@@ -173,13 +173,25 @@ def calculate_company_gains(  # noqa: PLR0915
         capital_gain_line: CapitalGainLine = capital_gain_line_accumulator.finalize()
         capital_gain_lines.append(capital_gain_line)
 
-    sale_actions.clear()
     if len(sales_daily_slices) > 0:
-        for trade_part in sales_daily_slices.values():
-            redistribute_unmatched_trades(sale_actions, trade_part)
-        logger.debug("Leftover sales_daily_slices:")
-        log_partitioned_trades(sales_daily_slices, "Leftover sales_daily_slices")
-        logger.debug("Leftover sale_actions: %s", sale_actions)
+        for _sale_date, sale_part in list(sales_daily_slices.items()):
+            remaining_qty = sale_part.quantity()
+            logger.warning(
+                "Partial sell mismatch for %s: %s shares sold with no matching buys — creating placeholder buy",
+                company.ticker,
+                remaining_qty,
+            )
+            placeholder_date = f"{PLACEHOLDER_YEAR}-01-01, 00:00:00"
+            placeholder_action = TradeAction(company, placeholder_date, currency, str(remaining_qty), "0", "0")
+            placeholder_parts = TradePartsWithinDay()
+            placeholder_parts.push_trade_part(remaining_qty, placeholder_action)
+            partial_accumulator = CapitalGainLineAccumulator(company, currency)
+            allocate_to_gain_line(remaining_qty, sale_part, partial_accumulator)
+            allocate_to_gain_line(remaining_qty, placeholder_parts, partial_accumulator)
+            capital_gain_lines.append(partial_accumulator.finalize())
+        sales_daily_slices.clear()
+
+    sale_actions.clear()
 
     buy_actions.clear()
     if len(buys_daily_slices) > 0:

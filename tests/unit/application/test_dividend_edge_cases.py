@@ -8,7 +8,7 @@ from shares_reporting.application.extraction import parse_dividend_income
 from shares_reporting.application.extraction.models import IBCsvData
 from shares_reporting.application.extraction.processing import _process_dividends
 from shares_reporting.domain.entities import DividendIncomePerSecurity
-from shares_reporting.domain.exceptions import DataValidationError
+from shares_reporting.domain.exceptions import DataValidationError, FileProcessingError
 from shares_reporting.domain.value_objects import parse_currency
 
 
@@ -223,6 +223,36 @@ class TestDividendProcessingErrorScenarios:
         assert unknown_dividend.gross_amount == Decimal("24.00")
         assert unknown_dividend.isin == "MISSING_ISIN_REQUIRES_ATTENTION"
         assert unknown_dividend.country == "UNKNOWN_COUNTRY"
+
+    def test_process_dividends_fails_on_mixed_currencies_for_same_symbol(self):
+        """Test that currency mismatch within same symbol raises FileProcessingError."""
+        raw_dividend_data = [
+            {
+                "currency": "USD",
+                "date": "2023-03-15",
+                "description": "AAPL - CASH DIVIDEND",
+                "amount": "50.00",
+            }
+        ]
+        raw_withholding_data = [
+            {
+                "currency": "EUR",  # Different currency for same symbol
+                "date": "2023-03-15",
+                "description": "AAPL - CASH DIVIDEND - US TAX",
+                "amount": "-7.50",
+            }
+        ]
+
+        csv_data = IBCsvData(
+            security_info={"AAPL": {"isin": "US0378331005", "country": "US"}},
+            raw_trade_data=[],
+            raw_dividend_data=raw_dividend_data,
+            raw_withholding_tax_data=raw_withholding_data,
+            metadata={},
+        )
+
+        with pytest.raises(FileProcessingError, match="[Cc]urrency"):
+            _process_dividends(csv_data)
 
     def test_dividend_income_per_security_validation_errors(self):
         """Test DividendIncomePerSecurity validation with various error scenarios."""

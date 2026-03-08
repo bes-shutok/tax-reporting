@@ -13,15 +13,24 @@ This file provides guidance to coding agents when working with code in this repo
 
 - For numeric fields from external reports, do not assume one locale. Detect thousands/decimal separators or fail with a clear error.
 - Do not classify values with a leading zero integer part (for example `0,001` or `0.001`) as thousands-grouped numbers.
+- A value with exactly one dot-grouped triplet (e.g. `1.234`) is ambiguous between decimal point and thousands separator — raise a clear error, do not guess. Only multi-group dot patterns (e.g. `1.234.567`) are unambiguously European thousands and may have dots stripped.
 
 ### 2. Repository Style and Conventions
 
 - Koinly source discovery must be year-agnostic (`koinly*`) and prefer a year matching parsed IB data when available.
 - If an inferred IB tax year exists and the selected Koinly directory year differs, skip crypto loading for that run.
+- Dividend aggregation must validate that all rows for a symbol share the same currency; a mismatch is invalid data and must raise `FileProcessingError` immediately (fail fast).
+
+### 4. Agent Workflow Rules
+
+- Do not commit changes unless explicitly asked by the user.
+- Never add `Co-Authored-By:` to commit messages.
 
 ### 3. Repository Constraints
 
 - Optional crypto ingestion must be non-blocking: when Koinly input is missing, mismatched-year, or unparseable, emit an explicit warning and continue IB report generation without crypto data.
+- Partially-unmatched sells (FIFO exhausts all buys before all sells are consumed) must never be silently dropped. Apply the placeholder-buy mechanism to the remaining sell quantity, emit `logger.warning`, and include the resulting capital gain line in the report.
+- When the FIFO loop exits with remaining unmatched trades, use `logger.warning` (not `logger.debug`) so data-loss conditions are always visible in production logs.
 
 ## Project Overview
 
