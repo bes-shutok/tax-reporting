@@ -193,9 +193,9 @@ class TradesContext(BaseSectionContext):
                 self.headers_found = True
                 self.logger.debug("Column mapping: %s", self.trades_col_mapping)
             except ValueError as e:
-                raise FileProcessingError("Row %d: Missing required column in Trades section: %s", row_number, e) from e
+                raise FileProcessingError(f"Row {row_number}: Missing required column in Trades section: {e}") from e
         else:
-            raise FileProcessingError("Row %d: Invalid Trades header format", row_number)
+            raise FileProcessingError(f"Row {row_number}: Invalid Trades header format")
 
     @override
     def process_data_row(self, row: list[str], row_number: int) -> None:
@@ -228,7 +228,7 @@ class TradesContext(BaseSectionContext):
             return
 
         # Extract trade data as dictionary for deferred processing
-        fee_value = ""
+        fee_value = "0"
         fee_idx = self.trades_col_mapping["fee"]
         if fee_idx is not None and len(row) > fee_idx:
             fee_value = row[fee_idx]
@@ -326,7 +326,7 @@ class DividendsContext(BaseSectionContext):
                 self.dividends_headers = None
                 self.dividends_col_mapping = None
         else:
-            raise FileProcessingError("Row %d: Invalid Dividends header format", row_number)
+            raise FileProcessingError(f"Row {row_number}: Invalid Dividends header format")
 
     @override
     def process_data_row(self, row: list[str], row_number: int) -> None:
@@ -411,7 +411,7 @@ class WithholdingTaxContext(BaseSectionContext):
                 self.withholding_tax_headers = None
                 self.withholding_tax_col_mapping = None
         else:
-            raise FileProcessingError("Row %d: Invalid Withholding Tax header format", row_number)
+            raise FileProcessingError(f"Row {row_number}: Invalid Withholding Tax header format")
 
     @override
     def process_data_row(self, row: list[str], row_number: int) -> None:

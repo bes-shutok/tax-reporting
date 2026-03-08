@@ -14,6 +14,9 @@ This file provides guidance to coding agents when working with code in this repo
 - For numeric fields from external reports, do not assume one locale. Detect thousands/decimal separators or fail with a clear error.
 - Do not classify values with a leading zero integer part (for example `0,001` or `0.001`) as thousands-grouped numbers.
 - A value with exactly one dot-grouped triplet (e.g. `1.234`) is ambiguous between decimal point and thousands separator — raise a clear error, do not guess. Only multi-group dot patterns (e.g. `1.234.567`) are unambiguously European thousands and may have dots stripped.
+- Always use f-strings in exception constructors: `raise SomeError(f"Row {n}: bad value {v}")`. Never pass multiple positional args to an exception constructor — `SomeError("msg %s", value)` stores a raw tuple and produces unreadable output.
+- When parsing files row-by-row, catch errors per-row (log a warning and skip the row). Do not let a single bad row propagate to a broad outer `except` that silently discards the entire dataset.
+- When an optional column is absent from a parsed CSV header, default the extracted value to a safe sentinel (e.g. `"0"` for fees) rather than empty string — downstream code such as `Decimal("")` will crash.
 
 ### 2. Repository Style and Conventions
 
@@ -21,16 +24,17 @@ This file provides guidance to coding agents when working with code in this repo
 - If an inferred IB tax year exists and the selected Koinly directory year differs, skip crypto loading for that run.
 - Dividend aggregation must validate that all rows for a symbol share the same currency; a mismatch is invalid data and must raise `FileProcessingError` immediately (fail fast).
 
-### 4. Agent Workflow Rules
-
-- Do not commit changes unless explicitly asked by the user.
-- Never add `Co-Authored-By:` to commit messages.
-
 ### 3. Repository Constraints
 
 - Optional crypto ingestion must be non-blocking: when Koinly input is missing, mismatched-year, or unparseable, emit an explicit warning and continue IB report generation without crypto data.
 - Partially-unmatched sells (FIFO exhausts all buys before all sells are consumed) must never be silently dropped. Apply the placeholder-buy mechanism to the remaining sell quantity, emit `logger.warning`, and include the resulting capital gain line in the report.
 - When the FIFO loop exits with remaining unmatched trades, use `logger.warning` (not `logger.debug`) so data-loss conditions are always visible in production logs.
+- When writing a partially-matched buy to the rollover CSV, the fee must be proportional: `proportional_fee = action.fee * (rolled_quantity / original_quantity)`.
+
+### 4. Agent Workflow Rules
+
+- Do not commit changes unless explicitly asked by the user.
+- Never add `Co-Authored-By:` to commit messages.
 
 ## Project Overview
 
@@ -387,8 +391,8 @@ Ask these questions for every test:
 def process_header(self, row: list[str], row_number: int) -> None:
 def process_data_row(self, row: list[str], row_number: int) -> None:
 
-# ✅ GOOD - Consistent error message patterns
-raise FileProcessingError("Row %d: Invalid %s format", row_number, section_name)
+# ✅ GOOD - Consistent error message patterns (f-string, not %d/%s tuple args)
+raise FileProcessingError(f"Row {row_number}: Invalid {section_name} format")
 ```
 
 ### Code Review Checklist

@@ -100,7 +100,8 @@ def export_rollover_file(leftover: str | PathLike[str], leftover_trades: TradeCy
                     row["Date/Time"] = str(action.date_time.date()) + ", " + str(action.date_time.time())
                     row["T. Price"] = str(action.price)
                     row["Proceeds"] = str(action.price * bought_trade.quantity)
-                    row["Comm/Fee"] = str(action.fee)
+                    proportional_fee = action.fee * (bought_trade.quantity / action.quantity)
+                    row["Comm/Fee"] = str(proportional_fee)
                     row["Basis"] = ""  # Empty for unmatched trades
                     row["Realized P/L"] = ""  # Empty for unmatched trades
                     writer.writerow(row)
