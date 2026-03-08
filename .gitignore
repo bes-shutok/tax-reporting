@@ -70,6 +70,7 @@ resources/tmp*/
 resources/result/*
 /resources/source/ib_export.csv
 /resources/source/shares-leftover.csv
+/resources/source/koinly2025
 /resources/source/tmp/*
 /tests/resources/tmp.*
 
