@@ -7,6 +7,22 @@ This file provides guidance to coding agents when working with code in this repo
 - `CLAUDE.md` and `AGENTS.md` must always stay synchronized.
 - After each update to the instructions in either file, immediately apply the same update to the other file.
 
+## Instruction Rules
+
+### 1. Reusable Engineering Rules
+
+- For numeric fields from external reports, do not assume one locale. Detect thousands/decimal separators or fail with a clear error.
+- Do not classify values with a leading zero integer part (for example `0,001` or `0.001`) as thousands-grouped numbers.
+
+### 2. Repository Style and Conventions
+
+- Koinly source discovery must be year-agnostic (`koinly*`) and prefer a year matching parsed IB data when available.
+- If an inferred IB tax year exists and the selected Koinly directory year differs, skip crypto loading for that run.
+
+### 3. Repository Constraints
+
+- Optional crypto ingestion must be non-blocking: when Koinly input is missing, mismatched-year, or unparseable, emit an explicit warning and continue IB report generation without crypto data.
+
 ## Project Overview
 
 Shares reporting tool is a financial application that processes Interactive Brokers CSV reports to generate tax reporting data for capital gains and dividend income calculations. It matches buy/sell transactions within the same day to calculate capital gains, processes dividend payments with tax information, and generates comprehensive Excel reports with currency conversion.
