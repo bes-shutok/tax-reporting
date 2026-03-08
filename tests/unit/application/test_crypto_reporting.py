@@ -304,9 +304,21 @@ def test_parse_koinly_decimal_handles_both_common_mixed_separator_formats():
     assert _parse_koinly_decimal("1.234,56") == Decimal("1234.56")
 
 
-def test_parse_koinly_decimal_handles_single_dot_european_thousands_grouping():
-    assert _parse_koinly_decimal("10.000") == Decimal("10000")
-    assert _parse_koinly_decimal("100.000") == Decimal("100000")
+def test_parse_koinly_decimal_raises_on_ambiguous_single_group_dot():
+    """Single-group dot values like '1.234' are ambiguous (decimal vs thousands) — must fail."""
+    import pytest
+    with pytest.raises(ValueError, match="Ambiguous"):
+        _parse_koinly_decimal("1.234")
+    with pytest.raises(ValueError, match="Ambiguous"):
+        _parse_koinly_decimal("10.000")
+    with pytest.raises(ValueError, match="Ambiguous"):
+        _parse_koinly_decimal("100.000")
+
+
+def test_parse_koinly_decimal_handles_multi_group_dot_as_european_thousands():
+    """Multi-group dot values like '1.234.567' are unambiguously European thousands."""
+    assert _parse_koinly_decimal("1.234.567") == Decimal("1234567")
+    assert _parse_koinly_decimal("12.345.678") == Decimal("12345678")
 
 
 def test_parse_koinly_decimal_does_not_treat_subunit_values_as_thousands_grouping():

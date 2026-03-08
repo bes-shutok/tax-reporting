@@ -198,6 +198,15 @@ def _process_dividends(csv_data: IBCsvData) -> DividendIncomePerCompany:  # noqa
 
             agg = dividend_income_per_company[symbol]
 
+            if currency_str:
+                incoming_currency = parse_currency(currency_str)
+                if incoming_currency != agg.currency:
+                    raise FileProcessingError(
+                        f"Currency mismatch for symbol {symbol}: "
+                        f"existing aggregation uses {agg.currency.currency!r} "
+                        f"but received {incoming_currency.currency!r}"
+                    )
+
             # Identify if this is a tax withholding
             is_tax = is_explicitly_tax or ("Withholding Tax" in description or "Tax" in description)
 

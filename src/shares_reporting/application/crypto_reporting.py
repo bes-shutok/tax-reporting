@@ -497,8 +497,11 @@ def _normalize_koinly_decimal_text(text: str) -> str:
             return text.replace(",", "")
         return text.replace(",", ".")
 
-    if "." in text and re.fullmatch(r"[+-]?[1-9]\d{0,2}(\.\d{3})+", text):
+    if "." in text and re.fullmatch(r"[+-]?[1-9]\d{0,2}(\.\d{3}){2,}", text):
         return text.replace(".", "")
+
+    if "." in text and re.fullmatch(r"[+-]?[1-9]\d{0,2}\.\d{3}", text):
+        raise ValueError(f"Ambiguous decimal format: {text!r} — dot could be thousands separator or decimal point")
 
     return text
 
