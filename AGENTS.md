@@ -23,6 +23,8 @@ This file provides guidance to coding agents when working with code in this repo
 - Koinly source discovery must be year-agnostic (`koinly*`) and prefer a year matching parsed IB data when available.
 - If an inferred IB tax year exists and the selected Koinly directory year differs, skip crypto loading for that run.
 - Dividend aggregation must validate that all rows for a symbol share the same currency; a mismatch is invalid data and must raise `FileProcessingError` immediately (fail fast).
+- `TradeDate` is a `NamedTuple(year, month, day)` — do not call `.date()` on it (no such method). Use it directly in comparisons and log messages, or call `.to_datetime()` to get a `datetime`.
+- When classifying a dividend row as withholding tax, match only the literal string `"Withholding Tax"` — never match on bare `"Tax"`. Dividend descriptions routinely contain "Tax" as a word fragment (e.g. "Tax-Exempt Interest").
 
 ### 3. Repository Constraints
 
@@ -30,11 +32,13 @@ This file provides guidance to coding agents when working with code in this repo
 - Partially-unmatched sells (FIFO exhausts all buys before all sells are consumed) must never be silently dropped. Apply the placeholder-buy mechanism to the remaining sell quantity, emit `logger.warning`, and include the resulting capital gain line in the report.
 - When the FIFO loop exits with remaining unmatched trades, use `logger.warning` (not `logger.debug`) so data-loss conditions are always visible in production logs.
 - When writing a partially-matched buy to the rollover CSV, the fee must be proportional: `proportional_fee = action.fee * (rolled_quantity / original_quantity)`.
+- Dividend per-symbol validation must run after all rows for all symbols are accumulated, not after each row. Mid-accumulation state can be temporarily invalid (e.g. reversal arrives before dividend). Symbols that fail post-accumulation validation are skipped with `logger.warning`; they must not abort processing of other symbols.
 
 ### 4. Agent Workflow Rules
 
 - Do not commit changes unless explicitly asked by the user.
 - Never add `Co-Authored-By:` to commit messages.
+- Always use `uv run pytest` (not `uvx pytest`) — `uvx` runs pytest in an isolated environment without the local `shares_reporting` package installed, causing import failures.
 
 ## Project Overview
 
@@ -96,7 +100,7 @@ uv pip list --outdated
 #### Development Workflow
 ```bash
 # Quick development cycle
-uvx pytest                     # Run tests (fast)
+uv run pytest                     # Run tests (fast)
 uvx ruff check . --fix && uvx ruff format .  # Lint and format (fast)
 uv run shares-reporting       # Run the application
 ```
@@ -104,10 +108,10 @@ uv run shares-reporting       # Run the application
 #### Quality Assurance
 ```bash
 # Run all tests
-uvx pytest
+uv run pytest
 
 # Run with coverage
-uvx pytest --cov=src --cov-report=html
+uv run pytest --cov=src --cov-report=html
 
 # Linting and formatting
 uvx ruff check .
@@ -119,6 +123,8 @@ uv run basedpyright src/ tests/  # Type checking
 - `uvx shares-reporting` - ❌ Won't work (project is not published to PyPI)
 - `uvx run shares-reporting` - ❌ Installs 'run' package, not what you want
 - `uv run shares-reporting` - ✅ Correct way to run the local application
+- `uvx pytest` - ❌ Runs pytest in an isolated env without the local package; `shares_reporting` import will fail
+- `uv run pytest` - ✅ Correct way to run tests (uses project's venv with local package installed)
 
 **Key point**: This project uses a local entry point defined in `pyproject.toml`, not a published PyPI package.
 
@@ -205,6 +211,8 @@ Rich domain models with proper separation of concerns:
 - **Accumulators**: CapitalGainLineAccumulator, TradePartsWithinDay for complex calculations
 - **Collections**: Type aliases for trades, capital gains, and dividend income data structures
 
+**TradeDate key facts**: `TradeDate` is a `NamedTuple(year, month, day)` — it has **no `.date()` method**. Supports `>` / `<` / `==` comparison via tuple ordering. Use it directly in log messages (has `__repr__`) and comparisons. To convert to `datetime`, call `.to_datetime()`.
+
 ## Configuration Management
 
 - Uses Python's `configparser` for INI file handling
@@ -283,31 +291,31 @@ tests/
 ### Testing Commands
 ```bash
 # Run all tests
-uvx pytest
+uv run pytest
 
 # Run tests by tier using markers
-uvx pytest -m unit         # Unit tests only (fast)
-uvx pytest -m integration  # Integration tests only
-uvx pytest -m e2e          # End-to-end tests only
+uv run pytest -m unit         # Unit tests only (fast)
+uv run pytest -m integration  # Integration tests only
+uv run pytest -m e2e          # End-to-end tests only
 
 # Run tests by directory
-uvx pytest tests/unit/             # All unit tests
-uvx pytest tests/unit/domain/      # Domain layer tests
-uvx pytest tests/unit/infrastructure/  # Infrastructure tests
-uvx pytest tests/unit/application/     # Application layer tests
-uvx pytest tests/integration/      # Integration tests
-uvx pytest tests/end_to_end/       # End-to-end tests
+uv run pytest tests/unit/             # All unit tests
+uv run pytest tests/unit/domain/      # Domain layer tests
+uv run pytest tests/unit/infrastructure/  # Infrastructure tests
+uv run pytest tests/unit/application/     # Application layer tests
+uv run pytest tests/integration/      # Integration tests
+uv run pytest tests/end_to_end/       # End-to-end tests
 
 # Run with coverage
-uvx pytest --cov=src --cov-report=html
+uv run pytest --cov=src --cov-report=html
 
 # Run specific test patterns
-uvx pytest -k "test_specific"     # Run tests matching pattern
-uvx pytest tests/unit/domain/test_value_objects.py  # Specific test file
+uv run pytest -k "test_specific"     # Run tests matching pattern
+uv run pytest tests/unit/domain/test_value_objects.py  # Specific test file
 
 # Development workflow
-uvx pytest -m unit -x            # Run unit tests, stop on first failure
-uvx pytest -m unit --tb=short    # Short traceback for faster debugging
+uv run pytest -m unit -x            # Run unit tests, stop on first failure
+uv run pytest -m unit --tb=short    # Short traceback for faster debugging
 ```
 
 ### Testing Guidelines

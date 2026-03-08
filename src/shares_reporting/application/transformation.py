@@ -171,6 +171,13 @@ def calculate_company_gains(  # noqa: PLR0915
                 _ = buys_daily_slices.pop(buy_date)
 
         capital_gain_line: CapitalGainLine = capital_gain_line_accumulator.finalize()
+        if capital_gain_line.get_buy_date() > capital_gain_line.get_sell_date():
+            logger.warning(
+                "Buy date (%s) is after sell date (%s) for %s — check for missing buy records or leftover data",
+                capital_gain_line.get_buy_date(),
+                capital_gain_line.get_sell_date(),
+                company.ticker,
+            )
         capital_gain_lines.append(capital_gain_line)
 
     if len(sales_daily_slices) > 0:

@@ -55,8 +55,8 @@ class TradeAction:
             self.trade_type = TradeType.BUY
             self.quantity = Decimal(quantity)
 
-        self.price = Decimal(price)
-        self.fee = Decimal(fee).copy_abs()
+        self.price = Decimal(price.replace(",", ""))
+        self.fee = Decimal(fee.replace(",", "")).copy_abs()
 
 
 class QuantitatedTradeAction(NamedTuple):

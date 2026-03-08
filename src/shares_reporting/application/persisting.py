@@ -639,7 +639,8 @@ def create_currency_table(worksheet: Worksheet, column_no: int, row_no: int, con
     _ = worksheet.cell(row_no, column_no, "Currency exchange rate")
     row_no += 1
     for i in range(len(currency_header)):
-        _ = worksheet.cell(row_no, column_no, currency_header[i])
+        _ = worksheet.cell(row_no, column_no + i, currency_header[i])
+    row_no += 1
 
     coordinates: dict[str, str] = {}
     for j in range(len(rates)):

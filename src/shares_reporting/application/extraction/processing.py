@@ -208,7 +208,7 @@ def _process_dividends(csv_data: IBCsvData) -> DividendIncomePerCompany:  # noqa
                     )
 
             # Identify if this is a tax withholding
-            is_tax = is_explicitly_tax or ("Withholding Tax" in description or "Tax" in description)
+            is_tax = is_explicitly_tax or "Withholding Tax" in description
 
             if is_tax:
                 # Taxes are usually negative in the report, we want positive magnitude for the record
@@ -217,15 +217,29 @@ def _process_dividends(csv_data: IBCsvData) -> DividendIncomePerCompany:  # noqa
                 # Gross income
                 agg.gross_amount += Decimal(amount)
 
-            # Skip validation for entries with missing ISINs since they're already marked
-            if dividend_income_per_company[symbol].isin != "MISSING_ISIN_REQUIRES_ATTENTION":
-                agg.validate()
-
         except SecurityInfoExtractionError as e:
             # This should no longer happen with our new approach, but fail fast if it does
             raise FileProcessingError(f"Security info error for symbol {symbol}: {e}") from e
         except Exception as e:
             raise FileProcessingError(f"Failed to process dividend/tax for symbol {symbol}: {e}") from e
+
+    # Validate after all rows are accumulated — mid-accumulation state can be temporarily invalid
+    # (e.g. reversal arrives before dividend, or withholding tax arrives after full reversal).
+    # Symbols that are fully reversed (net zero or invalid after reversal) are skipped with a warning.
+    invalid_symbols = []
+    for sym, agg in dividend_income_per_company.items():
+        if agg.isin != "MISSING_ISIN_REQUIRES_ATTENTION":
+            try:
+                agg.validate()
+            except Exception as e:
+                logger.warning(
+                    "Skipping symbol %s after post-accumulation validation failure (likely full reversal): %s",
+                    sym,
+                    e,
+                )
+                invalid_symbols.append(sym)
+    for sym in invalid_symbols:
+        del dividend_income_per_company[sym]
 
     logger.info(
         "Processed dividend data for %d securities",

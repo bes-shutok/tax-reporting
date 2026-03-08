@@ -110,6 +110,58 @@ class TestDividendExtractionEdgeCases:
         assert aapl_dividend.get_net_amount() == Decimal("64.80")
 
 
+    def test_full_dividend_reversal_does_not_abort_other_symbols(self, tmp_path):
+        """Full reversal on one symbol must not crash processing; other symbols still appear."""
+        csv_content = (
+            "Financial Instrument Information,Header,Asset Category,Symbol,Description,Conid,Security ID,Multiplier\n"
+            "Financial Instrument Information,Data,Stocks,AAPL,Apple Inc.,123456,US0378331005,1\n"
+            "Financial Instrument Information,Data,Stocks,MSFT,Microsoft Corp.,234567,US5949181045,1\n"
+            "Dividends,Header,Currency,Date,Description,Amount\n"
+            "Dividends,Data,USD,2023-03-15,AAPL - CASH DIVIDEND,100.00\n"
+            "Dividends,Data,USD,2023-03-15,AAPL - CASH DIVIDEND REVERSAL,-200.00\n"
+            "Dividends,Data,USD,2023-03-15,MSFT - CASH DIVIDEND,50.00\n"
+            "Withholding Tax,Header,Currency,Date,Description,Amount,Code\n"
+            "Withholding Tax,Data,USD,2023-03-15,MSFT(US5949181045) - TAX,-7.50,,\n"
+            "Trades,Header,Symbol,Currency,Date/Time,Quantity,T. Price,Comm/Fee\n"
+            "Trades,Data,Stocks,AAPL,USD,2023-01-15, 10:30:00,100,150.25,1.00\n"
+        )
+        csv_file = tmp_path / "test_reversal.csv"
+        csv_file.write_text(csv_content)
+
+        dividend_income = parse_dividend_income(csv_file)
+
+        # MSFT must still be processed normally
+        assert "MSFT" in dividend_income
+        assert dividend_income["MSFT"].gross_amount == Decimal("50.00")
+        assert dividend_income["MSFT"].total_taxes == Decimal("7.50")
+
+    def test_tax_exempt_description_is_not_misclassified_as_withholding(self, tmp_path):
+        """Descriptions containing 'Tax' as a word-part must be treated as dividend income."""
+        csv_content = (
+            "Financial Instrument Information,Header,Asset Category,Symbol,Description,Conid,Security ID,Multiplier\n"
+            "Financial Instrument Information,Data,Stocks,BOND,Tax-Exempt Bond Fund,123456,US1234567890,1\n"
+            "Financial Instrument Information,Data,Stocks,NTAX,Non-Taxable Special Div,234567,US2345678901,1\n"
+            "Dividends,Header,Currency,Date,Description,Amount\n"
+            "Dividends,Data,USD,2023-03-15,BOND - Tax-Exempt Bond Distribution,80.00\n"
+            "Dividends,Data,USD,2023-06-15,NTAX - Non-Taxable Special Dividend,60.00\n"
+            "Trades,Header,Symbol,Currency,Date/Time,Quantity,T. Price,Comm/Fee\n"
+            "Trades,Data,Stocks,BOND,USD,2023-01-15, 10:30:00,100,50.00,1.00\n"
+        )
+        csv_file = tmp_path / "test_tax_exempt.csv"
+        csv_file.write_text(csv_content)
+
+        dividend_income = parse_dividend_income(csv_file)
+
+        # Both must appear as gross income, not as withholding tax
+        assert "BOND" in dividend_income
+        assert dividend_income["BOND"].gross_amount == Decimal("80.00")
+        assert dividend_income["BOND"].total_taxes == Decimal("0")
+
+        assert "NTAX" in dividend_income
+        assert dividend_income["NTAX"].gross_amount == Decimal("60.00")
+        assert dividend_income["NTAX"].total_taxes == Decimal("0")
+
+
 @pytest.mark.unit
 class TestDividendProcessingErrorScenarios:
     """Test error scenarios in dividend processing."""
