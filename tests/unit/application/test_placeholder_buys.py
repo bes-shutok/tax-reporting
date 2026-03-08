@@ -147,6 +147,48 @@ class TestPlaceholderBuys:
         if currency_company in leftover_trades:
             assert not leftover_trades[currency_company].has_sold()
 
+    def test_fifo_warns_when_earliest_buy_is_after_sell(self, caplog):
+        """When the matched buy date is after the sell date, a warning must be logged."""
+        import logging
+
+        company = Company(ticker="LATE")
+        currency = Currency(currency="USD")
+
+        buy_action = TradeAction(
+            company=company,
+            date_time="2023-07-01, 10:00:00",
+            currency=currency,
+            quantity="10",
+            price="100.00",
+            fee="1.00",
+        )
+        sell_action = TradeAction(
+            company=company,
+            date_time="2023-06-15, 10:30:00",
+            currency=currency,
+            quantity="-10",
+            price="120.00",
+            fee="1.00",
+        )
+
+        trade_cycle_per_company = {
+            CurrencyCompany(currency, company): TradeCycle(
+                bought=[QuantitatedTradeAction(quantity=Decimal("10"), action=buy_action)],
+                sold=[QuantitatedTradeAction(quantity=Decimal("10"), action=sell_action)],
+            )
+        }
+
+        leftover_trades = {}
+        capital_gains = {}
+
+        with caplog.at_level(logging.WARNING):
+            calculate_fifo_gains(trade_cycle_per_company, leftover_trades, capital_gains)
+
+        warning_messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("LATE" in msg for msg in warning_messages), (
+            f"Expected a warning about LATE buy-after-sell, got: {warning_messages}"
+        )
+
     def test_normal_matching_still_works(self):
         """Test that normal buy/sell matching still works correctly."""
         # Arrange

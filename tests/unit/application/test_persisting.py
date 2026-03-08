@@ -1,12 +1,13 @@
-"""Tests for export_rollover_file in persisting.py."""
+"""Tests for export_rollover_file and create_currency_table in persisting.py."""
 
 import csv
 from decimal import Decimal
 from pathlib import Path
 
+import openpyxl
 import pytest
 
-from shares_reporting.application.persisting import export_rollover_file
+from shares_reporting.application.persisting import create_currency_table, export_rollover_file
 from shares_reporting.domain.entities import (
     CurrencyCompany,
     QuantitatedTradeAction,
@@ -14,6 +15,7 @@ from shares_reporting.domain.entities import (
     TradeCycle,
 )
 from shares_reporting.domain.value_objects import Company, Currency
+from shares_reporting.infrastructure.config import Config, ConversionRate
 
 
 @pytest.mark.unit
@@ -60,3 +62,23 @@ class TestExportRolloverFileFee:
         rows = list(csv.DictReader(out_file.read_text().splitlines()))
         assert len(rows) == 1
         assert Decimal(rows[0]["Comm/Fee"]) == Decimal("10")
+
+
+@pytest.mark.unit
+class TestCreateCurrencyTable:
+    """Test that create_currency_table writes headers to separate columns."""
+
+    def test_both_headers_are_written_to_separate_columns(self):
+        """'Base/target' and 'Rate' must land in column_no and column_no+1, not both in column_no."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        config = Config(
+            base="EUR",
+            rates=[ConversionRate(base="EUR", calculated="USD", rate=Decimal("1.10"))],
+        )
+
+        create_currency_table(ws, column_no=3, row_no=1, config=config)
+
+        # Row 1 = title "Currency exchange rate", row 2 = sub-headers
+        assert ws.cell(2, 3).value == "Base/target"
+        assert ws.cell(2, 4).value == "Rate"

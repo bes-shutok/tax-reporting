@@ -108,6 +108,14 @@ class TestTradeAction:
 
         assert trade.quantity == Decimal("10.5")
 
+    def test_trade_action_strips_commas_from_price_and_fee(self):
+        """Commas in price and fee strings must be stripped before Decimal conversion."""
+        company = parse_company("AAPL")
+        currency = parse_currency("USD")
+        trade = TradeAction(company, "2024-03-28, 14:30:45", currency, "100", "600,000.00", "1,000.00")
+        assert trade.price == Decimal("600000.00")
+        assert trade.fee == Decimal("1000.00")
+
     def test_trade_action_mutability(self):
         """Test that TradeAction fields are mutable (dataclass is not frozen)."""
         company = parse_company("AAPL")

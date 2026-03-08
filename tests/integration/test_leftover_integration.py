@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pytest
 
 from src.shares_reporting.application.extraction.processing import (
     parse_ib_export_all,
     parse_leftover_and_export_data,
-    parse_ib_export,
 )
 from src.shares_reporting.domain.value_objects import TradeType
 
@@ -183,7 +181,7 @@ def test_leftover_integration_actually_adds_data(test_export_file: Path, test_le
         f"but got {actual_increase} more trades."
     )
 
-    print(f"✅ Leftover integration verification passed:")
+    print("✅ Leftover integration verification passed:")
     print(f"   - Trades with leftover: {total_trades_with_leftover}")
     print(f"   - Trades without leftover: {total_trades_without_leftover}")
     print(f"   - Added {actual_increase} trades from leftover file ({actual_increase/total_trades_without_leftover*100:.1f}% increase)")
@@ -228,9 +226,9 @@ def test_leftover_security_enrichment(test_export_file: Path, test_leftover_file
     # Should have 4 trades from export + 4 trades from leftover = 8 total
     assert total_trades == 8, f"Expected 8 total trades, got {total_trades}"
 
-    print(f"✅ Security enrichment verification passed:")
+    print("✅ Security enrichment verification passed:")
     print(f"   - Found all expected symbols: {expected_symbols}")
-    print(f"   - Export symbols enriched with ISIN/country data")
+    print("   - Export symbols enriched with ISIN/country data")
     print(f"   - Total trades processed: {total_trades}")
 
 
