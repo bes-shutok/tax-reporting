@@ -788,3 +788,74 @@ class TestParseRawIbExport:
             finally:
                 with contextlib.suppress(OSError, PermissionError):
                     Path(f.name).unlink()
+
+    def test_parse_ib_export_handles_missing_fee_column(self):
+        """Trades header with no fee column must parse with fee=0, not crash."""
+        csv_content = [
+            [
+                "Financial Instrument Information",
+                "Header",
+                "Asset Category",
+                "Symbol",
+                "Description",
+                "Conid",
+                "Security ID",
+                "Multiplier",
+            ],
+            [
+                "Financial Instrument Information",
+                "Data",
+                "Stocks",
+                "AAPL",
+                "Apple Inc",
+                "265598",
+                "US0378331005",
+                "1",
+            ],
+            # Trades header with NO fee column (Comm/Fee, Comm in EUR, Commission all absent)
+            [
+                "Trades",
+                "Header",
+                "DataDiscriminator",
+                "Asset Category",
+                "Currency",
+                "Symbol",
+                "Date/Time",
+                "Quantity",
+                "T. Price",
+            ],
+            [
+                "Trades",
+                "Data",
+                "Order",
+                "Stocks",
+                "USD",
+                "AAPL",
+                "2024-03-28, 10:30:45",
+                "10",
+                "150.00",
+            ],
+        ]
+
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, newline="") as f:
+            writer = csv.writer(f)
+            for row in csv_content:
+                writer.writerow(row)
+            tmp_name = f.name
+
+        try:
+            trade_cycles = parse_ib_export(Path(tmp_name))
+            assert len(trade_cycles) == 1
+            # Key contains enriched company (with ISIN) — get it from the result
+            (key, cycle) = next(iter(trade_cycles.items()))
+            assert key.currency == parse_currency("USD")
+            assert key.company.ticker == "AAPL"
+            bought = cycle.get(TradeType.BUY)
+            assert len(bought) == 1
+            # Fee must default to 0 when no fee column is present
+            assert bought[0].action.fee == Decimal("0")
+        finally:
+            with contextlib.suppress(OSError, PermissionError):
+                Path(tmp_name).unlink()

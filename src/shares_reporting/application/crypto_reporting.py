@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import logging
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -292,11 +293,16 @@ def _parse_capital_gains_file(path: Path, skipped_assets: Counter[tuple[str, str
     rows = _read_koinly_rows(path)
     capital_entries: list[CryptoCapitalGainEntry] = []
 
+    logger = logging.getLogger(__name__)
     for row in rows:
         asset = row.get("Asset", "").strip()
-        cost_eur = _parse_koinly_decimal(row.get("Cost (EUR)", ""))
-        proceeds_eur = _parse_koinly_decimal(row.get("Proceeds (EUR)", ""))
-        gain_loss_eur = _parse_koinly_decimal(row.get("Gain / loss", ""))
+        try:
+            cost_eur = _parse_koinly_decimal(row.get("Cost (EUR)", ""))
+            proceeds_eur = _parse_koinly_decimal(row.get("Proceeds (EUR)", ""))
+            gain_loss_eur = _parse_koinly_decimal(row.get("Gain / loss", ""))
+        except ValueError as exc:
+            logger.warning("Skipping capital gains row for %r — ambiguous decimal value: %s", asset, exc)
+            continue
 
         if cost_eur == ZERO and proceeds_eur == ZERO and gain_loss_eur == ZERO:
             _register_skipped_zero_asset(skipped_assets, "capital_gains", asset)

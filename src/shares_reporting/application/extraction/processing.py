@@ -115,7 +115,7 @@ def _process_trades(csv_data: IBCsvData) -> TradeCyclePerCompany:
             quantitated_trade_actions.append(QuantitatedTradeAction(trade_action.quantity, trade_action))
 
         except Exception as e:
-            raise FileProcessingError("Failed to process trade for symbol %s: %s", symbol, e) from e
+            raise FileProcessingError(f"Failed to process trade for symbol {symbol}: {e}") from e
 
     logger.info(
         "Processed %d trades for %d currency-company pairs",
@@ -223,9 +223,9 @@ def _process_dividends(csv_data: IBCsvData) -> DividendIncomePerCompany:  # noqa
 
         except SecurityInfoExtractionError as e:
             # This should no longer happen with our new approach, but fail fast if it does
-            raise FileProcessingError("Security info error for symbol %s: %s", symbol, e) from e
+            raise FileProcessingError(f"Security info error for symbol {symbol}: {e}") from e
         except Exception as e:
-            raise FileProcessingError("Failed to process dividend/tax for symbol %s: %s", symbol, e) from e
+            raise FileProcessingError(f"Failed to process dividend/tax for symbol {symbol}: {e}") from e
 
     logger.info(
         "Processed dividend data for %d securities",

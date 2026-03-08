@@ -328,3 +328,71 @@ def test_parse_koinly_decimal_does_not_treat_subunit_values_as_thousands_groupin
     assert _parse_koinly_decimal("0.001") == Decimal("0.001")
     assert _parse_koinly_decimal("0.010") == Decimal("0.010")
     assert _parse_koinly_decimal("0.100") == Decimal("0.100")
+
+
+def test_capital_gains_file_skips_ambiguous_row_and_continues_parsing(tmp_path):
+    """A row with an ambiguous decimal must be skipped; subsequent valid rows still parse."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(
+        "\n".join(
+            [
+                "Capital gains report 2025",
+                "",
+                ",".join(
+                    [
+                        "Date Sold",
+                        "Date Acquired",
+                        "Asset",
+                        "Amount",
+                        "Cost (EUR)",
+                        "Proceeds (EUR)",
+                        "Gain / loss",
+                        "Notes",
+                        "Wallet Name",
+                        "Holding period",
+                    ]
+                ),
+                # Row with ambiguous single-group dot decimal (cost_eur = "1.234")
+                ",".join(
+                    [
+                        "13/01/2025 13:01",
+                        "18/11/2024 00:15",
+                        "ETH",
+                        "1",
+                        "1.234",       # ambiguous — should skip this row
+                        "1.500",       # also ambiguous, but row already bad
+                        "0.266",
+                        "",
+                        "Kraken",
+                        "Short term",
+                    ]
+                ),
+                # Valid row that must still appear in output
+                ",".join(
+                    [
+                        "20/01/2025 10:10",
+                        "01/01/2024 00:00",
+                        "BTC",
+                        '"0,10000000"',
+                        '"3000,00"',
+                        '"3500,00"',
+                        '"500,00"',
+                        "",
+                        "Kraken",
+                        "Long term",
+                    ]
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = load_koinly_crypto_report(koinly_dir)
+
+    # The ambiguous ETH row is skipped; the valid BTC row is still present
+    assert report is not None
+    assets = [e.asset for e in report.capital_entries]
+    assert "BTC" in assets
+    assert "ETH" not in assets
