@@ -2,6 +2,16 @@
 
 from decimal import Decimal
 
+from shares_reporting.application.crypto_reporting import (
+    CryptoCapitalGainEntry,
+    CryptoCompletePdfSummary,
+    CryptoReconciliationSummary,
+    CryptoRewardIncomeEntry,
+    CryptoSkippedZeroValueToken,
+    CryptoTaxReport,
+    HoldingsSnapshot,
+    resolve_operator_origin,
+)
 from shares_reporting.application.persisting import generate_tax_report
 from shares_reporting.domain.collections import DividendIncomePerCompany
 from shares_reporting.domain.entities import DividendIncomePerSecurity
@@ -261,7 +271,108 @@ class TestDividendExcelPersisting:
         assert "USD" in dividend_currencies
         assert "EUR" in dividend_currencies
         assert "CAD" in dividend_currencies
+        workbook.close()
 
+    def test_generate_tax_report_with_crypto_sheet(self, tmp_path):
+        """Test generating Excel report with additional crypto worksheet."""
+        bybit_origin = resolve_operator_origin("ByBit")
+        wirex_origin = resolve_operator_origin("Wirex", transaction_type="crypto_deposit")
+
+        crypto_report = CryptoTaxReport(
+            tax_year=2025,
+            capital_entries=[
+                CryptoCapitalGainEntry(
+                    disposal_date="2025-01-13 13:01",
+                    acquisition_date="2024-11-18 00:15",
+                    asset="USDT",
+                    amount=Decimal("1.5"),
+                    cost_eur=Decimal("1.25"),
+                    proceeds_eur=Decimal("1.35"),
+                    gain_loss_eur=Decimal("0.10"),
+                    holding_period="Short term",
+                    wallet="ByBit (2)",
+                    platform="ByBit",
+                    operator_origin=bybit_origin,
+                    annex_hint="J",
+                    review_required=bybit_origin.review_required,
+                    notes="",
+                )
+            ],
+            reward_entries=[
+                CryptoRewardIncomeEntry(
+                    date="2025-01-01 00:01",
+                    asset="WXT",
+                    amount=Decimal("5"),
+                    value_eur=Decimal("17.10"),
+                    income_label="Reward",
+                    source_type="Reward",
+                    wallet="Wirex",
+                    platform="Wirex",
+                    operator_origin=wirex_origin,
+                    annex_hint="J",
+                    review_required=wirex_origin.review_required,
+                    description="",
+                )
+            ],
+            reconciliation=CryptoReconciliationSummary(
+                capital_rows=1,
+                reward_rows=1,
+                short_term_rows=1,
+                long_term_rows=0,
+                capital_cost_total_eur=Decimal("1.25"),
+                capital_proceeds_total_eur=Decimal("1.35"),
+                capital_gain_total_eur=Decimal("0.10"),
+                reward_total_eur=Decimal("17.10"),
+                opening_holdings=HoldingsSnapshot(
+                    asset_rows=1,
+                    total_cost_eur=Decimal("100.00"),
+                    total_value_eur=Decimal("120.00"),
+                ),
+                closing_holdings=HoldingsSnapshot(
+                    asset_rows=1,
+                    total_cost_eur=Decimal("130.00"),
+                    total_value_eur=Decimal("150.00"),
+                ),
+            ),
+            skipped_zero_value_tokens=[
+                CryptoSkippedZeroValueToken(source_section="capital_gains", asset="FEE", count=3),
+                CryptoSkippedZeroValueToken(source_section="income", asset="AAA", count=2),
+            ],
+            pdf_summary=CryptoCompletePdfSummary(
+                period="1 Jan 2025 to 31 Dec 2025",
+                timezone="Europe/Lisbon",
+                extracted_tokens=12,
+            ),
+        )
+
+        report_path = tmp_path / "crypto_report.xlsx"
+        generate_tax_report(
+            extract=report_path,
+            capital_gain_lines_per_company={},
+            dividend_income_per_company={},
+            crypto_tax_report=crypto_report,
+        )
+
+        assert report_path.exists()
+
+        import openpyxl
+
+        workbook = openpyxl.load_workbook(report_path)
+        assert "Crypto" in workbook.sheetnames
+        crypto_sheet = workbook["Crypto"]
+        assert crypto_sheet["A1"].value == "CRYPTO TAX REPORT - PORTUGAL"
+
+        labels = set()
+        for row in crypto_sheet.iter_rows(values_only=True):
+            first_cell = row[0] if row else None
+            if isinstance(first_cell, str):
+                labels.add(first_cell)
+
+        assert "1. CAPITAL GAINS" in labels
+        assert "2. REWARDS INCOME" in labels
+        assert "3. RECONCILIATION" in labels
+        assert "4. SKIPPED ZERO VALUE TOKENS" in labels
+        assert "PDF period" in labels
         workbook.close()
 
     def test_generate_tax_report_with_dividend_validation_errors(self, tmp_path):

@@ -5,9 +5,12 @@ Processes Interactive Brokers CSV exports to generate tax reporting data for cap
 
 from __future__ import annotations
 
+import logging
+import re
 import sys
 from pathlib import Path
 
+from .application.crypto_reporting import CryptoTaxReport, load_koinly_crypto_report
 from .application.extraction import parse_ib_export_all
 from .application.persisting import export_rollover_file, generate_tax_report
 from .application.transformation import calculate_fifo_gains
@@ -22,7 +25,7 @@ from .infrastructure.logging_config import configure_application_logging, create
 from .infrastructure.validation import validate_output_directory
 
 
-def main(  # noqa: PLR0915
+def main(  # noqa: PLR0912, PLR0915
     source_file: Path | None = None, output_dir: Path | None = None, log_level: str = "INFO"
 ) -> None:
     """Main application entry point.
@@ -38,6 +41,7 @@ def main(  # noqa: PLR0915
     logger = create_module_logger(__name__)
 
     try:
+        final_report_type = "capital gains"
         # Default paths
         if source_file is None:
             source_file = Path("resources/source", "ib_export.csv")
@@ -109,16 +113,43 @@ def main(  # noqa: PLR0915
 
         # Generate comprehensive tax report
         try:
-            generate_tax_report(extract_path, capital_gains, dividend_income_per_company)
-            report_type = "capital gains and dividend income" if dividend_income_per_company else "capital gains"
-            logger.info("Generated %s report: %s", report_type, extract_path)
+            crypto_tax_report: CryptoTaxReport | None = None
+            tax_year_hint = _infer_tax_year_hint_from_ib_data(ib_data)
+            koinly_dir = _resolve_koinly_directory(validated_source.parent, tax_year_hint=tax_year_hint)
+
+            if koinly_dir:
+                logger.info("Detected Koinly directory: %s", koinly_dir)
+                crypto_tax_report = _load_crypto_tax_report(
+                    koinly_dir=koinly_dir,
+                    tax_year_hint=tax_year_hint,
+                    logger=logger,
+                )
+            else:
+                logger.warning(
+                    "No Koinly directory found under %s; continuing without crypto data",
+                    validated_source.parent,
+                )
+
+            generate_tax_report(
+                extract_path,
+                capital_gains,
+                dividend_income_per_company,
+                crypto_tax_report=crypto_tax_report,
+            )
+            final_report_type = (
+                "capital gains + dividends + crypto"
+                if crypto_tax_report
+                else "capital gains and dividend income"
+            )
+            if not dividend_income_per_company:
+                final_report_type = "capital gains + crypto" if crypto_tax_report else "capital gains"
+            logger.info("Generated %s report: %s", final_report_type, extract_path)
         except Exception as e:
             raise ReportGenerationError(f"Failed to generate report: {e}") from e
 
         logger.info("Application completed successfully")
         logger.info("Output directory: %s", validated_output_dir.name)
-        report_type = "capital gains and dividend income" if dividend_income_per_company else "capital gains"
-        logger.info("Generated %s report: %s", report_type, extract_path.name)
+        logger.info("Generated %s report: %s", final_report_type, extract_path.name)
         logger.info("Leftover shares report: %s", leftover_path.name)
         logger.info(
             "Processed %d trade cycles and %d dividend entries",
@@ -136,6 +167,93 @@ def main(  # noqa: PLR0915
         print(f"Unexpected error: {e}")
         print("Check logs for detailed information")
         sys.exit(1)
+
+
+def _infer_tax_year_hint_from_ib_data(ib_data: IBExportData) -> int | None:
+    sold_years = [
+        trade.action.date_time.year
+        for cycle in ib_data.trade_cycles.values()
+        for trade in cycle.sold
+    ]
+    if sold_years:
+        return max(sold_years)
+
+    buy_years = [
+        trade.action.date_time.year
+        for cycle in ib_data.trade_cycles.values()
+        for trade in cycle.bought
+    ]
+    if buy_years:
+        return max(buy_years)
+
+    return None
+
+
+def _extract_year(value: str) -> int | None:
+    match = re.search(r"(?<!\d)(\d{4})(?!\d)", value)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _is_koinly_year_mismatch(koinly_dir: Path, tax_year_hint: int | None) -> bool:
+    if tax_year_hint is None:
+        return False
+    detected_year = _extract_year(koinly_dir.name)
+    return detected_year is not None and detected_year != tax_year_hint
+
+
+def _load_crypto_tax_report(
+    koinly_dir: Path,
+    tax_year_hint: int | None,
+    logger: logging.Logger,
+) -> CryptoTaxReport | None:
+    if _is_koinly_year_mismatch(koinly_dir, tax_year_hint):
+        logger.warning(
+            "Koinly directory year (%s) does not match inferred IB tax year (%s); "
+            "skipping crypto data from: %s",
+            _extract_year(koinly_dir.name),
+            tax_year_hint,
+            koinly_dir,
+        )
+        return None
+
+    try:
+        crypto_tax_report = load_koinly_crypto_report(koinly_dir)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to load Koinly crypto dataset from %s: %s. Continuing without crypto data.",
+            koinly_dir,
+            exc,
+        )
+        return None
+
+    if crypto_tax_report:
+        logger.info(
+            "Loaded Koinly crypto dataset: %s capital rows, %s reward rows",
+            len(crypto_tax_report.capital_entries),
+            len(crypto_tax_report.reward_entries),
+        )
+    else:
+        logger.warning(
+            "Koinly directory exists but no parseable capital or income report was found: %s",
+            koinly_dir,
+        )
+
+    return crypto_tax_report
+
+
+def _resolve_koinly_directory(base_dir: Path, tax_year_hint: int | None) -> Path | None:
+    candidates = [path for path in base_dir.iterdir() if path.is_dir() and path.name.lower().startswith("koinly")]
+    if not candidates:
+        return None
+
+    if tax_year_hint is not None:
+        for candidate in candidates:
+            if _extract_year(candidate.name) == tax_year_hint:
+                return candidate
+
+    return max(candidates, key=lambda path: (_extract_year(path.name) or -1, path.name.lower()))
 
 
 if __name__ == "__main__":

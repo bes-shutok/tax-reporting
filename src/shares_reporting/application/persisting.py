@@ -15,6 +15,8 @@ from openpyxl.worksheet.worksheet import Worksheet
 if TYPE_CHECKING:
     from os import PathLike
 
+    from .crypto_reporting import CryptoTaxReport
+
 from ..domain.collections import (
     CapitalGainLinesPerCompany,
     DividendIncomePerCompany,
@@ -110,6 +112,7 @@ def generate_tax_report(  # noqa: PLR0912, PLR0915
     extract: str | PathLike[str],
     capital_gain_lines_per_company: CapitalGainLinesPerCompany,
     dividend_income_per_company: DividendIncomePerCompany | None = None,
+    crypto_tax_report: CryptoTaxReport | None = None,
 ) -> None:
     """Generate comprehensive Excel tax report with capital gains and dividend income.
 
@@ -121,6 +124,7 @@ def generate_tax_report(  # noqa: PLR0912, PLR0915
         extract: Output file path for the Excel tax report
         capital_gain_lines_per_company: Calculated capital gains grouped by company
         dividend_income_per_company: Dividend income data grouped by company (optional)
+        crypto_tax_report: Crypto tax data parsed from Koinly exports (optional)
     """
     logger = create_module_logger(__name__)
     logger.info("Generating capital gains report: %s", Path(extract).name)
@@ -407,6 +411,14 @@ def generate_tax_report(  # noqa: PLR0912, PLR0915
             # Skip if we can't determine column letter
             pass
 
+    if crypto_tax_report:
+        logger.info(
+            "Adding Crypto worksheet with %s capital and %s reward rows",
+            len(crypto_tax_report.capital_entries),
+            len(crypto_tax_report.reward_entries),
+        )
+        add_crypto_report_sheet(workbook, crypto_tax_report)
+
     safe_remove_file(extract)
 
     try:
@@ -416,6 +428,175 @@ def generate_tax_report(  # noqa: PLR0912, PLR0915
         logger.info("Successfully generated %s report with %s capital gain lines", report_type, processed_lines)
     except Exception as e:
         raise ReportGenerationError(f"Failed to save Excel report: {e}") from e
+
+
+def add_crypto_report_sheet(  # noqa: PLR0912, PLR0915
+    workbook: openpyxl.Workbook, crypto_tax_report: CryptoTaxReport
+) -> None:
+    """Append a dedicated crypto worksheet with capital, rewards, and reconciliation data."""
+    worksheet = workbook.create_sheet("Crypto")
+    worksheet.cell(1, 1, "CRYPTO TAX REPORT - PORTUGAL").font = Font(bold=True)  # type: ignore[assignment]
+    worksheet.cell(2, 1, "Tax year")
+    worksheet.cell(2, 2, crypto_tax_report.tax_year)
+    if crypto_tax_report.pdf_summary:
+        worksheet.cell(3, 1, "PDF period")
+        worksheet.cell(3, 2, crypto_tax_report.pdf_summary.period or "N/A")
+        worksheet.cell(3, 3, "PDF timezone")
+        worksheet.cell(3, 4, crypto_tax_report.pdf_summary.timezone or "N/A")
+        worksheet.cell(3, 5, "PDF extracted tokens")
+        worksheet.cell(3, 6, crypto_tax_report.pdf_summary.extracted_tokens)
+
+    row_no = 5 if crypto_tax_report.pdf_summary else 4
+    worksheet.cell(row_no, 1, "1. CAPITAL GAINS").font = Font(bold=True)  # type: ignore[assignment]
+    row_no += 1
+
+    capital_headers = [
+        "Disposal date",
+        "Acquisition date",
+        "Asset",
+        "Amount",
+        "Cost (EUR)",
+        "Proceeds (EUR)",
+        "Gain/Loss (EUR)",
+        "Holding period",
+        "Wallet",
+        "Platform",
+        "Operator entity",
+        "Operator country",
+        "Annex hint",
+        "Review flag",
+        "Notes",
+    ]
+    for idx, header in enumerate(capital_headers, start=1):
+        worksheet.cell(row_no, idx, header)
+    row_no += 1
+
+    for entry in crypto_tax_report.capital_entries:
+        worksheet.cell(row_no, 1, entry.disposal_date)
+        worksheet.cell(row_no, 2, entry.acquisition_date)
+        worksheet.cell(row_no, 3, entry.asset)
+        worksheet.cell(row_no, 4, float(entry.amount))
+        worksheet.cell(row_no, 5, float(entry.cost_eur))
+        worksheet.cell(row_no, 6, float(entry.proceeds_eur))
+        worksheet.cell(row_no, 7, float(entry.gain_loss_eur))
+        worksheet.cell(row_no, 8, entry.holding_period)
+        worksheet.cell(row_no, 9, entry.wallet)
+        worksheet.cell(row_no, 10, entry.platform)
+        worksheet.cell(row_no, 11, entry.operator_origin.operator_entity)
+        worksheet.cell(row_no, 12, entry.operator_origin.operator_country)
+        worksheet.cell(row_no, 13, entry.annex_hint)
+        worksheet.cell(row_no, 14, "YES" if entry.review_required else "NO")
+        worksheet.cell(row_no, 15, entry.notes)
+        row_no += 1
+
+    row_no += 2
+    worksheet.cell(row_no, 1, "2. REWARDS INCOME").font = Font(bold=True)  # type: ignore[assignment]
+    row_no += 1
+
+    income_headers = [
+        "Date",
+        "Asset",
+        "Amount",
+        "Value (EUR)",
+        "Income label",
+        "Source type",
+        "Wallet",
+        "Platform",
+        "Operator entity",
+        "Operator country",
+        "Annex hint",
+        "Review flag",
+        "Description",
+    ]
+    for idx, header in enumerate(income_headers, start=1):
+        worksheet.cell(row_no, idx, header)
+    row_no += 1
+
+    for entry in crypto_tax_report.reward_entries:
+        worksheet.cell(row_no, 1, entry.date)
+        worksheet.cell(row_no, 2, entry.asset)
+        worksheet.cell(row_no, 3, float(entry.amount))
+        worksheet.cell(row_no, 4, float(entry.value_eur))
+        worksheet.cell(row_no, 5, entry.income_label)
+        worksheet.cell(row_no, 6, entry.source_type)
+        worksheet.cell(row_no, 7, entry.wallet)
+        worksheet.cell(row_no, 8, entry.platform)
+        worksheet.cell(row_no, 9, entry.operator_origin.operator_entity)
+        worksheet.cell(row_no, 10, entry.operator_origin.operator_country)
+        worksheet.cell(row_no, 11, entry.annex_hint)
+        worksheet.cell(row_no, 12, "YES" if entry.review_required else "NO")
+        worksheet.cell(row_no, 13, entry.description)
+        row_no += 1
+
+    row_no += 2
+    worksheet.cell(row_no, 1, "3. RECONCILIATION").font = Font(bold=True)  # type: ignore[assignment]
+    row_no += 1
+
+    reconciliation_rows = [
+        ("Capital rows", crypto_tax_report.reconciliation.capital_rows),
+        ("Reward rows", crypto_tax_report.reconciliation.reward_rows),
+        ("Short term rows", crypto_tax_report.reconciliation.short_term_rows),
+        ("Long term rows", crypto_tax_report.reconciliation.long_term_rows),
+        ("Capital cost total (EUR)", float(crypto_tax_report.reconciliation.capital_cost_total_eur)),
+        ("Capital proceeds total (EUR)", float(crypto_tax_report.reconciliation.capital_proceeds_total_eur)),
+        ("Capital gain total (EUR)", float(crypto_tax_report.reconciliation.capital_gain_total_eur)),
+        ("Rewards total (EUR)", float(crypto_tax_report.reconciliation.reward_total_eur)),
+    ]
+
+    opening_holdings = crypto_tax_report.reconciliation.opening_holdings
+    if opening_holdings:
+        reconciliation_rows.extend(
+            [
+                ("Opening holdings rows", opening_holdings.asset_rows),
+                ("Opening holdings cost (EUR)", float(opening_holdings.total_cost_eur)),
+                ("Opening holdings value (EUR)", float(opening_holdings.total_value_eur)),
+            ]
+        )
+
+    closing_holdings = crypto_tax_report.reconciliation.closing_holdings
+    if closing_holdings:
+        reconciliation_rows.extend(
+            [
+                ("Closing holdings rows", closing_holdings.asset_rows),
+                ("Closing holdings cost (EUR)", float(closing_holdings.total_cost_eur)),
+                ("Closing holdings value (EUR)", float(closing_holdings.total_value_eur)),
+            ]
+        )
+
+    for key, value in reconciliation_rows:
+        worksheet.cell(row_no, 1, key)
+        worksheet.cell(row_no, 2, value)
+        row_no += 1
+
+    row_no += 2
+    worksheet.cell(row_no, 1, "4. SKIPPED ZERO VALUE TOKENS").font = Font(bold=True)  # type: ignore[assignment]
+    row_no += 1
+    worksheet.cell(row_no, 1, "Source section")
+    worksheet.cell(row_no, 2, "Asset")
+    worksheet.cell(row_no, 3, "Skipped rows")
+    row_no += 1
+
+    if crypto_tax_report.skipped_zero_value_tokens:
+        for skipped in crypto_tax_report.skipped_zero_value_tokens:
+            worksheet.cell(row_no, 1, skipped.source_section)
+            worksheet.cell(row_no, 2, skipped.asset)
+            worksheet.cell(row_no, 3, skipped.count)
+            row_no += 1
+    else:
+        worksheet.cell(row_no, 1, "none")
+        worksheet.cell(row_no, 2, "")
+        worksheet.cell(row_no, 3, 0)
+
+    for column_cells in worksheet.columns:
+        length = max(len(str(cell.value)) if cell.value is not None else 0 for cell in column_cells)
+        first_cell = column_cells[0]
+        try:
+            column_idx = first_cell.column
+            if column_idx is not None:
+                column_letter = get_column_letter(column_idx)
+                worksheet.column_dimensions[column_letter].width = length + 2
+        except (AttributeError, TypeError):
+            pass
 
 
 def safe_remove_file(path: str | PathLike[str]) -> None:
