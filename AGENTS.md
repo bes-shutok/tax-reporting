@@ -39,6 +39,12 @@ This file provides guidance to coding agents when working with code in this repo
 - Do not commit changes unless explicitly asked by the user.
 - Never add `Co-Authored-By:` to commit messages.
 - Always use `uv run pytest` (not `uvx pytest`) — `uvx` runs pytest in an isolated environment without the local `shares_reporting` package installed, causing import failures.
+- Write implementation plans to `docs/plans/` in the project repository (not to `~/.claude/plans/` or other external paths).
+
+### 5. Domain Knowledge References
+
+- **Before changing any crypto reporting logic** (Koinly parsing, capital gains aggregation, holding period classification, form field mapping, filtering thresholds), read `docs/domain/crypto_rules.md`. It contains numbered Portuguese tax rules (PT-C-001 … PT-C-029) derived from official AT documents with publication dates. Reference rule numbers in commit messages and code comments when a decision is law-driven (e.g. `# PT-C-008: FIFO mandatory`).
+- Each rule in that document carries its source authority level (`[OFFICIAL]` vs `[SECONDARY]`) and the source document date, so you can identify potentially outdated rules when the tax year changes.
 
 ## Project Overview
 
@@ -570,75 +576,10 @@ if len(row) < MIN_REQUIRED_COLUMNS:
 
 ## Error Handling Patterns
 
-### Contextual Error Information
-**Always provide sufficient context for debugging**:
-```python
-# ✅ GOOD - Include row number, symbol, and specific issue
-raise FileProcessingError(
-    "Row %d: Invalid monetary amount '%s' for symbol %s - expected decimal number", 
-    row_number, amount_str, symbol
-) from e
-
-# ✅ GOOD - Include column index and expected format in context
-raise FileProcessingError(
-    "Row %d: Invalid Trades header format - expected columns at indices %s", 
-    row_number, EXPECTED_COLUMN_INDICES
-)
-```
-
-### Exception Chaining
-**Always use proper exception chaining** to preserve original context:
-```python
-# ✅ GOOD - Preserve original exception context
-try:
-    result = risky_operation()
-except ValueError as e:
-    raise FileProcessingError("Processing failed for %s", item) from e
-
-# ❌ AVOID - Losing original exception information
-try:
-    result = risky_operation() 
-except ValueError:
-    raise FileProcessingError("Processing failed")
-```
-
-### Preferred Logging and Error Message Format
-
-**Logging Messages**: Use parameterized format for logging to improve maintainability, debugging, and performance:
-
-```python
-# ✅ GOOD - Parameterized format for logging
-logger.debug("Row %d: Created placeholder buy for %s: quantity=%s, date=%d-01-01, price=0", 
-              row_number, company.ticker, total_sold, PLACEHOLDER_YEAR)
-
-logger.error("Row %d: Invalid dividend amount for %s: expected positive, got %s", 
-             row_number, symbol, amount)
-
-# ❌ AVOID - Inline interpolation in logging
-logger.debug(f"Created buy for {company} with quantity {qty}")
-```
-
-**Exception Messages**: Use f-strings for exception messages since Python exceptions don't support parameterized formatting:
-
-```python
-# ✅ GOOD - f-strings for exceptions
-raise ValueError(f"Row {row}: Invalid header format: {header}")
-raise DataValidationError(f"Taxes ({self.total_taxes}) cannot exceed gross amount ({self.gross_amount})")
-
-# ❌ AVOID - Parameterized format in exceptions (won't work as expected)
-try:
-    raise ValueError("Invalid value: %s", value)  # This won't format correctly
-except TypeError:
-    # The above will fail because ValueError expects a single string argument
-    pass
-```
-
-**Benefits of Parameterized Format**:
-- **Easier debugging**: Consistent format makes log parsing easier
-- **Better maintainability**: Changes to message structure don't require string updates
-- **Consistent error reporting**: Row numbers and context are standardized
-- **Performance**: Slightly better performance than f-strings
-- **Internationalization ready**: Easier to translate messages later
+- Always include row number, symbol, and specific issue in error messages.
+- Use `from e` exception chaining to preserve original context.
+- **Logging**: parameterised format `logger.error("Row %d: bad value %s", row, val)`.
+- **Exceptions**: f-strings `raise ValueError(f"Row {row}: bad value {val}")` — see §1 Instruction Rules.
 
 ## Project Structure
 
@@ -691,157 +632,4 @@ shares-reporting/
 
 ## Lessons Learned
 
-### Common Issues and Prevention Strategies
-
-Based on recurring patterns in code fixes, here are rules to prevent similar mistakes:
-
-#### 1. Code Quality and Duplication
-- **Issue**: Duplicate test methods or functions with identical names
-- **Prevention**: Always check for duplicates before adding new code
-- **Command**: `grep -n "def method_name" . -r` to search for existing methods
-
-#### 2. Type Safety and Annotations
-- **Missing decorators**: Always add `@override` to methods overriding base class methods
-- **Class attributes**: Annotate all class attributes with types unless class is marked `@final`
-- **Method parameters**: Prefix unused parameters with underscore (`_param`) or use `_` for completely unused
-- **Pattern**:
-  ```python
-  class MyClass:
-      attr1: Type1  # Required if class not @final
-      
-      @override
-      def method_name(self, _param: UnusedType):  # Unused parameter
-          pass
-  ```
-
-#### 3. String and Code Formatting
-- **Implicit concatenation**: Keep f-strings on single lines or use explicit concatenation
-- **Line length**: Break long lines appropriately, especially for error messages
-- **Example**:
-  ```python
-  # Good
-  error_message = (
-      f"Error in row {row_number}: "
-      f"Expected format X, got Y"
-  )
-  
-  # Avoid
-  error_message = f"Error in row {row_number}: " f"Expected format X, got Y"
-  ```
-
-#### 4. Function and Method Design
-- **Parameter naming**: Use parameter names that match the interface you're implementing
-- **Example**: `lambda optionstr: optionstr` not `lambda option: option` for ConfigParser
-- **Required vs Optional**: Use required parameters for essential data, optional only with meaningful defaults
-
-#### 5. Dependencies and Imports
-- **Missing packages**: Check imports against dependencies and install missing packages
-- **Import organization**: Import from correct modules, check `__all__` exports for public API
-- **Private imports**: Avoid importing `_private` functions in tests unless necessary
-- **Prevention**: Run tests early to catch missing imports
-
-#### 6. Testing Best Practices
-- **Test structure**: Use 3-tier structure
-  - Unit tests (`tests/unit/`): Fast, isolated tests, can use internal functions
-  - Integration tests (`tests/integration/`): Component interactions, use only public APIs
-  - E2E tests (`tests/end_to_end/`): Full workflows, use only public APIs
-- **Pytest markers**: Use `@pytest.mark.unit`, `pytest.mark.integration`, `pytest.mark.e2e`
-- **Test organization**: Structure tests in separate directories with clear purposes
-
-#### 7. Refactoring and Maintenance
-- **Incremental changes**: Make small, incremental changes
-- **Test frequently**: Run tests after each change, fix issues immediately
-- **Version control**: Use version control to track progress
-- **Script cleanup**: Remove temporary scripts after use
-- **Pattern**: 
-  1. Make change
-  2. Run tests
-  3. Fix if broken
-  4. Repeat
-
-#### 8. Error Handling and Logging
-- **Contextual errors**: Always include sufficient context (row numbers, problematic data)
-- **Exception chaining**: Use proper exception chaining to preserve original context
-- **Logging format**: Use parameterized format for logging, f-strings for exceptions
-- **Pattern**:
-  ```python
-  # Logging
-  logger.error("Row %d: Invalid amount %s for symbol %s", row_number, amount, symbol)
-  
-  # Exceptions
-  raise ValueError(f"Invalid value: {value}") from original_error
-  ```
-
-#### 9. API Design for Production vs Testing
-- **Don't add features just for tests**: API design should reflect real-world usage, not test requirements
-- **Tests should adapt to production code**: Update tests to match production patterns rather than modifying production to support tests
-- **Example**: When tests require optional parameters, consider whether the test data structure can be adjusted instead
-- **Refactoring approach**: If tests need special handling, first try to make tests reflect real usage before adding complexity to production code
-
-#### 10. Test Path and Fixture Management
-- **Avoid fragile path construction**: Never use `Path(__file__).parent.parent` in tests - these break when test files move
-- **Use pytest fixtures**: Always use `tmp_path`, `tmp_path_factory`, or other provided fixtures for test file operations
-- **Test data isolation**: Keep test data separate from production data and use proper fixture setup
-- **Pattern**:
-  ```python
-  # ✅ GOOD - Use pytest fixtures
-  @pytest.fixture
-  def test_file(tmp_path: Path) -> Path:
-      test_file = tmp_path / "test.csv"
-      test_file.write_text("test,data")
-      return test_file
-  
-  # ❌ AVOID - Fragile path construction
-  def test_something():
-      test_file = Path(__file__).parent.parent / "resources" / "test.csv"
-  ```
-
-#### 11. Simplify Unnecessary Complexity
-- **Remove unused parameters**: If a parameter is always the same value (e.g., always `True`), remove it entirely
-- **YAGNI principle**: You Aren't Gonna Need It - don't add features "just in case"
-- **Constant parameters**: Parameters with constant values add unnecessary complexity and make the API harder to understand
-- **Example**: `require_trades_section=True` parameter that's always `True` should be removed and the behavior hardcoded
-
-#### 12. Test Real Behavior, Not Implementation Details
-- **Test functionality, not return values**: Verify that the feature actually works as expected, not just that it returns certain values
-- **Use meaningful test data**: Test with realistic data that represents actual usage scenarios
-- **Integration verification**: Ensure that components work together correctly, not just in isolation
-- **Example**: When testing leftover data integration, verify that the integrated data actually contains more trades than without integration
-
-### Pre-Commit Checklist
-
-Enhanced checklist based on recent fixes:
-
-1. **Tests**: `uv run pytest -x` (stop on first failure)
-2. **Linting**: `uv run ruff check . --fix` (auto-fix where possible)
-3. **Type checking**: `uv run basedpyright src/ tests/`
-4. **Line length check**: `uv run ruff check . --select=E501`
-5. **Import verification**: Ensure all imports have corresponding dependencies
-6. **Path construction check**: `grep -r "Path(__file__)" tests/` - ensure no fragile test paths
-7. **Parameter usage check**: Review new parameters - are they always constant?
-8. **Test behavior verification**: Do tests verify actual functionality vs just return values?
-9. **Clean up**: Remove any temporary files or scripts
-10. **Documentation**: Update relevant documentation if API changes were made
-
-### Quality Assurance Commands
-
-```bash
-# Check for specific issue types
-uv run ruff check . --select=E501  # Line length
-uv run ruff check . --select=F401  # Unused imports
-uv run ruff check . --select=PL  # Pylint rules
-
-# Check for fragile path construction in tests
-grep -r "Path(__file__)" tests/ || echo "✅ No fragile test paths found"
-
-# Check for parameters that might always be constant
-grep -r "= True" src/ --include="*.py" | grep -v "def " | head -10
-
-# Run tests by marker during development
-uv run pytest -m unit       # Fast feedback during development
-uv run pytest -m integration  # Before committing
-uv run pytest -m e2e         # Before release
-
-# Check for duplicate test methods
-grep -n "def test_" tests/ | cut -d: -f3 | sort | uniq -d
-```
+See full details, pre-commit checklist, and QA commands in `docs/domain/development_lessons.md`.
