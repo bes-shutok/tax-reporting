@@ -137,9 +137,7 @@ def main(  # noqa: PLR0912, PLR0915
                 crypto_tax_report=crypto_tax_report,
             )
             final_report_type = (
-                "capital gains + dividends + crypto"
-                if crypto_tax_report
-                else "capital gains and dividend income"
+                "capital gains + dividends + crypto" if crypto_tax_report else "capital gains and dividend income"
             )
             if not dividend_income_per_company:
                 final_report_type = "capital gains + crypto" if crypto_tax_report else "capital gains"
@@ -170,19 +168,11 @@ def main(  # noqa: PLR0912, PLR0915
 
 
 def _infer_tax_year_hint_from_ib_data(ib_data: IBExportData) -> int | None:
-    sold_years = [
-        trade.action.date_time.year
-        for cycle in ib_data.trade_cycles.values()
-        for trade in cycle.sold
-    ]
+    sold_years = [trade.action.date_time.year for cycle in ib_data.trade_cycles.values() for trade in cycle.sold]
     if sold_years:
         return max(sold_years)
 
-    buy_years = [
-        trade.action.date_time.year
-        for cycle in ib_data.trade_cycles.values()
-        for trade in cycle.bought
-    ]
+    buy_years = [trade.action.date_time.year for cycle in ib_data.trade_cycles.values() for trade in cycle.bought]
     if buy_years:
         return max(buy_years)
 
@@ -210,8 +200,7 @@ def _load_crypto_tax_report(
 ) -> CryptoTaxReport | None:
     if _is_koinly_year_mismatch(koinly_dir, tax_year_hint):
         logger.warning(
-            "Koinly directory year (%s) does not match inferred IB tax year (%s); "
-            "skipping crypto data from: %s",
+            "Koinly directory year (%s) does not match inferred IB tax year (%s); skipping crypto data from: %s",
             _extract_year(koinly_dir.name),
             tax_year_hint,
             koinly_dir,

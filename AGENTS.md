@@ -33,6 +33,8 @@ This file provides guidance to coding agents when working with code in this repo
 - When the FIFO loop exits with remaining unmatched trades, use `logger.warning` (not `logger.debug`) so data-loss conditions are always visible in production logs.
 - When writing a partially-matched buy to the rollover CSV, the fee must be proportional: `proportional_fee = action.fee * (rolled_quantity / original_quantity)`.
 - Dividend per-symbol validation must run after all rows for all symbols are accumulated, not after each row. Mid-accumulation state can be temporarily invalid (e.g. reversal arrives before dividend). Symbols that fail post-accumulation validation are skipped with `logger.warning`; they must not abort processing of other symbols.
+- Crypto capital gain entries must be aggregated by (exact disposal timestamp, asset, wallet, holding_period) before writing to the report — one line per sale event per holding period, not one per FIFO lot (PT-C-027). Do not remove or bypass `_aggregate_capital_entries()`. The holding_period is included in the aggregation key to preserve the taxable vs exempt breakdown needed for correct filing (PT-C-011: short-term gains are taxable, long-term gains are exempt).
+- After aggregation, entries where |gain/loss| < 1 EUR are excluded (PT-C-028). Do not remove or bypass `_filter_immaterial_entries()`. The threshold constant `_MATERIALITY_THRESHOLD` is intentionally a module-level `Final` — do not make it a parameter without a corresponding `crypto_rules.md` update.
 
 ### 4. Agent Workflow Rules
 
@@ -405,8 +407,8 @@ Ask these questions for every test:
 def process_header(self, row: list[str], row_number: int) -> None:
 def process_data_row(self, row: list[str], row_number: int) -> None:
 
-# ✅ GOOD - Consistent error message patterns
-raise FileProcessingError("Row %d: Invalid %s format", row_number, section_name)
+# ✅ GOOD - Consistent error message patterns (f-string, not %d/%s tuple args)
+raise FileProcessingError(f"Row {row_number}: Invalid {section_name} format")
 ```
 
 ### Code Review Checklist

@@ -282,8 +282,8 @@ class TestDividendExcelPersisting:
             tax_year=2025,
             capital_entries=[
                 CryptoCapitalGainEntry(
-                    disposal_date="2025-01-13 13:01",
-                    acquisition_date="2024-11-18 00:15",
+                    disposal_date="2025-01-13 13:01:00",
+                    acquisition_date="2024-11-18 00:15:00",
                     asset="USDT",
                     amount=Decimal("1.5"),
                     cost_eur=Decimal("1.25"),
@@ -300,7 +300,7 @@ class TestDividendExcelPersisting:
             ],
             reward_entries=[
                 CryptoRewardIncomeEntry(
-                    date="2025-01-01 00:01",
+                    date="2025-01-01 00:01:00",
                     asset="WXT",
                     amount=Decimal("5"),
                     value_eur=Decimal("17.10"),
@@ -319,6 +319,8 @@ class TestDividendExcelPersisting:
                 reward_rows=1,
                 short_term_rows=1,
                 long_term_rows=0,
+                mixed_rows=0,
+                unknown_rows=0,
                 capital_cost_total_eur=Decimal("1.25"),
                 capital_proceeds_total_eur=Decimal("1.35"),
                 capital_gain_total_eur=Decimal("0.10"),

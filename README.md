@@ -9,10 +9,11 @@ The investment reporting tool is designed to provide a simple and efficient way 
 - ✅ **Capital Gains Calculation**: FIFO-based matching of buy/sell transactions within daily buckets
 - ✅ **Capital Gains Reporting**: Generates Excel reports with capital gains data for tax authority submission
 - ✅ **Dividend Income Reporting**: Processes dividend data and generates detailed dividend income reports
+- ✅ **Crypto Tax Reporting**: Processes Koinly CSV exports for cryptocurrency capital gains and rewards income with Portuguese IRS-compliant aggregation and filtering
 - ✅ **Multi-Currency Support**: Handles multiple currencies with manual exchange rate configuration
 
 **Future Vision:**
-- 🚀 **Additional Investment Types**: Support for crypto currency trading, DeFi protocols, staking rewards, and other investment vehicles
+- 🚀 **Additional Investment Types**: Support for DeFi protocols, staking rewards, and other investment vehicles
 - 🚀 **Multiple Data Sources**: Integration with crypto exchanges (Binance, Coinbase, Kraken), DeFi platforms, and other financial APIs
 - 🚀 **Advanced Matching**: Sophisticated algorithms for different investment types and tax optimization strategies
 - 🚀 **Automated Exchange Rates**: Real-time currency conversion from multiple financial data providers
@@ -46,7 +47,14 @@ This will create a `.venv` folder in your project root that editors can detect a
 
 ### **Source Files Configuration**
 - **Input Data**: Add your Interactive Brokers CSV export to the `/resources/source` folder. See `/resources/shares_example.csv` for an example of the file format.
-  - *Note*: Future updates will support additional data sources (crypto exchanges, DeFi platforms, etc.)
+- **Crypto Tax Data (Optional)**: For Portuguese crypto tax reporting, place Koinly export files in a `koinly*` subdirectory within `/resources/source`:
+  - `koinly_<year>_capital_gains_report_*.csv` - Capital gains from crypto disposals
+  - `koinly_<year>_income_report_*.csv` - Staking rewards, airdrops, and other income
+  - `koinly_<year>_beginning_of_year_holdings_report_*.csv` - Opening balance (optional)
+  - `koinly_<year>_end_of_year_holdings_report_*.csv` - Closing balance (optional)
+  - `koinly_<year>_complete_tax_report_*.pdf` - Period metadata (optional)
+
+  The tool automatically aggregates FIFO lot rows by (sale timestamp, asset, wallet, holding period) to reduce manual filing burden while preserving the taxable vs exempt breakdown required for Portuguese IRS (short-term gains are taxable, long-term gains are exempt). After aggregation, entries where |gain/loss| < 1 EUR are filtered as immaterial. See `docs/domain/crypto_rules.md` for Portuguese tax law details.
 - **Automatic Leftover Integration**: The tool automatically integrates data from previous tax cycles:
   - If `shares-leftover.csv` exists in `/resources/source`, it will be automatically merged with the current year's export data
   - Leftover trades (older) are placed before current year trades to maintain FIFO order
@@ -74,10 +82,10 @@ uv run shares-reporting
 
 ```bash
 # Using UV (recommended)
-uvx pytest                       # Run all tests
-uvx pytest -k <keyword>          # Run tests matching keyword
-uvx pytest -vvl                 # Verbose output with all variables
-uvx pytest --cov=.              # Run with coverage
+uv run pytest                       # Run all tests
+uv run pytest -k <keyword>          # Run tests matching keyword
+uv run pytest -vvl                 # Verbose output with all variables
+uv run pytest --cov=.              # Run with coverage
 ```
 
 ### Code Quality and Linting
@@ -103,6 +111,7 @@ uvx ruff check . --fix && uvx ruff format .  # Fix and format
 The tool generates comprehensive Excel reports with:
 - **Capital Gains Section**: Detailed buy/sell transaction matching with FIFO methodology
 - **Dividend Income Section**: Complete dividend reporting with tax information and original currency amounts
+- **Crypto Section** (if Koinly data provided): Capital gains aggregated by sale event per holding period, rewards income, and reconciliation with sub-1-EUR immaterial entries filtered
 - **Professional Formatting**: Currency display with 2 decimal places and proper Excel formulas
 - **Multi-Currency Support**: Automatic currency conversion with exchange rate tables
 - **ISIN Integration**: Automatic country of source detection from financial instrument data
@@ -110,7 +119,6 @@ The tool generates comprehensive Excel reports with:
 ## Roadmap & Future Development
 
 ### **Planned Investment Type Support**
-- **Crypto Currency Trading**: Buy/sell transactions across different exchanges
 - **Earnings**: Various forms of investment earnings and rewards
 - **Fixed Income**: Bond interest payments and maturity tracking
 
