@@ -534,10 +534,12 @@ def add_crypto_report_sheet(  # noqa: PLR0912, PLR0915
     row_no += 1
 
     reconciliation_rows = [
-        ("Capital rows", crypto_tax_report.reconciliation.capital_rows),
+        ("Capital sale events (aggregated)", crypto_tax_report.reconciliation.capital_rows),
         ("Reward rows", crypto_tax_report.reconciliation.reward_rows),
         ("Short term rows", crypto_tax_report.reconciliation.short_term_rows),
         ("Long term rows", crypto_tax_report.reconciliation.long_term_rows),
+        ("Mixed holding period rows", crypto_tax_report.reconciliation.mixed_rows),
+        ("Unknown holding period rows", crypto_tax_report.reconciliation.unknown_rows),
         ("Capital cost total (EUR)", float(crypto_tax_report.reconciliation.capital_cost_total_eur)),
         ("Capital proceeds total (EUR)", float(crypto_tax_report.reconciliation.capital_proceeds_total_eur)),
         ("Capital gain total (EUR)", float(crypto_tax_report.reconciliation.capital_gain_total_eur)),

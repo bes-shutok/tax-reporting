@@ -82,6 +82,8 @@ class CryptoReconciliationSummary:
     reward_rows: int
     short_term_rows: int
     long_term_rows: int
+    mixed_rows: int
+    unknown_rows: int
     capital_cost_total_eur: Decimal
     capital_proceeds_total_eur: Decimal
     capital_gain_total_eur: Decimal
@@ -121,6 +123,7 @@ class CryptoTaxReport:
 
 
 ZERO: Final = Decimal("0")
+_MATERIALITY_THRESHOLD: Final = Decimal("1")
 DATE_FORMATS: Final = (
     "%d/%m/%Y %H:%M",
     "%Y-%m-%d %H:%M:%S UTC",
@@ -235,12 +238,33 @@ def load_koinly_crypto_report(koinly_dir: Path) -> CryptoTaxReport | None:
 
     short_term_rows = sum(1 for row in capital_entries if row.holding_period.lower().startswith("short"))
     long_term_rows = sum(1 for row in capital_entries if row.holding_period.lower().startswith("long"))
+    mixed_rows = sum(1 for row in capital_entries if row.holding_period.lower() == "mixed")
+    unknown_rows = sum(1 for row in capital_entries if row.holding_period.lower() == "unknown")
+
+    _recon_logger = logging.getLogger(__name__)
+    categorised = short_term_rows + long_term_rows + mixed_rows + unknown_rows
+    if categorised != len(capital_entries):
+        unclassified = [
+            row.holding_period
+            for row in capital_entries
+            if not row.holding_period.lower().startswith(("short", "long"))
+            and row.holding_period.lower() not in ("mixed", "unknown")
+        ]
+        _recon_logger.warning(
+            "Reconciliation mismatch: %d capital entries but only %d categorised by holding period. "
+            "Unrecognised holding_period values: %s",
+            len(capital_entries),
+            categorised,
+            sorted(set(unclassified)),
+        )
 
     reconciliation = CryptoReconciliationSummary(
         capital_rows=len(capital_entries),
         reward_rows=len(reward_entries),
         short_term_rows=short_term_rows,
         long_term_rows=long_term_rows,
+        mixed_rows=mixed_rows,
+        unknown_rows=unknown_rows,
         capital_cost_total_eur=sum((row.cost_eur for row in capital_entries), start=ZERO),
         capital_proceeds_total_eur=sum((row.proceeds_eur for row in capital_entries), start=ZERO),
         capital_gain_total_eur=sum((row.gain_loss_eur for row in capital_entries), start=ZERO),
@@ -286,7 +310,64 @@ def _extract_tax_year(koinly_dir: Path, capital_file: Path | None, income_file: 
     fallback_match = re.search(r"(\d{4})", koinly_dir.name)
     if fallback_match:
         return int(fallback_match.group(1))
-    return datetime.now(tz=None).year
+    return datetime.now(tz=UTC).year
+
+
+def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[CryptoCapitalGainEntry]:
+    """Aggregate FIFO lot rows into one line per sale event (same timestamp + asset + wallet + holding_period).
+
+    Rationale: the sale transaction is the reportable alienação in Portuguese IRS Quadro 9.4.
+    FIFO lot allocation is an accounting method, not a separate disposal event (PT-C-025, PT-C-027).
+
+    The holding_period is included in the aggregation key to preserve the taxable vs exempt breakdown
+    needed for correct filing (PT-C-011: short-term gains are taxable, long-term gains are exempt).
+    """
+    groups: dict[tuple[str, str, str, str], list[CryptoCapitalGainEntry]] = {}
+    for entry in entries:
+        key = (entry.disposal_date, entry.asset, entry.wallet, entry.holding_period)
+        groups.setdefault(key, []).append(entry)
+
+    logger = logging.getLogger(__name__)
+    result = []
+    for group in groups.values():
+        first = group[0]
+        acquisition_date = min(e.acquisition_date for e in group)
+        if acquisition_date.startswith("1970-"):
+            logger.warning(
+                "Aggregated entry for %r sold %s has epoch sentinel acquisition date — "
+                "one or more lots had missing Date Acquired in Koinly export",
+                first.asset,
+                first.disposal_date,
+            )
+        result.append(
+            CryptoCapitalGainEntry(
+                disposal_date=first.disposal_date,
+                acquisition_date=acquisition_date,
+                asset=first.asset,
+                amount=sum((e.amount for e in group), start=ZERO),
+                cost_eur=sum((e.cost_eur for e in group), start=ZERO),
+                proceeds_eur=sum((e.proceeds_eur for e in group), start=ZERO),
+                gain_loss_eur=sum((e.gain_loss_eur for e in group), start=ZERO),
+                holding_period=first.holding_period,
+                wallet=first.wallet,
+                platform=first.platform,
+                operator_origin=first.operator_origin,
+                annex_hint=first.annex_hint,
+                review_required=any(e.review_required for e in group),
+                notes="; ".join(dict.fromkeys(e.notes for e in group if e.notes)),
+            )
+        )
+    result.sort(key=lambda e: (e.disposal_date, e.asset, e.wallet, e.holding_period))
+    return result
+
+
+def _filter_immaterial_entries(entries: list[CryptoCapitalGainEntry]) -> list[CryptoCapitalGainEntry]:
+    """Drop lines where |gain/loss| < 1 EUR after aggregation (PT-C-028).
+
+    Sub-1-EUR lines have no material tax impact and AT portal requires manual entry per line.
+    The absolute-value test means small losses (between -1 and 0) are also excluded.
+    """
+    return [e for e in entries if abs(e.gain_loss_eur) >= _MATERIALITY_THRESHOLD]
 
 
 def _parse_capital_gains_file(path: Path, skipped_assets: Counter[tuple[str, str]]) -> list[CryptoCapitalGainEntry]:
@@ -300,6 +381,7 @@ def _parse_capital_gains_file(path: Path, skipped_assets: Counter[tuple[str, str
             cost_eur = _parse_koinly_decimal(row.get("Cost (EUR)", ""))
             proceeds_eur = _parse_koinly_decimal(row.get("Proceeds (EUR)", ""))
             gain_loss_eur = _parse_koinly_decimal(row.get("Gain / loss", ""))
+            amount = _parse_koinly_decimal(row.get("Amount", ""))
         except ValueError as exc:
             logger.warning("Skipping capital gains row for %r — ambiguous decimal value: %s", asset, exc)
             continue
@@ -313,24 +395,37 @@ def _parse_capital_gains_file(path: Path, skipped_assets: Counter[tuple[str, str
         operator_origin = resolve_operator_origin(platform, transaction_type="crypto_disposal")
         notes = row.get("Notes", "").strip()
         review_required = operator_origin.review_required or "missing cost basis" in notes.lower()
+        holding_period = row.get("Holding period", "").strip() or "Unknown"
+        # PT-C-011: long-term (≥365 days) exempt gains → Anexo G1; short-term taxable → Anexo J
+        annex_hint = "G1" if holding_period.lower().startswith("long") else "J"
 
         capital_entries.append(
             CryptoCapitalGainEntry(
                 disposal_date=_format_datetime(_parse_koinly_datetime(row.get("Date Sold", ""))),
                 acquisition_date=_format_datetime(_parse_koinly_datetime(row.get("Date Acquired", ""))),
                 asset=asset,
-                amount=_parse_koinly_decimal(row.get("Amount", "")),
+                amount=amount,
                 cost_eur=cost_eur,
                 proceeds_eur=proceeds_eur,
                 gain_loss_eur=gain_loss_eur,
-                holding_period=row.get("Holding period", "").strip() or "Unknown",
+                holding_period=holding_period,
                 wallet=wallet,
                 platform=platform,
                 operator_origin=operator_origin,
-                annex_hint="J",
+                annex_hint=annex_hint,
                 review_required=review_required,
                 notes=notes,
             )
+        )
+    capital_entries = _aggregate_capital_entries(capital_entries)
+    pre_filter_count = len(capital_entries)
+    capital_entries = _filter_immaterial_entries(capital_entries)
+    dropped = pre_filter_count - len(capital_entries)
+    if dropped > 0:
+        logger.warning(
+            "Filtered %d sub-1-EUR capital gain entries (PT-C-028); %d entries retained",
+            dropped,
+            len(capital_entries),
         )
     return capital_entries
 
@@ -338,10 +433,17 @@ def _parse_capital_gains_file(path: Path, skipped_assets: Counter[tuple[str, str
 def _parse_income_file(path: Path, skipped_assets: Counter[tuple[str, str]]) -> list[CryptoRewardIncomeEntry]:
     rows = _read_koinly_rows(path)
     reward_entries: list[CryptoRewardIncomeEntry] = []
+    logger = logging.getLogger(__name__)
 
     for row in rows:
         asset = row.get("Asset", "").strip()
-        value_eur = _parse_koinly_decimal(row.get("Value (EUR)", ""))
+        try:
+            value_eur = _parse_koinly_decimal(row.get("Value (EUR)", ""))
+            amount = _parse_koinly_decimal(row.get("Amount", ""))
+        except ValueError as exc:
+            logger.warning("Skipping income row for %r — ambiguous decimal value: %s", asset, exc)
+            continue
+
         if value_eur == ZERO:
             _register_skipped_zero_asset(skipped_assets, "income", asset)
             continue
@@ -354,7 +456,7 @@ def _parse_income_file(path: Path, skipped_assets: Counter[tuple[str, str]]) -> 
             CryptoRewardIncomeEntry(
                 date=_format_datetime(_parse_koinly_datetime(row.get("Date", ""))),
                 asset=asset,
-                amount=_parse_koinly_decimal(row.get("Amount", "")),
+                amount=amount,
                 value_eur=value_eur,
                 income_label="Reward",
                 source_type=row.get("Type", "").strip(),
@@ -377,19 +479,30 @@ def _parse_holdings_file(
         return None
 
     rows = _read_koinly_rows(path)
-    included_rows = []
+    logger = logging.getLogger(__name__)
+    asset_rows = 0
+    total_cost_eur = ZERO
+    total_value_eur = ZERO
+
     for row in rows:
         asset = row.get("Asset", "").strip()
-        value_eur = _parse_koinly_decimal(row.get("Value (EUR)", ""))
+        try:
+            value_eur = _parse_koinly_decimal(row.get("Value (EUR)", ""))
+            cost_eur = _parse_koinly_decimal(row.get("Cost (EUR)", ""))
+        except ValueError as exc:
+            logger.warning("Skipping holdings row for %r — ambiguous decimal value: %s", asset, exc)
+            continue
         if value_eur == ZERO:
             _register_skipped_zero_asset(skipped_assets, source_section, asset)
             continue
-        included_rows.append(row)
+        asset_rows += 1
+        total_cost_eur += cost_eur
+        total_value_eur += value_eur
 
     return HoldingsSnapshot(
-        asset_rows=len(included_rows),
-        total_cost_eur=sum((_parse_koinly_decimal(row.get("Cost (EUR)", "")) for row in included_rows), start=ZERO),
-        total_value_eur=sum((_parse_koinly_decimal(row.get("Value (EUR)", "")) for row in included_rows), start=ZERO),
+        asset_rows=asset_rows,
+        total_cost_eur=total_cost_eur,
+        total_value_eur=total_value_eur,
     )
 
 
@@ -473,8 +586,8 @@ def _parse_koinly_datetime(value: str) -> datetime:
 
 def _format_datetime(value: datetime) -> str:
     if value.hour == 0 and value.minute == 0 and value.second == 0:
-        return value.strftime("%Y-%m-%d 00:00")
-    return value.strftime("%Y-%m-%d %H:%M")
+        return value.strftime("%Y-%m-%d 00:00:00")
+    return value.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _parse_koinly_decimal(value: str) -> Decimal:
@@ -499,6 +612,10 @@ def _normalize_koinly_decimal_text(text: str) -> str:
         return text.replace(",", "")
 
     if "," in text:
+        # Comma-grouped single-triplet (e.g. "8,400") is treated as thousands, not decimal.
+        # Koinly always quotes decimal-comma values (e.g. '"8,40000000"'), so an unquoted bare
+        # "8,400" is unambiguously a large integer. This is intentionally asymmetric with the
+        # dot case below, where a single-group dot (e.g. "1.234") is raised as ambiguous.
         if re.fullmatch(r"[+-]?[1-9]\d{0,2}(,\d{3})+", text):
             return text.replace(",", "")
         return text.replace(",", ".")

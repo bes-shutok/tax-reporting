@@ -72,7 +72,7 @@ Research confirms: the AT Portal das Finanças **does not support CSV/XML import
 |---|---|---|
 | Current (zero-filter only) | 1,557 | Raw FIFO lot rows |
 | Aggregate by (timestamp, asset, wallet) | 568 | One per actual sale event — defensible |
-| + filter \|gain\| < 1 EUR | **94** | ✅ **Chosen approach** — see PT-C-027, PT-C-028 |
+| + filter \|gain/loss\| < 1 EUR | **94** | ✅ **Chosen approach** — see PT-C-027, PT-C-028 |
 | + filter zero-gain only | 401 | Legally uncertain: all alienações must be declared |
 | Aggregate by (date only, asset, wallet) | 287 | May conflate same-day separate transactions |
 | Aggregate by (asset, holding_period, wallet) | 99 | One per year per asset — no official backing |
@@ -101,9 +101,9 @@ After applying \|gain/loss\| < 1 EUR filter → **94 lines**:
    Rationale: no de minimis threshold exists in law (PT-C-024), but sub-1-EUR lines have zero material
    tax impact (~6 EUR total excluded) and AT portal requires manual entry for every line (PT-C-026).
 
-3. **Always keep negative gain lines** regardless of the 1 EUR filter (PT-C-029).
-   Losses carry forward 5 years (PT-C-016) and have long-term tax value.
-   Note: the \|gain\| < 1 EUR filter already covers this — a loss < 1 EUR in absolute value is between −1 and 0.
+3. **Apply the 1 EUR filter symmetrically to gains and losses** (PT-C-029).
+   Losses with \|gain/loss\| < 1 EUR are also excluded, despite PT-C-016 carryforward rules,
+   because keeping all such rows would bloat the manual filing set without practical value.
 
 Options B (date-level, 287 lines) and C (year-level, 99 lines) were considered but not chosen:
 - Option B risks merging distinct same-day transactions.
@@ -157,7 +157,7 @@ def _filter_immaterial_entries(entries: list[CryptoCapitalGainEntry]) -> list[Cr
     """Drop lines where |gain/loss| < 1 EUR after aggregation (PT-C-028).
 
     Sub-1-EUR lines have no material tax impact and AT portal requires manual entry per line.
-    Negative gain lines with |gain| >= 1 EUR are always retained (PT-C-029, PT-C-016).
+    The filter applies to gains and losses symmetrically (PT-C-029).
     """
     return [e for e in entries if abs(e.gain_loss_eur) >= _MATERIALITY_THRESHOLD]
 ```
@@ -183,6 +183,18 @@ capital_entries = _filter_immaterial_entries(capital_entries)
 ### Reconciliation label update (`persisting.py`)
 Update the capital rows count label to clarify it reflects aggregated sale events, not raw FIFO lot count.
 
+### Follow-up cleanup: remove stale `"Mixed"` references
+Status: `mixed_rows` field and reconciliation label remain because Koinly source data can
+still report `"Mixed"` holding period values (pass-through scenario). The aggregation logic
+ensures new synthetic "Mixed" entries are not created, but Koinly-reported "Mixed" rows are
+still tracked for reconciliation purposes.
+
+Rationale: The aggregation now groups by `(disposal_date, asset, wallet, holding_period)`,
+which means entries with different holding periods stay separate. However, Koinly itself may
+report `"Mixed"` holding periods in its source data (e.g., when it cannot determine a clear
+holding period for a specific lot). These pass-through "Mixed" entries are still counted
+and displayed in reconciliation for data validation purposes.
+
 ---
 
 ## Verification
@@ -195,3 +207,36 @@ uv run shares-reporting
 # Count Capital Gains rows → should be ~94 (32 positive + 62 negative)
 # Verify: sum of Gain/Loss matches Koinly PDF total (approximately −1,452 EUR)
 ```
+
+## Implementation Status
+
+- [x] `_aggregate_capital_entries()` helper added to `crypto_reporting.py` (PT-C-025, PT-C-027)
+- [x] `_filter_immaterial_entries()` helper added to `crypto_reporting.py` (PT-C-028)
+- [x] Both called at end of `_parse_capital_gains_file()`
+- [x] 14 new unit/integration tests written and passing (274 total)
+- [x] Reconciliation label in `persisting.py` updated to "Capital sale events (aggregated)"
+- [x] Follow-up cleanup: `mixed_rows` tracking kept for Koinly pass-through data (not removed)
+
+---
+
+## Post-Implementation Fixes (2026-03-15)
+
+**Issue 1: Seconds precision dropped in aggregation**
+- `_format_datetime()` was outputting `%Y-%m-%d %H:%M` (without seconds)
+- This caused sales at `13:01:05` and `13:01:55` to merge incorrectly
+- Fixed by changing format to `%Y-%m-%d %H:%M:%S` (with seconds)
+
+**Issue 2: Mixed holding periods lost taxable/exempt breakdown**
+- Aggregation key was `(disposal_date, asset, wallet)` without `holding_period`
+- When a sale spanned multiple lots with different holding periods, they merged into one "Mixed" entry
+- This lost the separate taxable (short-term) vs exempt (long-term) amounts needed for correct filing
+- Fixed by adding `holding_period` to aggregation key: `(disposal_date, asset, wallet, holding_period)`
+- Now sales with mixed holding periods produce separate entries per holding period
+
+**Updated PT-C-027** in `docs/domain/crypto_rules.md` to reflect:
+- Aggregation by (exact disposal timestamp, asset, wallet, holding_period)
+- Rationale: preserves taxable vs exempt breakdown (PT-C-011)
+
+**Tests updated:**
+- `test_aggregate_uses_mixed_holding_period_when_group_has_mixed_periods` → replaced with `test_aggregate_different_holding_periods_stay_separate`
+- All date assertions updated to include seconds format

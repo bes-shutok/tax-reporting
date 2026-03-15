@@ -108,7 +108,9 @@ def test_leftover_integration_creates_complete_cycles(test_export_file: Path, te
         )
 
 
-def test_parse_ib_export_all_automatically_detects_leftover(test_export_file: Path, test_leftover_file: Path, tmp_path: Path) -> None:
+def test_parse_ib_export_all_automatically_detects_leftover(
+    test_export_file: Path, test_leftover_file: Path, tmp_path: Path
+) -> None:
     """Test that parse_ib_export_all automatically detects and integrates leftover file."""
     # Copy leftover file to same directory as export file to test auto-detection
     leftover_in_export_dir = test_export_file.parent / "shares-leftover.csv"
@@ -135,7 +137,9 @@ def test_parse_ib_export_all_automatically_detects_leftover(test_export_file: Pa
     print(f"  - {cycles_with_sells} with sell trades")
 
 
-def test_leftover_integration_actually_adds_data(test_export_file: Path, test_leftover_file: Path, tmp_path: Path) -> None:
+def test_leftover_integration_actually_adds_data(
+    test_export_file: Path, test_leftover_file: Path, tmp_path: Path
+) -> None:
     """Test that leftover integration actually adds more trades compared to export-only processing."""
     # Copy leftover file to same directory as export file to test auto-detection
     leftover_in_export_dir = test_export_file.parent / "shares-leftover.csv"
@@ -153,19 +157,19 @@ def test_leftover_integration_actually_adds_data(test_export_file: Path, test_le
     leftover_in_export_dir.unlink()  # Remove leftover file
     result_without_leftover = parse_ib_export_all(test_export_file)
 
-            # Count total trades without leftover
+    # Count total trades without leftover
     total_trades_without_leftover = 0
     for cycle in result_without_leftover.trade_cycles.values():
         total_trades_without_leftover += len(cycle.get(TradeType.BUY)) + len(cycle.get(TradeType.SELL))
 
     # The key assertion: integration should add significantly more trades
     assert total_trades_with_leftover > total_trades_without_leftover, (
-                f"Leftover integration should add more trades! "
-                f"With leftover: {total_trades_with_leftover}, "
-                f"Without leftover: {total_trades_without_leftover}"
-            )
+        f"Leftover integration should add more trades! "
+        f"With leftover: {total_trades_with_leftover}, "
+        f"Without leftover: {total_trades_without_leftover}"
+    )
 
-            # Verify we have more trade cycles when integrating leftover data
+    # Verify we have more trade cycles when integrating leftover data
     assert len(result_with_leftover.trade_cycles) > len(result_without_leftover.trade_cycles), (
         f"Should have more trade cycles with leftover integration. "
         f"With leftover: {len(result_with_leftover.trade_cycles)}, "
@@ -184,7 +188,8 @@ def test_leftover_integration_actually_adds_data(test_export_file: Path, test_le
     print("✅ Leftover integration verification passed:")
     print(f"   - Trades with leftover: {total_trades_with_leftover}")
     print(f"   - Trades without leftover: {total_trades_without_leftover}")
-    print(f"   - Added {actual_increase} trades from leftover file ({actual_increase/total_trades_without_leftover*100:.1f}% increase)")
+    pct = actual_increase / total_trades_without_leftover * 100
+    print(f"   - Added {actual_increase} trades from leftover file ({pct:.1f}% increase)")
 
 
 def test_leftover_security_enrichment(test_export_file: Path, test_leftover_file: Path) -> None:
@@ -194,20 +199,18 @@ def test_leftover_security_enrichment(test_export_file: Path, test_leftover_file
 
     # Check that all expected symbols are present
     expected_symbols = {"TESTA", "TESTB", "TESTC", "TESTD"}
-    actual_symbols = {cc.company.ticker for cc in result.keys()}
+    actual_symbols = {cc.company.ticker for cc in result}
 
     assert expected_symbols.issubset(actual_symbols), (
-        f"Missing symbols in result. Expected: {expected_symbols}, "
-        f"Got: {actual_symbols}"
+        f"Missing symbols in result. Expected: {expected_symbols}, Got: {actual_symbols}"
     )
 
     # Verify security enrichment for symbols present in export file
-    for cc in result.keys():
+    for cc in result:
         if cc.company.ticker in {"TESTA", "TESTB", "TESTC"}:
             # These symbols should have proper ISIN from export file
             assert cc.company.isin.startswith("US"), (
-                f"Symbol {cc.company.ticker} should have US ISIN from export file, "
-                f"but got: {cc.company.isin}"
+                f"Symbol {cc.company.ticker} should have US ISIN from export file, but got: {cc.company.isin}"
             )
             assert cc.company.country_of_issuance != "Unknown", (
                 f"Symbol {cc.company.ticker} should have country from ISIN mapping"

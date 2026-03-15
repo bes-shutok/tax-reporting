@@ -109,7 +109,6 @@ class TestDividendExtractionEdgeCases:
         assert aapl_dividend.total_taxes == Decimal("7.20")  # Only 2 tax entries matched
         assert aapl_dividend.get_net_amount() == Decimal("64.80")
 
-
     def test_full_dividend_reversal_does_not_abort_other_symbols(self, tmp_path):
         """Full reversal on one symbol must not crash processing; other symbols still appear."""
         csv_content = (
@@ -344,21 +343,13 @@ class TestDividendProcessingErrorScenarios:
         with pytest.raises(DataValidationError, match="Country cannot be empty"):
             invalid_dividend.validate()
 
-        # Test with None currency - behavior depends on implementation
-        invalid_dividend = DividendIncomePerSecurity(
+        # Valid input: USD currency should not raise
+        valid_dividend = DividendIncomePerSecurity(
             symbol="AAPL",
             isin="US0378331005",
             country="US",
             gross_amount=Decimal("100.00"),
             total_taxes=Decimal("10.00"),
-            currency=parse_currency("USD"),  # Default to USD
+            currency=parse_currency("USD"),
         )
-        # Some implementations might not check for None currency,
-        # or might handle it differently. Adjust based on actual behavior.
-        try:
-            invalid_dividend.validate()
-            # If no exception is raised, that's the expected behavior
-            assert True
-        except DataValidationError as e:
-            # If validation fails, that's also acceptable
-            assert "currency" in str(e).lower()
+        valid_dividend.validate()  # must not raise

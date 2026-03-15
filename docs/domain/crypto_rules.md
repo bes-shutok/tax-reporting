@@ -217,12 +217,14 @@ Every line in Quadro 9.4 must be entered manually through the portal's web inter
 
 These decisions are specific to this codebase and may be revised.
 
-**PT-C-027** `[IMPLEMENTATION DECISION | 2026-03-14]`
-The Crypto sheet aggregates FIFO lot rows by **(exact disposal timestamp, asset, wallet)**
+**PT-C-027** `[IMPLEMENTATION DECISION | 2026-03-15]`
+The Crypto sheet aggregates FIFO lot rows by **(exact disposal timestamp, asset, wallet, holding_period)**
 before writing to Excel. This collapses multiple FIFO lot rows for the same real sale into
-one line, consistent with PT-C-025.
+one line per holding period, preserving the taxable vs exempt breakdown needed for correct filing
+(PT-C-011: short-term gains are taxable, long-term gains are exempt).
 Rationale: Koinly outputs one row per FIFO lot allocation; the "operação" for IRS purposes
-is the sale transaction, not the lot.
+is the sale transaction, not the lot. The holding_period must be preserved to distinguish
+taxable short-term gains from exempt long-term gains.
 
 **PT-C-028** `[IMPLEMENTATION DECISION | 2026-03-14]`
 After timestamp-level aggregation, lines where **|gain/loss| < 1 EUR** are excluded from
@@ -233,8 +235,9 @@ sub-1-EUR lines represent an impractical burden with no tax consequence.
 This decision should be revisited if the dataset changes significantly.
 
 **PT-C-029** `[IMPLEMENTATION DECISION | 2026-03-14]`
-Negative gain lines (capital losses) are always retained regardless of the 1 EUR threshold,
-because losses carry forward 5 years (PT-C-016) and have long-term tax value.
-Only lines where |gain| < 1 EUR are excluded, which by definition means gain is between
-−1 and +1 EUR.
-> Note: Rule PT-C-028 already covers this — |gain| < 1 means the loss is also < 1 EUR in absolute value.
+The 1 EUR materiality filter applies symmetrically to gains and losses.
+After aggregation, any line where **|gain/loss| < 1 EUR** is excluded, including small
+capital losses between −1 and 0 EUR, even though losses may in principle carry forward
+for 5 years under PT-C-016.
+Rationale: this codebase prioritises keeping the manual filing set manageable; retaining
+large volumes of sub-1-EUR losses would materially bloat the report without practical value.
