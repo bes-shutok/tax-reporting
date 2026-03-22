@@ -32,10 +32,18 @@ from ..domain.constants import (
     PLACEHOLDER_YEAR,
     ZERO_QUANTITY,
 )
-from ..domain.exceptions import ReportGenerationError
+from ..domain.exceptions import FileProcessingError, ReportGenerationError
 from ..domain.value_objects import TradeType
 from ..infrastructure.config import Config, ConversionRate, load_configuration_from_file
 from ..infrastructure.logging_config import create_module_logger
+
+# Import crypto reporting helpers for aggregation
+from .crypto_reporting import (
+    ZERO,
+    AggregatedRewardIncomeEntry,
+    RewardTaxClassification,
+    aggregate_taxable_rewards,
+)
 
 
 def export_rollover_file(leftover: str | PathLike[str], leftover_trades: TradeCyclePerCompany) -> None:
@@ -114,7 +122,7 @@ def generate_tax_report(  # noqa: PLR0912, PLR0915
     capital_gain_lines_per_company: CapitalGainLinesPerCompany,
     dividend_income_per_company: DividendIncomePerCompany | None = None,
     crypto_tax_report: CryptoTaxReport | None = None,
-) -> None:
+) -> bool:
     """Generate comprehensive Excel tax report with capital gains and dividend income.
 
     This function creates a professional Excel report containing all tax-relevant
@@ -126,6 +134,10 @@ def generate_tax_report(  # noqa: PLR0912, PLR0915
         capital_gain_lines_per_company: Calculated capital gains grouped by company
         dividend_income_per_company: Dividend income data grouped by company (optional)
         crypto_tax_report: Crypto tax data parsed from Koinly exports (optional)
+
+    Returns:
+        True if the Crypto sheet was successfully created, False otherwise.
+        Returns False when crypto_tax_report is None or crypto sheet rendering fails.
     """
     logger = create_module_logger(__name__)
     logger.info("Generating capital gains report: %s", Path(extract).name)
@@ -400,7 +412,7 @@ def generate_tax_report(  # noqa: PLR0912, PLR0915
     # auto width for the populated cells
     logger.debug("Auto-adjusting column widths")
     for column_cells in worksheet.columns:
-        length = max(len(str(cell.value)) for cell in column_cells)
+        length = max((len(str(cell.value)) if cell.value is not None else 0 for cell in column_cells), default=0)
         first_cell = column_cells[0]
         # Use cell column property to get column index
         try:
@@ -412,29 +424,71 @@ def generate_tax_report(  # noqa: PLR0912, PLR0915
             # Skip if we can't determine column letter
             pass
 
+    crypto_sheet_created = False
     if crypto_tax_report:
         logger.info(
             "Adding Crypto worksheet with %s capital and %s reward rows",
             len(crypto_tax_report.capital_entries),
             len(crypto_tax_report.reward_entries),
         )
-        add_crypto_report_sheet(workbook, crypto_tax_report)
+        crypto_worksheet = None
+        try:
+            # Aggregate taxable-now rewards before sheet creation to ensure validation runs first.
+            # If aggregation fails due to validation (e.g., invalid Tabela X country), the entire
+            # report generation fails with a clear error per plan requirement (Task 2).
+            aggregated_rewards = aggregate_taxable_rewards(crypto_tax_report.reward_entries)
+            add_crypto_report_sheet(workbook, crypto_tax_report, aggregated_rewards)
+            crypto_sheet_created = True
+        except FileProcessingError:
+            # Remove partially-created worksheet if it exists, clean up resources,
+            # remove old output file, then re-raise. FileProcessingError from
+            # aggregate_taxable_rewards indicates missing mandatory IRS fields for
+            # immediately taxable income; per plan, generation must fail.
+            crypto_worksheet = workbook["Crypto"] if "Crypto" in workbook.sheetnames else None
+            if crypto_worksheet is not None:
+                workbook.remove(crypto_worksheet)
+                logger.debug("Removed partially-created Crypto worksheet due to validation error")
+            workbook.close()
+            safe_remove_file(extract)
+            raise
+        except Exception:
+            # Any other exception also requires cleanup: remove partial worksheet,
+            # close workbook, remove old output file, then re-raise.
+            crypto_worksheet = workbook["Crypto"] if "Crypto" in workbook.sheetnames else None
+            if crypto_worksheet is not None:
+                workbook.remove(crypto_worksheet)
+                logger.debug("Removed partially-created Crypto worksheet due to unexpected error")
+            workbook.close()
+            safe_remove_file(extract)
+            raise
 
     safe_remove_file(extract)
 
     try:
         workbook.save(extract)
-        workbook.close()
         report_type = "capital gains and dividend income" if dividend_income_per_company else "capital gains"
         logger.info("Successfully generated %s report with %s capital gain lines", report_type, processed_lines)
     except Exception as e:
         raise ReportGenerationError(f"Failed to save Excel report: {e}") from e
+    finally:
+        workbook.close()
+
+    return crypto_sheet_created
 
 
 def add_crypto_report_sheet(  # noqa: PLR0912, PLR0915
-    workbook: openpyxl.Workbook, crypto_tax_report: CryptoTaxReport
+    workbook: openpyxl.Workbook,
+    crypto_tax_report: CryptoTaxReport,
+    aggregated_rewards: list[AggregatedRewardIncomeEntry],
 ) -> None:
-    """Append a dedicated crypto worksheet with capital, rewards, and reconciliation data."""
+    """Append a dedicated crypto worksheet with capital, rewards, and reconciliation data.
+
+    Args:
+        workbook: The Excel workbook to add the sheet to.
+        crypto_tax_report: The crypto tax report data.
+        aggregated_rewards: Pre-computed aggregated taxable-now rewards. Must be validated
+            before calling this function to ensure the sheet is never partially created.
+    """
     worksheet = workbook.create_sheet("Crypto")
     worksheet.cell(1, 1, "CRYPTO TAX REPORT - PORTUGAL").font = Font(bold=True)  # type: ignore[assignment]
     worksheet.cell(2, 1, "Tax year")
@@ -462,6 +516,7 @@ def add_crypto_report_sheet(  # noqa: PLR0912, PLR0915
         "Holding period",
         "Wallet",
         "Platform",
+        "Disposal chain",
         "Operator entity",
         "Operator country",
         "Annex hint",
@@ -483,50 +538,190 @@ def add_crypto_report_sheet(  # noqa: PLR0912, PLR0915
         worksheet.cell(row_no, 8, entry.holding_period)
         worksheet.cell(row_no, 9, entry.wallet)
         worksheet.cell(row_no, 10, entry.platform)
-        worksheet.cell(row_no, 11, entry.operator_origin.operator_entity)
-        worksheet.cell(row_no, 12, entry.operator_origin.operator_country)
-        worksheet.cell(row_no, 13, entry.annex_hint)
-        worksheet.cell(row_no, 14, "YES" if entry.review_required else "NO")
-        worksheet.cell(row_no, 15, entry.notes)
+        worksheet.cell(row_no, 11, entry.chain)
+        worksheet.cell(row_no, 12, entry.operator_origin.operator_entity)
+        worksheet.cell(row_no, 13, entry.operator_origin.operator_country)
+        worksheet.cell(row_no, 14, entry.annex_hint)
+        worksheet.cell(row_no, 15, "YES" if entry.review_required else "NO")
+        worksheet.cell(row_no, 16, entry.notes)
         row_no += 1
 
+    # Split reward entries for detailed sections (aggregated rewards already computed)
+    taxable_now_entries = [
+        e for e in crypto_tax_report.reward_entries if e.tax_classification == RewardTaxClassification.TAXABLE_NOW
+    ]
+    deferred_entries = [
+        e for e in crypto_tax_report.reward_entries if e.tax_classification == RewardTaxClassification.DEFERRED_BY_LAW
+    ]
+
+    # 2. REWARDS INCOME - IRS-READY SUMMARY (taxable_now aggregated)
     row_no += 2
-    worksheet.cell(row_no, 1, "2. REWARDS INCOME").font = Font(bold=True)  # type: ignore[assignment]
+    worksheet.cell(row_no, 1, "2. REWARDS INCOME - IRS-READY FILING SUMMARY").font = Font(bold=True)  # type: ignore[assignment]
     row_no += 1
 
-    income_headers = [
+    summary_note = worksheet.cell(
+        row_no,
+        1,
+        "This table shows only income taxable immediately in Category E. "
+        "Crypto-denominated rewards (deferred until disposal) are in section 2b below.",
+    )
+    summary_note.font = Font(italic=True, size=9)  # type: ignore[assignment]
+    row_no += 1
+
+    # IRS-ready aggregated rewards table headers
+    aggregated_headers = [
+        "Income code",
+        "Source country",
+        "Reward chain",
+        "Gross income (EUR)",
+        "Foreign tax (EUR)",
+        "Net income (EUR)",
+        "Raw rows",
+    ]
+    for idx, header in enumerate(aggregated_headers, start=1):
+        header_cell = worksheet.cell(row_no, idx, header)
+        header_cell.font = Font(bold=True)  # type: ignore[assignment]
+    row_no += 1
+
+    # Write aggregated taxable-now rows
+    if aggregated_rewards:
+        for entry in aggregated_rewards:
+            worksheet.cell(row_no, 1, entry.income_code)
+            worksheet.cell(row_no, 2, entry.source_country)
+            worksheet.cell(row_no, 3, ", ".join(entry.chains) if entry.chains else "Unknown")
+            worksheet.cell(row_no, 4, float(entry.gross_income_eur))
+            worksheet.cell(row_no, 5, float(entry.foreign_tax_eur))
+            worksheet.cell(row_no, 6, float(entry.gross_income_eur - entry.foreign_tax_eur))
+            worksheet.cell(row_no, 7, entry.raw_row_count)
+            row_no += 1
+    else:
+        worksheet.cell(
+            row_no, 1, "No immediately taxable rewards (all rewards are crypto-denominated and deferred by law)"
+        )
+        row_no += 1
+
+    # 2a2. TAXABLE-NOW SUPPORT DETAIL (reconciliation trail per plan requirement)
+    row_no += 1
+    worksheet.cell(row_no, 1, "2a2. TAXABLE-NOW - SUPPORT DETAIL").font = Font(bold=True)  # type: ignore[assignment]
+    row_no += 1
+    taxable_note = worksheet.cell(
+        row_no,
+        1,
+        "Individual rows that contribute to the IRS-ready filing table above. "
+        "Use this section to trace each aggregated line back to its source Koinly rows.",
+    )
+    taxable_note.font = Font(italic=True, size=9)  # type: ignore[assignment]
+    row_no += 1
+
+    taxable_detail_headers = [
         "Date",
         "Asset",
-        "Amount",
         "Value (EUR)",
-        "Income label",
-        "Source type",
+        "Income type",
         "Wallet",
         "Platform",
-        "Operator entity",
-        "Operator country",
-        "Annex hint",
+        "Reward chain",
+        "Country",
+        "Foreign tax (EUR)",
         "Review flag",
         "Description",
     ]
-    for idx, header in enumerate(income_headers, start=1):
-        worksheet.cell(row_no, idx, header)
+    for idx, header in enumerate(taxable_detail_headers, start=1):
+        header_cell = worksheet.cell(row_no, idx, header)
+        header_cell.font = Font(bold=True)  # type: ignore[assignment]
     row_no += 1
 
-    for entry in crypto_tax_report.reward_entries:
-        worksheet.cell(row_no, 1, entry.date)
-        worksheet.cell(row_no, 2, entry.asset)
-        worksheet.cell(row_no, 3, float(entry.amount))
-        worksheet.cell(row_no, 4, float(entry.value_eur))
-        worksheet.cell(row_no, 5, entry.income_label)
-        worksheet.cell(row_no, 6, entry.source_type)
-        worksheet.cell(row_no, 7, entry.wallet)
-        worksheet.cell(row_no, 8, entry.platform)
-        worksheet.cell(row_no, 9, entry.operator_origin.operator_entity)
-        worksheet.cell(row_no, 10, entry.operator_origin.operator_country)
-        worksheet.cell(row_no, 11, entry.annex_hint)
-        worksheet.cell(row_no, 12, "YES" if entry.review_required else "NO")
-        worksheet.cell(row_no, 13, entry.description)
+    if taxable_now_entries:
+        for entry in taxable_now_entries:
+            worksheet.cell(row_no, 1, entry.date)
+            worksheet.cell(row_no, 2, entry.asset)
+            worksheet.cell(row_no, 3, float(entry.value_eur))
+            worksheet.cell(row_no, 4, entry.source_type)
+            worksheet.cell(row_no, 5, entry.wallet)
+            worksheet.cell(row_no, 6, entry.platform)
+            worksheet.cell(row_no, 7, entry.chain)
+            worksheet.cell(row_no, 8, entry.operator_origin.operator_country)
+            worksheet.cell(row_no, 9, float(entry.foreign_tax_eur))
+            worksheet.cell(row_no, 10, "YES" if entry.review_required else "NO")
+            worksheet.cell(row_no, 11, entry.description)
+            row_no += 1
+    else:
+        worksheet.cell(row_no, 1, "No taxable-now rewards")
+        row_no += 1
+
+    # 2b. DEFERRED BY LAW SUPPORT SECTION
+    row_no += 1
+    worksheet.cell(row_no, 1, "2b. DEFERRED BY LAW - SUPPORT DETAIL").font = Font(bold=True)  # type: ignore[assignment]
+    row_no += 1
+
+    deferred_note = worksheet.cell(
+        row_no,
+        1,
+        "These rewards are crypto-denominated and taxation is deferred until disposal per CIRS art. 5(11). "
+        "They are shown here for auditability but NOT included in the IRS-ready filing table above.",
+    )
+    deferred_note.font = Font(italic=True, size=9)  # type: ignore[assignment]
+    row_no += 1
+
+    # Deferred rewards support table headers
+    deferred_headers = [
+        "Date",
+        "Asset",
+        "Value (EUR)",
+        "Income type",
+        "Wallet",
+        "Platform",
+        "Reward chain",
+        "Country",
+        "Foreign tax (EUR)",
+        "Review flag",
+        "Description",
+    ]
+    for idx, header in enumerate(deferred_headers, start=1):
+        header_cell = worksheet.cell(row_no, idx, header)
+        header_cell.font = Font(bold=True)  # type: ignore[assignment]
+    row_no += 1
+
+    # Write deferred reward rows (support detail for auditability)
+    if deferred_entries:
+        for entry in deferred_entries:
+            worksheet.cell(row_no, 1, entry.date)
+            worksheet.cell(row_no, 2, entry.asset)
+            worksheet.cell(row_no, 3, float(entry.value_eur))
+            worksheet.cell(row_no, 4, entry.source_type)
+            worksheet.cell(row_no, 5, entry.wallet)
+            worksheet.cell(row_no, 6, entry.platform)
+            worksheet.cell(row_no, 7, entry.chain)
+            worksheet.cell(row_no, 8, entry.operator_origin.operator_country)
+            worksheet.cell(row_no, 9, float(entry.foreign_tax_eur))
+            worksheet.cell(row_no, 10, "YES" if entry.review_required else "NO")
+            worksheet.cell(row_no, 11, entry.description)
+            row_no += 1
+    else:
+        worksheet.cell(row_no, 1, "No deferred rewards")
+        row_no += 1
+
+    # 2c. REWARDS CLASSIFICATION RECONCILIATION
+    row_no += 1
+    worksheet.cell(row_no, 1, "2c. REWARDS CLASSIFICATION RECONCILIATION").font = Font(bold=True)  # type: ignore[assignment]
+    row_no += 1
+
+    # Calculate totals for reconciliation
+    taxable_now_total_eur = sum((e.value_eur for e in taxable_now_entries), start=ZERO)
+    deferred_total_eur = sum((e.value_eur for e in deferred_entries), start=ZERO)
+
+    reconciliation_rewards_rows = [
+        ("Total reward rows (raw)", len(crypto_tax_report.reward_entries)),
+        ("Taxable-now rows (immediately taxable)", len(taxable_now_entries)),
+        ("Deferred-by-law rows (taxation deferred)", len(deferred_entries)),
+        ("Taxable-now total value (EUR)", float(taxable_now_total_eur)),
+        ("Deferred total value (EUR)", float(deferred_total_eur)),
+        ("Filing-ready lines after aggregation", len(aggregated_rewards)),
+    ]
+
+    for key, value in reconciliation_rewards_rows:
+        worksheet.cell(row_no, 1, key)
+        worksheet.cell(row_no, 2, value)
         row_no += 1
 
     row_no += 2

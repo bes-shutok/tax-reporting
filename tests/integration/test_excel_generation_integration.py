@@ -2,6 +2,8 @@
 
 from decimal import Decimal
 
+import pytest
+
 from shares_reporting.application.crypto_reporting import (
     CryptoCapitalGainEntry,
     CryptoCompletePdfSummary,
@@ -292,6 +294,7 @@ class TestDividendExcelPersisting:
                     holding_period="Short term",
                     wallet="ByBit (2)",
                     platform="ByBit",
+                    chain="ByBit",
                     operator_origin=bybit_origin,
                     annex_hint="J",
                     review_required=bybit_origin.review_required,
@@ -308,6 +311,7 @@ class TestDividendExcelPersisting:
                     source_type="Reward",
                     wallet="Wirex",
                     platform="Wirex",
+                    chain="Wirex",
                     operator_origin=wirex_origin,
                     annex_hint="J",
                     review_required=wirex_origin.review_required,
@@ -371,16 +375,143 @@ class TestDividendExcelPersisting:
                 labels.add(first_cell)
 
         assert "1. CAPITAL GAINS" in labels
-        assert "2. REWARDS INCOME" in labels
+        assert "2. REWARDS INCOME - IRS-READY FILING SUMMARY" in labels
+        assert "2b. DEFERRED BY LAW - SUPPORT DETAIL" in labels
+        assert "2c. REWARDS CLASSIFICATION RECONCILIATION" in labels
         assert "3. RECONCILIATION" in labels
         assert "4. SKIPPED ZERO VALUE TOKENS" in labels
         assert "PDF period" in labels
         workbook.close()
 
-    def test_generate_tax_report_with_dividend_validation_errors(self, tmp_path):
-        """Test that dividend validation errors are properly handled."""
-        # Test that validation happens during processing
-        # For now, just test with valid data to ensure report generation works
+    def test_crypto_sheet_contains_chain_column(self, tmp_path):
+        """Assert the Crypto worksheet contains chain headers and writes the normalized values."""
+        bybit_origin = resolve_operator_origin("ByBit")
+        wirex_origin = resolve_operator_origin("Wirex", transaction_type="crypto_deposit")
+
+        crypto_report = CryptoTaxReport(
+            tax_year=2025,
+            capital_entries=[
+                CryptoCapitalGainEntry(
+                    disposal_date="2025-01-13 13:01:00",
+                    acquisition_date="2024-11-18 00:15:00",
+                    asset="USDT",
+                    amount=Decimal("1.5"),
+                    cost_eur=Decimal("1.25"),
+                    proceeds_eur=Decimal("1.35"),
+                    gain_loss_eur=Decimal("0.10"),
+                    holding_period="Short term",
+                    wallet="ByBit (2)",
+                    platform="ByBit",
+                    chain="ByBit",
+                    operator_origin=bybit_origin,
+                    annex_hint="J",
+                    review_required=bybit_origin.review_required,
+                    notes="",
+                )
+            ],
+            reward_entries=[
+                CryptoRewardIncomeEntry(
+                    date="2025-01-01 00:01:00",
+                    asset="WXT",
+                    amount=Decimal("5"),
+                    value_eur=Decimal("17.10"),
+                    income_label="Reward",
+                    source_type="Reward",
+                    wallet="Wirex",
+                    platform="Wirex",
+                    chain="Wirex",
+                    operator_origin=wirex_origin,
+                    annex_hint="J",
+                    review_required=wirex_origin.review_required,
+                    description="",
+                )
+            ],
+            reconciliation=CryptoReconciliationSummary(
+                capital_rows=1,
+                reward_rows=1,
+                short_term_rows=1,
+                long_term_rows=0,
+                mixed_rows=0,
+                unknown_rows=0,
+                capital_cost_total_eur=Decimal("1.25"),
+                capital_proceeds_total_eur=Decimal("1.35"),
+                capital_gain_total_eur=Decimal("0.10"),
+                reward_total_eur=Decimal("17.10"),
+                opening_holdings=None,
+                closing_holdings=None,
+            ),
+            skipped_zero_value_tokens=[],
+            pdf_summary=None,
+        )
+
+        report_path = tmp_path / "crypto_chain_report.xlsx"
+        generate_tax_report(
+            extract=report_path,
+            capital_gain_lines_per_company={},
+            dividend_income_per_company={},
+            crypto_tax_report=crypto_report,
+        )
+
+        assert report_path.exists()
+
+        import openpyxl
+
+        workbook = openpyxl.load_workbook(report_path)
+        crypto_sheet = workbook["Crypto"]
+
+        # Find the capital gains header row and check for chain column
+        capital_headers_found = False
+        capital_chain_col_idx = None
+        reward_headers_found = False
+        reward_chain_col_idx = None
+
+        for row in crypto_sheet.iter_rows(values_only=True):
+            if row and "Disposal date" in str(row[0] if row[0] else ""):
+                # Found capital gains headers
+                capital_headers_found = True
+                # Find the "Disposal chain" column index
+                for col_idx, cell_value in enumerate(row):
+                    if cell_value == "Disposal chain":
+                        capital_chain_col_idx = col_idx + 1
+                        break
+            elif row and "Date" in str(row[0] if row[0] else "") and "Asset" in str(row[1] if len(row) > 1 else ""):
+                # Found rewards headers
+                reward_headers_found = True
+                # Find the "Reward chain" column index
+                for col_idx, cell_value in enumerate(row):
+                    if cell_value == "Reward chain":
+                        reward_chain_col_idx = col_idx + 1
+                        break
+
+        # Verify headers were found
+        assert capital_headers_found, "Capital gains headers not found"
+        assert reward_headers_found, "Reward headers not found"
+        assert capital_chain_col_idx is not None, "Disposal chain column not found in capital gains headers"
+        assert reward_chain_col_idx is not None, "Reward chain column not found in rewards headers"
+
+        # Verify the chain values are written in the data rows
+        capital_data_row = None
+        reward_data_row = None
+
+        for row in crypto_sheet.iter_rows(values_only=True):
+            if row and row[0] == "2025-01-13 13:01:00":
+                capital_data_row = row
+            elif row and row[0] == "2025-01-01 00:01:00":
+                reward_data_row = row
+
+        assert capital_data_row is not None, "Capital data row not found"
+        assert reward_data_row is not None, "Reward data row not found"
+
+        # Check chain values in data rows (using 1-based column index)
+        capital_chain = capital_data_row[capital_chain_col_idx - 1]
+        assert capital_chain == "ByBit", f"Expected 'ByBit' chain in capital data, got {capital_chain}"
+        reward_chain = reward_data_row[reward_chain_col_idx - 1]
+        assert reward_chain == "Wirex", f"Expected 'Wirex' chain in reward data, got {reward_chain}"
+
+        workbook.close()
+
+    def test_generate_tax_report_with_single_dividend_entry(self, tmp_path):
+        """Test that report generation works with a single valid dividend entry."""
         dividend_income = DividendIncomePerCompany(
             {
                 "VALID": DividendIncomePerSecurity(
@@ -504,3 +635,150 @@ class TestDividendExcelPersisting:
         assert net_amount_cell.value == "84.44455"  # 100.12345 - 15.67890
 
         workbook.close()
+
+    def test_crypto_sheet_generation_error_fails_report_generation(self, tmp_path):
+        """Test that crypto sheet generation errors fail the entire report generation.
+
+        Per plan requirement (Task 2), report generation must fail with a clear error
+        when a taxable-now row cannot be assigned all mandatory IRS fields.
+        """
+        from unittest.mock import patch
+
+        from shares_reporting.domain.exceptions import FileProcessingError
+
+        # Create a simple crypto report
+        crypto_report = CryptoTaxReport(
+            tax_year=2025,
+            capital_entries=[
+                CryptoCapitalGainEntry(
+                    disposal_date="2025-01-13 13:01:00",
+                    acquisition_date="2024-11-18 00:15:00",
+                    asset="ETH",
+                    amount=Decimal("1"),
+                    cost_eur=Decimal("1000"),
+                    proceeds_eur=Decimal("1200"),
+                    gain_loss_eur=Decimal("200"),
+                    holding_period="Short term",
+                    wallet="Ledger ETH",
+                    platform="Ledger ETH",
+                    chain="Ethereum",
+                    operator_origin=resolve_operator_origin("Ledger ETH"),
+                    annex_hint="J",
+                    review_required=False,
+                    notes="",
+                ),
+            ],
+            reward_entries=[],
+            reconciliation=CryptoReconciliationSummary(
+                capital_rows=1,
+                reward_rows=0,
+                short_term_rows=1,
+                long_term_rows=0,
+                mixed_rows=0,
+                unknown_rows=0,
+                capital_cost_total_eur=Decimal("1000"),
+                capital_proceeds_total_eur=Decimal("1200"),
+                capital_gain_total_eur=Decimal("200"),
+                reward_total_eur=Decimal("0"),
+                opening_holdings=None,
+                closing_holdings=None,
+            ),
+            skipped_zero_value_tokens=[],
+            pdf_summary=None,
+        )
+
+        report_path = tmp_path / "crypto_error_test.xlsx"
+
+        # Mock add_crypto_report_sheet to raise a FileProcessingError
+        with patch(
+            "shares_reporting.application.persisting.add_crypto_report_sheet",
+            side_effect=FileProcessingError("Simulated validation failure for testing"),
+        ), pytest.raises(FileProcessingError, match="Simulated validation failure for testing"):
+            generate_tax_report(
+                extract=report_path,
+                capital_gain_lines_per_company={},
+                dividend_income_per_company={},
+                crypto_tax_report=crypto_report,
+            )
+
+        # Verify the report was NOT created because generation failed
+        assert not report_path.exists()
+
+    def test_crypto_sheet_removed_on_partial_write_error(self, tmp_path):
+        """Test that partial Crypto sheet is removed when error occurs during writing.
+
+        Per plan requirement (Task 2), report generation must fail with a clear error
+        when a taxable-now row cannot be assigned all mandatory IRS fields. The error
+        propagates and fails the entire report generation.
+        """
+        from unittest.mock import patch
+
+        from shares_reporting.application.persisting import generate_tax_report
+        from shares_reporting.domain.exceptions import FileProcessingError
+
+        crypto_report = CryptoTaxReport(
+            tax_year=2025,
+            capital_entries=[
+                CryptoCapitalGainEntry(
+                    disposal_date="2025-01-15",
+                    acquisition_date="2024-06-01",
+                    asset="BTC",
+                    amount=Decimal("0.5"),
+                    cost_eur=Decimal("10000"),
+                    proceeds_eur=Decimal("12000"),
+                    gain_loss_eur=Decimal("2000"),
+                    holding_period="Short term",
+                    wallet="TestWallet",
+                    platform="TestPlatform",
+                    chain="Bitcoin",
+                    operator_origin=resolve_operator_origin("TestPlatform", "crypto_disposal"),
+                    annex_hint="G",
+                    review_required=False,
+                    notes="",
+                ),
+            ],
+            reward_entries=[],
+            reconciliation=CryptoReconciliationSummary(
+                capital_rows=1,
+                reward_rows=0,
+                short_term_rows=1,
+                long_term_rows=0,
+                mixed_rows=0,
+                unknown_rows=0,
+                capital_cost_total_eur=Decimal("10000"),
+                capital_proceeds_total_eur=Decimal("12000"),
+                capital_gain_total_eur=Decimal("2000"),
+                reward_total_eur=Decimal("0"),
+                opening_holdings=None,
+                closing_holdings=None,
+            ),
+            skipped_zero_value_tokens=[],
+            pdf_summary=None,
+        )
+
+        report_path = tmp_path / "crypto_partial_error_test.xlsx"
+
+        # Mock add_crypto_report_sheet to create the sheet but fail during writing
+        def mock_add_crypto_that_fails_partial(workbook, crypto_tax_report, aggregated_rewards):
+            # First create the sheet (this adds it to workbook.sheetnames)
+            crypto_ws = workbook.create_sheet("Crypto")
+            # Write some initial content
+            crypto_ws.cell(1, 1, "CRYPTO TAX REPORT - PORTUGAL")
+            crypto_ws.cell(2, 1, "Tax year")
+            crypto_ws.cell(2, 2, crypto_tax_report.tax_year)
+            # Now simulate an error during writing
+            raise FileProcessingError("Simulated write error during crypto sheet generation")
+
+        with patch(
+            "shares_reporting.application.persisting.add_crypto_report_sheet",
+            side_effect=mock_add_crypto_that_fails_partial,
+        ), pytest.raises(FileProcessingError, match="Simulated write error during crypto sheet generation"):
+            generate_tax_report(
+                extract=report_path,
+                capital_gain_lines_per_company={},
+                dividend_income_per_company={},
+                crypto_tax_report=crypto_report,
+            )
+
+        # Verify the report was NOT created because generation failed
+        assert not report_path.exists()
