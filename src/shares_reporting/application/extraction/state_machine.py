@@ -1,13 +1,10 @@
 """State machine orchestration for Interactive Brokers CSV parsing."""
 
-from typing import TYPE_CHECKING
+from logging import Logger
 
 from ...domain.constants import CSV_DATA_MARKER, CSV_HEADER_MARKER, DATA_DISCRIMINATOR_COLUMN_INDEX
 from ...domain.exceptions import FileProcessingError
 from ...infrastructure.logging_config import create_module_logger
-
-if TYPE_CHECKING:
-    from logging import Logger
 from .contexts import (
     DividendsContext,
     FinancialInstrumentContext,

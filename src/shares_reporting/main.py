@@ -130,17 +130,17 @@ def main(  # noqa: PLR0912, PLR0915
                     validated_source.parent,
                 )
 
-            generate_tax_report(
+            crypto_sheet_created = generate_tax_report(
                 extract_path,
                 capital_gains,
                 dividend_income_per_company,
                 crypto_tax_report=crypto_tax_report,
             )
             final_report_type = (
-                "capital gains + dividends + crypto" if crypto_tax_report else "capital gains and dividend income"
+                "capital gains + dividends + crypto" if crypto_sheet_created else "capital gains and dividend income"
             )
             if not dividend_income_per_company:
-                final_report_type = "capital gains + crypto" if crypto_tax_report else "capital gains"
+                final_report_type = "capital gains + crypto" if crypto_sheet_created else "capital gains"
             logger.info("Generated %s report: %s", final_report_type, extract_path)
         except Exception as e:
             raise ReportGenerationError(f"Failed to generate report: {e}") from e

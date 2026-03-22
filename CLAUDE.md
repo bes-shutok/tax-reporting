@@ -11,20 +11,28 @@ This file provides guidance to coding agents when working with code in this repo
 
 ### 1. Reusable Engineering Rules
 
-- For numeric fields from external reports, do not assume one locale. Detect thousands/decimal separators or fail with a clear error.
+- For numeric fields from external reports, detect thousands/decimal separators or fail clearly.
 - Do not classify values with a leading zero integer part (for example `0,001` or `0.001`) as thousands-grouped numbers.
-- A value with exactly one dot-grouped triplet (e.g. `1.234`) is ambiguous between decimal point and thousands separator — raise a clear error, do not guess. Only multi-group dot patterns (e.g. `1.234.567`) are unambiguously European thousands and may have dots stripped.
-- Always use f-strings in exception constructors: `raise SomeError(f"Row {n}: bad value {v}")`. Never pass multiple positional args to an exception constructor — `SomeError("msg %s", value)` stores a raw tuple and produces unreadable output.
-- When parsing files row-by-row, catch errors per-row (log a warning and skip the row). Do not let a single bad row propagate to a broad outer `except` that silently discards the entire dataset.
-- When an optional column is absent from a parsed CSV header, default the extracted value to a safe sentinel (e.g. `"0"` for fees) rather than empty string — downstream code such as `Decimal("")` will crash.
+- Treat exactly one dot-grouped triplet (for example `1.234`) as ambiguous and raise a clear error. Only multi-group dot patterns (for example `1.234.567`) may be stripped as European thousands.
+- Use f-strings in exception constructors; never pass multiple positional args to an exception constructor.
+- Catch row-level parse errors per row (warn and skip). Do not let one bad row discard the whole dataset.
+- When an optional CSV column is absent, use a safe sentinel (for example `"0"` for fees) rather than `""`.
 
 ### 2. Repository Style and Conventions
 
 - Koinly source discovery must be year-agnostic (`koinly*`) and prefer a year matching parsed IB data when available.
 - If an inferred IB tax year exists and the selected Koinly directory year differs, skip crypto loading for that run.
-- Dividend aggregation must validate that all rows for a symbol share the same currency; a mismatch is invalid data and must raise `FileProcessingError` immediately (fail fast).
-- `TradeDate` is a `NamedTuple(year, month, day)` — do not call `.date()` on it (no such method). Use it directly in comparisons and log messages, or call `.to_datetime()` to get a `datetime`.
+- Dividend aggregation must validate one currency per symbol; mismatches must raise `FileProcessingError`.
+- `TradeDate` is a `NamedTuple(year, month, day)`. Do not call `.date()` on it; use it directly or call `.to_datetime()`.
 - When classifying a dividend row as withholding tax, match only the literal string `"Withholding Tax"` — never match on bare `"Tax"`. Dividend descriptions routinely contain "Tax" as a word fragment (e.g. "Tax-Exempt Interest").
+- In `docs/tax/.../official/`, keep only source-origin files. Derived notes and numbered guidance belong outside `official/`, and `sources.md` must record issuing dates.
+- For tax/origin web sources, prefer authoritative PDFs or extracted Markdown/PDF over raw HTML, and reuse local mirrors.
+- Under `docs/tax/`, use `*-tax` for tax-law archives and `*-origin` for chain/operator domicile archives.
+- Share crypto `País da Fonte` resolution across rewards and capital gains. Never use taxpayer residence.
+- Keep the `docs/tax/crypto-origin/` source manifest, registry, and decision log synchronized when changing crypto chain/operator mappings.
+- Chain derivation must use deterministic normalization rules and validate against trusted sources in `docs/tax/crypto-origin/`.
+- Wallet labels are discovery hints only; final chain/country mappings come from archived operator origin documents.
+- When wallet labels don't allow reasonable chain derivation, use `Unknown` explicitly rather than guessing from asset symbols.
 
 ### 3. Repository Constraints
 
@@ -33,20 +41,27 @@ This file provides guidance to coding agents when working with code in this repo
 - When the FIFO loop exits with remaining unmatched trades, use `logger.warning` (not `logger.debug`) so data-loss conditions are always visible in production logs.
 - When writing a partially-matched buy to the rollover CSV, the fee must be proportional: `proportional_fee = action.fee * (rolled_quantity / original_quantity)`.
 - Dividend per-symbol validation must run after all rows for all symbols are accumulated, not after each row. Mid-accumulation state can be temporarily invalid (e.g. reversal arrives before dividend). Symbols that fail post-accumulation validation are skipped with `logger.warning`; they must not abort processing of other symbols.
-- Crypto capital gain entries must be aggregated by (exact disposal timestamp, asset, wallet, holding_period) before writing to the report — one line per sale event per holding period, not one per FIFO lot (PT-C-027). Do not remove or bypass `_aggregate_capital_entries()`. The holding_period is included in the aggregation key to preserve the taxable vs exempt breakdown needed for correct filing (PT-C-011: short-term gains are taxable, long-term gains are exempt).
-- After aggregation, entries where |gain/loss| < 1 EUR are excluded (PT-C-028). Do not remove or bypass `_filter_immaterial_entries()`. The threshold constant `_MATERIALITY_THRESHOLD` is intentionally a module-level `Final` — do not make it a parameter without a corresponding `crypto_rules.md` update.
+- Aggregate crypto capital gains by `(disposal timestamp, asset, wallet, holding_period)` before reporting. Do not remove or bypass `_aggregate_capital_entries()`.
+- After aggregation, exclude entries where `|gain/loss| < 1 EUR`. Do not remove `_filter_immaterial_entries()` or parameterize `_MATERIALITY_THRESHOLD` without a `crypto_rules.md` update.
+- Crypto reward income must be aggregated by `(income_code, source_country)` before inclusion in the IRS-ready filing table. Do not bypass or remove `aggregate_taxable_rewards()`.
+- Reward classification into taxable_now vs deferred_by_law must use `_classify_reward_tax_status()` and cite CRG-001/CRG-002 rule IDs.
+- Crypto worksheet must present rewards in two sections: IRS-ready filing summary (taxable_now only) and support detail (both classifications).
+- The aggregation step must fail with `FileProcessingError` if any taxable-now row cannot be assigned all mandatory IRS fields (valid Tabela X country code).
 
 ### 4. Agent Workflow Rules
 
 - Do not commit changes unless explicitly asked by the user.
 - Never add `Co-Authored-By:` to commit messages.
-- Always use `uv run pytest` (not `uvx pytest`) — `uvx` runs pytest in an isolated environment without the local `shares_reporting` package installed, causing import failures.
-- Write implementation plans to `docs/plans/` in the project repository (not to `~/.claude/plans/` or other external paths).
+- Always use `uv run pytest`, not `uvx pytest`.
+- Write implementation plans to `docs/plans/` in the project repository, not external paths.
 
 ### 5. Domain Knowledge References
 
-- **Before changing any crypto reporting logic** (Koinly parsing, capital gains aggregation, holding period classification, form field mapping, filtering thresholds), read `docs/domain/crypto_rules.md`. It contains numbered Portuguese tax rules (PT-C-001 … PT-C-029) derived from official AT documents with publication dates. Reference rule numbers in commit messages and code comments when a decision is law-driven (e.g. `# PT-C-008: FIFO mandatory`).
-- Each rule in that document carries its source authority level (`[OFFICIAL]` vs `[SECONDARY]`) and the source document date, so you can identify potentially outdated rules when the tax year changes.
+- Before changing crypto reporting logic, read `docs/domain/crypto_rules.md`, `docs/domain/crypto_reporting_guidelines.md`, and `docs/domain/crypto_implementation_guidelines.md`. Cite PT-C / CRG rule IDs for law-driven changes.
+- Before implementing new crypto features, read `docs/domain/crypto_implementation_guidelines.md` for lessons learned and common pitfalls to avoid.
+- Before changing cross-cutting report-generation behavior, read `docs/domain/shares_reporting_guidelines.md` and cite SRG rule IDs for repository-policy changes.
+- Before writing implementation plans, read `docs/domain/plan_quality_guidelines.md` for patterns that minimize review iterations.
+- Use the authority level and source date in `crypto_rules.md` to check whether a rule may be stale for the current tax year.
 
 ## Project Overview
 
@@ -155,7 +170,8 @@ The project follows **professional layered architecture** with **Domain-Driven D
     - `state_machine.py` - Parsing state machine
     - `processing.py` - Core processing logic
   - `transformation.py` - Capital gains calculation and trade matching
-  - `persisting.py` - Excel report generation with formulas (capital gains + dividend income)
+  - `persisting.py` - Excel report generation with formulas (capital gains, dividend income, and crypto IRS-ready summary)
+  - `crypto_reporting.py` - Koinly crypto tax report ingestion, reward classification, chain derivation, operator-origin resolution, and IRS-ready aggregation
 - **Infrastructure Layer** (`src/shares_reporting/infrastructure/`): External concerns
   - `config.py` - Configuration management and currency exchange rates
   - `isin_country.py` - ISIN to country resolution

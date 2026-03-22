@@ -55,6 +55,10 @@ This will create a `.venv` folder in your project root that editors can detect a
   - `koinly_<year>_complete_tax_report_*.pdf` - Period metadata (optional)
 
   The tool automatically aggregates FIFO lot rows by (sale timestamp, asset, wallet, holding period) to reduce manual filing burden while preserving the taxable vs exempt breakdown required for Portuguese IRS (short-term gains are taxable, long-term gains are exempt). After aggregation, entries where |gain/loss| < 1 EUR are filtered as immaterial. See `docs/domain/crypto_rules.md` for Portuguese tax law details.
+
+  Chain derivation: The tool automatically derives blockchain chain information from wallet labels using trusted archived sources in `docs/tax/crypto-origin/`. Chain is reported as a separate column (e.g., "Ethereum", "Solana", "Berachain") alongside wallet/platform. Wallet aliases are normalized (e.g., "ByBit (2)" -> "ByBit") before aggregation.
+
+  Validation behavior: The tool validates that all taxable-now rewards and capital entries have valid Portuguese Tabela X country codes. If validation fails, report generation stops with a clear error indicating which platform/wallet needs a country mapping. Crypto loading is non-blocking: missing or malformed Koinly inputs emit warnings but allow IB report generation to continue.
 - **Automatic Leftover Integration**: The tool automatically integrates data from previous tax cycles:
   - If `shares-leftover.csv` exists in `/resources/source`, it will be automatically merged with the current year's export data
   - Leftover trades (older) are placed before current year trades to maintain FIFO order
@@ -111,7 +115,12 @@ uvx ruff check . --fix && uvx ruff format .  # Fix and format
 The tool generates comprehensive Excel reports with:
 - **Capital Gains Section**: Detailed buy/sell transaction matching with FIFO methodology
 - **Dividend Income Section**: Complete dividend reporting with tax information and original currency amounts
-- **Crypto Section** (if Koinly data provided): Capital gains aggregated by sale event per holding period, rewards income, and reconciliation with sub-1-EUR immaterial entries filtered
+- **Crypto Section** (if Koinly data provided):
+  - Capital gains aggregated by sale event per holding period with sub-1-EUR immaterial entries filtered
+  - Rewards income classified into taxable-now (fiat-denominated) vs deferred-by-law (crypto-denominated) per Portuguese tax law
+  - IRS-ready aggregated summary for immediate Category E filing (taxable-now rewards grouped by income code + source country)
+  - Chain derivation for blockchain context (e.g., Ethereum, Solana, Berachain) alongside wallet/platform
+  - Full support detail sections for auditability and reconciliation
 - **Professional Formatting**: Currency display with 2 decimal places and proper Excel formulas
 - **Multi-Currency Support**: Automatic currency conversion with exchange rate tables
 - **ISIN Integration**: Automatic country of source detection from financial instrument data
