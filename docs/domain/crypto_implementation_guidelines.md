@@ -288,6 +288,8 @@ Every operator mapping must be documented in TWO places:
 
 ### Entity Selection Criteria (Portuguese Tax Rules)
 
+**Detailed reference**: See `docs/tax/crypto-origin/entity_selection_criteria.md` for complete entity selection hierarchy.
+
 For platforms with multiple legal entities, use this hierarchy:
 
 1. **Interface Entity**: The entity that contracts directly with the user
@@ -309,9 +311,51 @@ For platforms with multiple legal entities, use this hierarchy:
 - Regulatory changes
 - Entity mergers/acquisitions
 
-**Current Limitation**: The code does not yet support date-based lookup. All transactions use current mappings regardless of transaction date.
+**Implemented Feature**: The code now supports date-based lookup via the `transaction_date` parameter in `resolve_operator_origin()`.
 
-**Future Plan**: See `docs/plans/temporal-crypto-operator-origins.md` for proposed temporal tracking implementation.
+**Temporal Validity Checking**:
+- All `OperatorOrigin` instances include `valid_from` date (when mapping became effective)
+- Optional `valid_until` date for expired mappings
+- When `transaction_date` is provided, the function checks if the date falls within the mapping's validity period
+- If a transaction predates `valid_from`, a warning is logged and the earliest known mapping is returned (for historical data recovery)
+- If `transaction_date` is outside known validity periods, a warning is logged for audit trail purposes
+
+**Implementation Pattern**:
+
+```python
+def resolve_operator_origin(
+    platform: str,
+    transaction_type: str | None = None,
+    transaction_date: str | None = None,  # NEW: supports "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
+) -> OperatorOrigin:
+    """Resolve operator metadata with optional temporal validity checks.
+
+    When transaction_date is provided, performs date-based mapping selection
+    to ensure historical tax filings use the correct mapping for that period.
+
+    Args:
+        platform: Wallet or platform name
+        transaction_type: Optional hint for service scope (e.g., "fiat_deposit" vs "crypto_deposit")
+        transaction_date: Optional transaction date for temporal validity checks
+
+    Returns:
+        OperatorOrigin with platform metadata and validity information.
+    """
+```
+
+**Helper Functions**:
+- `_parse_transaction_date(transaction_date: str | None) -> str | None`: Parses transaction dates to ISO format (YYYY-MM-DD) for temporal validity checks. Supports formats: "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS".
+- `_is_temporally_valid(valid_from: str | None, valid_until: str | None, transaction_date: str) -> bool`: Checks if a mapping is valid for a given transaction date. Returns True if `valid_from <= transaction_date <= valid_until` (or no validity constraints).
+
+**Call Sites**: The parsing functions pass transaction dates to `resolve_operator_origin()`:
+- `_parse_capital_gains_file()`: passes `disposal_date` from CSV rows
+- `_parse_income_file()`: passes `date` from CSV rows
+
+**Testing Requirements**:
+- All platform mappings must have `valid_from` dates
+- Tests cover date boundary cases (before, during, after validity period)
+- Tests verify warning logs for transactions outside validity period
+- Tests verify backward compatibility (works without `transaction_date`)
 
 ### Implementation Pattern
 
@@ -449,9 +493,61 @@ Before implementing new crypto features, verify the plan has:
 
 If any are missing, clarify the plan first.
 
+## Koinly Export Files
+
+### File Structure and Usage
+
+Koinly generates multiple CSV files from tax reports. Not all are currently used by this repository.
+
+| File | Contains Swap Data? | Current Usage | Swap Information |
+|------|---------------------|---------------|------------------|
+| `koinly_*_capital_gains_report_*.csv` | ❌ No | Used for capital entries | Only shows final asset |
+| `koinly_*_income_report_*.csv` | ❌ No | Used for reward entries | Single asset per row |
+| `koinly_*_transaction_history_*.csv` | ✅ **Yes** | **NOT CURRENTLY USED** | Shows both sides of swap |
+
+### Token Swap History in transaction_history.csv
+
+**Location**: `resources/source/koinly*/koinly_*_transaction_history_*.csv`
+
+**Key columns for swaps**:
+- `Type`: Value `"exchange"` indicates a token swap
+- `Sent Currency`: Source token (e.g., `SUI`)
+- `Received Currency`: Destination token (e.g., `HASUI`)
+
+**Example swap row** (from 2025 export):
+```csv
+2025-02-16 17:10:42 UTC,exchange,"",Ledger SUI,"26,40816087",SUI,"29,83",Ledger SUI,"25,19665014",HASUI,"29,83"
+```
+
+This shows **SUI → HASUI swap** with:
+- Sent: 26.40816087 SUI (€29.83 cost basis)
+- Received: 25.19665014 HASUI (€29.83 cost basis)
+
+### Using Swap History for Audit Trail
+
+When implementing token swap history display:
+
+1. **Parse transaction_history.csv** for rows with `Type="exchange"`
+2. **Build lookup** by `(wallet, date)` → `"Sent Currency → Received Currency"`
+3. **Match to capital gains** rows by `(Wallet Name, Date Sold)`
+4. **Display in Crypto sheet** as new column `"Token swap history"`
+
+**Benefit**: Makes token migrations (SUI → HASUI, SUI → SSUI) visible for audit trail without manual cross-referencing.
+
+### Manual Review Reduction Opportunities
+
+Analysis of Koinly exports reveals these fixable false-positive triggers:
+
+| Trigger | Root Cause | Fix |
+|---------|-----------|-----|
+| "Missing cost basis" with 0 EUR proceeds | Koinly marks as missing but disposal has 0 value | Only flag if `proceeds_eur > 0` |
+| Character encoding (WBТC) | Cyrillic 'Т' (U+0422) instead of 'T' | Unicode normalize before parsing |
+| Temporal validity warnings | Historical transactions before `valid_from` | Use `service_start_date` separate from `verified_date` |
+
 ## References
 
 - Plan: `docs/plans/aggregate-crypto-rewards-income.md`
+- Plan: `docs/plans/crypto_manual_review_reduction.md` (token swap history)
 - Rules: `docs/domain/crypto_rules.md`
 - Guidelines: `docs/domain/crypto_reporting_guidelines.md`
 - Chain sources: `docs/tax/crypto-origin/`

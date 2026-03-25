@@ -182,23 +182,23 @@ If `transaction_date` is None (current behavior):
 
 ### Task 1: Documentation Updates
 
-- [ ] Add temporal fields to `operator_chain_origin_registry.md` (at least `valid_from`)
-- [ ] Create `entity_selection_criteria.md` with Portuguese tax rules
-- [ ] Add CMD-018 to `mapping_decision_log.md` for Wirex split-scope
-- [ ] Update all existing mappings with `valid_from` dates (use `source_checked_on` or source doc date)
+- [x] Add temporal fields to `operator_chain_origin_registry.md` (at least `valid_from`)
+- [x] Create `entity_selection_criteria.md` with Portuguese tax rules
+- [x] Add CMD-018 to `mapping_decision_log.md` for Wirex split-scope
+- [x] Update all existing mappings with `valid_from` dates (use `source_checked_on` or source doc date)
 
 ### Task 2: Data Structure Changes (DEFERRED)
 
-- [ ] Add `valid_from` and `valid_until` fields to `OperatorOrigin` dataclass
-- [ ] Update all `OperatorOrigin` instantiations to include `valid_from`
-- [ ] Add tests for temporal lookups
+- [x] Add `valid_from` and `valid_until` fields to `OperatorOrigin` dataclass
+- [x] Update all `OperatorOrigin` instantiations to include `valid_from`
+- [x] Add tests for temporal lookups
 
 ### Task 3: Date-Aware Resolution (DEFERRED)
 
-- [ ] Add `transaction_date` parameter to `resolve_operator_origin()`
-- [ ] Implement date-based mapping selection logic
-- [ ] Add tests for historical transaction lookups
-- [ ] Update call sites in `_parse_capital_gains_file()` and `_parse_income_file()` to pass transaction date
+- [x] Add `transaction_date` parameter to `resolve_operator_origin()`
+- [x] Implement date-based mapping selection logic
+- [x] Add tests for historical transaction lookups
+- [x] Update call sites in `_parse_capital_gains_file()` and `_parse_income_file()` to pass transaction date
 
 ## Open Questions
 
@@ -215,17 +215,17 @@ If `transaction_date` is None (current behavior):
 ## Acceptance Criteria
 
 Phase 1 (documentation):
-- [ ] All mappings in registry have `valid_from` date
-- [ ] Wirex split-scope documented in registry and decision log
-- [ ] Entity selection criteria documented with Portuguese tax basis
-- [ ] All changes referenced from `crypto_implementation_guidelines.md`
+- [x] All mappings in registry have `valid_from` date
+- [x] Wirex split-scope documented in registry and decision log
+- [x] Entity selection criteria documented with Portuguese tax basis
+- [x] All changes referenced from `crypto_implementation_guidelines.md`
 
 Phase 2 (data structures, deferred):
-- [ ] `OperatorOrigin` has temporal fields
-- [ ] All instantiations include `valid_from`
-- [ ] Tests pass for new fields
+- [x] `OperatorOrigin` has temporal fields
+- [x] All instantiations include `valid_from`
+- [x] Tests pass for new fields
 
 Phase 3 (date-aware resolution, optional):
-- [ ] Can query historical mappings by transaction date
-- [ ] Tests cover date boundary cases
-- [ ] Backward compatible (works without transaction_date)
+- [x] Can query historical mappings by transaction date
+- [x] Tests cover date boundary cases
+- [x] Backward compatible (works without transaction_date)

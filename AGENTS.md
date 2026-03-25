@@ -30,6 +30,9 @@ This file provides guidance to coding agents when working with code in this repo
 - Under `docs/tax/`, use `*-tax` for tax-law archives and `*-origin` for chain/operator domicile archives.
 - Share crypto `País da Fonte` resolution across rewards and capital gains. Never use taxpayer residence.
 - Keep the `docs/tax/crypto-origin/` source manifest, registry, and decision log synchronized when changing crypto chain/operator mappings.
+- Chain derivation must use deterministic normalization rules and validate against trusted sources in `docs/tax/crypto-origin/`.
+- Wallet labels are discovery hints only; final chain/country mappings come from archived operator origin documents.
+- When wallet labels don't allow reasonable chain derivation, use `Unknown` explicitly rather than guessing from asset symbols.
 
 ### 3. Repository Constraints
 
@@ -47,6 +50,7 @@ This file provides guidance to coding agents when working with code in this repo
 
 ### 4. Agent Workflow Rules
 
+- Examine existing source data files in the repository (e.g., `resources/source/koinly*/`) directly before asking the user to provide samples or examples. Use Glob and Read tools to find and analyze the actual data.
 - Do not commit changes unless explicitly asked by the user.
 - Never add `Co-Authored-By:` to commit messages.
 - Always use `uv run pytest`, not `uvx pytest`.
