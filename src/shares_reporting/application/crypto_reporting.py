@@ -6,8 +6,8 @@ import csv
 import logging
 import re
 from collections import Counter
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from dataclasses import dataclass, field, replace
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from functools import lru_cache
@@ -31,6 +31,47 @@ _SPLIT_PARTS_WITH_TICKER: Final = 2
 # File size limits for security (prevent DoS via large files)
 _MAX_CSV_BYTES: Final = 50 * 1024 * 1024  # 50 MB limit for CSV files
 
+# Constants for date validation
+_MIN_VALID_YEAR: Final = 2009  # Bitcoin genesis, crypto didn't exist before
+_MAX_VALID_YEAR: Final = 2100
+_ISO_DATE_LENGTH: Final = 10
+_ISO_DATE_PARTS: Final = 3  # YYYY-MM-DD has 3 parts
+
+
+def _validate_iso_date(date_str: str) -> str:
+    """Validate an ISO date string (YYYY-MM-DD) and return it.
+
+    Args:
+        date_str: Date string in ISO format (YYYY-MM-DD).
+
+    Returns:
+        The validated date string.
+
+    Raises:
+        ValueError: If the date is invalid or out of reasonable range.
+    """
+    parts = date_str.split("-")
+    if len(parts) != 3:
+        raise ValueError(f"Invalid date format '{date_str}': expected YYYY-MM-DD")
+    year_str, month_str, day_str = parts
+
+    # Verify zero-padding: YYYY-MM-DD requires exactly 4, 2, 2 digits
+    if len(year_str) != 4 or len(month_str) != 2 or len(day_str) != 2:
+        raise ValueError(f"Invalid date format '{date_str}': zero-padding required (YYYY-MM-DD)")
+
+    # Verify all parts are numeric
+    if not (year_str.isdigit() and month_str.isdigit() and day_str.isdigit()):
+        raise ValueError(f"Invalid date format '{date_str}': non-numeric characters")
+
+    try:
+        year, month, day = int(year_str), int(month_str), int(day_str)
+        if year < _MIN_VALID_YEAR or year > _MAX_VALID_YEAR:
+            raise ValueError(f"Year {year} out of reasonable range")
+        date(year, month, day)  # Validates calendar date (rejects Feb 31, etc.)
+        return date_str
+    except ValueError as e:
+        raise ValueError(f"Invalid date '{date_str}': {e}") from e
+
 
 class RewardTaxClassification(Enum):
     """Tax classification status for crypto rewards per Portuguese law (CRG-001, CRG-002).
@@ -45,7 +86,12 @@ class RewardTaxClassification(Enum):
 
 @dataclass(frozen=True)
 class OperatorOrigin:
-    """Operator and jurisdiction metadata for a wallet platform."""
+    """Operator and jurisdiction metadata for a wallet platform.
+
+    Temporal validity tracking allows historical tax filings to reference the
+    mapping that was in effect at the time of transaction, even if the mapping
+    changes later (e.g., operator restructuring, legal domicile changes).
+    """
 
     platform: str
     service_scope: str
@@ -55,6 +101,32 @@ class OperatorOrigin:
     source_checked_on: str
     confidence: str
     review_required: bool
+    valid_from: str | None = None
+    valid_until: str | None = None
+
+    def __post_init__(self) -> None:
+        """Validate temporal validity fields."""
+        # Normalize empty strings to None for temporal fields
+        normalized_from = self.valid_from.strip() if isinstance(self.valid_from, str) and self.valid_from.strip() else None
+        normalized_until = self.valid_until.strip() if isinstance(self.valid_until, str) and self.valid_until.strip() else None
+
+        # Validate ISO date format for valid_from if provided
+        if normalized_from is not None:
+            _validate_iso_date(normalized_from)
+
+        # Validate ISO date format for valid_until if provided
+        if normalized_until is not None:
+            _validate_iso_date(normalized_until)
+
+        # Validate that valid_until >= valid_from if both are provided
+        if normalized_from is not None and normalized_until is not None:
+            from_date = datetime.fromisoformat(normalized_from).date()
+            until_date = datetime.fromisoformat(normalized_until).date()
+            if until_date < from_date:
+                raise ValueError(
+                    f"Invalid date range for {self.platform}: valid_until ({self.valid_until}) "
+                    f"must be on or after valid_from ({self.valid_from})"
+                )
 
 
 @dataclass(frozen=True)
@@ -190,6 +262,101 @@ _CRYPTO_TOKEN_FIAT_COLLISIONS: Final[frozenset[str]] = frozenset(
         "GEL",  # Gelato Network token (fiat GEL = Georgian Lari)
     )
 )
+
+
+def _parse_transaction_date(transaction_date: str | None) -> str | None:
+    """Parse transaction date to ISO date format (YYYY-MM-DD) for temporal validity checks.
+
+    Args:
+        transaction_date: Transaction date string in one of the following formats:
+            - "YYYY-MM-DD HH:MM:SS" (Koinly format)
+            - "YYYY-MM-DD" (ISO date)
+
+    Returns:
+        ISO date string (YYYY-MM-DD) or None if input is empty/None.
+
+    Raises:
+        ValueError: If the date format is invalid.
+    """
+    if not transaction_date:
+        return None
+
+    # Strip leading/trailing whitespace
+    transaction_date = transaction_date.strip()
+
+    # Handle Koinly format: "YYYY-MM-DD HH:MM:SS"
+    if " " in transaction_date:
+        parts = transaction_date.split(" ")
+        if len(parts) != 2:
+            raise ValueError(f"Unsupported transaction date format: {transaction_date}")
+        date_part, time_part = parts
+        # Validate time part matches HH:MM:SS pattern with valid ranges
+        time_components = time_part.split(":")
+        if len(time_components) != 3:
+            raise ValueError(f"Unsupported transaction date format: {transaction_date}")
+        # Verify all time parts are digits AND zero-padded (exactly 2 digits each)
+        if not all(cp.isdigit() and len(cp) == 2 for cp in time_components):
+            raise ValueError(f"Unsupported transaction date format: {transaction_date}")
+        # Validate time ranges: hour (0-23), minute (0-59), second (0-59)
+        hour, minute, second = map(int, time_components)
+        if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
+            raise ValueError(f"Unsupported transaction date format: {transaction_date}")
+        return _validate_iso_date(date_part)
+
+    # Already in YYYY-MM-DD format
+    if len(transaction_date) == _ISO_DATE_LENGTH and transaction_date[4] == "-" and transaction_date[7] == "-":
+        return _validate_iso_date(transaction_date)
+
+    raise ValueError(f"Unsupported transaction date format: {transaction_date}")
+
+
+def _is_temporally_valid(valid_from: str | None, valid_until: str | None, transaction_date: str) -> bool:
+    """Check if a mapping is valid for a given transaction date.
+
+    Args:
+        valid_from: ISO date when mapping becomes valid (YYYY-MM-DD).
+        valid_until: ISO date when mapping expires (YYYY-MM-DD), or None if still valid.
+        transaction_date: ISO transaction date to check (YYYY-MM-DD).
+
+    Returns:
+        True if the mapping was valid on the transaction date.
+    """
+    # Parse transaction date once for comparison
+    tx_date = _parse_iso_date(transaction_date)
+
+    # If valid_from is specified (and not empty), check if transaction is on or after it
+    if valid_from:
+        from_date = _parse_iso_date(valid_from)
+        if tx_date < from_date:
+            return False
+
+    # If valid_until is specified (and not empty), check if transaction is on or before it
+    if valid_until:
+        until_date = _parse_iso_date(valid_until)
+        if tx_date > until_date:
+            return False
+
+    # No constraints violated, or no constraints at all
+    return True
+
+
+def _parse_iso_date(date_str: str) -> date:
+    """Parse ISO date string (YYYY-MM-DD) to date object.
+
+    Args:
+        date_str: ISO date string (must be pre-validated).
+
+    Returns:
+        Date object.
+
+    Raises:
+        ValueError: If date_str is not in valid ISO format.
+    """
+    parts = date_str.split("-")
+    if len(parts) != _ISO_DATE_PARTS:  # noqa: PLR2004
+        raise ValueError(f"Invalid ISO date format: '{date_str}'. Expected YYYY-MM-DD.")
+    year, month, day = map(int, parts)
+    return date(year, month, day)
 
 
 @lru_cache(maxsize=1)
@@ -541,7 +708,9 @@ _KOINLY_TYPE_TO_INCOME_CODE: Final[dict[str, str]] = {
     # Default fallback for unknown types
 }
 
-_MAX_PDF_BYTES: Final = 20 * 1024 * 1024  # 20 MB limit for PDF parsing (increased from 10 MB due to growing Koinly report sizes)
+_MAX_PDF_BYTES: Final = (
+    20 * 1024 * 1024
+)  # 20 MB limit for PDF parsing (increased from 10 MB due to growing Koinly report sizes)
 DATE_FORMATS: Final = (
     "%d/%m/%Y %H:%M",
     "%Y-%m-%d %H:%M:%S UTC",
@@ -551,8 +720,12 @@ DATE_FORMATS: Final = (
 )
 
 
-def resolve_operator_origin(platform: str, transaction_type: str | None = None) -> OperatorOrigin:  # noqa: PLR0911, PLR0912
-    """Resolve operator metadata from platform brand and transaction type.
+def resolve_operator_origin(  # noqa: PLR0911, PLR0912
+    platform: str,
+    transaction_type: str | None = None,
+    transaction_date: str | None = None,
+) -> OperatorOrigin:
+    """Resolve operator metadata from platform brand, transaction type, and optional transaction date.
 
     Source-country resolution hierarchy for DeFi:
     1. Interface legal entity (the exposed contracting party)
@@ -563,266 +736,392 @@ def resolve_operator_origin(platform: str, transaction_type: str | None = None) 
     The source country must be derived from the paying entity / platform / protocol
     legal-entity domicile, not from where the taxpayer performed the activity.
 
+    Temporal Validity:
+    When transaction_date is provided, this function performs temporal validity checks
+    against the mapping's valid_from/valid_until dates. If a transaction predates the
+    earliest known mapping for a platform, a warning is logged and the earliest known
+    mapping is returned (for historical data recovery scenarios).
+
     Args:
         platform: Wallet or platform name (e.g., "Ledger Berachain", "ByBit").
         transaction_type: Optional hint for service scope (e.g., "crypto_disposal", "fiat_deposit").
+        transaction_date: Optional transaction date for historical mapping lookup.
+            Accepts formats like "2025-03-15" or "2025-03-15 14:30:00".
 
     Returns:
         OperatorOrigin with the resolved operator entity and country.
         Returns operator_country="UNKNOWN" and review_required=True for unrecognized platforms.
     """
+    logger = logging.getLogger(__name__)
+
+    # Parse transaction date for temporal validity checks
+    parsed_date: str | None = None
+    date_parse_failed = False
+    if transaction_date:
+        try:
+            parsed_date = _parse_transaction_date(transaction_date)
+        except ValueError:
+            logger.error(
+                "Invalid transaction_date format '%s' for platform '%s': "
+                "temporal validity check skipped. Expected format: 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'. "
+                "Marking for manual review to ensure correct tax reporting.",
+                transaction_date,
+                platform,
+            )
+            date_parse_failed = True
+
     normalized = platform.lower()
     transaction_type_normalized = (transaction_type or "").lower()
 
+    def _return_with_temporal_check(origin: OperatorOrigin) -> OperatorOrigin:
+        """Return operator origin after performing temporal validity check.
+
+        Logs a warning if the transaction date is outside the mapping's validity period.
+        When out of validity, returns a modified origin with review_required=True to
+        surface the ambiguity in the workbook's manual-review flag.
+
+        Args:
+            origin: The operator origin to validate.
+
+        Returns:
+            The origin, potentially with review_required=True if outside validity period
+            or if date parsing failed.
+        """
+        # If date parsing failed, mark for review to ensure correct tax reporting
+        if date_parse_failed:
+            return replace(origin, review_required=True)
+
+        is_valid = (
+            parsed_date is None
+            or _is_temporally_valid(origin.valid_from, origin.valid_until, parsed_date)
+        )
+        if not is_valid:
+            logger.warning(
+                "Transaction date %s for platform '%s' (service_scope: %s) is outside "
+                "the known validity period [%s, %s]. Marking for manual review. "
+                "Please verify the operator origin is correct for this historical transaction.",
+                parsed_date,
+                origin.platform,
+                origin.service_scope,
+                origin.valid_from,
+                origin.valid_until or "present",
+            )
+            # Return a modified origin with review_required=True to surface in the workbook
+            return replace(origin, review_required=True)
+        return origin
+
     if "wirex" in normalized:
         if transaction_type_normalized.startswith("fiat"):
-            return OperatorOrigin(
+            return _return_with_temporal_check(
+                OperatorOrigin(
+                    platform="Wirex",
+                    service_scope="fiat",
+                    operator_entity="Wirex Limited",
+                    operator_country="GB",
+                    source_url="https://wirexapp.com/legal",
+                    source_checked_on="2026-03-08",
+                    confidence="medium",
+                    review_required=True,
+                    valid_from="2026-03-08",  # Split-scope verified 2026-03-08; exact start date unknown
+                )
+            )
+        return _return_with_temporal_check(
+            OperatorOrigin(
                 platform="Wirex",
-                service_scope="fiat",
-                operator_entity="Wirex Limited",
-                operator_country="GB",
+                service_scope="crypto",
+                operator_entity="Wirex Digital (crypto operator, verify account terms)",
+                operator_country="HR",
                 source_url="https://wirexapp.com/legal",
                 source_checked_on="2026-03-08",
                 confidence="medium",
                 review_required=True,
+                valid_from="2026-03-08",  # Split-scope verified 2026-03-08; exact start date unknown
             )
-        return OperatorOrigin(
-            platform="Wirex",
-            service_scope="crypto",
-            operator_entity="Wirex Digital (crypto operator, verify account terms)",
-            operator_country="HR",
-            source_url="https://wirexapp.com/legal",
-            source_checked_on="2026-03-08",
-            confidence="medium",
-            review_required=True,
         )
 
     if "bybit" in normalized:
-        return OperatorOrigin(
-            platform="Bybit",
-            service_scope="crypto",
-            operator_entity="Bybit group entity (account-region specific)",
-            operator_country="AE",
-            source_url="https://www.bybit.com/en/legal/terms-of-service/terms-of-service",
-            source_checked_on="2026-03-08",
-            confidence="low",
-            review_required=True,
+        return _return_with_temporal_check(
+            OperatorOrigin(
+                platform="Bybit",
+                service_scope="crypto",
+                operator_entity="Bybit group entity (account-region specific)",
+                operator_country="AE",
+                source_url="https://www.bybit.com/en/legal/terms-of-service/terms-of-service",
+                source_checked_on="2026-03-08",
+                confidence="low",
+                review_required=True,
+                valid_from=None,  # Historical operator, exact start date unknown
+            )
         )
 
     if "berachain" in normalized:
-        return OperatorOrigin(
-            platform="Berachain",
-            service_scope="crypto",
-            operator_entity="BERA Chain Foundation",
-            operator_country="VG",
-            source_url="https://www.berachain.com/terms-of-service",
-            source_checked_on="2026-03-15",
-            confidence="high",
-            review_required=False,
+        return _return_with_temporal_check(
+            OperatorOrigin(
+                platform="Berachain",
+                service_scope="crypto",
+                operator_entity="BERA Chain Foundation",
+                operator_country="VG",
+                source_url="https://www.berachain.com/terms-of-service",
+                source_checked_on="2026-03-15",
+                confidence="high",
+                review_required=False,
+                valid_from="2025-02-05",
+            )
         )
 
     if "starknet" in normalized:
-        return OperatorOrigin(
-            platform="Starknet",
-            service_scope="crypto",
-            operator_entity="Starknet Foundation",
-            operator_country="KY",
-            source_url="https://www.starknet.io/privacy-policy/",
-            source_checked_on="2026-03-15",
-            confidence="medium",
-            review_required=True,
+        return _return_with_temporal_check(
+            OperatorOrigin(
+                platform="Starknet",
+                service_scope="crypto",
+                operator_entity="Starknet Foundation",
+                operator_country="KY",
+                source_url="https://www.starknet.io/privacy-policy/",
+                source_checked_on="2026-03-15",
+                confidence="medium",
+                review_required=True,
+                valid_from=None,  # Historical operator, exact start date unknown
+            )
         )
 
     if "zksync" in normalized:
-        return OperatorOrigin(
-            platform="zkSync",
-            service_scope="crypto",
-            operator_entity="Matter Labs",
-            operator_country="KY",
-            source_url="https://zksync.io/terms",
-            source_checked_on="2026-03-15",
-            confidence="high",
-            review_required=False,
+        return _return_with_temporal_check(
+            OperatorOrigin(
+                platform="zkSync",
+                service_scope="crypto",
+                operator_entity="Matter Labs",
+                operator_country="KY",
+                source_url="https://zksync.io/terms",
+                source_checked_on="2026-03-15",
+                confidence="high",
+                review_required=False,
+                valid_from=None,  # Historical operator, exact start date unknown
+            )
         )
 
     if "solana" in normalized:
-        return OperatorOrigin(
-            platform="Solana",
-            service_scope="crypto",
-            operator_entity="Solana Foundation",
-            operator_country="CH",
-            source_url="https://solana.org/",
-            source_checked_on="2026-03-15",
-            confidence="medium",
-            review_required=False,
+        return _return_with_temporal_check(
+            OperatorOrigin(
+                platform="Solana",
+                service_scope="crypto",
+                operator_entity="Solana Foundation",
+                operator_country="CH",
+                source_url="https://solana.org/",
+                source_checked_on="2026-03-15",
+                confidence="medium",
+                review_required=False,
+                valid_from=None,  # Historical operator, exact start date unknown
+            )
         )
 
     # Handle both correct "Tonkeeper" and common typo "Tonkeper" from Koinly exports
     if "tonkeeper" in normalized or "tonkeper" in normalized:
-        return OperatorOrigin(
-            platform="Tonkeeper",
-            service_scope="crypto",
-            operator_entity="Ton Apps UK Ltd.",
-            operator_country="GB",
-            source_url="https://tonkeeper.com/terms",
-            source_checked_on="2026-03-15",
-            confidence="high",
-            review_required=False,
+        return _return_with_temporal_check(
+            OperatorOrigin(
+                platform="Tonkeeper",
+                service_scope="crypto",
+                operator_entity="Ton Apps UK Ltd.",
+                operator_country="GB",
+                source_url="https://tonkeeper.com/terms",
+                source_checked_on="2026-03-15",
+                confidence="high",
+                review_required=False,
+                valid_from=None,  # Historical operator with unknown exact start date
+            )
         )
 
     if re.search(r"\bton\b", normalized) and "tonkeeper" not in normalized and "tonkeper" not in normalized:
-        return OperatorOrigin(
-            platform="TON",
-            service_scope="crypto",
-            operator_entity="TON Foundation",
-            operator_country="CH",
-            source_url="https://ton.foundation/",
-            source_checked_on="2026-03-15",
-            confidence="high",
-            review_required=False,
+        return _return_with_temporal_check(
+            OperatorOrigin(
+                platform="TON",
+                service_scope="crypto",
+                operator_entity="TON Foundation",
+                operator_country="CH",
+                source_url="https://ton.foundation/",
+                source_checked_on="2026-03-15",
+                confidence="high",
+                review_required=False,
+                valid_from=None,  # Historical operator, exact start date unknown
+            )
         )
 
     if "ethereum" in normalized:
-        return OperatorOrigin(
-            platform="Ethereum",
-            service_scope="crypto",
-            operator_entity="Ethereum Foundation",
-            operator_country="CH",
-            source_url="https://blog.ethereum.org/2024/05/08/ethereum-foundation-report-2024",
-            source_checked_on="2026-03-15",
-            confidence="high",
-            review_required=False,
+        return _return_with_temporal_check(
+            OperatorOrigin(
+                platform="Ethereum",
+                service_scope="crypto",
+                operator_entity="Ethereum Foundation",
+                operator_country="CH",
+                source_url="https://blog.ethereum.org/2024/05/08/ethereum-foundation-report-2024",
+                source_checked_on="2026-03-15",
+                confidence="high",
+                review_required=False,
+                valid_from="2024-05-08",
+            )
         )
 
     if "aptos" in normalized:
-        return OperatorOrigin(
-            platform="Aptos",
-            service_scope="crypto",
-            operator_entity="Aptos Foundation",
-            operator_country="KY",
-            source_url="https://aptosfoundation.org/terms",
-            source_checked_on="2026-03-15",
-            confidence="high",
-            review_required=False,
+        return _return_with_temporal_check(
+            OperatorOrigin(
+                platform="Aptos",
+                service_scope="crypto",
+                operator_entity="Aptos Foundation",
+                operator_country="KY",
+                source_url="https://aptosfoundation.org/terms",
+                source_checked_on="2026-03-15",
+                confidence="high",
+                review_required=False,
+                valid_from="2025-08-29",
+            )
         )
 
     if re.search(r"\bsui\b", normalized):
-        return OperatorOrigin(
-            platform="Sui",
-            service_scope="crypto",
-            operator_entity="Sui Foundation",
-            operator_country="KY",
-            source_url="https://www.sui.io/terms",
-            source_checked_on="2026-03-15",
-            confidence="medium",
-            review_required=False,
+        return _return_with_temporal_check(
+            OperatorOrigin(
+                platform="Sui",
+                service_scope="crypto",
+                operator_entity="Sui Foundation",
+                operator_country="KY",
+                source_url="https://www.sui.io/terms",
+                source_checked_on="2026-03-15",
+                confidence="medium",
+                review_required=False,
+                valid_from=None,  # Historical operator, exact start date unknown
+            )
         )
 
     if "arbitrum" in normalized:
-        return OperatorOrigin(
-            platform="Arbitrum",
-            service_scope="crypto",
-            operator_entity="The Arbitrum Foundation",
-            operator_country="KY",
-            source_url="https://docs.arbitrum.foundation/assets/files/The%20Arbitrum%20Foundation%20M%26A%20-%2020%20July%202023-6e264ee4c38da73a3aa4c8581c5f751f.pdf",
-            source_checked_on="2026-03-15",
-            confidence="high",
-            review_required=False,
+        return _return_with_temporal_check(
+            OperatorOrigin(
+                platform="Arbitrum",
+                service_scope="crypto",
+                operator_entity="The Arbitrum Foundation",
+                operator_country="KY",
+                source_url="https://docs.arbitrum.foundation/assets/files/The%20Arbitrum%20Foundation%20M%26A%20-%2020%20July%202023-6e264ee4c38da73a3aa4c8581c5f751f.pdf",
+                source_checked_on="2026-03-15",
+                confidence="high",
+                review_required=False,
+                valid_from="2023-07-20",
+            )
         )
 
     if re.search(r"\bmantle\b", normalized):
-        return OperatorOrigin(
-            platform="Mantle",
-            service_scope="crypto",
-            operator_entity="Mantle Foundation S.A.",
-            operator_country="VG",
-            source_url="https://www.ipd.gov.hk/hkipjournal/15032024/PUBLICATION_TYPE_TRADE_MARK_REGISTERED.pdf",
-            source_checked_on="2026-03-15",
-            confidence="medium",
-            review_required=True,
+        return _return_with_temporal_check(
+            OperatorOrigin(
+                platform="Mantle",
+                service_scope="crypto",
+                operator_entity="Mantle Foundation S.A.",
+                operator_country="VG",
+                source_url="https://www.ipd.gov.hk/hkipjournal/15032024/PUBLICATION_TYPE_TRADE_MARK_REGISTERED.pdf",
+                source_checked_on="2026-03-15",
+                confidence="medium",
+                review_required=True,
+                valid_from="2024-03-15",
+            )
         )
 
     if "polygon" in normalized:
-        return OperatorOrigin(
-            platform="Polygon",
-            service_scope="crypto",
-            operator_entity="Polygon Labs UI (Cayman) Ltd.",
-            operator_country="KY",
-            source_url="https://polygon.technology/terms-of-use",
-            source_checked_on="2026-03-15",
-            confidence="high",
-            review_required=False,
+        return _return_with_temporal_check(
+            OperatorOrigin(
+                platform="Polygon",
+                service_scope="crypto",
+                operator_entity="Polygon Labs UI (Cayman) Ltd.",
+                operator_country="KY",
+                source_url="https://polygon.technology/terms-of-use",
+                source_checked_on="2026-03-15",
+                confidence="high",
+                review_required=False,
+                valid_from="2024-01-23",
+            )
         )
 
     if re.search(r"\bbase\b", normalized) and "coinbase" not in normalized:
-        return OperatorOrigin(
-            platform="BASE",
-            service_scope="crypto",
-            operator_entity="Coinbase Technologies, Inc.",
-            operator_country="US",
-            source_url="https://docs.base.org/terms-of-service",
-            source_checked_on="2026-03-15",
-            confidence="medium",
-            review_required=False,
+        return _return_with_temporal_check(
+            OperatorOrigin(
+                platform="BASE",
+                service_scope="crypto",
+                operator_entity="Coinbase Technologies, Inc.",
+                operator_country="US",
+                source_url="https://docs.base.org/terms-of-service",
+                source_checked_on="2026-03-15",
+                confidence="medium",
+                review_required=False,
+                valid_from="2025-12-04",
+            )
         )
 
     if "filecoin" in normalized:
-        return OperatorOrigin(
-            platform="Filecoin",
-            service_scope="crypto",
-            operator_entity="Filecoin Foundation",
-            operator_country="US",
-            source_url="https://careers.fil.org/privacy-policy",
-            source_checked_on="2026-03-15",
-            confidence="medium",
-            review_required=False,
+        return _return_with_temporal_check(
+            OperatorOrigin(
+                platform="Filecoin",
+                service_scope="crypto",
+                operator_entity="Filecoin Foundation",
+                operator_country="US",
+                source_url="https://careers.fil.org/privacy-policy",
+                source_checked_on="2026-03-15",
+                confidence="medium",
+                review_required=False,
+                valid_from="2024-04-01",
+            )
         )
 
     if "binance" in normalized:
-        return OperatorOrigin(
-            platform="Binance",
-            service_scope="crypto",
-            operator_entity="Binance Spain, S.L. (Europe override for filing output)",
-            operator_country="ES",
-            source_url="https://www.binance.com/es/about-legal/local-terms",
-            source_checked_on="2026-03-15",
-            confidence="medium",
-            review_required=False,
+        return _return_with_temporal_check(
+            OperatorOrigin(
+                platform="Binance",
+                service_scope="crypto",
+                operator_entity="Binance Spain, S.L. (Europe override for filing output)",
+                operator_country="ES",
+                source_url="https://www.binance.com/es/about-legal/local-terms",
+                source_checked_on="2026-03-15",
+                confidence="medium",
+                review_required=False,
+                valid_from=None,  # Europe override verified 2026-03-15; exact entity change date unknown
+            )
         )
 
     if "gate.io" in normalized or normalized == "gate":
-        return OperatorOrigin(
-            platform="Gate.io",
-            service_scope="crypto",
-            operator_entity="Gate Technology Ltd",
-            operator_country="MT",
-            source_url="https://www.gate.com/en-eu/about-us",
-            source_checked_on="2026-03-15",
-            confidence="high",
-            review_required=False,
+        return _return_with_temporal_check(
+            OperatorOrigin(
+                platform="Gate.io",
+                service_scope="crypto",
+                operator_entity="Gate Technology Ltd",
+                operator_country="MT",
+                source_url="https://www.gate.com/en-eu/about-us",
+                source_checked_on="2026-03-15",
+                confidence="high",
+                review_required=False,
+                valid_from=None,  # Historical operator, exact start date unknown
+            )
         )
 
     if "kraken" in normalized:
-        return OperatorOrigin(
-            platform="Kraken",
-            service_scope="crypto",
-            operator_entity="Payward Ireland Limited / Payward Europe Solutions Limited",
-            operator_country="IE",
-            source_url="https://support.kraken.com/articles/where-is-kraken-licensed-or-regulated",
-            source_checked_on="2026-03-15",
-            confidence="high",
-            review_required=False,
+        return _return_with_temporal_check(
+            OperatorOrigin(
+                platform="Kraken",
+                service_scope="crypto",
+                operator_entity="Payward Ireland Limited / Payward Europe Solutions Limited",
+                operator_country="IE",
+                source_url="https://support.kraken.com/articles/where-is-kraken-licensed-or-regulated",
+                source_checked_on="2026-03-15",
+                confidence="high",
+                review_required=False,
+                valid_from=None,  # Historical operator, exact start date unknown
+            )
         )
 
-    return OperatorOrigin(
-        platform=platform,
-        service_scope="crypto",
-        operator_entity="UNKNOWN_OPERATOR_REVIEW_REQUIRED",
-        operator_country="UNKNOWN",
-        source_url="",
-        source_checked_on="2026-03-08",
-        confidence="low",
-        review_required=True,
+    return _return_with_temporal_check(
+        OperatorOrigin(
+            platform=platform,
+            service_scope="crypto",
+            operator_entity="UNKNOWN_OPERATOR_REVIEW_REQUIRED",
+            operator_country="UNKNOWN",
+            source_url="",
+            source_checked_on="2026-03-08",
+            confidence="low",
+            review_required=True,
+            valid_from="2026-03-08",  # Unknown platform - use source check date as valid_from
+        )
     )
 
 
@@ -1065,7 +1364,11 @@ def _parse_capital_gains_file(path: Path, skipped_assets: Counter[tuple[str, str
 
         wallet = row.get("Wallet Name", "").strip()
         platform = _normalize_platform_name(wallet)
-        operator_origin = resolve_operator_origin(platform, transaction_type="crypto_disposal")
+        operator_origin = resolve_operator_origin(
+            platform,
+            transaction_type="crypto_disposal",
+            transaction_date=disposal_date,
+        )
         notes = row.get("Notes", "").strip()
         review_required = operator_origin.review_required or "missing cost basis" in notes.lower()
         holding_period = row.get("Holding period", "").strip() or "Unknown"
@@ -1144,7 +1447,7 @@ def _parse_income_file(path: Path, skipped_assets: Counter[tuple[str, str]]) -> 
         else:
             transaction_type = "crypto_deposit"
 
-        operator_origin = resolve_operator_origin(platform, transaction_type=transaction_type)
+        operator_origin = resolve_operator_origin(platform, transaction_type=transaction_type, transaction_date=date)
 
         # Parse foreign tax if present in Koinly report (optional field)
         foreign_tax_eur = ZERO

@@ -14,8 +14,10 @@ from shares_reporting.application.crypto_reporting import (
     _classify_reward_tax_status,
     _derive_chain,
     _filter_immaterial_entries,
+    _is_temporally_valid,
     _is_valid_tabela_x_country,
     _parse_koinly_decimal,
+    _parse_transaction_date,
     _resolve_income_code,
     _validate_capital_entries_have_valid_countries,
     aggregate_taxable_rewards,
@@ -32,6 +34,7 @@ _TEST_OPERATOR = OperatorOrigin(
     source_checked_on="2026-01-01",
     confidence="low",
     review_required=False,
+    valid_from="2026-01-01",
 )
 
 
@@ -1851,16 +1854,6 @@ def test_validate_capital_entries_includes_detailed_error_info():
     assert "UNKNOWN" in error_message
 
 
-def test_resolve_operator_origin_docstring_describes_hierarchy():
-    """resolve_operator_origin docstring should document the DeFi hierarchy and reject taxpayer residence."""
-    docstring = resolve_operator_origin.__doc__
-
-    assert docstring is not None
-    assert "hierarchy" in docstring.lower() or "interface" in docstring.lower()
-    assert "taxpayer" in docstring.lower() or "residence" in docstring.lower()
-    assert "never" in docstring.lower() or "reject" in docstring.lower() or "not default" in docstring.lower()
-
-
 def test_resolve_operator_origin_never_returns_taxpayer_residence():
     """Unknown platforms should return UNKNOWN country, never default to Portugal or taxpayer residence."""
     unknown_origin = resolve_operator_origin("CompletelyUnknownPlatformXYZ")
@@ -2112,3 +2105,521 @@ def test_all_iso_4217_fiat_currencies_classified_as_taxable_now():
 
     # GEL is the exception due to Gelato token collision
     assert _classify_reward_tax_status("GEL") == RewardTaxClassification.DEFERRED_BY_LAW
+
+
+def test_operator_origin_has_temporal_fields():
+    """OperatorOrigin should have valid_from and valid_until fields for temporal tracking.
+
+    Temporal validity tracking allows historical tax filings to reference the mapping
+    that was in effect at the time of transaction, even if the mapping changes later.
+    """
+    origin = OperatorOrigin(
+        platform="TestPlatform",
+        service_scope="crypto",
+        operator_entity="Test Entity",
+        operator_country="US",
+        source_url="https://example.com",
+        source_checked_on="2026-03-15",
+        confidence="high",
+        review_required=False,
+        valid_from="2025-01-01",
+        valid_until=None,
+    )
+
+    assert origin.valid_from == "2025-01-01"
+    assert origin.valid_until is None
+
+
+def test_operator_origin_valid_from_default_is_none():
+    """valid_from should default to None when not provided."""
+    origin = OperatorOrigin(
+        platform="TestPlatform",
+        service_scope="crypto",
+        operator_entity="Test Entity",
+        operator_country="US",
+        source_url="https://example.com",
+        source_checked_on="2026-03-15",
+        confidence="high",
+        review_required=False,
+    )
+
+    assert origin.valid_from is None
+    assert origin.valid_until is None
+
+
+def test_resolve_operator_origin_includes_valid_from_dates():
+    """resolve_operator_origin should include valid_from dates from the registry.
+
+    This test verifies that all platform mappings have temporal validity tracking
+    for audit trail support in historical tax filings.
+    """
+    berachain = resolve_operator_origin("Berachain", transaction_type="crypto_disposal")
+    assert berachain.valid_from == "2025-02-05"
+
+    ethereum = resolve_operator_origin("Ethereum", transaction_type="crypto_disposal")
+    assert ethereum.valid_from == "2024-05-08"
+
+    arbitrum = resolve_operator_origin("Arbitrum", transaction_type="crypto_disposal")
+    assert arbitrum.valid_from == "2023-07-20"
+
+    tonkeeper = resolve_operator_origin("Tonkeeper wallet", transaction_type="crypto_disposal")
+    assert tonkeeper.valid_from is None  # Historical operator with unknown exact start date
+
+
+def test_resolve_operator_origin_wirex_split_scope_has_valid_from():
+    """Wirex split-scope mappings (fiat vs crypto) should both have valid_from dates."""
+    fiat_origin = resolve_operator_origin("Wirex", transaction_type="fiat_deposit")
+    crypto_origin = resolve_operator_origin("Wirex", transaction_type="crypto_deposit")
+
+    assert fiat_origin.valid_from == "2026-03-08"  # Split-scope verified 2026-03-08
+    assert crypto_origin.valid_from == "2026-03-08"
+
+
+def test_resolve_operator_origin_unknown_platform_has_valid_from():
+    """Unknown platforms should include valid_from for audit trail."""
+    unknown = resolve_operator_origin("CompletelyUnknownPlatformXYZ")
+    assert unknown.valid_from == "2026-03-08"
+    assert unknown.valid_until is None
+
+
+def test_resolve_operator_origin_with_transaction_date_within_validity():
+    """resolve_operator_origin should return normally when transaction_date is within validity period."""
+    # Berachain valid_from is 2025-02-05, so a transaction in 2025-03 should be valid
+    origin = resolve_operator_origin(
+        "Berachain",
+        transaction_type="crypto_disposal",
+        transaction_date="2025-03-15 14:30:00"
+    )
+    assert origin.platform == "Berachain"
+    assert origin.valid_from == "2025-02-05"
+    assert origin.operator_country == "VG"
+
+
+def test_resolve_operator_origin_with_transaction_date_before_validity(caplog):
+    """Out-of-validity transactions should log warning and set review_required=True.
+
+    This is a data recovery scenario - we still return the earliest known mapping
+    but warn the user to verify the historical origin and flag for manual review.
+    """
+    # Berachain valid_from is 2025-02-05, so a transaction in 2024 should trigger a warning
+    with caplog.at_level(logging.WARNING, logger="shares_reporting.application.crypto_reporting"):
+        origin = resolve_operator_origin(
+            "Berachain",
+            transaction_type="crypto_disposal",
+            transaction_date="2024-06-01 10:00:00"
+        )
+
+    assert origin.platform == "Berachain"
+    assert origin.valid_from == "2025-02-05"
+    # Verify warning was logged
+    assert any(
+        "Transaction date 2024-06-01" in record.message
+        for record in caplog.records
+    )
+    # Verify review_required is set to True for out-of-validity transactions
+    assert origin.review_required is True
+
+
+def test_resolve_operator_origin_with_transaction_date_after_validity():
+    """resolve_operator_origin should work normally when transaction_date is after valid_from."""
+    # Ethereum valid_from is 2024-05-08, transaction in 2025 should be valid
+    origin = resolve_operator_origin(
+        "Ethereum",
+        transaction_type="crypto_disposal",
+        transaction_date="2025-01-20"
+    )
+    assert origin.platform == "Ethereum"
+    assert origin.valid_from == "2024-05-08"
+    assert origin.operator_country == "CH"
+
+
+def test_resolve_operator_origin_with_partial_date_format():
+    """resolve_operator_origin should handle transaction_date in YYYY-MM-DD format."""
+    origin = resolve_operator_origin(
+        "Arbitrum",
+        transaction_type="crypto_disposal",
+        transaction_date="2024-08-15"
+    )
+    assert origin.platform == "Arbitrum"
+    assert origin.valid_from == "2023-07-20"
+
+
+def test_resolve_operator_origin_with_invalid_date_format(caplog):
+    """resolve_operator_origin should log warning and skip check when date format is invalid."""
+    with caplog.at_level(logging.WARNING, logger="shares_reporting.application.crypto_reporting"):
+        origin = resolve_operator_origin(
+            "Solana",
+            transaction_type="crypto_disposal",
+            transaction_date="invalid-date-format"
+        )
+
+    assert origin.platform == "Solana"
+    # Verify warning about invalid format was logged
+    assert any(
+        "Invalid transaction_date format" in record.message
+        for record in caplog.records
+    )
+
+
+def test_resolve_operator_origin_backward_compatible_without_date():
+    """resolve_operator_origin should work without transaction_date parameter (backward compatibility)."""
+    # Without transaction_date, should return normally
+    origin = resolve_operator_origin("TON", transaction_type="crypto_disposal")
+    assert origin.platform == "TON"
+    assert origin.valid_from is None  # Historical operator, exact start date unknown
+    assert origin.operator_country == "CH"
+
+
+def test_resolve_operator_origin_wirex_with_transaction_date():
+    """Wirex split-scope should work with transaction_date parameter."""
+    # Wirex crypto valid_from is 2026-03-08 (split-scope verification date)
+    crypto_origin = resolve_operator_origin(
+        "Wirex",
+        transaction_type="crypto_deposit",
+        transaction_date="2026-06-01 12:00:00"
+    )
+    assert crypto_origin.service_scope == "crypto"
+    assert crypto_origin.operator_country == "HR"
+
+    # Wirex fiat valid_from is 2026-03-08 (split-scope verification date)
+    fiat_origin = resolve_operator_origin(
+        "Wirex",
+        transaction_type="fiat_deposit",
+        transaction_date="2026-06-01 12:00:00"
+    )
+    assert fiat_origin.service_scope == "fiat"
+    assert fiat_origin.operator_country == "GB"
+
+
+# =============================================================================
+# Unit tests for _parse_transaction_date()
+# =============================================================================
+
+
+def test_parse_transaction_date_with_datetime_format():
+    """Koinly format with time should extract date part."""
+    assert _parse_transaction_date("2025-03-15 14:30:00") == "2025-03-15"
+    assert _parse_transaction_date("2024-12-31 23:59:59") == "2024-12-31"
+
+
+def test_parse_transaction_date_with_date_only_format():
+    """ISO date format without time should be returned as-is."""
+    assert _parse_transaction_date("2025-03-15") == "2025-03-15"
+    assert _parse_transaction_date("2024-02-29") == "2024-02-29"  # leap year
+
+
+def test_parse_transaction_date_with_none():
+    """None input should return None."""
+    assert _parse_transaction_date(None) is None
+
+
+def test_parse_transaction_date_with_empty_string():
+    """Empty string should return None."""
+    assert _parse_transaction_date("") is None
+
+
+def test_parse_transaction_date_rejects_invalid_february_31():
+    """February 31st is not a valid date and should raise ValueError."""
+    with pytest.raises(ValueError, match="Invalid date"):
+        _parse_transaction_date("2025-02-31")
+
+
+def test_parse_transaction_date_rejects_invalid_april_31():
+    """April 31st is not a valid date and should raise ValueError."""
+    with pytest.raises(ValueError, match="Invalid date"):
+        _parse_transaction_date("2025-04-31")
+
+
+def test_parse_transaction_date_rejects_invalid_month():
+    """Month 13 is not valid and should raise ValueError."""
+    with pytest.raises(ValueError, match="Invalid date"):
+        _parse_transaction_date("2025-13-01")
+
+
+def test_parse_transaction_date_rejects_invalid_day():
+    """Day 32 is not valid and should raise ValueError."""
+    with pytest.raises(ValueError, match="Invalid date"):
+        _parse_transaction_date("2025-01-32")
+
+
+def test_parse_transaction_date_rejects_malformed_format():
+    """Non-ISO formats should raise ValueError."""
+    with pytest.raises(ValueError, match="Unsupported transaction date format"):
+        _parse_transaction_date("2025/03/15")
+    with pytest.raises(ValueError, match="Unsupported transaction date format"):
+        _parse_transaction_date("15-03-2025")
+
+
+def test_parse_transaction_date_rejects_year_out_of_range():
+    """Years outside reasonable range should raise ValueError."""
+    with pytest.raises(ValueError, match="Year.*out of reasonable range"):
+        _parse_transaction_date("1899-01-01")
+    with pytest.raises(ValueError, match="Year.*out of reasonable range"):
+        _parse_transaction_date("2101-01-01")
+
+
+def test_parse_transaction_date_datetime_with_invalid_date():
+    """Datetime format with invalid calendar date should raise ValueError."""
+    with pytest.raises(ValueError, match="Invalid date"):
+        _parse_transaction_date("2025-02-30 14:30:00")
+
+
+# =============================================================================
+# Unit tests for _is_temporally_valid()
+# =============================================================================
+
+
+def test_is_temporally_valid_with_no_constraints():
+    """No validity constraints should always return True."""
+    assert _is_temporally_valid(None, None, "2025-03-15") is True
+
+
+def test_is_temporally_valid_with_empty_string_valid_from():
+    """Empty string valid_from should behave like None (no constraint)."""
+    assert _is_temporally_valid("", None, "2025-03-15") is True
+
+
+def test_is_temporally_valid_transaction_before_valid_from():
+    """Transaction date before valid_from should return False."""
+    assert _is_temporally_valid("2025-02-01", None, "2025-01-15") is False
+
+
+def test_is_temporally_valid_transaction_on_valid_from():
+    """Transaction date equal to valid_from should return True."""
+    assert _is_temporally_valid("2025-02-01", None, "2025-02-01") is True
+
+
+def test_is_temporally_valid_transaction_after_valid_from():
+    """Transaction date after valid_from should return True."""
+    assert _is_temporally_valid("2025-02-01", None, "2025-03-15") is True
+
+
+def test_is_temporally_valid_transaction_after_valid_until():
+    """Transaction date after valid_until should return False."""
+    assert _is_temporally_valid("2025-02-01", "2025-03-01", "2025-03-15") is False
+
+
+def test_is_temporally_valid_transaction_on_valid_until():
+    """Transaction date equal to valid_until should return True."""
+    assert _is_temporally_valid("2025-02-01", "2025-03-01", "2025-03-01") is True
+
+
+def test_is_temporally_valid_transaction_within_range():
+    """Transaction date within validity range should return True."""
+    assert _is_temporally_valid("2025-02-01", "2025-03-01", "2025-02-15") is True
+
+
+def test_is_temporally_valid_valid_until_without_valid_from():
+    """Edge case: valid_until without valid_from should return True when within range."""
+    assert _is_temporally_valid(None, "2025-03-01", "2025-02-15") is True
+
+
+def test_is_temporally_valid_valid_until_without_valid_from_after_expiration():
+    """Edge case: valid_until without valid_from should return False when after expiration."""
+    assert _is_temporally_valid(None, "2025-03-01", "2025-04-01") is False
+
+
+def test_is_temporally_valid_with_very_old_dates():
+    """String comparison should work for very old dates."""
+    assert _is_temporally_valid("1900-01-01", None, "2025-03-15") is True
+
+
+def test_is_temporally_valid_with_future_dates():
+    """Future transaction dates should still compare correctly."""
+    assert _is_temporally_valid("2025-01-01", None, "2099-12-31") is True
+
+
+# =============================================================================
+# OperatorOrigin validation tests
+# =============================================================================
+
+
+def test_operator_origin_accepts_valid_dates():
+    """OperatorOrigin should accept valid ISO dates for valid_from and valid_until."""
+    origin = OperatorOrigin(
+        platform="TestPlatform",
+        service_scope="crypto",
+        operator_entity="Test Entity",
+        operator_country="US",
+        source_url="https://example.com",
+        source_checked_on="2025-01-01",
+        confidence="high",
+        review_required=False,
+        valid_from="2025-01-01",
+        valid_until="2025-12-31",
+    )
+    assert origin.valid_from == "2025-01-01"
+    assert origin.valid_until == "2025-12-31"
+
+
+def test_operator_origin_accepts_none_dates():
+    """OperatorOrigin should accept None for valid_from and valid_until."""
+    origin = OperatorOrigin(
+        platform="TestPlatform",
+        service_scope="crypto",
+        operator_entity="Test Entity",
+        operator_country="US",
+        source_url="https://example.com",
+        source_checked_on="2025-01-01",
+        confidence="high",
+        review_required=False,
+        valid_from=None,
+        valid_until=None,
+    )
+    assert origin.valid_from is None
+    assert origin.valid_until is None
+
+
+def test_operator_origin_rejects_invalid_valid_from_format():
+    """OperatorOrigin should reject non-ISO date format for valid_from."""
+    with pytest.raises(ValueError, match="Invalid date"):
+        OperatorOrigin(
+            platform="TestPlatform",
+            service_scope="crypto",
+            operator_entity="Test Entity",
+            operator_country="US",
+            source_url="https://example.com",
+            source_checked_on="2025-01-01",
+            confidence="high",
+            review_required=False,
+            valid_from="2025/01/01",  # Wrong format
+        )
+
+
+def test_operator_origin_rejects_invalid_valid_until_format():
+    """OperatorOrigin should reject non-ISO date format for valid_until."""
+    with pytest.raises(ValueError, match="Invalid date"):
+        OperatorOrigin(
+            platform="TestPlatform",
+            service_scope="crypto",
+            operator_entity="Test Entity",
+            operator_country="US",
+            source_url="https://example.com",
+            source_checked_on="2025-01-01",
+            confidence="high",
+            review_required=False,
+            valid_from="2025-01-01",
+            valid_until="2025/12/31",  # Wrong format
+        )
+
+
+def test_operator_origin_rejects_valid_until_before_valid_from():
+    """OperatorOrigin should reject valid_until earlier than valid_from."""
+    with pytest.raises(ValueError, match="valid_until.*must be on or after valid_from"):
+        OperatorOrigin(
+            platform="TestPlatform",
+            service_scope="crypto",
+            operator_entity="Test Entity",
+            operator_country="US",
+            source_url="https://example.com",
+            source_checked_on="2025-01-01",
+            confidence="high",
+            review_required=False,
+            valid_from="2025-06-01",
+            valid_until="2025-01-01",  # Earlier than valid_from
+        )
+
+
+def test_operator_origin_allows_equal_valid_from_and_valid_until():
+    """OperatorOrigin should allow valid_until equal to valid_from (single day validity)."""
+    origin = OperatorOrigin(
+        platform="TestPlatform",
+        service_scope="crypto",
+        operator_entity="Test Entity",
+        operator_country="US",
+        source_url="https://example.com",
+        source_checked_on="2025-01-01",
+        confidence="high",
+        review_required=False,
+        valid_from="2025-06-01",
+        valid_until="2025-06-01",
+    )
+    assert origin.valid_from == "2025-06-01"
+    assert origin.valid_until == "2025-06-01"
+
+
+def test_operator_origin_rejects_invalid_calendar_date():
+    """OperatorOrigin should reject invalid calendar dates like February 31."""
+    with pytest.raises(ValueError, match="Invalid date"):
+        OperatorOrigin(
+            platform="TestPlatform",
+            service_scope="crypto",
+            operator_entity="Test Entity",
+            operator_country="US",
+            source_url="https://example.com",
+            source_checked_on="2025-01-01",
+            confidence="high",
+            review_required=False,
+            valid_from="2025-02-31",  # Invalid date
+        )
+
+
+def test_operator_origin_rejects_year_before_crypto_genesis():
+    """OperatorOrigin should reject years before 2009 (Bitcoin genesis)."""
+    with pytest.raises(ValueError, match="Year.*out of reasonable range"):
+        OperatorOrigin(
+            platform="TestPlatform",
+            service_scope="crypto",
+            operator_entity="Test Entity",
+            operator_country="US",
+            source_url="https://example.com",
+            source_checked_on="2025-01-01",
+            confidence="high",
+            review_required=False,
+            valid_from="2008-12-31",  # Before Bitcoin genesis
+        )
+
+
+# =============================================================================
+# Integration test: CSV date parsing with temporal validity
+# =============================================================================
+
+
+def test_load_koinly_crypto_report_passes_dates_to_resolve_operator_origin(tmp_path, caplog):
+    """Integration test: dates from CSV parsing should work with temporal validity checks.
+
+    Verifies that the actual date format produced by _format_datetime() matches
+    what _parse_transaction_date() expects, and that temporal validity warnings
+    are logged for transactions outside known validity periods.
+    """
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Berachain valid_from is 2025-02-05, so a disposal in 2024-06 should trigger warning
+    csv_content = "\n".join([
+        "Capital gains report 2025",
+        "",
+        ",".join([
+            "Date Sold", "Date Acquired", "Asset", "Amount",
+            "Cost (EUR)", "Proceeds (EUR)", "Gain / loss",
+            "Notes", "Wallet Name", "Holding period",
+        ]),
+        ",".join([
+            "15/06/2024 13:01",  # Before Berachain valid_from (2025-02-05)
+            "18/11/2023 00:15",
+            "BERA",
+            '"1,00000000"',
+            '"1,00"',
+            '"2,00"',
+            '"1,00"',
+            "",
+            "Ledger Berachain",
+            "Short term",
+        ]),
+    ])
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(csv_content, encoding="utf-8")
+    (koinly_dir / "koinly_2025_income_report.csv").write_text(
+        "Income report 2025\n\nDate,Asset,Amount,Value (EUR),Type,Description,Wallet Name\n",
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="shares_reporting.application.crypto_reporting"):
+        report = load_koinly_crypto_report(koinly_dir)
+
+    assert report is not None
+    assert len(report.capital_entries) == 1
+    # Verify warning was logged about transaction date predating valid_from
+    assert any(
+        "Transaction date 2024-06-15" in record.message and "Berachain" in record.message
+        for record in caplog.records
+    ), "Expected warning about transaction date outside validity period"

@@ -44,6 +44,19 @@ Use this source-country fallback order for DeFi rows:
 - protocol / foundation / sponsoring legal entity
 - validator operator for identifiable native staking
 
+**For DEX (Decentralized Exchange) transactions specifically:**
+
+The country determination follows the same hierarchy, with these clarifications:
+
+1. **Interface legal entity**: If the DEX has a frontend UI with terms of service (e.g., Uniswap app interface), use that entity.
+2. **Protocol / foundation**: For pure protocol interactions, use the chain's foundation entity (e.g., Ethereum Foundation → Switzerland for Uniswap on Ethereum).
+3. **No separate DEX mapping required**: A DEX like Uniswap running on Ethereum uses the Ethereum chain mapping (Switzerland via Ethereum Foundation), unless the DEX has its own explicit legal entity.
+
+**Examples:**
+- Uniswap on Ethereum → Switzerland (via Ethereum Foundation)
+- PancakeSwap on BNB Chain → Spain (via BNB repository override for EEA filing)
+- Pure protocol interaction → Use chain origin from `operator_chain_origin_registry.md`
+
 **CRG-007**
 The final Crypto sheet must be IRS-ready: filing-facing rows must not be missing mandatory IRS fields, and broad placeholders such as `Multiple jurisdictions` must not appear when a repository mapping policy exists.
 

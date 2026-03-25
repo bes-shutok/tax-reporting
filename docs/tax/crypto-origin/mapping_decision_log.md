@@ -170,3 +170,19 @@ Reasoning record for chain/operator origin mappings used by this repository.
   - The user explicitly asked that `Multiple jurisdictions` not appear in the export and that the Europe-relevant choice be hardcoded.
   - The repository therefore records `Spain` as a Europe-facing repository override for filing output.
   - This is intentionally documented as a local override, not as a claim that upstream Binance or BNB Chain is globally domiciled in Spain.
+
+### CMD-018: Wirex Split-Scope (GB vs HR)
+
+- Mapping: `Wirex (fiat) -> GB`
+- Mapping: `Wirex (crypto) -> HR`
+- valid_from: `2026-03-08`
+- Source basis:
+  - Wirex account terms (https://wirexapp.com/legal) - verified 2026-03-08
+- Reasoning:
+  - Wirex splits services by legal entity: Wirex Limited (UK) for fiat, Wirex Digital (Croatia) for crypto.
+  - Portuguese tax rules require using the entity that actually provides the service to the user.
+  - For EUR/USD fiat rewards and deposits: use Wirex Limited (GB) as the source country.
+  - For crypto rewards and deposits: use Wirex Digital (HR) as the source country.
+  - The code implementation uses the `transaction_type` parameter to disambiguate between fiat and crypto transactions.
+  - The valid_from date reflects when the split-scope mapping was verified from source terms, not Wirex's founding date.
+- See also: `entity_selection_criteria.md` for the service-scope split hierarchy.

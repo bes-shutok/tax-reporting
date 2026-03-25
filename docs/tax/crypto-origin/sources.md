@@ -90,6 +90,11 @@ Retrieved on: 2026-03-15
 - Issuing date: undated
 - Purpose: Gate Europe / Malta extract for Gate.io EEA mapping.
 
+17. Wirex account terms
+- URL: https://wirexapp.com/legal
+- Issuing date: verified 2026-03-08
+- Purpose: Wirex service-scope split documentation (Wirex Limited GB for fiat, Wirex Digital HR for crypto).
+
 ## Public-record extracts
 
 1. `public/mantle_public_record_2024-03-15.md`
