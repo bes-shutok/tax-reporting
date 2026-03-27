@@ -33,6 +33,7 @@ This file provides guidance to coding agents when working with code in this repo
 - Chain derivation must use deterministic normalization rules and validate against trusted sources in `docs/tax/crypto-origin/`.
 - Wallet labels are discovery hints only; final chain/country mappings come from archived operator origin documents.
 - When wallet labels don't allow reasonable chain derivation, use `Unknown` explicitly rather than guessing from asset symbols.
+- When adding operator mappings with temporal validity: use `service_start_date` for when the platform started offering this service (used for transaction matching), use `valid_from` for when this specific mapping was verified from source documents (used for audit trail), set `service_start_date` before `valid_from` when both are known, and for platforms with unknown verification dates, set `service_start_date` and leave `valid_from` as null.
 
 ### 3. Repository Constraints
 

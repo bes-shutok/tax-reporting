@@ -11,6 +11,7 @@ from shares_reporting.application.crypto_reporting import (
     OperatorOrigin,
     RewardTaxClassification,
     _aggregate_capital_entries,
+    _build_swap_lookup,
     _classify_reward_tax_status,
     _derive_chain,
     _filter_immaterial_entries,
@@ -52,6 +53,7 @@ def _make_entry(  # noqa: PLR0913
     chain: str = "ByBit",
     review_required: bool = False,
     notes: str = "",
+    token_swap_history: str = "",
     operator_origin: OperatorOrigin = _TEST_OPERATOR,
 ) -> CryptoCapitalGainEntry:
     return CryptoCapitalGainEntry(
@@ -70,6 +72,7 @@ def _make_entry(  # noqa: PLR0913
         annex_hint="J",
         review_required=review_required,
         notes=notes,
+        token_swap_history=token_swap_history,
     )
 
 
@@ -1050,10 +1053,10 @@ def test_resolve_operator_origin_case_insensitive():
     assert wirex_crypto.platform == "Wirex"
     assert wirex_crypto_lower.platform == "Wirex"
     assert wirex_crypto_mixed.platform == "Wirex"
-    # All require review
-    assert wirex_crypto.review_required is True
-    assert wirex_crypto_lower.review_required is True
-    assert wirex_crypto_mixed.review_required is True
+    # Wirex no longer requires review (service_start_date enables historical matching)
+    assert wirex_crypto.review_required is False
+    assert wirex_crypto_lower.review_required is False
+    assert wirex_crypto_mixed.review_required is False
     # All have the same operator entity (crypto scope)
     assert wirex_crypto.operator_entity == wirex_crypto_lower.operator_entity
     assert wirex_crypto.operator_entity == wirex_crypto_mixed.operator_entity
@@ -1097,6 +1100,101 @@ def test_filter_boundary_values_around_threshold():
     assert Decimal("-0.99") not in gains
     assert Decimal("-1.00") in gains
     assert Decimal("-1.01") in gains
+
+
+def test_missing_cost_basis_with_zero_proceeds_no_review(tmp_path):
+    """Missing cost basis with zero proceeds (no tax impact) should NOT require review."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    header = ",".join(
+        [
+            "Date Sold",
+            "Date Acquired",
+            "Asset",
+            "Amount",
+            "Cost (EUR)",
+            "Proceeds (EUR)",
+            "Gain / loss",
+            "Notes",
+            "Wallet Name",
+            "Holding period",
+        ]
+    )
+
+    # Row with "missing cost basis" but truly zero values (no tax impact at all)
+    # All zero - this is a false positive that should be suppressed
+    all_zero_row = ",".join(
+        [
+            "20/01/2025 10:00",
+            "01/06/2024 00:00",
+            "BTC",
+            '"0,01000000"',
+            '"0,00"',  # Zero cost
+            '"0,00"',  # Zero proceeds
+            '"0,00"',  # Zero gain
+            '"Missing cost basis"',  # Notes flag - should be suppressed for truly zero entries
+            "Kraken",
+            "Short term",
+        ]
+    )
+
+    # Row with "missing cost basis" and non-zero proceeds (tax impact - should require review)
+    non_zero_proceeds_row = ",".join(
+        [
+            "20/01/2025 11:00",
+            "01/06/2024 00:00",
+            "ETH",
+            '"0,10000000"',
+            '"0,00"',
+            '"100,00"',  # Non-zero proceeds - tax impact
+            '"100,00"',
+            '"Missing cost basis"',  # Notes flag
+            "Kraken",
+            "Short term",
+        ]
+    )
+
+    # Row with "missing cost basis" and non-zero cost/loss (tax impact - should require review)
+    loss_with_missing_basis_row = ",".join(
+        [
+            "20/01/2025 12:00",
+            "01/06/2024 00:00",
+            "SOL",
+            '"0,05000000"',
+            '"50,00"',  # Non-zero cost (loss scenario)
+            '"0,00"',  # Zero proceeds but loss has tax impact
+            '"-50,00"',
+            '"Missing cost basis"',  # Notes flag - loss cannot be verified
+            "Kraken",
+            "Short term",
+        ]
+    )
+
+    csv_content = "\n".join(
+        ["Capital gains report 2025", "", header, all_zero_row, non_zero_proceeds_row, loss_with_missing_basis_row]
+    )
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(csv_content, encoding="utf-8")
+
+    report = load_koinly_crypto_report(koinly_dir)
+
+    assert report is not None
+    # All-zero row should be filtered out, others pass
+    assert len(report.capital_entries) == 2
+
+    # Find the ETH entry (non-zero proceeds, gain)
+    eth_entry = next(e for e in report.capital_entries if e.asset == "ETH")
+    assert eth_entry.proceeds_eur == Decimal("100")
+    assert eth_entry.review_required is True, "Non-zero proceeds with missing cost basis SHOULD require review"
+
+    # Find the SOL entry (zero proceeds but has loss - tax impact)
+    sol_entry = next(e for e in report.capital_entries if e.asset == "SOL")
+    assert sol_entry.proceeds_eur == Decimal("0")
+    assert sol_entry.cost_eur == Decimal("50")
+    assert sol_entry.gain_loss_eur == Decimal("-50")
+    assert sol_entry.review_required is True, (
+        "Zero proceeds with non-zero cost/loss and missing cost basis SHOULD require review (loss cannot be verified)"
+    )
 
 
 # --- Reward tax classification tests ---
@@ -2020,6 +2118,43 @@ def test_normalize_platform_name_preserves_bybit_prefixed_wallets():
     assert _normalize_platform_name("ByBit Savings") == "ByBit Savings"
 
 
+def test_normalize_asset_ticker_cyrillic_to_latin():
+    """Asset tickers with Cyrillic characters should be normalized to Latin equivalents.
+
+    This test verifies the fix for the WBТC issue where the 'T' was a Cyrillic
+    character (U+0422) instead of Latin 'T'.
+    """
+    from shares_reporting.application.crypto_reporting import _normalize_asset_ticker
+
+    # Cyrillic Т (U+0422) -> Latin T
+    assert _normalize_asset_ticker("WBТC") == "WBTC"
+    assert _normalize_asset_ticker("BТC") == "BTC"
+    # Multiple Cyrillic characters
+    assert _normalize_asset_ticker("ТЕSТ") == "TEST"
+
+
+def test_normalize_asset_ticker_unicode_normalization():
+    """Asset tickers should be normalized to canonical composed unicode form."""
+    from shares_reporting.application.crypto_reporting import _normalize_asset_ticker
+
+    # Unicode normalization handles various unicode equivalence issues
+    assert _normalize_asset_ticker("BTC") == "BTC"
+    assert _normalize_asset_ticker("  BTC  ") == "BTC"  # Whitespace trimming
+    assert _normalize_asset_ticker("BTC\t") == "BTC"
+
+
+def test_normalize_asset_ticker_preserves_valid_tickers():
+    """Valid asset tickers should be preserved unchanged."""
+    from shares_reporting.application.crypto_reporting import _normalize_asset_ticker
+
+    assert _normalize_asset_ticker("BTC") == "BTC"
+    assert _normalize_asset_ticker("ETH") == "ETH"
+    assert _normalize_asset_ticker("SUI") == "SUI"
+    assert _normalize_asset_ticker("HASUI") == "HASUI"
+    assert _normalize_asset_ticker("USDC") == "USDC"
+    assert _normalize_asset_ticker("USDT") == "USDT"
+
+
 def test_wirex_fiat_reward_gets_gb_country_code():
     """Wirex fiat-denominated rewards should resolve to GB (Wirex Limited), not HR (Wirex Digital).
 
@@ -2152,26 +2287,38 @@ def test_resolve_operator_origin_includes_valid_from_dates():
 
     This test verifies that all platform mappings have temporal validity tracking
     for audit trail support in historical tax filings.
+
+    Note: valid_from is the verification date (when mapping was verified from source
+    documents), not the launch date (service_start_date).
     """
     berachain = resolve_operator_origin("Berachain", transaction_type="crypto_disposal")
     assert berachain.valid_from == "2025-02-05"
 
     ethereum = resolve_operator_origin("Ethereum", transaction_type="crypto_disposal")
-    assert ethereum.valid_from == "2024-05-08"
+    assert ethereum.valid_from == "2026-03-15"  # Source verification date
 
     arbitrum = resolve_operator_origin("Arbitrum", transaction_type="crypto_disposal")
-    assert arbitrum.valid_from == "2023-07-20"
+    assert arbitrum.valid_from == "2026-03-15"  # Source verification date
 
     tonkeeper = resolve_operator_origin("Tonkeeper wallet", transaction_type="crypto_disposal")
-    assert tonkeeper.valid_from is None  # Historical operator with unknown exact start date
+    assert tonkeeper.valid_from is None  # Historical operator with unknown verification date
 
 
-def test_resolve_operator_origin_wirex_split_scope_has_valid_from():
-    """Wirex split-scope mappings (fiat vs crypto) should both have valid_from dates."""
+def test_resolve_operator_origin_wirex_split_scope_uses_service_start_date():
+    """Wirex split-scope mappings use founding date as service_start_date.
+
+    Per CMD-021 (updated), Wirex uses the approximate founding date (2015-01-01) as
+    service_start_date to allow legitimate historical transactions to be auto-classified.
+    The valid_from field (2026-03-08) preserves the GB/HR split-scope verification date
+    for audit trail.
+    """
     fiat_origin = resolve_operator_origin("Wirex", transaction_type="fiat_deposit")
     crypto_origin = resolve_operator_origin("Wirex", transaction_type="crypto_deposit")
 
-    assert fiat_origin.valid_from == "2026-03-08"  # Split-scope verified 2026-03-08
+    assert fiat_origin.service_start_date == "2015-01-01"  # Approximate founding date
+    assert crypto_origin.service_start_date == "2015-01-01"
+    # valid_from preserves the verification date for audit trail
+    assert fiat_origin.valid_from == "2026-03-08"
     assert crypto_origin.valid_from == "2026-03-08"
 
 
@@ -2186,9 +2333,7 @@ def test_resolve_operator_origin_with_transaction_date_within_validity():
     """resolve_operator_origin should return normally when transaction_date is within validity period."""
     # Berachain valid_from is 2025-02-05, so a transaction in 2025-03 should be valid
     origin = resolve_operator_origin(
-        "Berachain",
-        transaction_type="crypto_disposal",
-        transaction_date="2025-03-15 14:30:00"
+        "Berachain", transaction_type="crypto_disposal", transaction_date="2025-03-15 14:30:00"
     )
     assert origin.platform == "Berachain"
     assert origin.valid_from == "2025-02-05"
@@ -2204,61 +2349,48 @@ def test_resolve_operator_origin_with_transaction_date_before_validity(caplog):
     # Berachain valid_from is 2025-02-05, so a transaction in 2024 should trigger a warning
     with caplog.at_level(logging.WARNING, logger="shares_reporting.application.crypto_reporting"):
         origin = resolve_operator_origin(
-            "Berachain",
-            transaction_type="crypto_disposal",
-            transaction_date="2024-06-01 10:00:00"
+            "Berachain", transaction_type="crypto_disposal", transaction_date="2024-06-01 10:00:00"
         )
 
     assert origin.platform == "Berachain"
     assert origin.valid_from == "2025-02-05"
     # Verify warning was logged
-    assert any(
-        "Transaction date 2024-06-01" in record.message
-        for record in caplog.records
-    )
+    assert any("Transaction date 2024-06-01" in record.message for record in caplog.records)
     # Verify review_required is set to True for out-of-validity transactions
     assert origin.review_required is True
 
 
-def test_resolve_operator_origin_with_transaction_date_after_validity():
-    """resolve_operator_origin should work normally when transaction_date is after valid_from."""
-    # Ethereum valid_from is 2024-05-08, transaction in 2025 should be valid
-    origin = resolve_operator_origin(
-        "Ethereum",
-        transaction_type="crypto_disposal",
-        transaction_date="2025-01-20"
-    )
+def test_resolve_operator_origin_with_transaction_date_after_service_start():
+    """resolve_operator_origin should work normally when transaction_date is after service_start_date."""
+    # Ethereum service_start_date is 2015-07-30 (launch), valid_from is 2026-03-15 (verification)
+    # Transaction in 2025 is after service_start_date, so no review required
+    # valid_from is for audit trail only, not for transaction matching
+    origin = resolve_operator_origin("Ethereum", transaction_type="crypto_disposal", transaction_date="2025-01-20")
     assert origin.platform == "Ethereum"
-    assert origin.valid_from == "2024-05-08"
+    assert origin.valid_from == "2026-03-15"  # Verification date (audit trail only)
+    assert origin.review_required is False  # Transaction after service_start_date
     assert origin.operator_country == "CH"
 
 
 def test_resolve_operator_origin_with_partial_date_format():
     """resolve_operator_origin should handle transaction_date in YYYY-MM-DD format."""
-    origin = resolve_operator_origin(
-        "Arbitrum",
-        transaction_type="crypto_disposal",
-        transaction_date="2024-08-15"
-    )
+    origin = resolve_operator_origin("Arbitrum", transaction_type="crypto_disposal", transaction_date="2024-08-15")
     assert origin.platform == "Arbitrum"
-    assert origin.valid_from == "2023-07-20"
+    assert origin.valid_from == "2026-03-15"  # Source verification date (audit trail only)
+    # Transaction in 2024 is after service_start_date (2021-08-31), so no review required
+    assert origin.review_required is False
 
 
 def test_resolve_operator_origin_with_invalid_date_format(caplog):
     """resolve_operator_origin should log warning and skip check when date format is invalid."""
     with caplog.at_level(logging.WARNING, logger="shares_reporting.application.crypto_reporting"):
         origin = resolve_operator_origin(
-            "Solana",
-            transaction_type="crypto_disposal",
-            transaction_date="invalid-date-format"
+            "Solana", transaction_type="crypto_disposal", transaction_date="invalid-date-format"
         )
 
     assert origin.platform == "Solana"
     # Verify warning about invalid format was logged
-    assert any(
-        "Invalid transaction_date format" in record.message
-        for record in caplog.records
-    )
+    assert any("Invalid transaction_date format" in record.message for record in caplog.records)
 
 
 def test_resolve_operator_origin_backward_compatible_without_date():
@@ -2274,21 +2406,74 @@ def test_resolve_operator_origin_wirex_with_transaction_date():
     """Wirex split-scope should work with transaction_date parameter."""
     # Wirex crypto valid_from is 2026-03-08 (split-scope verification date)
     crypto_origin = resolve_operator_origin(
-        "Wirex",
-        transaction_type="crypto_deposit",
-        transaction_date="2026-06-01 12:00:00"
+        "Wirex", transaction_type="crypto_deposit", transaction_date="2026-06-01 12:00:00"
     )
     assert crypto_origin.service_scope == "crypto"
     assert crypto_origin.operator_country == "HR"
 
     # Wirex fiat valid_from is 2026-03-08 (split-scope verification date)
     fiat_origin = resolve_operator_origin(
-        "Wirex",
-        transaction_type="fiat_deposit",
-        transaction_date="2026-06-01 12:00:00"
+        "Wirex", transaction_type="fiat_deposit", transaction_date="2026-06-01 12:00:00"
     )
     assert fiat_origin.service_scope == "fiat"
     assert fiat_origin.operator_country == "GB"
+
+
+def test_resolve_operator_origin_wirex_historical_transaction_after_service_start():
+    """Wirex transactions after service_start_date (2015-01-01) are auto-classified.
+
+    Per CMD-021 (updated), Wirex uses the approximate founding date (2015-01-01) as
+    service_start_date. Transactions on or after this date are auto-classified as GB
+    (fiat) or HR (crypto) without review flags.
+    """
+    crypto_origin = resolve_operator_origin(
+        "Wirex", transaction_type="crypto_disposal", transaction_date="2025-06-15 12:00:00"
+    )
+
+    # Verify no review required (transaction is after service_start_date)
+    assert crypto_origin.review_required is False
+    assert crypto_origin.service_start_date == "2015-01-01"
+    assert crypto_origin.valid_from == "2026-03-08"
+
+
+def test_resolve_operator_origin_wirex_transaction_before_service_start_date(caplog):
+    """Wirex transactions before service_start_date should trigger warning and review_required.
+
+    Per CMD-021 (updated), Wirex service_start_date is 2015-01-01 (approximate founding date).
+    Transactions before this date should be flagged as outside the service period and
+    require manual review.
+    """
+    with caplog.at_level(logging.WARNING, logger="shares_reporting.application.crypto_reporting"):
+        crypto_origin = resolve_operator_origin(
+            "Wirex", transaction_type="crypto_disposal", transaction_date="2014-06-15 12:00:00"
+        )
+
+    # Verify warning was logged about transaction outside service period
+    assert any("service period" in record.message and "Wirex" in record.message for record in caplog.records)
+    # Verify review_required is True (manual review needed)
+    assert crypto_origin.review_required is True
+    assert crypto_origin.service_start_date == "2015-01-01"
+
+
+def test_resolve_operator_origin_wirex_transaction_after_service_start_date(caplog):
+    """Wirex transactions on or after service_start_date (2015-01-01) should NOT trigger warning.
+
+    Per CMD-021 (updated), Wirex service_start_date is 2015-01-01 (approximate founding date).
+    Transactions on or after this date should NOT trigger review_required because
+    they fall within the service period.
+    """
+    with caplog.at_level(logging.WARNING, logger="shares_reporting.application.crypto_reporting"):
+        # Transaction after service_start_date (2025 transaction)
+        crypto_origin = resolve_operator_origin(
+            "Wirex", transaction_type="crypto_disposal", transaction_date="2025-03-10 12:00:00"
+        )
+
+    # Verify no warning was logged (transaction is after service_start_date)
+    assert not any("service period" in record.message and "Wirex" in record.message for record in caplog.records)
+    # Verify review_required is False (no manual review needed for post-service-start transactions)
+    assert crypto_origin.review_required is False
+    assert crypto_origin.service_start_date == "2015-01-01"
+    assert crypto_origin.valid_from == "2026-03-08"
 
 
 # =============================================================================
@@ -2503,6 +2688,38 @@ def test_operator_origin_rejects_invalid_valid_until_format():
         )
 
 
+def test_operator_origin_rejects_invalid_service_start_date_format():
+    """OperatorOrigin should reject non-ISO date format for service_start_date."""
+    with pytest.raises(ValueError, match="Invalid date"):
+        OperatorOrigin(
+            platform="TestPlatform",
+            service_scope="crypto",
+            operator_entity="Test Entity",
+            operator_country="US",
+            source_url="https://example.com",
+            source_checked_on="2025-01-01",
+            confidence="high",
+            review_required=False,
+            service_start_date="2025/01/01",  # Wrong format
+        )
+
+
+def test_operator_origin_allows_service_start_date_none():
+    """OperatorOrigin should allow service_start_date to be None."""
+    origin = OperatorOrigin(
+        platform="TestPlatform",
+        service_scope="crypto",
+        operator_entity="Test Entity",
+        operator_country="US",
+        source_url="https://example.com",
+        source_checked_on="2025-01-01",
+        confidence="high",
+        review_required=False,
+        service_start_date=None,
+    )
+    assert origin.service_start_date is None
+
+
 def test_operator_origin_rejects_valid_until_before_valid_from():
     """OperatorOrigin should reject valid_until earlier than valid_from."""
     with pytest.raises(ValueError, match="valid_until.*must be on or after valid_from"):
@@ -2536,6 +2753,58 @@ def test_operator_origin_allows_equal_valid_from_and_valid_until():
     )
     assert origin.valid_from == "2025-06-01"
     assert origin.valid_until == "2025-06-01"
+
+
+def test_operator_origin_rejects_service_start_date_after_valid_from():
+    """OperatorOrigin should reject service_start_date after valid_from."""
+    with pytest.raises(ValueError, match="service_start_date.*must be on or before valid_from"):
+        OperatorOrigin(
+            platform="TestPlatform",
+            service_scope="crypto",
+            operator_entity="Test Entity",
+            operator_country="US",
+            source_url="https://example.com",
+            source_checked_on="2025-01-01",
+            confidence="high",
+            review_required=False,
+            service_start_date="2026-01-01",  # After valid_from
+            valid_from="2025-06-01",
+        )
+
+
+def test_operator_origin_rejects_service_start_date_after_valid_until():
+    """OperatorOrigin should reject service_start_date after valid_until."""
+    with pytest.raises(ValueError, match="service_start_date.*must be on or before valid_until"):
+        OperatorOrigin(
+            platform="TestPlatform",
+            service_scope="crypto",
+            operator_entity="Test Entity",
+            operator_country="US",
+            source_url="https://example.com",
+            source_checked_on="2025-01-01",
+            confidence="high",
+            review_required=False,
+            service_start_date="2026-01-01",  # After valid_until
+            valid_until="2025-12-31",
+        )
+
+
+def test_operator_origin_allows_service_start_date_equal_to_valid_from():
+    """OperatorOrigin should allow service_start_date equal to valid_from."""
+    origin = OperatorOrigin(
+        platform="TestPlatform",
+        service_scope="crypto",
+        operator_entity="Test Entity",
+        operator_country="US",
+        source_url="https://example.com",
+        source_checked_on="2025-01-01",
+        confidence="high",
+        review_required=False,
+        service_start_date="2025-06-01",
+        valid_from="2025-06-01",
+    )
+    assert origin.service_start_date == "2025-06-01"
+    assert origin.valid_from == "2025-06-01"
 
 
 def test_operator_origin_rejects_invalid_calendar_date():
@@ -2586,27 +2855,40 @@ def test_load_koinly_crypto_report_passes_dates_to_resolve_operator_origin(tmp_p
     koinly_dir.mkdir()
 
     # Berachain valid_from is 2025-02-05, so a disposal in 2024-06 should trigger warning
-    csv_content = "\n".join([
-        "Capital gains report 2025",
-        "",
-        ",".join([
-            "Date Sold", "Date Acquired", "Asset", "Amount",
-            "Cost (EUR)", "Proceeds (EUR)", "Gain / loss",
-            "Notes", "Wallet Name", "Holding period",
-        ]),
-        ",".join([
-            "15/06/2024 13:01",  # Before Berachain valid_from (2025-02-05)
-            "18/11/2023 00:15",
-            "BERA",
-            '"1,00000000"',
-            '"1,00"',
-            '"2,00"',
-            '"1,00"',
+    csv_content = "\n".join(
+        [
+            "Capital gains report 2025",
             "",
-            "Ledger Berachain",
-            "Short term",
-        ]),
-    ])
+            ",".join(
+                [
+                    "Date Sold",
+                    "Date Acquired",
+                    "Asset",
+                    "Amount",
+                    "Cost (EUR)",
+                    "Proceeds (EUR)",
+                    "Gain / loss",
+                    "Notes",
+                    "Wallet Name",
+                    "Holding period",
+                ]
+            ),
+            ",".join(
+                [
+                    "15/06/2024 13:01",  # Before Berachain valid_from (2025-02-05)
+                    "18/11/2023 00:15",
+                    "BERA",
+                    '"1,00000000"',
+                    '"1,00"',
+                    '"2,00"',
+                    '"1,00"',
+                    "",
+                    "Ledger Berachain",
+                    "Short term",
+                ]
+            ),
+        ]
+    )
     (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(csv_content, encoding="utf-8")
     (koinly_dir / "koinly_2025_income_report.csv").write_text(
         "Income report 2025\n\nDate,Asset,Amount,Value (EUR),Type,Description,Wallet Name\n",
@@ -2620,6 +2902,1280 @@ def test_load_koinly_crypto_report_passes_dates_to_resolve_operator_origin(tmp_p
     assert len(report.capital_entries) == 1
     # Verify warning was logged about transaction date predating valid_from
     assert any(
-        "Transaction date 2024-06-15" in record.message and "Berachain" in record.message
-        for record in caplog.records
+        "Transaction date 2024-06-15" in record.message and "Berachain" in record.message for record in caplog.records
     ), "Expected warning about transaction date outside validity period"
+
+
+def test_resolve_operator_origin_ethereum_exact_history_no_review(caplog):
+    """Ethereum has exact launch date (2015-07-30) and verification date (2026-03-15).
+
+    The service_start_date is the launch date (2015-07-30) and valid_from is the
+    verification date (2026-03-15). Transactions after the launch date should NOT
+    be flagged for review, even if they fall before the verification date, because
+    valid_from is for audit trail only and not used for transaction matching per
+    the repository contract.
+    """
+    with caplog.at_level(logging.WARNING, logger="shares_reporting.application.crypto_reporting"):
+        origin = resolve_operator_origin("Ethereum", None, "2024-01-20")
+
+    # Should NOT be marked for review - transaction is after service_start_date
+    assert origin.review_required is False
+
+    # No verification warning should be logged (valid_from is audit-only)
+    verification_warnings = [
+        record.message
+        for record in caplog.records
+        if "verification date" in record.message.lower() and "ethereum" in record.message.lower()
+    ]
+    assert len(verification_warnings) == 0, "No verification warning for post-launch transactions"
+
+
+# =============================================================================
+# Unit tests for _build_swap_lookup()
+# =============================================================================
+
+
+def test_build_swap_lookup_from_transaction_history(tmp_path):
+    """Extract swap information from Koinly transaction history CSV."""
+    tx_history_file = tmp_path / "koinly_2025_transaction_history.csv"
+
+    # Create a transaction history file with exchange (swap) rows
+    header = (  # noqa: E501
+        "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
+        "Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,"
+        "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
+        "TxSrc,TxDest,TxHash,Description"
+    )
+    csv_content = "\n".join(
+        [
+            "Transaction report 2025",
+            "",
+            header,
+            '2025-02-16 17:10:42 UTC,exchange,"",Ledger SUI,"26,40816087",SUI,'  # noqa: E501
+            '"29,83",Ledger SUI,"25,19665014",HASUI,"29,83","","","","83,05",'
+            '"",0xabc,0xdef,tx123',
+            '2025-03-01 10:00:00 UTC,exchange,"",ByBit (2),"100,00",USDT,'  # noqa: E501
+            '"95,00",ByBit (2),"0,05",ETH,"95,00","","","","95,00","",'
+            "0x456,0x789,tx456",
+            '2025-03-05 14:30:00 UTC,crypto_deposit,Reward,"","","","",Kraken,'  # noqa: E501
+            '"10,00",EUR,"10,00","","","","10,00","","","","",""',
+            '2025-03-10 09:15:00 UTC,exchange,"",Ledger SUI,"50,00",SUI,'  # noqa: E501
+            '"48,00",Ledger SUI,"48,00",USDT,"48,00","","","","48,00","",'
+            "0x111,0x222,tx789",
+        ]
+    )
+    tx_history_file.write_text(csv_content, encoding="utf-8")
+
+    swap_lookup = _build_swap_lookup(tx_history_file)
+
+    # Should extract 3 swap entries (1 exchange row is skipped - it's a crypto_deposit reward)
+    # Keys are (wallet, date, received_currency), values are lists of (timestamp, swap_history) tuples
+    assert len(swap_lookup) == 3
+
+    # Check SUI -> HASUI swap on 2025-02-16 for Ledger SUI wallet (received currency: HASUI)
+    sui_hasui_swaps = swap_lookup[("Ledger SUI", "2025-02-16", "HASUI")]
+    assert len(sui_hasui_swaps) == 1
+    assert sui_hasui_swaps[0][1] == "SUI → HASUI"  # swap_history string
+    # Verify timestamp is preserved for time-ordered matching
+    assert sui_hasui_swaps[0][0].year == 2025
+    assert sui_hasui_swaps[0][0].month == 2
+    assert sui_hasui_swaps[0][0].day == 16
+    assert sui_hasui_swaps[0][0].hour == 17
+    assert sui_hasui_swaps[0][0].minute == 10
+
+    # Check USDT -> ETH swap on 2025-03-01 for ByBit wallet (normalized, received currency: ETH)
+    usdt_eth_swaps = swap_lookup[("ByBit", "2025-03-01", "ETH")]
+    assert len(usdt_eth_swaps) == 1
+    assert usdt_eth_swaps[0][1] == "USDT → ETH"
+
+    # Check SUI -> USDT swap on 2025-03-10 for Ledger SUI wallet (received currency: USDT)
+    sui_usdt_swaps = swap_lookup[("Ledger SUI", "2025-03-10", "USDT")]
+    assert len(sui_usdt_swaps) == 1
+    assert sui_usdt_swaps[0][1] == "SUI → USDT"
+
+
+def test_build_swap_lookup_missing_file_returns_empty_dict(tmp_path):
+    """Missing transaction history file should return empty lookup dict."""
+    missing_file = tmp_path / "nonexistent_transaction_history.csv"
+    swap_lookup = _build_swap_lookup(missing_file)
+
+    assert swap_lookup == {}
+
+
+def test_build_swap_lookup_handles_multiple_swaps_same_date_wallet(tmp_path):
+    """Multiple swaps on same date/wallet producing different currencies should be stored separately.
+
+    Each swap is keyed by (wallet, date, received_currency) so that disposals of
+    different assets only get their relevant swap history, not all swaps from that day.
+    """
+    tx_history_file = tmp_path / "koinly_2025_transaction_history.csv"
+
+    csv_content = "\n".join(
+        [
+            "Transaction report 2025",
+            "",
+            (
+                "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
+                "Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,"
+                "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
+                "TxSrc,TxDest,TxHash,Description"
+            ),
+            (
+                '2025-02-16 10:00:00 UTC,exchange,"",Ledger SUI,"10,00",SUI,"10,00",'
+                'Ledger SUI,"9,50",HASUI,"10,00","","","","10,00","",0xabc,0xdef,tx1'
+            ),
+            (
+                '2025-02-16 11:00:00 UTC,exchange,"",Ledger SUI,"20,00",USDT,"19,00",'
+                'Ledger SUI,"19,00",ETH,"19,00","","","","19,00","",0x123,0x456,tx2'
+            ),
+        ]
+    )
+    tx_history_file.write_text(csv_content, encoding="utf-8")
+
+    swap_lookup = _build_swap_lookup(tx_history_file)
+
+    # Swaps producing different currencies should be stored separately
+    assert len(swap_lookup) == 2
+    # HASUI disposal would get SUI → HASUI
+    assert swap_lookup[("Ledger SUI", "2025-02-16", "HASUI")][0][1] == "SUI → HASUI"
+    # ETH disposal would get USDT → ETH
+    assert swap_lookup[("Ledger SUI", "2025-02-16", "ETH")][0][1] == "USDT → ETH"
+
+
+def test_build_swap_lookup_skips_non_exchange_transactions(tmp_path):
+    """Only Type='exchange' rows should be processed, other types ignored."""
+    tx_history_file = tmp_path / "koinly_2025_transaction_history.csv"
+
+    csv_content = "\n".join(
+        [
+            "Transaction report 2025",
+            "",
+            (
+                "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
+                "Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,"
+                "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
+                "TxSrc,TxDest,TxHash,Description"
+            ),
+            (
+                '2025-01-01 00:01:23 UTC,crypto_deposit,Reward,"","","","",ByBit,'
+                '"0,25",USDT,"0,24","","","","0,24","","","","",""'
+            ),
+            ('2025-01-02 10:00:00 UTC,fiat_withdrawal,"",Wirex,"0,97",EUR,"","","","","","","","0,97","","","","",""'),
+            (
+                '2025-01-03 14:30:00 UTC,transfer,To pool,Ledger SUI,"10,00",HASUI,'
+                '"10,00",Ledger SUI,"10,00",HASUI,"10,00","","","","10,00","",0xabc,'
+                "0xdef,tx1"
+            ),
+            (
+                '2025-01-04 09:00:00 UTC,exchange,"",ByBit,"100,00",USDT,"95,00",'
+                'ByBit,"0,05",ETH,"95,00","","","","95,00","",0x456,0x789,tx2'
+            ),
+        ]
+    )
+    tx_history_file.write_text(csv_content, encoding="utf-8")
+
+    swap_lookup = _build_swap_lookup(tx_history_file)
+
+    # Only the exchange transaction should be extracted (key includes received currency)
+    assert len(swap_lookup) == 1
+    assert swap_lookup[("ByBit", "2025-01-04", "ETH")][0][1] == "USDT → ETH"
+
+
+def test_build_swap_lookup_normalizes_wallet_names(tmp_path):
+    """Wallet names should be normalized using _normalize_platform_name for consistent matching."""
+    tx_history_file = tmp_path / "koinly_2025_transaction_history.csv"
+
+    csv_content = "\n".join(
+        [
+            "Transaction report 2025",
+            "",
+            (
+                "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
+                "Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,"
+                "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
+                "TxSrc,TxDest,TxHash,Description"
+            ),
+            # ByBit (2) should normalize to ByBit
+            (
+                '2025-02-01 10:00:00 UTC,exchange,"",ByBit (2),"100,00",USDT,"95,00",'
+                'ByBit (2),"0,05",ETH,"95,00","","","","95,00","",0x456,0x789,tx1'
+            ),
+        ]
+    )
+    tx_history_file.write_text(csv_content, encoding="utf-8")
+
+    swap_lookup = _build_swap_lookup(tx_history_file)
+
+    # Should use normalized wallet name "ByBit" not "ByBit (2)" (key includes received currency)
+    assert ("ByBit", "2025-02-01", "ETH") in swap_lookup
+    assert swap_lookup[("ByBit", "2025-02-01", "ETH")][0][1] == "USDT → ETH"
+
+
+def test_capital_gains_entry_includes_swap_history(tmp_path):
+    """Integration test: capital gains entries should include swap history from transaction history.
+
+    With time-ordered matching, a disposal only gets swap history from swaps that happened
+    AT OR BEFORE the acquisition time. A swap creates a lot, so the swap must happen
+    before the lot is acquired (not between acquisition and disposal).
+    """
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Create transaction history with SUI -> HASUI swap at 16:55 (before acquisition)
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(
+        "\n".join(
+            [
+                "Transaction report 2025",
+                "",
+                (
+                    "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
+                    "Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,"
+                    "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
+                    "TxSrc,TxDest,TxHash,Description"
+                ),
+                (
+                    '2025-02-16 16:55:00 UTC,exchange,"",Ledger SUI,"26,40816087",SUI,'
+                    '"29,83",Ledger SUI,"25,19665014",HASUI,"29,83","","","","83,05","",'
+                    "0xabc,0xdef,tx123"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    # Create capital gains report with HASUI disposal at 17:10 (after swap)
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(
+        "\n".join(
+            [
+                "Capital gains report 2025",
+                "",
+                ",".join(
+                    [
+                        "Date Sold",
+                        "Date Acquired",
+                        "Asset",
+                        "Amount",
+                        "Cost (EUR)",
+                        "Proceeds (EUR)",
+                        "Gain / loss",
+                        "Notes",
+                        "Wallet Name",
+                        "Holding period",
+                    ]
+                ),
+                ",".join(
+                    [
+                        "16/02/2025 17:10",  # Disposal happens AFTER the swap
+                        "16/02/2025 17:00",  # Acquisition happens AFTER the swap (swap created the lot)
+                        "HASUI",
+                        '"25,19665014"',
+                        '"29,83"',
+                        '"83,05"',
+                        '"53,22"',
+                        "",
+                        "Ledger SUI",
+                        "Short term",
+                    ]
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    (koinly_dir / "koinly_2025_income_report.csv").write_text(
+        "Income report 2025\n\nDate,Asset,Amount,Value (EUR),Type,Description,Wallet Name\n",
+        encoding="utf-8",
+    )
+
+    report = load_koinly_crypto_report(koinly_dir)
+
+    assert report is not None
+    assert len(report.capital_entries) == 1
+
+    entry = report.capital_entries[0]
+    # Verify the swap history is populated (swap at 16:55, acquisition at 17:00)
+    assert entry.token_swap_history == "SUI → HASUI"
+    assert entry.asset == "HASUI"
+    assert entry.wallet == "Ledger SUI"
+
+
+def test_capital_gains_entry_empty_swap_history_when_no_match(tmp_path):
+    """Capital gains entry should have empty swap history when no matching swap exists."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Create transaction history with a swap on a different date
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(
+        "\n".join(
+            [
+                "Transaction report 2025",
+                "",
+                (
+                    "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
+                    "Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,"
+                    "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
+                    "TxSrc,TxDest,TxHash,Description"
+                ),
+                (
+                    '2025-02-16 17:10:42 UTC,exchange,"",Ledger SUI,"26,40816087",SUI,'
+                    '"29,83",Ledger SUI,"25,19665014",HASUI,"29,83","","","","83,05","",'
+                    "0xabc,0xdef,tx123"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    # Create capital gains report with disposal on a different date
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(
+        "\n".join(
+            [
+                "Capital gains report 2025",
+                "",
+                ",".join(
+                    [
+                        "Date Sold",
+                        "Date Acquired",
+                        "Asset",
+                        "Amount",
+                        "Cost (EUR)",
+                        "Proceeds (EUR)",
+                        "Gain / loss",
+                        "Notes",
+                        "Wallet Name",
+                        "Holding period",
+                    ]
+                ),
+                ",".join(
+                    [
+                        "20/02/2025 10:00",  # Different date - no swap match
+                        "01/01/2024 00:00",
+                        "HASUI",
+                        '"10,00"',
+                        '"10,00"',
+                        '"15,00"',
+                        '"5,00"',
+                        "",
+                        "Ledger SUI",
+                        "Short term",
+                    ]
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    (koinly_dir / "koinly_2025_income_report.csv").write_text(
+        "Income report 2025\n\nDate,Asset,Amount,Value (EUR),Type,Description,Wallet Name\n",
+        encoding="utf-8",
+    )
+
+    report = load_koinly_crypto_report(koinly_dir)
+
+    assert report is not None
+    assert len(report.capital_entries) == 1
+
+    entry = report.capital_entries[0]
+    # Should have empty swap history since dates don't match
+    assert entry.token_swap_history == ""
+
+
+def test_capital_gains_swap_history_time_ordered_matching(tmp_path):
+    """Swap history should only include swaps that happened AT OR BEFORE acquisition.
+
+    A swap creates a lot, so the swap must happen before the lot is acquired.
+    For example, if I swap SUI->HASUI at 14:00, I receive HASUI at 14:00.
+    A HASUI lot acquired at 14:05 could have come from that swap, but a HASUI
+    lot acquired at 13:55 could not (that would require time travel).
+    """
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Create transaction history with two swaps on the same day at different times
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(
+        "\n".join(
+            [
+                "Transaction report 2025",
+                "",
+                (
+                    "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
+                    "Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,"
+                    "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
+                    "TxSrc,TxDest,TxHash,Description"
+                ),
+                # Swap at 14:00: SUI -> HASUI (creates HASUI lot)
+                (
+                    '2025-05-22 14:00:00 UTC,exchange,"",Ledger SUI,"100,00",SUI,'
+                    '"95,00",Ledger SUI,"95,00",HASUI,"95,00","","","","95,00","",'
+                    "0xabc,0xdef,tx1"
+                ),
+                # Swap at 16:00: SSUI -> SUI (creates SUI lot)
+                (
+                    '2025-05-22 16:00:00 UTC,exchange,"",Ledger SUI,"50,00",SSUI,'
+                    '"48,00",Ledger SUI,"48,00",SUI,"48,00","","","","48,00","",'
+                    "0x123,0x456,tx2"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    # Create capital gains report with two disposals at different times
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(
+        "\n".join(
+            [
+                "Capital gains report 2025",
+                "",
+                ",".join(
+                    [
+                        "Date Sold",
+                        "Date Acquired",
+                        "Asset",
+                        "Amount",
+                        "Cost (EUR)",
+                        "Proceeds (EUR)",
+                        "Gain / loss",
+                        "Notes",
+                        "Wallet Name",
+                        "Holding period",
+                    ]
+                ),
+                # Disposal 1 at 15:00: HASUI acquired at 14:05 (after first swap at 14:00)
+                # This lot could have come from the 14:00 swap
+                ",".join(
+                    [
+                        "22/05/2025 15:00",
+                        "22/05/2025 14:05",  # Acquired after first swap at 14:00
+                        "HASUI",
+                        '"10,00"',
+                        '"10,00"',
+                        '"15,00"',
+                        '"5,00"',
+                        "",
+                        "Ledger SUI",
+                        "Short term",
+                    ]
+                ),
+                # Disposal 2 at 17:00: SUI acquired at 16:05 (after second swap at 16:00)
+                # This lot could have come from the 16:00 swap
+                ",".join(
+                    [
+                        "22/05/2025 17:00",
+                        "22/05/2025 16:05",  # Acquired after second swap at 16:00
+                        "SUI",
+                        '"5,00"',
+                        '"5,00"',
+                        '"7,00"',
+                        '"2,00"',
+                        "",
+                        "Ledger SUI",
+                        "Short term",
+                    ]
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    (koinly_dir / "koinly_2025_income_report.csv").write_text(
+        "Income report 2025\n\nDate,Asset,Amount,Value (EUR),Type,Description,Wallet Name\n",
+        encoding="utf-8",
+    )
+
+    report = load_koinly_crypto_report(koinly_dir)
+
+    assert report is not None
+    assert len(report.capital_entries) == 2
+
+    # First disposal at 15:00: should get SUI -> HASUI swap (14:00 <= 14:05)
+    hasui_entry = [e for e in report.capital_entries if e.asset == "HASUI"][0]
+    assert hasui_entry.token_swap_history == "SUI → HASUI"
+
+    # Second disposal at 17:00: should get SSUI -> SUI swap (16:00 <= 16:05)
+    sui_entry = [e for e in report.capital_entries if e.asset == "SUI"][0]
+    assert sui_entry.token_swap_history == "SSUI → SUI"
+
+
+def test_capital_gains_swap_history_disposal_upper_bound_filter(tmp_path):
+    """Swap history should NOT include swaps that occurred AFTER acquisition.
+
+    Regression test for: swaps bleeding onto capital entries acquired before
+    the swap occurred. This uses the SAME asset for both swap and capital entry
+    to ensure the asset key doesn't mask the bug.
+
+    Scenario:
+    - SUI disposal at 15:00, acquired at 14:05
+    - Swap at 16:00: some other asset -> SUI (affects SUI's swap history)
+    - Expected: empty swap history (the swap happened after acquisition)
+
+    A swap creates a lot, so a swap at 16:00 cannot be the source of a lot
+    that was acquired at 14:05.
+    """
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Create capital gains report with SUI disposal BEFORE the swap
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(
+        "\n".join(
+            [
+                "Capital gains report 2025",
+                "",
+                ",".join(
+                    [
+                        "Date Sold",
+                        "Date Acquired",
+                        "Asset",
+                        "Amount",
+                        "Cost (EUR)",
+                        "Proceeds (EUR)",
+                        "Gain / loss",
+                        "Notes",
+                        "Wallet Name",
+                        "Holding period",
+                    ]
+                ),
+                # SUI disposal at 15:00, acquired at 14:05
+                ",".join(
+                    [
+                        "22/05/2025 15:00",
+                        "22/05/2025 14:05",
+                        "SUI",
+                        '"10,00"',
+                        '"10,00"',
+                        '"15,00"',
+                        '"5,00"',
+                        "",
+                        "Ledger SUI",
+                        "Short term",
+                    ]
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    # Create transaction history with a swap that affects SUI AFTER the disposal
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(
+        "\n".join(
+            [
+                "Transaction report 2025",
+                "",
+                (
+                    "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
+                    "Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,"
+                    "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
+                    "TxSrc,TxDest,TxHash,Description"
+                ),
+                # Swap at 16:00: some other asset -> SUI (AFTER the disposal at 15:00)
+                (
+                    '2025-05-22 16:00:00 UTC,exchange,"",Ledger SUI,"100,00",HASUI,'
+                    '"95,00",Ledger SUI,"95,00",SUI,"95,00","","","","95,00","",'
+                    "0xabc,0xdef,tx1"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    (koinly_dir / "koinly_2025_income_report.csv").write_text(
+        "Income report 2025\n\nDate,Asset,Amount,Value (EUR),Type,Description,Wallet Name\n",
+        encoding="utf-8",
+    )
+
+    report = load_koinly_crypto_report(koinly_dir)
+
+    assert report is not None
+    assert len(report.capital_entries) == 1
+
+    entry = report.capital_entries[0]
+    # Should have empty swap history since the swap happened after disposal
+    assert entry.token_swap_history == "", (
+        f"Expected empty swap history for disposal before swap, got: {entry.token_swap_history}"
+    )
+
+
+def test_capital_gains_swap_history_same_minute_matching(tmp_path):
+    """Swap history should match swaps in the same minute as the acquisition.
+
+    Koinly capital gains reports truncate acquisition times to minute precision
+    (e.g., "22:01" becomes "22:01:00"), while transaction history has actual
+    seconds (e.g., "22:01:07 UTC"). A swap at 22:01:07 SHOULD match a lot
+    acquired at 22:01 (same minute), because the swap happens at 22:01:07
+    and when truncated to minute precision (22:01:00), it is at or before
+    the acquisition time (22:01:00).
+
+    Regression test for: same-minute swaps being dropped due to full datetime
+    comparison (22:01:07 > 22:01:00). The code truncates both to minute precision
+    for comparison.
+    """
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Create transaction history with a swap at 22:01:07
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(
+        "\n".join(
+            [
+                "Transaction report 2025",
+                "",
+                (
+                    "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
+                    "Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,"
+                    "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
+                    "TxSrc,TxDest,TxHash,Description"
+                ),
+                # Swap at 22:01:07: XSTRK -> STRK
+                (
+                    '2025-02-23 22:01:07 UTC,exchange,"",Starknet (STRK),"188,00",XSTRK,'
+                    '"45,82",Starknet (STRK),"122,67",STRK,"45,82","","","","26,91","",'
+                    "0xabc,0xdef,tx1"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    # Create capital gains report with disposal at 22:01 (truncated to minute)
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(
+        "\n".join(
+            [
+                "Capital gains report 2025",
+                "",
+                ",".join(
+                    [
+                        "Date Sold",
+                        "Date Acquired",
+                        "Asset",
+                        "Amount",
+                        "Cost (EUR)",
+                        "Proceeds (EUR)",
+                        "Gain / loss",
+                        "Notes",
+                        "Wallet Name",
+                        "Holding period",
+                    ]
+                ),
+                # Disposal at 22:01 (truncated to minute, becomes 22:01:00)
+                # Use larger amounts to avoid immateriality filter (gain >= 1 EUR)
+                ",".join(
+                    [
+                        "23/02/2025 22:01",
+                        "23/02/2025 22:01",
+                        "STRK",
+                        '"10,00"',
+                        '"5,00"',
+                        '"15,00"',
+                        '"10,00"',
+                        "",
+                        "Starknet (STRK)",
+                        "Short term",
+                    ]
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    (koinly_dir / "koinly_2025_income_report.csv").write_text(
+        "Income report 2025\n\nDate,Asset,Amount,Value (EUR),Type,Description,Wallet Name\n",
+        encoding="utf-8",
+    )
+
+    report = load_koinly_crypto_report(koinly_dir)
+
+    assert report is not None
+    assert len(report.capital_entries) == 1
+
+    entry = report.capital_entries[0]
+    # Should have swap history since swap at 22:01:07 matches disposal at 22:01
+    assert entry.token_swap_history == "XSTRK → STRK"
+
+
+def test_capital_gains_swap_history_cross_day_near_midnight_with_time_window(tmp_path):
+    """Cross-day near-midnight swaps should use a 1-hour window around acquisition.
+
+    Regression test for: swaps from much earlier in the day being incorrectly
+    included for near-midnight cross-day lots.
+
+    Scenario:
+    - Swap at 09:00: USDT -> ETH (creates ETH lot at 09:00)
+    - Swap at 23:00: USDT -> ETH (creates ETH lot at 23:00)
+    - ETH lot acquired at 23:00, sold at 00:05 next day (near-midnight)
+    - Expected: only the 23:00 swap (within 1-hour window of 23:00), not the 09:00 swap
+
+    The 1-hour window prevents swaps from earlier in the day from being
+    incorrectly attributed to a near-midnight lot.
+    """
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Create transaction history with two swaps on the same day
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(
+        "\n".join(
+            [
+                "Transaction report 2025",
+                "",
+                (
+                    "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
+                    "Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,"
+                    "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
+                    "TxSrc,TxDest,TxHash,Description"
+                ),
+                # Swap at 09:00: USDT -> ETH
+                (
+                    '2025-02-16 09:00:00 UTC,exchange,"",Kraken,"100,00",USDT,'
+                    '"95,00",Kraken,"95,00",ETH,"95,00","","","","95,00","",'
+                    "0xabc,0xdef,tx1"
+                ),
+                # Swap at 23:00: USDT -> ETH (creates the lot we're testing)
+                (
+                    '2025-02-16 23:00:00 UTC,exchange,"",Kraken,"100,00",USDT,'
+                    '"95,00",Kraken,"95,00",ETH,"95,00","","","","95,00","",'
+                    "0x123,0x456,tx2"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    # Create capital gains report with cross-day near-midnight disposal
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(
+        "\n".join(
+            [
+                "Capital gains report 2025",
+                "",
+                ",".join(
+                    [
+                        "Date Sold",
+                        "Date Acquired",
+                        "Asset",
+                        "Amount",
+                        "Cost (EUR)",
+                        "Proceeds (EUR)",
+                        "Gain / loss",
+                        "Notes",
+                        "Wallet Name",
+                        "Holding period",
+                    ]
+                ),
+                # Cross-day near-midnight: acquired at 23:00, sold at 00:05
+                ",".join(
+                    [
+                        "17/02/2025 00:05",  # Disposal early morning
+                        "16/02/2025 23:00",  # Acquisition late night (near-midnight)
+                        "ETH",
+                        '"10,00"',
+                        '"10,00"',
+                        '"15,00"',
+                        '"5,00"',
+                        "",
+                        "Kraken",
+                        "Short term",
+                    ]
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    (koinly_dir / "koinly_2025_income_report.csv").write_text(
+        "Income report 2025\n\nDate,Asset,Amount,Value (EUR),Type,Description,Wallet Name\n",
+        encoding="utf-8",
+    )
+
+    report = load_koinly_crypto_report(koinly_dir)
+
+    assert report is not None
+    assert len(report.capital_entries) == 1
+
+    entry = report.capital_entries[0]
+    # Should only get the 23:00 swap (within 1-hour window), not the 09:00 swap
+    assert entry.token_swap_history == "USDT → ETH"
+
+
+def test_capital_gains_swap_history_same_day_most_recent_only(tmp_path):
+    """Same-day swap history should only include the most recent swap before acquisition.
+
+    Regression test for: multiple same-day swaps producing the same asset causing
+    over-matching (all prior swaps included instead of just the most recent).
+
+    Scenario:
+    - Swap at 10:00: USDT -> ETH (creates ETH lot at 10:00)
+    - Swap at 13:00: BTC -> ETH (creates another ETH lot at 13:00)
+    - ETH lot acquired at 13:05, sold at 17:00
+    - Expected: only "BTC -> ETH" (most recent before acquisition), not "USDT -> ETH; BTC -> ETH"
+
+    A swap creates a lot at the moment of the swap. A lot acquired at 13:05 could
+    only have come from the 13:00 swap (or later), not the 10:00 swap which created
+    a different lot. Including all prior swaps creates misleading provenance.
+    """
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Create transaction history with two swaps producing the SAME asset (ETH)
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(
+        "\n".join(
+            [
+                "Transaction report 2025",
+                "",
+                (
+                    "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
+                    "Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,"
+                    "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
+                    "TxSrc,TxDest,TxHash,Description"
+                ),
+                # Swap at 10:00: USDT -> ETH
+                (
+                    '2025-05-22 10:00:00 UTC,exchange,"",Kraken,"100,00",USDT,'
+                    '"95,00",Kraken,"95,00",ETH,"95,00","","","","95,00","",'
+                    "0xabc,0xdef,tx1"
+                ),
+                # Swap at 13:00: BTC -> ETH (creates the lot we're testing)
+                (
+                    '2025-05-22 13:00:00 UTC,exchange,"",Kraken,"50,00",BTC,'
+                    '"48,00",Kraken,"48,00",ETH,"48,00","","","","48,00","",'
+                    "0x123,0x456,tx2"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    # Create capital gains report with ETH acquired at 13:05 (after second swap)
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(
+        "\n".join(
+            [
+                "Capital gains report 2025",
+                "",
+                ",".join(
+                    [
+                        "Date Sold",
+                        "Date Acquired",
+                        "Asset",
+                        "Amount",
+                        "Cost (EUR)",
+                        "Proceeds (EUR)",
+                        "Gain / loss",
+                        "Notes",
+                        "Wallet Name",
+                        "Holding period",
+                    ]
+                ),
+                # ETH disposal at 17:00, acquired at 13:05
+                ",".join(
+                    [
+                        "22/05/2025 17:00",
+                        "22/05/2025 13:05",  # Acquired after second swap at 13:00
+                        "ETH",
+                        '"10,00"',
+                        '"10,00"',
+                        '"15,00"',
+                        '"5,00"',
+                        "",
+                        "Kraken",
+                        "Short term",
+                    ]
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    (koinly_dir / "koinly_2025_income_report.csv").write_text(
+        "Income report 2025\n\nDate,Asset,Amount,Value (EUR),Type,Description,Wallet Name\n",
+        encoding="utf-8",
+    )
+
+    report = load_koinly_crypto_report(koinly_dir)
+
+    assert report is not None
+    assert len(report.capital_entries) == 1
+
+    entry = report.capital_entries[0]
+    # Should only get the most recent swap (13:00), not both swaps
+    assert entry.token_swap_history == "BTC → ETH", (
+        f"Expected only the most recent swap before acquisition, got: {entry.token_swap_history}"
+    )
+
+
+def test_build_swap_lookup_uses_receiving_wallet_as_key(tmp_path):
+    """Swap lookup should use receiving wallet as the key for matching with capital gains."""
+    tx_history_file = tmp_path / "koinly_2025_transaction_history.csv"
+
+    csv_content = "\n".join(
+        [
+            "Transaction report 2025",
+            "",
+            (
+                "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
+                "Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,"
+                "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
+                "TxSrc,TxDest,TxHash,Description"
+            ),
+            # Sending from empty wallet to Ledger SUI
+            (
+                '2025-02-16 10:00:00 UTC,exchange,""," ","100,00",USDT,"95,00",'
+                'Ledger SUI,"95,00",ETH,"95,00","","","","95,00","",0xabc,0xdef,tx1'
+            ),
+        ]
+    )
+    tx_history_file.write_text(csv_content, encoding="utf-8")
+
+    swap_lookup = _build_swap_lookup(tx_history_file)
+
+    # Should use receiving wallet "Ledger SUI" as the key (with received currency ETH)
+    assert ("Ledger SUI", "2025-02-16", "ETH") in swap_lookup
+    assert swap_lookup[("Ledger SUI", "2025-02-16", "ETH")][0][1] == "USDT → ETH"
+
+
+def test_aggregate_capital_entries_joins_swap_history(tmp_path):
+    """Aggregation should join swap history strings from multiple entries."""
+    entries = [
+        _make_entry(
+            disposal_date="2025-02-16 10:00:00",
+            wallet="Ledger SUI",
+            platform="Ledger SUI",
+            token_swap_history="SUI → HASUI",  # noqa: S106
+        ),
+        _make_entry(
+            disposal_date="2025-02-16 10:00:00",
+            wallet="Ledger SUI",
+            platform="Ledger SUI",
+            token_swap_history="SUI → USDT",  # noqa: S106
+        ),
+        _make_entry(
+            disposal_date="2025-02-16 10:00:00",
+            wallet="Ledger SUI",
+            platform="Ledger SUI",
+            token_swap_history="",  # Empty swap history
+        ),
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 1
+    # Swap history should be joined and deduplicated
+    assert result[0].token_swap_history == "SUI → HASUI; SUI → USDT"
+
+
+def test_capital_gains_swap_history_only_for_same_day_acquisition(tmp_path):
+    """Swap history should only be assigned to lots acquired on the same day as the swap.
+
+    Regression test for: same-day swaps bleeding onto older lots.
+    Example: A LINK lot acquired on 2022-09-30, disposed on 2025-04-07,
+    should NOT get "BTC → LINK" swap history from same-day 2025-04-07 swaps.
+    Those swaps produced NEW LINK tokens on 2025-04-07, not the 2022-acquired lot.
+
+    A swap creates a lot, so the swap must happen at or before the lot is acquired.
+    """
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Create transaction history with BTC -> LINK swap on 2025-04-07
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(
+        "\n".join(
+            [
+                "Transaction report 2025",
+                "",
+                (
+                    "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
+                    "Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,"
+                    "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
+                    "TxSrc,TxDest,TxHash,Description"
+                ),
+                (
+                    '2025-04-07 06:40:00 UTC,exchange,"",Kraken,"0,00189000",BTC,'
+                    '"114,94",Kraken,"13,59712230",LINK,"114,94","","","","129,22","",'
+                    "0xabc,0xdef,tx1"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    # Create capital gains report with two LINK disposals on 2025-04-07
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(
+        "\n".join(
+            [
+                "Capital gains report 2025",
+                "",
+                ",".join(
+                    [
+                        "Date Sold",
+                        "Date Acquired",
+                        "Asset",
+                        "Amount",
+                        "Cost (EUR)",
+                        "Proceeds (EUR)",
+                        "Gain / loss",
+                        "Notes",
+                        "Wallet Name",
+                        "Holding period",
+                    ]
+                ),
+                # Older lot: acquired 2022-09-30, disposed 2025-04-07
+                # Should NOT get swap history (different acquisition day)
+                ",".join(
+                    [
+                        "07/04/2025 07:58",
+                        "30/09/2022 09:14",
+                        "LINK",
+                        '"0,93585000"',
+                        '"7,56"',
+                        '"8,83"',
+                        '"1,27"',
+                        "Fee",
+                        "Kraken",
+                        "Long term",
+                    ]
+                ),
+                # Same-day lot: acquired and disposed on 2025-04-07
+                # The swap at 06:40 creates this lot, acquired at 06:45
+                ",".join(
+                    [
+                        "07/04/2025 07:00",
+                        "07/04/2025 06:45",  # Acquired after the swap at 06:40
+                        "LINK",
+                        '"5,00"',
+                        '"100,00"',
+                        '"120,00"',
+                        '"20,00"',
+                        "",
+                        "Kraken",
+                        "Short term",
+                    ]
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    (koinly_dir / "koinly_2025_income_report.csv").write_text(
+        "Income report 2025\n\nDate,Asset,Amount,Value (EUR),Type,Description,Wallet Name\n",
+        encoding="utf-8",
+    )
+
+    report = load_koinly_crypto_report(koinly_dir)
+
+    assert report is not None
+    assert len(report.capital_entries) == 2
+
+    # Find the older lot (2022-acquired) and same-day lot (2025-acquired)
+    older_lot = [e for e in report.capital_entries if e.holding_period == "Long term"][0]
+    same_day_lot = [e for e in report.capital_entries if e.holding_period == "Short term"][0]
+
+    # Older lot should NOT have swap history (acquired on different day)
+    assert older_lot.token_swap_history == "", (
+        f"Older lot (acquired {older_lot.acquisition_date}) should not have swap history from 2025-04-07 swaps"
+    )
+
+    # Same-day lot SHOULD have swap history (swap at 06:40, acquisition at 06:45)
+    assert same_day_lot.token_swap_history == "BTC → LINK", (
+        f"Same-day lot (acquired {same_day_lot.acquisition_date}) should have swap history from 2025-04-07 swaps"
+    )
+
+
+def test_capital_gains_swap_history_near_midnight_cross_day(tmp_path):
+    """Swap history should be preserved for near-midnight cross-day disposals.
+
+    Regression test for: lots acquired at 23:55 and disposed at 00:05 losing swap history.
+    When acquisition and disposal span midnight but are close together (within a few hours),
+    the lot was clearly acquired from same-day swaps and should preserve swap history.
+
+    Example: SUI → HASUI swap at 23:55, disposal of HASUI at 00:05 (10 minutes later).
+    """
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Create transaction history with SUI -> HASUI swap near midnight (23:55)
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(
+        "\n".join(
+            [
+                "Transaction history 2025",
+                "",
+                "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,Fee,Fee Currency,Net Worth,Net Worth Currency,Order Hash,Transaction Hash,Label",  # noqa: E501
+                '2025-02-16 23:55:00 UTC,exchange,"",Ledger SUI,"10,00",SUI,"10,00",Ledger SUI,"10,00",HASUI,"10,00",0,,"0,0",,0x111,0x222',  # noqa: E501
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    # Create capital gains with disposal just after midnight (00:05)
+    # Acquisition is at 23:55 (same day as swap), disposal at 00:05 (next day)
+    (koinly_dir / "koinly_2025_capital_gains_report_Ledger SUI.csv").write_text(
+        "\n".join(
+            [
+                "Capital gains report 2025",
+                "",
+                ",".join(
+                    [
+                        "Date Sold",
+                        "Date Acquired",
+                        "Asset",
+                        "Amount",
+                        "Cost (EUR)",
+                        "Proceeds (EUR)",
+                        "Gain / loss",
+                        "Notes",
+                        "Wallet Name",
+                        "Holding period",
+                    ]
+                ),
+                # Near-midnight disposal: acquired 23:55, disposed 00:05 (10 minutes later)
+                # Should get swap history (near-midnight cross-day case)
+                ",".join(
+                    [
+                        "17/02/2025 00:05",
+                        "16/02/2025 23:55",
+                        "HASUI",
+                        '"10,00"',
+                        '"10,00"',
+                        '"12,00"',
+                        '"2,00"',
+                        "",
+                        "Ledger SUI",
+                        "Short term",
+                    ]
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    # Create empty income and holdings files
+    (koinly_dir / "koinly_2025_income_report_Ledger SUI.csv").write_text(
+        "\n".join(
+            [
+                "Income report 2025",
+                "",
+                "Date,Type,Tag,Asset,Amount,Price,Value,Currency,Notes,Wallet Name",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    (koinly_dir / "koinly_2025_holdings_report_Ledger SUI.csv").write_text(
+        "\n".join(
+            [
+                "Balances as at 31/12/2025 23:59",
+                "",
+                "Wallet,Asset,Amount,Price,Value,Currency",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = load_koinly_crypto_report(koinly_dir)
+
+    assert report is not None
+    assert len(report.capital_entries) == 1
+
+    entry = report.capital_entries[0]
+    # Should have swap history (near-midnight cross-day case: 23:55 -> 00:05)
+    assert entry.token_swap_history == "SUI → HASUI", (
+        f"Near-midnight disposal (acquired {entry.acquisition_date}, "
+        f"disposed {entry.disposal_date}) should have swap history from 23:55 swap"
+    )
+
+
+def test_capital_gains_swap_history_near_midnight_edge_case_21_59(tmp_path):
+    """Swap history should be preserved for near-midnight cross-day disposals at 21:59.
+
+    Regression test for: lots acquired at 21:59 (before the 22:00 threshold) and
+    disposed at 00:05 losing swap history due to overly restrictive acquisition hour
+    constraint. The total span is still short (< 6 hours) and disposal is early morning,
+    so this should be considered a near-midnight cross-day case.
+
+    Example: SUI -> HASUI swap at 21:59, disposal of HASUI at 00:05 (~2 hours later).
+    """
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Create transaction history with SUI -> HASUI swap at 21:59 (before 22:00 threshold)
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(
+        "\n".join(
+            [
+                "Transaction history 2025",
+                "",
+                "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,Fee,Fee Currency,Net Worth,Net Worth Currency,Order Hash,Transaction Hash,Label",  # noqa: E501
+                '2025-02-16 21:59:00 UTC,exchange,"",Ledger SUI,"10,00",SUI,"10,00",Ledger SUI,"10,00",HASUI,"10,00",0,,"0,0",,0x111,0x222',  # noqa: E501
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    # Create capital gains with disposal just after midnight (00:05)
+    # Acquisition is at 21:59 (same day as swap), disposal at 00:05 (next day)
+    (koinly_dir / "koinly_2025_capital_gains_report_Ledger SUI.csv").write_text(
+        "\n".join(
+            [
+                "Capital gains report 2025",
+                "",
+                ",".join(
+                    [
+                        "Date Sold",
+                        "Date Acquired",
+                        "Asset",
+                        "Amount",
+                        "Cost (EUR)",
+                        "Proceeds (EUR)",
+                        "Gain / loss",
+                        "Notes",
+                        "Wallet Name",
+                        "Holding period",
+                    ]
+                ),
+                # Edge case: acquired 21:59, disposed 00:05 (~2 hours later)
+                # Should get swap history (near-midnight cross-day case even though 21:59 < 22:00)
+                ",".join(
+                    [
+                        "17/02/2025 00:05",
+                        "16/02/2025 21:59",
+                        "HASUI",
+                        '"10,00"',
+                        '"10,00"',
+                        '"12,00"',
+                        '"2,00"',
+                        "",
+                        "Ledger SUI",
+                        "Short term",
+                    ]
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    # Create empty income and holdings files
+    (koinly_dir / "koinly_2025_income_report_Ledger SUI.csv").write_text(
+        "\n".join(
+            [
+                "Income report 2025",
+                "",
+                "Date,Type,Tag,Asset,Amount,Price,Value,Currency,Notes,Wallet Name",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    (koinly_dir / "koinly_2025_holdings_report_Ledger SUI.csv").write_text(
+        "\n".join(
+            [
+                "Balances as at 31/12/2025 23:59",
+                "",
+                "Wallet,Asset,Amount,Price,Value,Currency",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = load_koinly_crypto_report(koinly_dir)
+
+    assert report is not None
+    assert len(report.capital_entries) == 1
+
+    entry = report.capital_entries[0]
+    # Should have swap history (near-midnight cross-day case: 21:59 -> 00:05)
+    assert entry.token_swap_history == "SUI → HASUI", (
+        f"Near-midnight disposal (acquired {entry.acquisition_date}, "
+        f"disposed {entry.disposal_date}) should have swap history from 21:59 swap"
+    )
