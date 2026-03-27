@@ -522,6 +522,7 @@ def add_crypto_report_sheet(  # noqa: PLR0912, PLR0915
         "Annex hint",
         "Review flag",
         "Notes",
+        "Token swap history",
     ]
     for idx, header in enumerate(capital_headers, start=1):
         worksheet.cell(row_no, idx, header)
@@ -544,6 +545,7 @@ def add_crypto_report_sheet(  # noqa: PLR0912, PLR0915
         worksheet.cell(row_no, 14, entry.annex_hint)
         worksheet.cell(row_no, 15, "YES" if entry.review_required else "NO")
         worksheet.cell(row_no, 16, entry.notes)
+        worksheet.cell(row_no, 17, entry.token_swap_history)
         row_no += 1
 
     # Split reward entries for detailed sections (aggregated rewards already computed)

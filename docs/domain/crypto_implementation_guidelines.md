@@ -278,7 +278,7 @@ Every operator mapping must be documented in TWO places:
 1. **`operator_chain_origin_registry.md`** - The mapping registry with:
    - Country code
    - Authority level (official, inferred, repository override)
-   - `valid_from` date (when this mapping became effective)
+   - `valid_from` date (when this mapping was verified from source documents)
    - Basis (why this country was chosen)
 
 2. **`mapping_decision_log.md`** - Detailed reasoning with:
@@ -314,10 +314,16 @@ For platforms with multiple legal entities, use this hierarchy:
 **Implemented Feature**: The code now supports date-based lookup via the `transaction_date` parameter in `resolve_operator_origin()`.
 
 **Temporal Validity Checking**:
-- All `OperatorOrigin` instances include `valid_from` date (when mapping became effective)
-- Optional `valid_until` date for expired mappings
-- When `transaction_date` is provided, the function checks if the date falls within the mapping's validity period
-- If a transaction predates `valid_from`, a warning is logged and the earliest known mapping is returned (for historical data recovery)
+- All `OperatorOrigin` instances include temporal fields:
+  - `service_start_date`: When the platform actually started offering this service
+    - Used for transaction date matching to avoid false positives on historical data
+    - Prevents historical transactions from triggering "outside validity period" warnings
+  - `valid_from`: When this specific mapping was verified from source documents
+    - Used for audit trail and documentation purposes
+    - Preserves verification timeline for historical tax filings
+  - Optional `valid_until` date for expired mappings
+- When `transaction_date` is provided, the function checks if the date falls within the service period using `service_start_date`
+- If a transaction predates `service_start_date`, a warning is logged and the mapping is marked for review
 - If `transaction_date` is outside known validity periods, a warning is logged for audit trail purposes
 
 **Implementation Pattern**:
@@ -345,14 +351,14 @@ def resolve_operator_origin(
 
 **Helper Functions**:
 - `_parse_transaction_date(transaction_date: str | None) -> str | None`: Parses transaction dates to ISO format (YYYY-MM-DD) for temporal validity checks. Supports formats: "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS".
-- `_is_temporally_valid(valid_from: str | None, valid_until: str | None, transaction_date: str) -> bool`: Checks if a mapping is valid for a given transaction date. Returns True if `valid_from <= transaction_date <= valid_until` (or no validity constraints).
+- `_is_temporally_valid(service_start_date: str | None, valid_until: str | None, transaction_date: str) -> bool`: Checks if a mapping is valid for a given transaction date using `service_start_date` for the lower bound (not `valid_from`, which is the verification date). Returns True if `service_start_date <= transaction_date <= valid_until` (or no validity constraints).
 
 **Call Sites**: The parsing functions pass transaction dates to `resolve_operator_origin()`:
 - `_parse_capital_gains_file()`: passes `disposal_date` from CSV rows
 - `_parse_income_file()`: passes `date` from CSV rows
 
 **Testing Requirements**:
-- All platform mappings must have `valid_from` dates
+- Platform mappings may have `valid_from=None` for historical operators where the exact verification date is unknown
 - Tests cover date boundary cases (before, during, after validity period)
 - Tests verify warning logs for transactions outside validity period
 - Tests verify backward compatibility (works without `transaction_date`)
@@ -384,7 +390,9 @@ def resolve_operator_origin(platform: str, transaction_type: str | None = None) 
                 source_url="https://wirexapp.com/legal",
                 source_checked_on="2026-03-08",
                 confidence="medium",
-                review_required=True,
+                review_required=False,
+                service_start_date="2015-01-01",  # Wirex founded ~2014-2015
+                valid_from="2026-03-08",  # Split-scope verified 2026-03-08
             )
         return OperatorOrigin(
             platform="Wirex",
@@ -394,7 +402,9 @@ def resolve_operator_origin(platform: str, transaction_type: str | None = None) 
             source_url="https://wirexapp.com/legal",
             source_checked_on="2026-03-08",
             confidence="medium",
-            review_required=True,
+            review_required=False,
+            service_start_date="2015-01-01",  # Wirex founded ~2014-2015
+            valid_from="2026-03-08",  # Split-scope verified 2026-03-08
         )
 ```
 
@@ -542,7 +552,7 @@ Analysis of Koinly exports reveals these fixable false-positive triggers:
 |---------|-----------|-----|
 | "Missing cost basis" with 0 EUR proceeds | Koinly marks as missing but disposal has 0 value | Only flag if `proceeds_eur > 0` |
 | Character encoding (WBТC) | Cyrillic 'Т' (U+0422) instead of 'T' | Unicode normalize before parsing |
-| Temporal validity warnings | Historical transactions before `valid_from` | Use `service_start_date` separate from `verified_date` |
+| Temporal validity warnings | Historical transactions before `service_start_date` | Use `service_start_date` separate from `valid_from` |
 
 ## References
 

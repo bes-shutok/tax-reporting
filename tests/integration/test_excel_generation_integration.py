@@ -299,6 +299,7 @@ class TestDividendExcelPersisting:
                     annex_hint="J",
                     review_required=bybit_origin.review_required,
                     notes="",
+                    token_swap_history="",
                 )
             ],
             reward_entries=[
@@ -407,6 +408,7 @@ class TestDividendExcelPersisting:
                     annex_hint="J",
                     review_required=bybit_origin.review_required,
                     notes="",
+                    token_swap_history="",
                 )
             ],
             reward_entries=[
@@ -507,6 +509,101 @@ class TestDividendExcelPersisting:
         assert capital_chain == "ByBit", f"Expected 'ByBit' chain in capital data, got {capital_chain}"
         reward_chain = reward_data_row[reward_chain_col_idx - 1]
         assert reward_chain == "Wirex", f"Expected 'Wirex' chain in reward data, got {reward_chain}"
+
+        workbook.close()
+
+    def test_crypto_sheet_contains_token_swap_history_column(self, tmp_path):
+        """Assert the Crypto worksheet contains token swap history column and values."""
+        bybit_origin = resolve_operator_origin("ByBit")
+
+        crypto_report = CryptoTaxReport(
+            tax_year=2025,
+            capital_entries=[
+                CryptoCapitalGainEntry(
+                    disposal_date="2025-02-16 12:00:00",
+                    acquisition_date="2025-02-16 10:00:00",
+                    asset="HASUI",
+                    amount=Decimal("29.83"),
+                    cost_eur=Decimal("10.00"),
+                    proceeds_eur=Decimal("15.00"),
+                    gain_loss_eur=Decimal("5.00"),
+                    holding_period="Short term",
+                    wallet="Ledger SUI",
+                    platform="Ledger",
+                    chain="Sui",
+                    operator_origin=bybit_origin,
+                    annex_hint="J",
+                    review_required=False,
+                    notes="",
+                    token_swap_history="SUI → HASUI",  # noqa: S106
+                )
+            ],
+            reward_entries=[],
+            reconciliation=CryptoReconciliationSummary(
+                capital_rows=1,
+                reward_rows=0,
+                short_term_rows=1,
+                long_term_rows=0,
+                mixed_rows=0,
+                unknown_rows=0,
+                capital_cost_total_eur=Decimal("10.00"),
+                capital_proceeds_total_eur=Decimal("15.00"),
+                capital_gain_total_eur=Decimal("5.00"),
+                reward_total_eur=Decimal("0"),
+                opening_holdings=None,
+                closing_holdings=None,
+            ),
+            skipped_zero_value_tokens=[],
+            pdf_summary=None,
+        )
+
+        report_path = tmp_path / "crypto_swap_history_report.xlsx"
+        generate_tax_report(
+            extract=report_path,
+            capital_gain_lines_per_company={},
+            dividend_income_per_company={},
+            crypto_tax_report=crypto_report,
+        )
+
+        assert report_path.exists()
+
+        import openpyxl
+
+        workbook = openpyxl.load_workbook(report_path)
+        crypto_sheet = workbook["Crypto"]
+
+        # Find the capital gains header row and check for token swap history column
+        capital_headers_found = False
+        swap_history_col_idx = None
+
+        for row in crypto_sheet.iter_rows(values_only=True):
+            if row and "Disposal date" in str(row[0] if row[0] else ""):
+                # Found capital gains headers
+                capital_headers_found = True
+                # Find the "Token swap history" column index
+                for col_idx, cell_value in enumerate(row):
+                    if cell_value == "Token swap history":
+                        swap_history_col_idx = col_idx + 1
+                        break
+                break
+
+        # Verify header was found
+        assert capital_headers_found, "Capital gains headers not found"
+        assert swap_history_col_idx is not None, "Token swap history column not found in capital gains headers"
+
+        # Verify the swap history value is written in the data row
+        capital_data_row = None
+
+        for row in crypto_sheet.iter_rows(values_only=True):
+            if row and row[0] == "2025-02-16 12:00:00":
+                capital_data_row = row
+                break
+
+        assert capital_data_row is not None, "Capital data row not found"
+
+        # Check swap history value in data row (using 1-based column index)
+        swap_history = capital_data_row[swap_history_col_idx - 1]
+        assert swap_history == "SUI → HASUI", f"Expected 'SUI → HASUI' swap history, got {swap_history}"
 
         workbook.close()
 
@@ -666,6 +763,7 @@ class TestDividendExcelPersisting:
                     annex_hint="J",
                     review_required=False,
                     notes="",
+                    token_swap_history="",
                 ),
             ],
             reward_entries=[],
@@ -690,10 +788,13 @@ class TestDividendExcelPersisting:
         report_path = tmp_path / "crypto_error_test.xlsx"
 
         # Mock add_crypto_report_sheet to raise a FileProcessingError
-        with patch(
-            "shares_reporting.application.persisting.add_crypto_report_sheet",
-            side_effect=FileProcessingError("Simulated validation failure for testing"),
-        ), pytest.raises(FileProcessingError, match="Simulated validation failure for testing"):
+        with (
+            patch(
+                "shares_reporting.application.persisting.add_crypto_report_sheet",
+                side_effect=FileProcessingError("Simulated validation failure for testing"),
+            ),
+            pytest.raises(FileProcessingError, match="Simulated validation failure for testing"),
+        ):
             generate_tax_report(
                 extract=report_path,
                 capital_gain_lines_per_company={},
@@ -735,6 +836,7 @@ class TestDividendExcelPersisting:
                     annex_hint="G",
                     review_required=False,
                     notes="",
+                    token_swap_history="",
                 ),
             ],
             reward_entries=[],
@@ -769,10 +871,13 @@ class TestDividendExcelPersisting:
             # Now simulate an error during writing
             raise FileProcessingError("Simulated write error during crypto sheet generation")
 
-        with patch(
-            "shares_reporting.application.persisting.add_crypto_report_sheet",
-            side_effect=mock_add_crypto_that_fails_partial,
-        ), pytest.raises(FileProcessingError, match="Simulated write error during crypto sheet generation"):
+        with (
+            patch(
+                "shares_reporting.application.persisting.add_crypto_report_sheet",
+                side_effect=mock_add_crypto_that_fails_partial,
+            ),
+            pytest.raises(FileProcessingError, match="Simulated write error during crypto sheet generation"),
+        ):
             generate_tax_report(
                 extract=report_path,
                 capital_gain_lines_per_company={},

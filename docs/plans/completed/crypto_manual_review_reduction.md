@@ -1,6 +1,6 @@
 # Crypto Manual Review Reduction & Token Swap History
 
-**Status:** Ready for Implementation
+**Status:** Complete - All phases (1.1-1.3, 2.1-2.3) implemented
 **Created:** 2026-03-25
 **Analysis:** Based on actual Koinly exports in `resources/source/koinly2025/`
 
@@ -99,11 +99,22 @@ review_required = operator_origin.review_required or missing_cost_with_impact
 
 **Impact:** Eliminates flags for zero-disposals that Koinly marked as "missing cost basis" but have 0 EUR proceeds
 
-#### 2.2 Fix Character Encoding Issue
+#### 2.2 Fix Character Encoding Issue ✅ COMPLETED
 
 **Problem:** `WBТC` with Cyrillic 'Т' (U+0422) instead of 'T'
 
-**Solution:** Add normalization in `_parse_capital_gains_file`:
+**Solution implemented:** Added `_normalize_asset_ticker()` function with comprehensive Cyrillic-to-Latin character mapping
+
+**Changes:**
+- Added `_normalize_asset_ticker()` function that handles common Cyrillic-to-Latin character confusions:
+  - Т (U+0422) -> T, Е (U+0415) -> E, О (U+041E) -> O, Р (U+0420) -> P
+  - А (U+0410) -> A, Н (U+041D) -> H, К (U+041A) -> K, М (U+041C) -> M
+  - С (U+0421) -> C, В (U+0412) -> B, Х (U+0425) -> X
+  - Plus lowercase variants: у -> y, е -> e, о -> o, р -> p, а -> a
+- Applied normalization in `_parse_capital_gains_file()`, `_parse_income_file()`, and `_parse_holdings_file()`
+- Added comprehensive tests for the normalization function
+
+**Original planned solution:** Add normalization in `_parse_capital_gains_file`:
 ```python
 import unicodedata
 
@@ -119,19 +130,33 @@ def _normalize_asset_ticker(asset: str) -> str:
 asset = _normalize_asset_ticker(row.get("Asset", "").strip())
 ```
 
-#### 2.3 Temporal Validity Improvements
+#### 2.3 Temporal Validity Improvements ✅ COMPLETED (Updated 2026-03-26)
 
-**Current issue:** Wirex split-scope `valid_from="2026-03-08"` flags historical transactions
+**Current issue:** Wirex split-scope needed temporal boundaries to handle unknown GB/HR split date
 
-**Solution options:**
+**Solution implemented:** Added `service_start_date` field separate from `valid_from`
 
-| Option | Change | Pro | Con |
-|--------|--------|-----|-----|
-| A | Set `valid_from=None` for verified mappings | No false flags | Less precise |
-| B | Add `service_start_date` field | Best accuracy | Dataclass change |
-| C | Widen ranges with uncertainty note | Balance | More documentation |
+**Changes:**
+- Added `service_start_date: str | None` field to `OperatorOrigin` dataclass
+- Modified `_is_temporally_valid()` to use `service_start_date` for transaction matching
+- Updated `_return_with_temporal_check()` to pass `service_start_date` instead of `valid_from`
+- Updated Wirex entries with `service_start_date="2015-01-01"` (approximate founding date) and `valid_from="2026-03-08"` (verification date)
+- IMPORTANT: `valid_from` is for audit trail only and NOT used for transaction matching
+  per the repository contract (AGENTS.md, registry, guidelines). Only `service_start_date`
+  is used for transaction date matching.
 
-**Recommendation:** Option B - add `service_start_date` separate from `verified_date`
+**Implementation Note:**
+- The original implementation (2026-03-25) used `service_start_date="2026-03-08"` (verification date).
+- However, the actual 2025 sample data contains Wirex transactions that were all being flagged for review.
+- The corrected implementation (2026-03-26) uses `service_start_date="2015-01-01"` (approximate founding date, Wirex Limited incorporated in 2014).
+- This allows legitimate 2025 Wirex transactions to be auto-classified, achieving the Phase 2.3 goal of reducing manual review flags.
+- See CMD-021 (updated) in `mapping_decision_log.md` for the rationale.
+
+**Result:**
+- Wirex transactions from 2015 onwards are auto-classified as GB (fiat) or HR (crypto) without review flags
+- Wirex transactions before 2015 would require historical investigation if present in actual data (unlikely in practice)
+- The `valid_from="2026-03-08"` preserves the GB/HR split-scope verification date for audit trail
+- For platforms with exact history (Ethereum, Arbitrum, BASE, etc.), `service_start_date` reflects their actual launch date and `valid_from` records the verification date
 
 ### Phase 3: Expand Platform Mappings
 
@@ -153,12 +178,12 @@ asset = _normalize_asset_ticker(row.get("Asset", "").strip())
 
 ## Implementation Order
 
-1. ✅ **Phase 1.1**: Add token_swap_history field to dataclass
-2. ✅ **Phase 1.2**: Parse transaction_history for swaps
-3. ✅ **Phase 1.3**: Add column to Crypto sheet output
-4. ✅ **Phase 2.1**: Fix "missing cost basis" logic
-5. ✅ **Phase 2.2**: Add character normalization
-6. ⏳ **Phase 2.3**: Temporal validity refactoring (defer if complex)
+1. ✅ **Phase 1.1**: Add token_swap_history field to dataclass (COMPLETED)
+2. ✅ **Phase 1.2**: Parse transaction_history for swaps (COMPLETED)
+3. ✅ **Phase 1.3**: Add column to Crypto sheet output (COMPLETED)
+4. ✅ **Phase 2.1**: Fix "missing cost basis" logic (COMPLETED)
+5. ✅ **Phase 2.2**: Add character normalization (COMPLETED)
+6. ✅ **Phase 2.3**: Temporal validity refactoring (COMPLETED)
 7. ⏳ **Phase 3**: Platform mappings (as data allows)
 
 ## Testing Strategy

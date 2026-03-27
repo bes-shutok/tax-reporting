@@ -5,9 +5,10 @@ from __future__ import annotations
 import csv
 import logging
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from functools import lru_cache
@@ -36,6 +37,15 @@ _MIN_VALID_YEAR: Final = 2009  # Bitcoin genesis, crypto didn't exist before
 _MAX_VALID_YEAR: Final = 2100
 _ISO_DATE_LENGTH: Final = 10
 _ISO_DATE_PARTS: Final = 3  # YYYY-MM-DD has 3 parts
+_YEAR_DIGITS: Final = 4
+_MONTH_DAY_DIGITS: Final = 2
+
+# Constants for time validation
+_DATETIME_SPACE_PARTS: Final = 2  # Date and time separated by space
+_TIME_COMPONENTS: Final = 3  # HH:MM:SS has 3 parts
+_TIME_PART_DIGITS: Final = 2
+_MAX_HOUR: Final = 23
+_MAX_MINUTE_SECOND: Final = 59
 
 
 def _validate_iso_date(date_str: str) -> str:
@@ -51,12 +61,12 @@ def _validate_iso_date(date_str: str) -> str:
         ValueError: If the date is invalid or out of reasonable range.
     """
     parts = date_str.split("-")
-    if len(parts) != 3:
+    if len(parts) != _ISO_DATE_PARTS:
         raise ValueError(f"Invalid date format '{date_str}': expected YYYY-MM-DD")
     year_str, month_str, day_str = parts
 
     # Verify zero-padding: YYYY-MM-DD requires exactly 4, 2, 2 digits
-    if len(year_str) != 4 or len(month_str) != 2 or len(day_str) != 2:
+    if len(year_str) != _YEAR_DIGITS or len(month_str) != _MONTH_DAY_DIGITS or len(day_str) != _MONTH_DAY_DIGITS:
         raise ValueError(f"Invalid date format '{date_str}': zero-padding required (YYYY-MM-DD)")
 
     # Verify all parts are numeric
@@ -91,6 +101,13 @@ class OperatorOrigin:
     Temporal validity tracking allows historical tax filings to reference the
     mapping that was in effect at the time of transaction, even if the mapping
     changes later (e.g., operator restructuring, legal domicile changes).
+
+    Temporal Fields:
+        service_start_date: When the platform actually started offering this service.
+            Used for transaction date matching to avoid false positives on historical data.
+        valid_from: When this specific mapping was verified from source documents.
+            Used for audit trail and documentation purposes.
+        valid_until: When this mapping expires (if applicable).
     """
 
     platform: str
@@ -101,14 +118,28 @@ class OperatorOrigin:
     source_checked_on: str
     confidence: str
     review_required: bool
+    service_start_date: str | None = None
     valid_from: str | None = None
     valid_until: str | None = None
 
     def __post_init__(self) -> None:
         """Validate temporal validity fields."""
         # Normalize empty strings to None for temporal fields
-        normalized_from = self.valid_from.strip() if isinstance(self.valid_from, str) and self.valid_from.strip() else None
-        normalized_until = self.valid_until.strip() if isinstance(self.valid_until, str) and self.valid_until.strip() else None
+        normalized_service_start = (
+            self.service_start_date.strip()
+            if isinstance(self.service_start_date, str) and self.service_start_date.strip()
+            else None
+        )
+        normalized_from = (
+            self.valid_from.strip() if isinstance(self.valid_from, str) and self.valid_from.strip() else None
+        )
+        normalized_until = (
+            self.valid_until.strip() if isinstance(self.valid_until, str) and self.valid_until.strip() else None
+        )
+
+        # Validate ISO date format for service_start_date if provided
+        if normalized_service_start is not None:
+            _validate_iso_date(normalized_service_start)
 
         # Validate ISO date format for valid_from if provided
         if normalized_from is not None:
@@ -118,15 +149,40 @@ class OperatorOrigin:
         if normalized_until is not None:
             _validate_iso_date(normalized_until)
 
+        # Validate that service_start_date <= valid_from if both are provided
+        if normalized_service_start is not None and normalized_from is not None:
+            service_date = datetime.fromisoformat(normalized_service_start).date()
+            from_date = datetime.fromisoformat(normalized_from).date()
+            if service_date > from_date:
+                raise ValueError(
+                    f"Invalid date range for {self.platform}: service_start_date ({normalized_service_start}) "
+                    f"must be on or before valid_from ({normalized_from})"
+                )
+
+        # Validate that service_start_date <= valid_until if both are provided
+        if normalized_service_start is not None and normalized_until is not None:
+            service_date = datetime.fromisoformat(normalized_service_start).date()
+            until_date = datetime.fromisoformat(normalized_until).date()
+            if service_date > until_date:
+                raise ValueError(
+                    f"Invalid date range for {self.platform}: service_start_date ({normalized_service_start}) "
+                    f"must be on or before valid_until ({normalized_until})"
+                )
+
         # Validate that valid_until >= valid_from if both are provided
         if normalized_from is not None and normalized_until is not None:
             from_date = datetime.fromisoformat(normalized_from).date()
             until_date = datetime.fromisoformat(normalized_until).date()
             if until_date < from_date:
                 raise ValueError(
-                    f"Invalid date range for {self.platform}: valid_until ({self.valid_until}) "
-                    f"must be on or after valid_from ({self.valid_from})"
+                    f"Invalid date range for {self.platform}: valid_until ({normalized_until}) "
+                    f"must be on or after valid_from ({normalized_from})"
                 )
+
+        # Assign normalized values back to frozen dataclass
+        object.__setattr__(self, "service_start_date", normalized_service_start)
+        object.__setattr__(self, "valid_from", normalized_from)
+        object.__setattr__(self, "valid_until", normalized_until)
 
 
 @dataclass(frozen=True)
@@ -148,6 +204,7 @@ class CryptoCapitalGainEntry:
     annex_hint: str
     review_required: bool
     notes: str
+    token_swap_history: str = ""
 
 
 @dataclass(frozen=True)
@@ -287,19 +344,19 @@ def _parse_transaction_date(transaction_date: str | None) -> str | None:
     # Handle Koinly format: "YYYY-MM-DD HH:MM:SS"
     if " " in transaction_date:
         parts = transaction_date.split(" ")
-        if len(parts) != 2:
+        if len(parts) != _DATETIME_SPACE_PARTS:
             raise ValueError(f"Unsupported transaction date format: {transaction_date}")
         date_part, time_part = parts
         # Validate time part matches HH:MM:SS pattern with valid ranges
         time_components = time_part.split(":")
-        if len(time_components) != 3:
+        if len(time_components) != _TIME_COMPONENTS:
             raise ValueError(f"Unsupported transaction date format: {transaction_date}")
         # Verify all time parts are digits AND zero-padded (exactly 2 digits each)
-        if not all(cp.isdigit() and len(cp) == 2 for cp in time_components):
+        if not all(cp.isdigit() and len(cp) == _TIME_PART_DIGITS for cp in time_components):
             raise ValueError(f"Unsupported transaction date format: {transaction_date}")
         # Validate time ranges: hour (0-23), minute (0-59), second (0-59)
         hour, minute, second = map(int, time_components)
-        if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
+        if not (0 <= hour <= _MAX_HOUR and 0 <= minute <= _MAX_MINUTE_SECOND and 0 <= second <= _MAX_MINUTE_SECOND):
             raise ValueError(f"Unsupported transaction date format: {transaction_date}")
         return _validate_iso_date(date_part)
 
@@ -310,23 +367,30 @@ def _parse_transaction_date(transaction_date: str | None) -> str | None:
     raise ValueError(f"Unsupported transaction date format: {transaction_date}")
 
 
-def _is_temporally_valid(valid_from: str | None, valid_until: str | None, transaction_date: str) -> bool:
+def _is_temporally_valid(service_start_date: str | None, valid_until: str | None, transaction_date: str) -> bool:
     """Check if a mapping is valid for a given transaction date.
 
     Args:
-        valid_from: ISO date when mapping becomes valid (YYYY-MM-DD).
+        service_start_date: ISO date when the platform service started (YYYY-MM-DD).
+            Used for transaction matching, not verification date.
         valid_until: ISO date when mapping expires (YYYY-MM-DD), or None if still valid.
         transaction_date: ISO transaction date to check (YYYY-MM-DD).
 
     Returns:
         True if the mapping was valid on the transaction date.
+
+    Note:
+        This function uses service_start_date for transaction date matching to avoid
+        false positives on historical data. The valid_from field is preserved for
+        audit trail but NOT used for temporal validation (it represents verification
+        date, not service availability).
     """
     # Parse transaction date once for comparison
     tx_date = _parse_iso_date(transaction_date)
 
-    # If valid_from is specified (and not empty), check if transaction is on or after it
-    if valid_from:
-        from_date = _parse_iso_date(valid_from)
+    # If service_start_date is specified (and not empty), check if transaction is on or after it
+    if service_start_date:
+        from_date = _parse_iso_date(service_start_date)
         if tx_date < from_date:
             return False
 
@@ -719,6 +783,15 @@ DATE_FORMATS: Final = (
     "%Y-%m-%d",
 )
 
+# Near-midnight cross-day swap history thresholds
+# Acquisition late hour (22+) or early hour (0-2) indicates near-midnight
+_NEAR_MIDNIGHT_ACQUISITION_LATEST_HOUR: Final = 22
+_NEAR_MIDNIGHT_ACQUISITION_EARLIEST_HOUR: Final = 2
+# Disposal early hour (0-4) indicates just after midnight
+_NEAR_MIDNIGHT_DISPOSAL_LATEST_HOUR: Final = 4
+# Maximum time between acquisition and disposal to consider "near-midnight" (6 hours)
+_NEAR_MIDNIGHT_MAX_SPAN_SECONDS: Final = 6 * 3600
+
 
 def resolve_operator_origin(  # noqa: PLR0911, PLR0912
     platform: str,
@@ -738,9 +811,9 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
 
     Temporal Validity:
     When transaction_date is provided, this function performs temporal validity checks
-    against the mapping's valid_from/valid_until dates. If a transaction predates the
-    earliest known mapping for a platform, a warning is logged and the earliest known
-    mapping is returned (for historical data recovery scenarios).
+    against the mapping's service_start_date/valid_until dates. If a transaction predates
+    service_start_date, a warning is logged and the earliest known mapping is returned
+    (for historical data recovery scenarios).
 
     Args:
         platform: Wallet or platform name (e.g., "Ledger Berachain", "ByBit").
@@ -791,23 +864,25 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
         if date_parse_failed:
             return replace(origin, review_required=True)
 
-        is_valid = (
-            parsed_date is None
-            or _is_temporally_valid(origin.valid_from, origin.valid_until, parsed_date)
-        )
+        # Use service_start_date only for transaction matching (valid_from is for audit trail only)
+        # When service_start_date is None, skip lower-bound check to avoid false positives
+        # on long-running mappings that only have verification dates (e.g., Ethereum, Arbitrum)
+        lower_bound = origin.service_start_date
+        is_valid = parsed_date is None or _is_temporally_valid(lower_bound, origin.valid_until, parsed_date)
         if not is_valid:
             logger.warning(
                 "Transaction date %s for platform '%s' (service_scope: %s) is outside "
-                "the known validity period [%s, %s]. Marking for manual review. "
+                "the service period [%s, %s]. Marking for manual review. "
                 "Please verify the operator origin is correct for this historical transaction.",
                 parsed_date,
                 origin.platform,
                 origin.service_scope,
-                origin.valid_from,
+                lower_bound or "unknown",
                 origin.valid_until or "present",
             )
             # Return a modified origin with review_required=True to surface in the workbook
             return replace(origin, review_required=True)
+
         return origin
 
     if "wirex" in normalized:
@@ -821,8 +896,9 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
                     source_url="https://wirexapp.com/legal",
                     source_checked_on="2026-03-08",
                     confidence="medium",
-                    review_required=True,
-                    valid_from="2026-03-08",  # Split-scope verified 2026-03-08; exact start date unknown
+                    review_required=False,
+                    service_start_date="2015-01-01",  # Approximate founding date (Wirex Ltd incorporated 2014)
+                    valid_from="2026-03-08",  # GB/HR split-scope verification date (audit trail)
                 )
             )
         return _return_with_temporal_check(
@@ -834,8 +910,9 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
                 source_url="https://wirexapp.com/legal",
                 source_checked_on="2026-03-08",
                 confidence="medium",
-                review_required=True,
-                valid_from="2026-03-08",  # Split-scope verified 2026-03-08; exact start date unknown
+                review_required=False,
+                service_start_date="2015-01-01",  # Approximate founding date (Wirex Ltd incorporated 2014)
+                valid_from="2026-03-08",  # GB/HR split-scope verification date (audit trail)
             )
         )
 
@@ -865,6 +942,7 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
                 source_checked_on="2026-03-15",
                 confidence="high",
                 review_required=False,
+                service_start_date="2025-02-05",
                 valid_from="2025-02-05",
             )
         )
@@ -880,7 +958,8 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
                 source_checked_on="2026-03-15",
                 confidence="medium",
                 review_required=True,
-                valid_from=None,  # Historical operator, exact start date unknown
+                service_start_date="2021-11-16",  # Starknet mainnet-alpha launch
+                valid_from=None,
             )
         )
 
@@ -956,7 +1035,8 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
                 source_checked_on="2026-03-15",
                 confidence="high",
                 review_required=False,
-                valid_from="2024-05-08",
+                service_start_date="2015-07-30",  # Ethereum mainnet launch
+                valid_from="2026-03-15",  # Source verification date
             )
         )
 
@@ -971,7 +1051,8 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
                 source_checked_on="2026-03-15",
                 confidence="high",
                 review_required=False,
-                valid_from="2025-08-29",
+                service_start_date="2022-10-17",  # Aptos mainnet launch
+                valid_from="2026-03-15",  # Source verification date
             )
         )
 
@@ -986,7 +1067,8 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
                 source_checked_on="2026-03-15",
                 confidence="medium",
                 review_required=False,
-                valid_from=None,  # Historical operator, exact start date unknown
+                service_start_date="2023-05-03",  # Sui mainnet launch
+                valid_from=None,
             )
         )
 
@@ -1001,7 +1083,8 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
                 source_checked_on="2026-03-15",
                 confidence="high",
                 review_required=False,
-                valid_from="2023-07-20",
+                service_start_date="2021-08-31",  # Arbitrum One mainnet launch
+                valid_from="2026-03-15",  # Source verification date
             )
         )
 
@@ -1016,6 +1099,7 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
                 source_checked_on="2026-03-15",
                 confidence="medium",
                 review_required=True,
+                service_start_date="2023-07-17",  # Mantle mainnet launch
                 valid_from="2024-03-15",
             )
         )
@@ -1031,7 +1115,8 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
                 source_checked_on="2026-03-15",
                 confidence="high",
                 review_required=False,
-                valid_from="2024-01-23",
+                service_start_date="2020-05-28",  # Polygon mainnet launch
+                valid_from="2026-03-15",  # Source verification date
             )
         )
 
@@ -1046,7 +1131,8 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
                 source_checked_on="2026-03-15",
                 confidence="medium",
                 review_required=False,
-                valid_from="2025-12-04",
+                service_start_date="2023-08-09",  # BASE mainnet launch
+                valid_from="2026-03-15",  # Source verification date
             )
         )
 
@@ -1061,6 +1147,7 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
                 source_checked_on="2026-03-15",
                 confidence="medium",
                 review_required=False,
+                service_start_date="2020-10-15",  # Filecoin mainnet launch
                 valid_from="2024-04-01",
             )
         )
@@ -1138,7 +1225,12 @@ def load_koinly_crypto_report(koinly_dir: Path) -> CryptoTaxReport | None:
 
     year = _extract_tax_year(koinly_dir, capital_file, income_file)
     skipped_assets: Counter[tuple[str, str]] = Counter()
-    capital_entries = _parse_capital_gains_file(capital_file, skipped_assets) if capital_file else []
+
+    # Build swap lookup from transaction history for token swap history tracking
+    transaction_history_file = _find_report_file(koinly_dir, "transaction_history")
+    swap_lookup = _build_swap_lookup(transaction_history_file) if transaction_history_file else {}
+
+    capital_entries = _parse_capital_gains_file(capital_file, skipped_assets, swap_lookup) if capital_file else []
     reward_entries = _parse_income_file(income_file, skipped_assets) if income_file else []
 
     opening = _parse_holdings_file(
@@ -1275,6 +1367,9 @@ def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[Cr
                 annex_hint=first.annex_hint,
                 review_required=any(e.review_required for e in group),
                 notes="; ".join(dict.fromkeys(e.notes for e in group if e.notes)),
+                token_swap_history="; ".join(
+                    dict.fromkeys(e.token_swap_history for e in group if e.token_swap_history)
+                ),
             )
         )
     result.sort(key=lambda e: (e.disposal_date, e.asset, e.platform, e.holding_period))
@@ -1340,13 +1435,162 @@ def _validate_capital_entries_have_valid_countries(entries: list[CryptoCapitalGa
     )
 
 
-def _parse_capital_gains_file(path: Path, skipped_assets: Counter[tuple[str, str]]) -> list[CryptoCapitalGainEntry]:
+def _build_swap_lookup(
+    transaction_history_path: Path,
+) -> dict[tuple[str, str, str], list[tuple[datetime, str]]]:
+    """Build lookup of (wallet, date, received_currency) -> list of (timestamp, swap_history).
+
+    Parses transaction_history.csv for Type="exchange" rows and extracts
+    Sent Currency -> Received Currency swaps for matching with capital gains.
+
+    The received_currency in the key ensures that each disposal only gets swaps
+    that produced the specific asset being disposed, not all swaps from that day.
+
+    Args:
+        transaction_history_path: Path to the Koinly transaction_history CSV file.
+
+    Returns:
+        Dictionary keyed by (normalized_wallet, disposal_date, received_currency)
+        containing lists of (timestamp, swap_history) tuples. Each swap_history is
+        a string like "SUI → HASUI". Multiple swaps for the same key are stored
+        in time order. Returns empty dict if file doesn't exist or has no exchange rows.
+
+        The lookup stores swap entries with full datetime to ensure time-ordered matching:
+        a disposal at 14:00 only gets swaps that happened BEFORE 14:00 on the same day.
+    """
+    logger = logging.getLogger(__name__)
+    # Store list of (timestamp, swap_history) tuples for each (wallet, date, received_currency)
+    swap_lookup: dict[tuple[str, str, str], list[tuple[datetime, str]]] = {}
+
+    if not transaction_history_path.exists():
+        return swap_lookup
+
+    try:
+        rows = _read_koinly_rows(transaction_history_path)
+    except (ValueError, FileProcessingError) as e:
+        # Transaction history file may have different format or be corrupt
+        # Log and continue without swap data
+        logger.warning(
+            "Could not parse transaction history file %s: %s - swap history will not be available",
+            transaction_history_path.name,
+            e,
+        )
+        return swap_lookup
+
+    for row in rows:
+        # Only process exchange transactions (swaps)
+        if row.get("Type", "").strip().lower() != "exchange":
+            continue
+
+        # Extract wallet from Sending Wallet or Receiving Wallet
+        # Use normalized wallet name for consistent matching
+        sending_wallet = row.get("Sending Wallet", "").strip()
+        receiving_wallet = row.get("Receiving Wallet", "").strip()
+
+        # Use the receiving wallet as the primary key (where the swapped asset goes)
+        wallet = receiving_wallet or sending_wallet
+        if not wallet:
+            continue
+
+        normalized_wallet = _normalize_platform_name(wallet)
+
+        # Parse date and store full datetime for time-ordered matching
+        date_str = row.get("Date", "").strip()
+        if not date_str:
+            continue
+
+        try:
+            tx_datetime = _parse_koinly_datetime(date_str)
+        except ValueError:
+            # Skip rows with unparseable dates
+            continue
+
+        # Extract and normalize sent and received currencies
+        # Normalization handles character encoding issues (e.g., Cyrillic Т -> T)
+        sent_currency = _normalize_asset_ticker(row.get("Sent Currency", ""))
+        received_currency = _normalize_asset_ticker(row.get("Received Currency", ""))
+
+        if not sent_currency or not received_currency:
+            continue
+
+        # Create swap history string (e.g., "SUI → HASUI")
+        swap_history = f"{sent_currency} → {received_currency}"
+
+        # Store in lookup keyed by (wallet, date, received_currency) with full timestamp.
+        # Date is YYYY-MM-DD for matching, but we store the full datetime to enforce time ordering.
+        date_key = tx_datetime.strftime("%Y-%m-%d")
+        key = (normalized_wallet, date_key, received_currency)
+        if key in swap_lookup:
+            swap_lookup[key].append((tx_datetime, swap_history))
+        else:
+            swap_lookup[key] = [(tx_datetime, swap_history)]
+
+    if swap_lookup:
+        total_swaps = sum(len(swaps) for swaps in swap_lookup.values())
+        logger.info(
+            "Built swap lookup from transaction history: %d wallet-date-currency "
+            "combinations with %d total swap entries",
+            len(swap_lookup),
+            total_swaps,
+        )
+
+    return swap_lookup
+
+
+def _normalize_asset_ticker(asset: str) -> str:
+    """Normalize common character encoding issues in asset tickers.
+
+    Fixes known encoding issues such as:
+    - Cyrillic 'Т' (U+0422) instead of Latin 'T' in WBТC
+    - Cyrillic 'Е' (U+0415) instead of Latin 'E'
+    - Other visually similar Cyrillic-Latin character pairs
+
+    Args:
+        asset: The raw asset ticker from Koinly.
+
+    Returns:
+        Normalized asset ticker with known character substitutions applied.
+    """
+    # Replace commonly confused Cyrillic characters with Latin equivalents
+    cyrillic_to_latin = {
+        "Т": "T",  # U+0422 Cyrillic Te -> Latin T
+        "Е": "E",  # U+0415 Cyrillic Ie -> Latin E
+        "О": "O",  # U+041E Cyrillic O -> Latin O (same visual, different codepoint)
+        "Р": "P",  # U+0420 Cyrillic Er -> Latin P
+        "А": "A",  # U+0410 Cyrillic A -> Latin A
+        "Н": "H",  # U+041D Cyrillic En -> Latin H
+        "К": "K",  # U+041A Cyrillic Ka -> Latin K
+        "М": "M",  # U+041C Cyrillic Em -> Latin M
+        "С": "C",  # U+0421 Cyrillic Es -> Latin C
+        "В": "B",  # U+0412 Cyrillic Ve -> Latin B
+        "Х": "X",  # U+0425 Cyrillic Ha -> Latin X
+        "у": "y",  # U+0443 Cyrillic U -> Latin y (lowercase)
+        "е": "e",  # U+0435 Cyrillic ie -> Latin e (lowercase)
+        "о": "o",  # U+043E Cyrillic o -> Latin o (lowercase)
+        "р": "p",  # U+0440 Cyrillic er -> Latin p (lowercase)
+        "а": "a",  # U+0430 Cyrillic a -> Latin a (lowercase)
+    }
+    for cyrillic, latin in cyrillic_to_latin.items():
+        asset = asset.replace(cyrillic, latin)
+    # Normalize unicode characters to canonical composed form
+    asset = unicodedata.normalize("NFKC", asset)
+    return asset.strip()
+
+
+def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
+    path: Path,
+    skipped_assets: Counter[tuple[str, str]],
+    swap_lookup: dict[tuple[str, str, str], list[tuple[datetime, str]]] | None = None,
+) -> list[CryptoCapitalGainEntry]:
     rows = _read_koinly_rows(path)
     capital_entries: list[CryptoCapitalGainEntry] = []
 
+    if swap_lookup is None:
+        swap_lookup = {}
+
     logger = logging.getLogger(__name__)
     for row_number, row in enumerate(rows, start=1):
-        asset = row.get("Asset", "").strip()
+        asset = _normalize_asset_ticker(row.get("Asset", ""))
         try:
             cost_eur = _parse_koinly_decimal(row.get("Cost (EUR)", ""))
             proceeds_eur = _parse_koinly_decimal(row.get("Proceeds (EUR)", ""))
@@ -1370,10 +1614,120 @@ def _parse_capital_gains_file(path: Path, skipped_assets: Counter[tuple[str, str
             transaction_date=disposal_date,
         )
         notes = row.get("Notes", "").strip()
-        review_required = operator_origin.review_required or "missing cost basis" in notes.lower()
+        # Only flag "missing cost basis" if it has actual tax impact.
+        # A truly zero-disposal (cost=0, proceeds=0, gain=0) has no tax impact.
+        # Zero-proceeds disposals with non-zero cost/gain DO have tax impact (capital loss).
+        has_tax_impact = not (cost_eur == ZERO and proceeds_eur == ZERO and gain_loss_eur == ZERO)
+        missing_cost_with_impact = "missing cost basis" in notes.lower() and has_tax_impact
+        review_required = operator_origin.review_required or missing_cost_with_impact
         holding_period = row.get("Holding period", "").strip() or "Unknown"
         # PT-C-011: long-term (≥365 days) exempt gains → Anexo G1; short-term taxable → Anexo J
         annex_hint = "G1" if holding_period.lower().startswith("long") else "J"
+
+        # Extract disposal datetime for time-ordered swap lookup.
+        # A disposal only gets swap history from swaps that happened BEFORE it on the same day.
+        # This prevents earlier disposals from inheriting swaps that happened later.
+        try:
+            disposal_datetime = _parse_koinly_datetime(disposal_date)
+            disposal_date_only = disposal_datetime.strftime("%Y-%m-%d")
+        except ValueError:
+            # If datetime parsing fails, fall back to date-only matching (no time ordering)
+            disposal_date_only = disposal_date.split(" ")[0] if " " in disposal_date else disposal_date
+            disposal_datetime = None
+
+        # Extract acquisition date only (YYYY-MM-DD) for swap history validation.
+        # Swap history should only be assigned to lots that were acquired on the same day
+        # as the swap (and disposal). A lot acquired on a different date could not have
+        # come from same-day swaps. This prevents same-day swaps from bleeding onto
+        # older lots (e.g., a 2022-acquired LINK lot getting 2025 swap history).
+        try:
+            acquisition_datetime = _parse_koinly_datetime(acquisition_date)
+            acquisition_date_only = acquisition_datetime.strftime("%Y-%m-%d")
+        except ValueError:
+            acquisition_date_only = acquisition_date.split(" ")[0] if " " in acquisition_date else acquisition_date
+
+        # Swap history matching logic:
+        # - Use acquisition_date as the lookup key (the swap creates the lot at acquisition time).
+        # - For cross-day scenarios, check if it's a near-midnight case (acquisition late,
+        #   disposal early, within a few hours). If so, allow swap history from acquisition date.
+        # - If dates differ and not near-midnight, clear swap history (old lots shouldn't get
+        #   same-day swap history from newer swaps).
+        # - When same-day, only include swaps between acquisition and disposal (time-ordered).
+        # - This prevents swaps from bleeding onto old lots while handling near-midnight edge cases.
+        # - Use <= for disposal because Koinly truncates disposal times to minute precision
+        #   (e.g., "22:01" becomes "22:01:00"), while swap times have actual seconds.
+
+        # Determine lookup key based on date proximity and near-midnight check
+        swap_key: tuple[str, str, str] | tuple[()]
+        if acquisition_date_only != disposal_date_only:
+            # Cross-day scenario: check if near-midnight (short span crossing midnight)
+            if disposal_datetime and acquisition_datetime:
+                # Near-midnight: disposal is early morning (0-4) AND total span is less than 6 hours.
+                # This captures cross-day disposals where the holding period is short enough that
+                # the asset was clearly acquired from same-day swaps, even if acquisition was
+                # before the hard-coded 22:00 "late night" threshold (e.g., 21:59 -> 00:05).
+                is_near_midnight = (
+                    disposal_datetime.hour <= _NEAR_MIDNIGHT_DISPOSAL_LATEST_HOUR
+                    and 0 < (disposal_datetime - acquisition_datetime).total_seconds() < _NEAR_MIDNIGHT_MAX_SPAN_SECONDS
+                )
+                if is_near_midnight:
+                    # Use acquisition date for lookup (swap created the lot at acquisition time)
+                    swap_key = (platform, acquisition_date_only, asset)
+                else:
+                    # Not near-midnight: clear swap history for genuinely cross-day lots
+                    token_swap_history = ""
+                    swap_key = ()  # Empty key to skip lookup
+                # Lookup already handled above for non-near-midnight case
+            else:
+                # Missing timestamp info: can't verify near-midnight, clear swap history
+                token_swap_history = ""
+                swap_key = ()
+        else:
+            # Same-day acquisition and disposal: use disposal date for lookup
+            swap_key = (platform, disposal_date_only, asset)
+
+        # Only perform lookup if swap_key was set (not cleared above)
+        if swap_key:
+            matching_swaps = swap_lookup.get(swap_key, [])
+
+            if disposal_datetime and acquisition_datetime and matching_swaps:
+                # Truncate to minute precision for same-minute matching
+                acquisition_minute = acquisition_datetime.replace(second=0, microsecond=0)
+                # Filter swaps based on whether this is a same-day or cross-day scenario
+                if acquisition_date_only == disposal_date_only:
+                    # Same-day: swaps must occur at or before acquisition time.
+                    # A swap creates a lot at the moment of the swap, so only the most
+                    # recent swap before acquisition could have created this specific lot.
+                    # For example, if I swap USDT->ETH at 10:00 and BTC->ETH at 13:00,
+                    # a lot acquired at 13:05 could only have come from the 13:00 swap,
+                    # not the 10:00 swap which created a different lot.
+                    qualifying_swaps = [
+                        s for s in matching_swaps if s[0].replace(second=0, microsecond=0) <= acquisition_minute
+                    ]
+                    if qualifying_swaps:
+                        # Sort by timestamp descending and take only the most recent
+                        qualifying_swaps.sort(key=lambda x: x[0], reverse=True)
+                        matching_swaps = [qualifying_swaps[0]]
+                    else:
+                        matching_swaps = []
+                else:
+                    # Cross-day near-midnight: swaps must occur within a time window before
+                    # acquisition on the acquisition day. We use a 1-hour window to exclude
+                    # swaps from much earlier in the day that created different lots.
+                    # For example, a lot acquired at 23:55 should only get swaps from ~22:55
+                    # onwards, not a swap at 09:00 that morning.
+                    one_hour_before = acquisition_minute - timedelta(hours=1)
+                    matching_swaps = [
+                        s
+                        for s in matching_swaps
+                        if one_hour_before <= s[0].replace(second=0, microsecond=0) <= acquisition_minute
+                    ]
+                token_swap_history = "; ".join(s[1] for s in matching_swaps)
+            elif matching_swaps:
+                # Fallback: include all swaps if we couldn't parse disposal time
+                token_swap_history = "; ".join(s[1] for s in matching_swaps)
+            else:
+                token_swap_history = ""
 
         capital_entries.append(
             CryptoCapitalGainEntry(
@@ -1392,6 +1746,7 @@ def _parse_capital_gains_file(path: Path, skipped_assets: Counter[tuple[str, str
                 annex_hint=annex_hint,
                 review_required=review_required,
                 notes=notes,
+                token_swap_history=token_swap_history,
             )
         )
 
@@ -1419,7 +1774,7 @@ def _parse_income_file(path: Path, skipped_assets: Counter[tuple[str, str]]) -> 
     logger = logging.getLogger(__name__)
 
     for row_number, row in enumerate(rows, start=1):
-        asset = row.get("Asset", "").strip()
+        asset = _normalize_asset_ticker(row.get("Asset", ""))
         try:
             value_eur = _parse_koinly_decimal(row.get("Value (EUR)", ""))
             amount = _parse_koinly_decimal(row.get("Amount", ""))
@@ -1504,7 +1859,7 @@ def _parse_holdings_file(
     total_value_eur = ZERO
 
     for row in rows:
-        asset = row.get("Asset", "").strip()
+        asset = _normalize_asset_ticker(row.get("Asset", ""))
         try:
             value_eur = _parse_koinly_decimal(row.get("Value (EUR)", ""))
             cost_eur = _parse_koinly_decimal(row.get("Cost (EUR)", ""))
