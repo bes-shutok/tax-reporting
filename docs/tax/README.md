@@ -21,6 +21,9 @@ Canonical layout for tax-related documentation in this repository.
 - `../domain/crypto_reporting_guidelines.md`
   - Canonical implementation guidance that turns the archived tax/origin sources into repository behavior.
 
+- `../domain/koinly_guidelines.md`
+  - Practical Koinly repair workflows for known import defects such as wrapped-asset pool actions that lose cost-basis continuity.
+
 ## Non-duplication Rule
 
 - Do not duplicate Portugal tax-law findings inside `crypto-origin/`.
