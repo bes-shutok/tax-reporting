@@ -53,6 +53,7 @@ def _make_entry(  # noqa: PLR0913
     chain: str = "ByBit",
     review_required: bool = False,
     notes: str = "",
+    review_reason: str | None = None,
     token_swap_history: str = "",
     operator_origin: OperatorOrigin = _TEST_OPERATOR,
 ) -> CryptoCapitalGainEntry:
@@ -72,6 +73,7 @@ def _make_entry(  # noqa: PLR0913
         annex_hint="J",
         review_required=review_required,
         notes=notes,
+        review_reason=review_reason,
         token_swap_history=token_swap_history,
     )
 
@@ -688,7 +690,7 @@ def test_aggregate_different_wallets_stay_separate():
 def test_aggregate_review_required_is_or_of_group():
     entries = [
         _make_entry(review_required=False),
-        _make_entry(review_required=True),
+        _make_entry(review_required=True, review_reason="test reason"),
         _make_entry(review_required=False),
     ]
 
@@ -4179,3 +4181,309 @@ def test_capital_gains_swap_history_near_midnight_edge_case_21_59(tmp_path):
         f"Near-midnight disposal (acquired {entry.acquisition_date}, "
         f"disposed {entry.disposal_date}) should have swap history from 21:59 swap"
     )
+
+
+# --- Review reason tests ---
+
+
+def test_bybit_operator_origin_has_review_reason():
+    """ByBit platform must have a specific review_reason explaining account-region concern."""
+    origin = resolve_operator_origin("ByBit")
+    assert origin.review_required is True
+    assert origin.review_reason is not None
+    assert "account-region" in origin.review_reason.lower()
+    assert "Bybit" in origin.review_reason
+
+
+def test_starknet_operator_origin_no_review_required():
+    """Starknet has a known operator with reliable chain derivation; no review needed."""
+    origin = resolve_operator_origin("Starknet")
+    assert origin.review_required is False
+    assert origin.review_reason is None
+
+
+def test_mantle_operator_origin_has_review_reason():
+    """Mantle platform must have a specific review_reason."""
+    origin = resolve_operator_origin("Mantle")
+    assert origin.review_required is True
+    assert origin.review_reason is not None
+    assert "Mantle" in origin.review_reason
+
+
+def test_unknown_operator_origin_has_review_reason():
+    """Unknown platforms must have a specific review_reason."""
+    origin = resolve_operator_origin("SomeNewChain123")
+    assert origin.review_required is True
+    assert origin.review_reason is not None
+    assert "Unknown platform" in origin.review_reason
+
+
+def test_temporal_invalidity_sets_review_reason(caplog):
+    """Out-of-validity transactions must have a review_reason with the service period."""
+    with caplog.at_level(logging.WARNING, logger="shares_reporting.application.crypto_reporting"):
+        origin = resolve_operator_origin(
+            "Berachain", transaction_type="crypto_disposal", transaction_date="2024-06-01 10:00:00"
+        )
+    assert origin.review_required is True
+    assert origin.review_reason is not None
+    assert "2024-06-01" in origin.review_reason
+    assert "service period" in origin.review_reason.lower()
+
+
+def test_valid_transaction_has_no_review_reason():
+    """Valid transactions on known platforms should not have a review_reason."""
+    origin = resolve_operator_origin("Ethereum", transaction_type="crypto_disposal", transaction_date="2025-01-20")
+    assert origin.review_required is False
+    assert origin.review_reason is None
+
+
+def test_capital_entry_review_reason_from_operator():
+    """Capital entries should inherit review_reason from operator origin."""
+    bybit_origin = resolve_operator_origin("ByBit")
+    entry = _make_entry(
+        operator_origin=bybit_origin,
+        review_required=bybit_origin.review_required,
+        review_reason=bybit_origin.review_reason,
+    )
+    assert entry.review_reason == bybit_origin.review_reason
+
+
+def test_capital_entry_review_reason_missing_cost_basis(tmp_path):
+    """Missing cost basis with tax impact must produce review_reason via _parse_capital_gains_file."""
+    csv_content = "\n".join(
+        [
+            "Capital gains report 2025",
+            "",
+            ",".join(
+                [
+                    "Date Sold",
+                    "Date Acquired",
+                    "Asset",
+                    "Amount",
+                    "Cost (EUR)",
+                    "Proceeds (EUR)",
+                    "Gain / loss",
+                    "Notes",
+                    "Wallet Name",
+                    "Holding period",
+                ]
+            ),
+            ",".join(
+                [
+                    "15/01/2025 10:00",
+                    "01/01/2024 10:00",
+                    "ETH",
+                    '"1,00000000"',
+                    '"0,00"',
+                    '"100,00"',
+                    '"100,00"',
+                    "Missing cost basis",
+                    "Kraken",
+                    "Short term",
+                ]
+            ),
+        ]
+    )
+    csv_file = tmp_path / "capital_gains.csv"
+    csv_file.write_text(csv_content, encoding="utf-8")
+
+    from collections import Counter
+
+    from shares_reporting.application.crypto_reporting import _parse_capital_gains_file
+
+    skipped = Counter()
+    entries = _parse_capital_gains_file(csv_file, skipped)
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.review_required is True
+    assert entry.review_reason is not None
+    assert "Missing cost basis" in entry.review_reason
+
+
+def test_aggregate_joins_review_reasons():
+    """Aggregation should join review_reasons from multiple entries."""
+    entries = [
+        _make_entry(review_required=True, notes="note1", review_reason="reason A"),
+        _make_entry(review_required=True, notes="note2", review_reason="reason B"),
+    ]
+    result = _aggregate_capital_entries(entries)
+    assert len(result) == 1
+    assert result[0].review_required is True
+    assert "reason A" in result[0].review_reason
+    assert "reason B" in result[0].review_reason
+
+
+def test_aggregate_review_reason_none_when_all_none():
+    """Aggregation should produce None review_reason when all entries have None."""
+    entries = [
+        _make_entry(review_required=False),
+        _make_entry(review_required=False),
+    ]
+    result = _aggregate_capital_entries(entries)
+    assert len(result) == 1
+    assert result[0].review_reason is None
+
+
+def test_date_parse_failure_sets_review_reason():
+    """Invalid transaction date format should set review_reason."""
+    origin = resolve_operator_origin("Ethereum", transaction_type="crypto_disposal", transaction_date="not-a-date")
+    assert origin.review_required is True
+    assert origin.review_reason is not None
+    assert "date format" in origin.review_reason.lower()
+
+
+# =============================================================================
+# Task 3: Automate resolvable review flags
+# =============================================================================
+
+
+def test_bybit_review_flag_is_intentional_with_reason():
+    """ByBit review flag must stay because region-specific entities cannot be auto-detected from Koinly exports."""
+    origin = resolve_operator_origin("ByBit")
+    assert origin.review_required is True
+    assert origin.operator_country == "AE"
+    assert origin.review_reason is not None
+    assert "account-region" in origin.review_reason
+
+
+def test_bybit_review_reason_propagates_through_capital_gains_csv(tmp_path):
+    """ByBit review reason must propagate from operator origin through full CSV parse."""
+    csv_content = "\n".join(
+        [
+            "Capital gains report 2025",
+            "",
+            ",".join(
+                [
+                    "Date Sold",
+                    "Date Acquired",
+                    "Asset",
+                    "Amount",
+                    "Cost (EUR)",
+                    "Proceeds (EUR)",
+                    "Gain / loss",
+                    "Notes",
+                    "Wallet Name",
+                    "Holding period",
+                ]
+            ),
+            ",".join(
+                [
+                    "15/01/2025 10:00",
+                    "01/01/2024 10:00",
+                    "BTC",
+                    '"0,10000000"',
+                    '"1000,00"',
+                    '"1200,00"',
+                    '"200,00"',
+                    "",
+                    "ByBit",
+                    "Long term",
+                ]
+            ),
+        ]
+    )
+    csv_file = tmp_path / "capital_gains.csv"
+    csv_file.write_text(csv_content, encoding="utf-8")
+
+    from collections import Counter
+
+    from shares_reporting.application.crypto_reporting import _parse_capital_gains_file
+
+    skipped = Counter()
+    entries = _parse_capital_gains_file(csv_file, skipped)
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.review_required is True
+    assert entry.review_reason is not None
+    assert "account-region" in entry.review_reason
+
+
+def test_platforms_without_service_start_date_allow_old_transactions():
+    """Platforms without service_start_date must not flag old transactions as temporally invalid."""
+    kraken_origin = resolve_operator_origin("Kraken", transaction_type="crypto_disposal", transaction_date="2015-01-01")
+    assert kraken_origin.service_start_date is None
+    assert kraken_origin.review_required is False
+
+    binance_origin = resolve_operator_origin(
+        "Binance", transaction_type="crypto_disposal", transaction_date="2017-01-01"
+    )
+    assert binance_origin.service_start_date is None
+    assert binance_origin.review_required is False
+
+
+def test_ethereum_early_service_start_date_allows_historical_transactions():
+    """Ethereum's 2015 service_start_date must allow historical transactions from 2016+."""
+    origin = resolve_operator_origin("Ethereum", transaction_type="crypto_disposal", transaction_date="2016-06-15")
+    assert origin.service_start_date == "2015-07-30"
+    assert origin.review_required is False
+    assert origin.review_reason is None
+
+
+def test_ethereum_service_start_date_allows_exact_start_date():
+    """Transaction on Ethereum's exact service_start_date must be valid."""
+    origin = resolve_operator_origin("Ethereum", transaction_type="crypto_disposal", transaction_date="2015-07-30")
+    assert origin.review_required is False
+
+
+def test_zero_value_entries_never_reach_report(tmp_path):
+    """Zero-value entries must be filtered before reaching the final report output."""
+    csv_content = "\n".join(
+        [
+            "Capital gains report 2025",
+            "",
+            ",".join(
+                [
+                    "Date Sold",
+                    "Date Acquired",
+                    "Asset",
+                    "Amount",
+                    "Cost (EUR)",
+                    "Proceeds (EUR)",
+                    "Gain / loss",
+                    "Notes",
+                    "Wallet Name",
+                    "Holding period",
+                ]
+            ),
+            ",".join(
+                [
+                    "01/01/2025 10:00",
+                    "01/01/2024 10:00",
+                    "FEE1",
+                    '"10,00000000"',
+                    "0.0",
+                    "0.0",
+                    "0.0",
+                    "",
+                    "Kraken",
+                    "Short term",
+                ]
+            ),
+            ",".join(
+                [
+                    "02/01/2025 10:00",
+                    "01/01/2024 10:00",
+                    "FEE2",
+                    '"5,00000000"',
+                    "0.0",
+                    "0.0",
+                    "0.0",
+                    "",
+                    "Kraken",
+                    "Short term",
+                ]
+            ),
+        ]
+    )
+    csv_file = tmp_path / "capital_gains.csv"
+    csv_file.write_text(csv_content, encoding="utf-8")
+
+    from collections import Counter
+
+    from shares_reporting.application.crypto_reporting import _parse_capital_gains_file
+
+    skipped = Counter()
+    entries = _parse_capital_gains_file(csv_file, skipped)
+    assert len(entries) == 0
+    assert skipped[("capital_gains", "FEE1")] == 1
+    assert skipped[("capital_gains", "FEE2")] == 1

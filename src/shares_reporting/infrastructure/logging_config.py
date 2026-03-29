@@ -1,4 +1,4 @@
-"""Logging configuration for the shares reporting application.
+"""Logging configuration for the tax reporting application.
 
 Provides centralized logging setup with appropriate log levels,
 formatters, and handlers for different environments.

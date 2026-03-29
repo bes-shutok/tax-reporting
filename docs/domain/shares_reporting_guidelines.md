@@ -4,7 +4,7 @@ Cross-cutting reporting guidelines for this repository outside the narrow tax-la
 
 ## Terminology
 
-- `SRG-xxx`: numbered shares-reporting guideline for this repository.
+- `SRG-xxx`: numbered tax-reporting guideline for this repository.
 - Core report: the main Interactive Brokers capital-gains / dividend output.
 - Auxiliary dataset: optional supporting input such as Koinly crypto exports.
 

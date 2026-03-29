@@ -239,7 +239,7 @@ Create a specialized skill for crypto tax features that encodes lessons learned:
 # crypto-implementation Skill
 
 ## Context
-This skill guides implementation of crypto tax features in the shares-reporting project, incorporating lessons learned from the aggregate-crypto-rewards implementation.
+This skill guides implementation of crypto tax features in the tax-reporting project, incorporating lessons learned from the aggregate-crypto-rewards implementation.
 
 ## Fiat Currency Classification
 

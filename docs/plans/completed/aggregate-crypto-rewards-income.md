@@ -13,7 +13,7 @@
 ## Validation Commands
 
 - `uv run pytest tests/unit/application/test_crypto_reporting.py tests/integration/test_excel_generation_integration.py`
-- `uv run shares-reporting`
+- `uv run tax-reporting`
 
 ### Task 1: Classify rewards before aggregation
 

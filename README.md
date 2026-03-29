@@ -1,8 +1,8 @@
-# Investment Reporting Tool
+# Tax Reporting Tool
 
 ## Overview
 
-The investment reporting tool is designed to provide a simple and efficient way to generate capital gains data for tax reporting purposes. The tool can be used for reporting in various countries with similar requirements of grouping bought/sold investments.
+The tax reporting tool processes Interactive Brokers and Koinly CSV reports to generate tax reporting data for capital gains, dividend income, and crypto rewards calculations. It matches buy/sell transactions using FIFO methodology, processes dividend payments with tax information, aggregates crypto data by Portuguese tax rules, and generates comprehensive Excel reports with currency conversion.
 
 **Current Capabilities:**
 - ✅ **Share Trading**: Processes Interactive Brokers CSV reports for stock trading
@@ -75,11 +75,11 @@ This will create a `.venv` folder in your project root that editors can detect a
 
 ```bash
 # Install dependencies
-cd shares-reporting
+cd tax-reporting
 uv sync --extra dev
 
 # Run the application
-uv run shares-reporting
+uv run tax-reporting
 ```
 
 ### Testing

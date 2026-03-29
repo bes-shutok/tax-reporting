@@ -54,29 +54,29 @@ uv run tax-reporting
 - `pyproject.toml`
 - `src/shares_reporting/main.py`
 
-- [ ] Update `pyproject.toml`:
+- [x] Update `pyproject.toml`:
   - Change package name from `shares-reporting` to `tax-reporting` (line 2)
   - Change entry point from `shares-reporting` to `tax-reporting` (line 34)
   - Update description to reflect comprehensive tax reporting
   - Update homepage/repository URLs if needed
 
-- [ ] Update `src/shares_reporting/main.py`:
+- [x] Update `src/shares_reporting/main.py`:
   - Change log file name from `shares-reporting.log` to `tax-reporting.log` (line 39)
   - Update log messages that mention "shares reporting" to "tax reporting"
   - Update module docstring to reflect comprehensive tax reporting
 
-- [ ] Update `CLAUDE.md` and `AGENTS.md`:
+- [x] Update `CLAUDE.md` and `AGENTS.md`:
   - Replace all `shares-reporting` references with `tax-reporting`
   - Update quick start commands
   - Update development workflow commands
   - Ensure both files remain synchronized
 
-- [ ] Update `README.md`:
+- [x] Update `README.md`:
   - Replace `shares-reporting` with `tax-reporting` in all examples
   - Update installation and usage instructions
   - Update project description to reflect comprehensive tax reporting
 
-- [ ] Update other documentation files:
+- [x] Update other documentation files:
   - `docs/domain/shares_reporting_guidelines.md` - consider renaming to `tax_reporting_guidelines.md`
   - `docs/plans/completed/*.md` - update historical references where appropriate
   - Update any remaining references in comments or docstrings
@@ -87,33 +87,33 @@ uv run tax-reporting
 - `src/shares_reporting/application/crypto_reporting.py`
 - `src/shares_reporting/application/persisting.py`
 
-- [ ] **Add specific review reasons** to `CryptoCapitalEntry` and `CryptoRewardIncomeEntry`:
+- [x] **Add specific review reasons** to `CryptoCapitalEntry` and `CryptoRewardIncomeEntry`:
   - Add `review_reason: str | None` field to store the specific reason for review
   - Populate this field when setting `review_required=True` with actionable context
 
-- [ ] **Update ByBit handling**:
+- [x] **Update ByBit handling**:
   - Keep `review_required=True` but add specific reason: "Bybit uses account-region specific entities; verify your account region matches the operator entity"
   - This preserves the review requirement while making it actionable
 
-- [ ] **Update Starknet handling**:
+- [x] **Update Starknet handling**:
   - Consider removing `review_required=True` since:
     - Operator is known (Starknet Foundation, Cayman Islands)
     - Service start date is documented (2021-11-16)
     - Chain derivation is reliable
   - If keeping review flag, add specific reason
 
-- [ ] **Improve temporal invalidity messages**:
+- [x] **Improve temporal invalidity messages**:
   - Instead of generic review flag, add specific reason: "Transaction date X is outside known service period [Y, Z] for platform"
   - Include the service period in the reason
 
-- [ ] **Improve missing cost basis handling**:
+- [x] **Improve missing cost basis handling**:
   - Already well-targeted (only when tax impact exists)
   - Add specific reason when flagged: "Missing cost basis with tax impact - verify cost calculation"
 
-- [ ] **Improve foreign tax parsing failure**:
+- [x] **Improve foreign tax parsing failure**:
   - Add specific reason: "Foreign tax field could not be parsed - verify tax credit manually"
 
-- [ ] **Update Excel output** (`persisting.py`):
+- [x] **Update Excel output** (`persisting.py`):
   - Modify the review flag column to include the specific reason
   - Instead of just "TRUE", show "TRUE: [specific reason]"
   - This makes manual review more efficient
@@ -123,17 +123,17 @@ uv run tax-reporting
 **Files:**
 - `src/shares_reporting/application/crypto_reporting.py`
 
-- [ ] **ByBit account-region specific**: Consider if we can:
+- [x] **ByBit account-region specific**: Consider if we can:
   - Detect the account region from Koinly export (if available)
   - Or document that UAE (Dubai) is the default/primary entity
   - Current approach (review flag) is acceptable given the complexity
 
-- [ ] **Temporal validity edge cases**: Review if the temporal checks are too strict:
+- [x] **Temporal validity edge cases**: Review if the temporal checks are too strict:
   - For long-running platforms (Ethereum, Bitcoin), the lower bound check may be inappropriate
   - Already handled: "When service_start_date is None, skip lower-bound check"
   - Verify this is working correctly for historical transactions
 
-- [ ] **Zero-value disposals**: Ensure these are filtered out:
+- [x] **Zero-value disposals**: Ensure these are filtered out:
   - Already done: `if cost_eur == ZERO and proceeds_eur == ZERO and gain_loss_eur == ZERO: continue`
   - Verify no zero-value entries are reaching the report
 
@@ -144,29 +144,29 @@ uv run tax-reporting
 - `tests/integration/test_crypto_reporting_integration.py`
 - `tests/end_to_end/test_full_workflow.py`
 
-- [ ] Update tests that reference `shares-reporting` command:
+- [x] Update tests that reference `shares-reporting` command:
   - Change to `tax-reporting`
   - Update log file references
   - Update any assertions checking command output
 
-- [ ] Add tests for new `review_reason` field:
+- [x] Add tests for new `review_reason` field:
   - Verify specific reasons are set correctly
   - Verify review flags with reasons appear correctly in Excel output
 
-- [ ] Verify all tests pass after changes:
+- [x] Verify all tests pass after changes:
   - `uv run pytest -xvs`
 
 ## Task 5: Documentation and Cleanup
 
-- [ ] Update `docs/domain/crypto_rules.md` if needed to reflect review flag improvements
+- [x] Update `docs/domain/crypto_rules.md` if needed to reflect review flag improvements
 
-- [ ] Update `docs/domain/crypto_implementation_guidelines.md` with lessons learned about review flags
+- [x] Update `docs/domain/crypto_implementation_guidelines.md` with lessons learned about review flags
 
-- [ ] Update `CLAUDE.md` with new command name and any new patterns
+- [x] Update `CLAUDE.md` with new command name and any new patterns
 
-- [ ] Verify `AGENTS.md` stays synchronized with `CLAUDE.md`
+- [x] Verify `AGENTS.md` stays synchronized with `CLAUDE.md`
 
-- [ ] Consider creating a migration guide for users (if this is a published tool)
+- [x] Consider creating a migration guide for users (if this is a published tool) - skipped; not a published tool
 
 ## Notes
 
