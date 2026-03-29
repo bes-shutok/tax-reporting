@@ -48,6 +48,7 @@ This file provides guidance to coding agents when working with code in this repo
 - Reward classification into taxable_now vs deferred_by_law must use `_classify_reward_tax_status()` and cite CRG-001/CRG-002 rule IDs.
 - Crypto worksheet must present rewards in two sections: IRS-ready filing summary (taxable_now only) and support detail (both classifications).
 - The aggregation step must fail with `FileProcessingError` if any taxable-now row cannot be assigned all mandatory IRS fields (valid Tabela X country code).
+- When `review_required=True` is set on `CryptoCapitalGainEntry` or `CryptoRewardIncomeEntry`, the `review_reason` field must contain a specific, actionable explanation. The Excel output shows "YES: \<reason\>" rather than a bare boolean. See PT-C-030.
 
 ### 4. Agent Workflow Rules
 
@@ -67,13 +68,13 @@ This file provides guidance to coding agents when working with code in this repo
 
 ## Project Overview
 
-Shares reporting tool is a financial application that processes Interactive Brokers CSV reports to generate tax reporting data for capital gains and dividend income calculations. It matches buy/sell transactions within the same day to calculate capital gains, processes dividend payments with tax information, and generates comprehensive Excel reports with currency conversion.
+Tax reporting tool is a comprehensive financial application that processes Interactive Brokers and Koinly CSV reports to generate tax reporting data for capital gains, dividend income, and crypto rewards calculations. It matches buy/sell transactions within the same day to calculate capital gains, processes dividend payments with tax information, aggregates crypto data by Portuguese tax rules, and generates comprehensive Excel reports with currency conversion.
 
 ## Quick Start
 
 ```bash
 # Using UV (recommended)
-uv run shares-reporting
+uv run tax-reporting
 
 # Direct execution (alternative)
 uv run python ./src/shares_reporting/main.py
@@ -127,7 +128,7 @@ uv pip list --outdated
 # Quick development cycle
 uv run pytest                     # Run tests (fast)
 uvx ruff check . --fix && uvx ruff format .  # Lint and format (fast)
-uv run shares-reporting       # Run the application
+uv run tax-reporting       # Run the application
 ```
 
 #### Quality Assurance
@@ -145,9 +146,9 @@ uv run basedpyright src/ tests/  # Type checking
 ```
 
 ### Common Mistakes to Avoid
-- `uvx shares-reporting` - ❌ Won't work (project is not published to PyPI)
-- `uvx run shares-reporting` - ❌ Installs 'run' package, not what you want
-- `uv run shares-reporting` - ✅ Correct way to run the local application
+- `uvx tax-reporting` - ❌ Won't work (project is not published to PyPI)
+- `uvx run tax-reporting` - ❌ Installs 'run' package, not what you want
+- `uv run tax-reporting` - ✅ Correct way to run the local application
 - `uvx pytest` - ❌ Runs pytest in an isolated env without the local package; `shares_reporting` import will fail
 - `uv run pytest` - ✅ Correct way to run tests (uses project's venv with local package installed)
 
@@ -604,7 +605,7 @@ if len(row) < MIN_REQUIRED_COLUMNS:
 ## Project Structure
 
 ```
-shares-reporting/
+tax-reporting/
 ├── src/                     # Source code (src layout)
 │   └── shares_reporting/
 │       ├── __init__.py        # Package exports

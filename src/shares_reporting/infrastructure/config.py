@@ -1,4 +1,4 @@
-"""Configuration management for the shares reporting application."""
+"""Configuration management for the tax reporting application."""
 
 from __future__ import annotations
 

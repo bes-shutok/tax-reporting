@@ -1,7 +1,7 @@
 [project]
-name = "shares-reporting"
+name = "tax-reporting"
 version = "0.0.1"
-description = "Investment portfolio reporting tool that processes Interactive Brokers CSV exports to generate capital gains and dividend income reports for tax purposes."
+description = "Comprehensive tax reporting tool that processes Interactive Brokers and Koinly CSV exports to generate capital gains, dividend income, and crypto tax reports for Portuguese tax compliance."
 authors = [{name = "Andrey Dmitriev", email = "dmitriev.andrey.vitalyevich@gmail.com"}]
 readme = "README.md"
 license = {text = "MIT"}
@@ -31,15 +31,18 @@ dev = [
 ]
 
 [project.scripts]
-shares-reporting = "shares_reporting.main:main"
+tax-reporting = "shares_reporting.main:main"
 
 [project.urls]
-homepage = "https://github.com/bes-shutok/shares"
-repository = "https://github.com/bes-shutok/shares"
+homepage = "https://github.com/bes-shutok/tax-reporting"
+repository = "https://github.com/bes-shutok/tax-reporting"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shares_reporting"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

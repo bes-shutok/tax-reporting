@@ -543,7 +543,7 @@ def add_crypto_report_sheet(  # noqa: PLR0912, PLR0915
         worksheet.cell(row_no, 12, entry.operator_origin.operator_entity)
         worksheet.cell(row_no, 13, entry.operator_origin.operator_country)
         worksheet.cell(row_no, 14, entry.annex_hint)
-        worksheet.cell(row_no, 15, "YES" if entry.review_required else "NO")
+        worksheet.cell(row_no, 15, f"YES: {entry.review_reason}" if entry.review_required else "NO")
         worksheet.cell(row_no, 16, entry.notes)
         worksheet.cell(row_no, 17, entry.token_swap_history)
         row_no += 1
@@ -644,7 +644,7 @@ def add_crypto_report_sheet(  # noqa: PLR0912, PLR0915
             worksheet.cell(row_no, 7, entry.chain)
             worksheet.cell(row_no, 8, entry.operator_origin.operator_country)
             worksheet.cell(row_no, 9, float(entry.foreign_tax_eur))
-            worksheet.cell(row_no, 10, "YES" if entry.review_required else "NO")
+            worksheet.cell(row_no, 10, f"YES: {entry.review_reason}" if entry.review_required else "NO")
             worksheet.cell(row_no, 11, entry.description)
             row_no += 1
     else:
@@ -696,7 +696,7 @@ def add_crypto_report_sheet(  # noqa: PLR0912, PLR0915
             worksheet.cell(row_no, 7, entry.chain)
             worksheet.cell(row_no, 8, entry.operator_origin.operator_country)
             worksheet.cell(row_no, 9, float(entry.foreign_tax_eur))
-            worksheet.cell(row_no, 10, "YES" if entry.review_required else "NO")
+            worksheet.cell(row_no, 10, f"YES: {entry.review_reason}" if entry.review_required else "NO")
             worksheet.cell(row_no, 11, entry.description)
             row_no += 1
     else:

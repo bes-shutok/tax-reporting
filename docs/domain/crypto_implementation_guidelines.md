@@ -426,6 +426,37 @@ When implementing crypto features, update:
 3. **AGENTS.md** - Synchronize with CLAUDE.md
 4. **Domain docs** - Update `crypto_rules.md` or `crypto_reporting_guidelines.md` with rule IDs
 
+## Review Flag Specificity
+
+### Pattern: review_reason Field
+
+Every crypto entry that sets `review_required=True` must also populate `review_reason` with a specific, actionable explanation. The Excel output renders this as "YES: \<reason\>" rather than a bare boolean.
+
+### Where review_reason Is Set
+
+| Location | Trigger | Example Reason |
+|----------|---------|---------------|
+| `resolve_operator_origin()` | ByBit platform | "Bybit uses account-region specific entities; verify your account region matches the operator entity" |
+| `resolve_operator_origin()` | Unknown platform | "Unknown platform - operator origin could not be determined automatically" |
+| `resolve_operator_origin()` | Transaction date unparseable | "Transaction date format could not be parsed; temporal validity check skipped" |
+| `resolve_operator_origin()` | Date outside service period | "Transaction date X is outside known service period [Y, Z] for platform" |
+| `_parse_capital_gains_file()` | Missing cost basis with proceeds > 0 | "Missing cost basis with tax impact - verify cost calculation" |
+| `_parse_income_file()` | Foreign tax field unparseable | "Foreign tax field could not be parsed - verify tax credit manually" |
+
+### Aggregation of review_reason
+
+When entries are aggregated by `_aggregate_capital_entries()`, multiple distinct reasons are joined with "; " using `dict.fromkeys()` to deduplicate while preserving order:
+
+```python
+review_reason="; ".join(dict.fromkeys(e.review_reason for e in group if e.review_reason)) or None,
+```
+
+### Lessons Learned
+
+1. Bare "TRUE" review flags required users to trace through source data to understand why. Specific reasons eliminate this round-trip.
+2. The `review_reason` field is optional (`str | None`) — entries without review flags have `None`, not an empty string.
+3. When adding a new review flag condition, always provide a `review_reason` that tells the user what to verify, not just that something needs review.
+
 ## Common Implementation Pitfalls
 
 ### Pitfall 1: Using `startswith()` for Pattern Matching

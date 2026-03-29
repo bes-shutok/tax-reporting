@@ -1,4 +1,4 @@
-"""Extraction package for shares reporting.
+"""Extraction package for tax reporting.
 
 Provides functionality to parse Interactive Brokers CSV exports,
 extracting trades, dividends, and withholding taxes using a

@@ -1,6 +1,7 @@
-"""Main entry point for the shares reporting application.
+"""Main entry point for the tax reporting application.
 
-Processes Interactive Brokers CSV exports to generate tax reporting data for capital gains calculations.
+Processes Interactive Brokers and Koinly CSV exports to generate comprehensive tax reporting data
+for capital gains, dividend income, and crypto rewards.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ def main(  # noqa: PLR0912, PLR0915
         log_level: Logging level
     """
     # Set up logging
-    log_file = Path("logs", "shares-reporting.log") if output_dir else None
+    log_file = Path("logs", "tax-reporting.log") if output_dir else None
     configure_application_logging(level=log_level, log_file=log_file)
     logger = create_module_logger(__name__)
 
@@ -52,7 +53,7 @@ def main(  # noqa: PLR0912, PLR0915
         extract_path = output_dir / "extract.xlsx"
         leftover_path = output_dir / "shares-leftover.csv"
 
-        logger.info("Starting shares reporting application")
+        logger.info("Starting tax reporting application")
         logger.info("Source file: %s", source_file)
         logger.info("Output directory: %s", output_dir)
 

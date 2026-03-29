@@ -298,6 +298,7 @@ class TestDividendExcelPersisting:
                     operator_origin=bybit_origin,
                     annex_hint="J",
                     review_required=bybit_origin.review_required,
+                    review_reason=bybit_origin.review_reason,
                     notes="",
                     token_swap_history="",
                 )
@@ -316,6 +317,7 @@ class TestDividendExcelPersisting:
                     operator_origin=wirex_origin,
                     annex_hint="J",
                     review_required=wirex_origin.review_required,
+                    review_reason=wirex_origin.review_reason,
                     description="",
                 )
             ],
@@ -407,6 +409,7 @@ class TestDividendExcelPersisting:
                     operator_origin=bybit_origin,
                     annex_hint="J",
                     review_required=bybit_origin.review_required,
+                    review_reason=bybit_origin.review_reason,
                     notes="",
                     token_swap_history="",
                 )
@@ -425,6 +428,7 @@ class TestDividendExcelPersisting:
                     operator_origin=wirex_origin,
                     annex_hint="J",
                     review_required=wirex_origin.review_required,
+                    review_reason=wirex_origin.review_reason,
                     description="",
                 )
             ],
@@ -604,6 +608,115 @@ class TestDividendExcelPersisting:
         # Check swap history value in data row (using 1-based column index)
         swap_history = capital_data_row[swap_history_col_idx - 1]
         assert swap_history == "SUI → HASUI", f"Expected 'SUI → HASUI' swap history, got {swap_history}"
+
+        workbook.close()
+
+    def test_crypto_sheet_review_reason_in_excel_output(self, tmp_path):
+        """Assert review_reason appears in Excel cells as 'YES: <reason>' when review_required."""
+        bybit_origin = resolve_operator_origin("ByBit")
+        wirex_origin = resolve_operator_origin("Wirex", transaction_type="crypto_deposit")
+
+        crypto_report = CryptoTaxReport(
+            tax_year=2025,
+            capital_entries=[
+                CryptoCapitalGainEntry(
+                    disposal_date="2025-01-13 13:01:00",
+                    acquisition_date="2024-11-18 00:15:00",
+                    asset="USDT",
+                    amount=Decimal("1.5"),
+                    cost_eur=Decimal("1.25"),
+                    proceeds_eur=Decimal("1.35"),
+                    gain_loss_eur=Decimal("0.10"),
+                    holding_period="Short term",
+                    wallet="ByBit (2)",
+                    platform="ByBit",
+                    chain="ByBit",
+                    operator_origin=bybit_origin,
+                    annex_hint="J",
+                    review_required=bybit_origin.review_required,
+                    review_reason=bybit_origin.review_reason,
+                    notes="",
+                    token_swap_history="",
+                )
+            ],
+            reward_entries=[
+                CryptoRewardIncomeEntry(
+                    date="2025-01-01 00:01:00",
+                    asset="WXT",
+                    amount=Decimal("5"),
+                    value_eur=Decimal("17.10"),
+                    income_label="Reward",
+                    source_type="Reward",
+                    wallet="Wirex",
+                    platform="Wirex",
+                    chain="Wirex",
+                    operator_origin=wirex_origin,
+                    annex_hint="J",
+                    review_required=False,
+                    description="",
+                )
+            ],
+            reconciliation=CryptoReconciliationSummary(
+                capital_rows=1,
+                reward_rows=1,
+                short_term_rows=1,
+                long_term_rows=0,
+                mixed_rows=0,
+                unknown_rows=0,
+                capital_cost_total_eur=Decimal("1.25"),
+                capital_proceeds_total_eur=Decimal("1.35"),
+                capital_gain_total_eur=Decimal("0.10"),
+                reward_total_eur=Decimal("17.10"),
+                opening_holdings=None,
+                closing_holdings=None,
+            ),
+            skipped_zero_value_tokens=[],
+            pdf_summary=None,
+        )
+
+        report_path = tmp_path / "crypto_review_reason_report.xlsx"
+        generate_tax_report(
+            extract=report_path,
+            capital_gain_lines_per_company={},
+            dividend_income_per_company={},
+            crypto_tax_report=crypto_report,
+        )
+
+        assert report_path.exists()
+
+        import openpyxl
+
+        workbook = openpyxl.load_workbook(report_path)
+        crypto_sheet = workbook["Crypto"]
+
+        # Find capital gains data row and reward row in support detail section
+        capital_review_cell = None
+        reward_review_cell = None
+        found_capital_review = False
+        found_reward_review = False
+        in_deferred = False
+        for row in crypto_sheet.iter_rows(values_only=True):
+            if row and isinstance(row[0], str) and "DEFERRED BY LAW" in row[0]:
+                in_deferred = True
+            if in_deferred and row and row[0] == "2025-01-01 00:01:00":
+                reward_review_cell = row[9] if len(row) > 9 else None
+                found_reward_review = True
+                break
+            if row and row[0] == "2025-01-13 13:01:00":
+                capital_review_cell = row[14] if len(row) > 14 else None
+                found_capital_review = True
+
+        assert found_capital_review, "Capital data row not found"
+        assert capital_review_cell is not None
+        assert isinstance(capital_review_cell, str)
+        assert capital_review_cell.startswith("YES:"), f"Expected 'YES: ...' but got '{capital_review_cell}'"
+        assert "account-region" in capital_review_cell.lower(), (
+            f"Expected account-region in review reason, got '{capital_review_cell}'"
+        )
+
+        assert found_reward_review, "Reward row not found in deferred support detail section"
+        assert reward_review_cell is not None
+        assert reward_review_cell == "NO", f"Expected 'NO' for non-review reward, got '{reward_review_cell}'"
 
         workbook.close()
 

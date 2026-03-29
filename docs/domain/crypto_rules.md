@@ -241,3 +241,15 @@ capital losses between −1 and 0 EUR, even though losses may in principle carry
 for 5 years under PT-C-016.
 Rationale: this codebase prioritises keeping the manual filing set manageable; retaining
 large volumes of sub-1-EUR losses would materially bloat the report without practical value.
+
+**PT-C-030** `[IMPLEMENTATION DECISION | 2026-03-27]`
+Review flags in the Excel report carry specific, actionable reasons via the `review_reason`
+field on `CryptoCapitalGainEntry` and `CryptoRewardIncomeEntry`. When `review_required=True`,
+the Excel column shows "YES: \<reason\>" instead of a bare boolean. Each reason must explain
+what the user needs to verify (e.g. "Bybit uses account-region specific entities; verify your
+account region matches the operator entity"). Multiple reasons for the same entry are joined
+with "; ". The goal is not to eliminate all review flags but to ensure each flag provides
+enough context for the user to take action without re-examining source data.
+Rationale: bare "YES" review flags required the user to trace back through source data
+and operator mappings to understand why the flag was set. Specific reasons make manual
+review more efficient and reduce the risk of incorrect dismissals.

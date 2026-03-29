@@ -1,4 +1,4 @@
-"""Application layer for shares reporting.
+"""Application layer for tax reporting.
 
 Contains business logic services and orchestration components that handle
 use cases and coordinate between domain objects.

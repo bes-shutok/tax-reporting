@@ -118,6 +118,7 @@ class OperatorOrigin:
     source_checked_on: str
     confidence: str
     review_required: bool
+    review_reason: str | None = None
     service_start_date: str | None = None
     valid_from: str | None = None
     valid_until: str | None = None
@@ -179,6 +180,10 @@ class OperatorOrigin:
                     f"must be on or after valid_from ({normalized_from})"
                 )
 
+        # Validate review_reason is set when review_required is True
+        if self.review_required and not self.review_reason:
+            raise ValueError("review_reason must be set when review_required=True")
+
         # Assign normalized values back to frozen dataclass
         object.__setattr__(self, "service_start_date", normalized_service_start)
         object.__setattr__(self, "valid_from", normalized_from)
@@ -204,7 +209,13 @@ class CryptoCapitalGainEntry:
     annex_hint: str
     review_required: bool
     notes: str
+    review_reason: str | None = None
     token_swap_history: str = ""
+
+    def __post_init__(self) -> None:
+        """Validate review_reason is provided when review_required is True."""
+        if self.review_required and not self.review_reason:
+            raise ValueError("review_reason must be set when review_required=True")
 
 
 @dataclass(frozen=True)
@@ -224,8 +235,14 @@ class CryptoRewardIncomeEntry:
     annex_hint: str
     review_required: bool
     description: str
+    review_reason: str | None = None
     tax_classification: RewardTaxClassification = RewardTaxClassification.DEFERRED_BY_LAW
     foreign_tax_eur: Decimal = ZERO
+
+    def __post_init__(self) -> None:
+        """Validate review_reason is provided when review_required is True."""
+        if self.review_required and not self.review_reason:
+            raise ValueError("review_reason must be set when review_required=True")
 
 
 @dataclass(frozen=True)
@@ -862,7 +879,13 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
         """
         # If date parsing failed, mark for review to ensure correct tax reporting
         if date_parse_failed:
-            return replace(origin, review_required=True)
+            reason = "Transaction date format could not be parsed; temporal validity check skipped"
+            combined = f"{origin.review_reason}; {reason}" if origin.review_reason else reason
+            return replace(
+                origin,
+                review_required=True,
+                review_reason=combined,
+            )
 
         # Use service_start_date only for transaction matching (valid_from is for audit trail only)
         # When service_start_date is None, skip lower-bound check to avoid false positives
@@ -881,7 +904,16 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
                 origin.valid_until or "present",
             )
             # Return a modified origin with review_required=True to surface in the workbook
-            return replace(origin, review_required=True)
+            reason = (
+                f"Transaction date {parsed_date} is outside known service period "
+                f"[{lower_bound or 'unknown'}, {origin.valid_until or 'present'}] for {origin.platform}"
+            )
+            combined = f"{origin.review_reason}; {reason}" if origin.review_reason else reason
+            return replace(
+                origin,
+                review_required=True,
+                review_reason=combined,
+            )
 
         return origin
 
@@ -927,6 +959,10 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
                 source_checked_on="2026-03-08",
                 confidence="low",
                 review_required=True,
+                review_reason=(
+                    "Bybit uses account-region specific entities; "
+                    "verify your account region matches the operator entity"
+                ),
                 valid_from=None,  # Historical operator, exact start date unknown
             )
         )
@@ -957,7 +993,7 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
                 source_url="https://www.starknet.io/privacy-policy/",
                 source_checked_on="2026-03-15",
                 confidence="medium",
-                review_required=True,
+                review_required=False,
                 service_start_date="2021-11-16",  # Starknet mainnet-alpha launch
                 valid_from=None,
             )
@@ -1099,6 +1135,9 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
                 source_checked_on="2026-03-15",
                 confidence="medium",
                 review_required=True,
+                review_reason=(
+                    "Mantle Foundation operator entity based on trademark registration; verify current entity structure"
+                ),
                 service_start_date="2023-07-17",  # Mantle mainnet launch
                 valid_from="2024-03-15",
             )
@@ -1207,6 +1246,7 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
             source_checked_on="2026-03-08",
             confidence="low",
             review_required=True,
+            review_reason="Unknown platform - operator origin could not be determined automatically",
             valid_from="2026-03-08",  # Unknown platform - use source check date as valid_from
         )
     )
@@ -1366,6 +1406,7 @@ def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[Cr
                 operator_origin=first.operator_origin,
                 annex_hint=first.annex_hint,
                 review_required=any(e.review_required for e in group),
+                review_reason="; ".join(dict.fromkeys(e.review_reason for e in group if e.review_reason)) or None,
                 notes="; ".join(dict.fromkeys(e.notes for e in group if e.notes)),
                 token_swap_history="; ".join(
                     dict.fromkeys(e.token_swap_history for e in group if e.token_swap_history)
@@ -1614,12 +1655,15 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
             transaction_date=disposal_date,
         )
         notes = row.get("Notes", "").strip()
-        # Only flag "missing cost basis" if it has actual tax impact.
-        # A truly zero-disposal (cost=0, proceeds=0, gain=0) has no tax impact.
-        # Zero-proceeds disposals with non-zero cost/gain DO have tax impact (capital loss).
-        has_tax_impact = not (cost_eur == ZERO and proceeds_eur == ZERO and gain_loss_eur == ZERO)
-        missing_cost_with_impact = "missing cost basis" in notes.lower() and has_tax_impact
+        # Zero-value entries are already filtered above,
+        # so all remaining entries have non-zero amounts and thus tax impact.
+        missing_cost_with_impact = "missing cost basis" in notes.lower()
         review_required = operator_origin.review_required or missing_cost_with_impact
+
+        review_reason = operator_origin.review_reason
+        if missing_cost_with_impact:
+            cost_basis_reason = "Missing cost basis with tax impact - verify cost calculation"
+            review_reason = f"{review_reason}; {cost_basis_reason}" if review_reason else cost_basis_reason
         holding_period = row.get("Holding period", "").strip() or "Unknown"
         # PT-C-011: long-term (≥365 days) exempt gains → Anexo G1; short-term taxable → Anexo J
         annex_hint = "G1" if holding_period.lower().startswith("long") else "J"
@@ -1745,6 +1789,7 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
                 operator_origin=operator_origin,
                 annex_hint=annex_hint,
                 review_required=review_required,
+                review_reason=review_reason,
                 notes=notes,
                 token_swap_history=token_swap_history,
             )
@@ -1807,6 +1852,7 @@ def _parse_income_file(path: Path, skipped_assets: Counter[tuple[str, str]]) -> 
         # Parse foreign tax if present in Koinly report (optional field)
         foreign_tax_eur = ZERO
         review_required = operator_origin.review_required
+        review_reason = operator_origin.review_reason
         if "Tax (EUR)" in row or "Foreign Tax" in row:
             try:
                 tax_field = row.get("Tax (EUR)", "") or row.get("Foreign Tax", "")
@@ -1822,6 +1868,8 @@ def _parse_income_file(path: Path, skipped_assets: Counter[tuple[str, str]]) -> 
                     exc,
                 )
                 review_required = True  # Flag for manual review since tax data was lost
+                tax_parse_reason = "Foreign tax field could not be parsed - verify tax credit manually"
+                review_reason = f"{review_reason}; {tax_parse_reason}" if review_reason else tax_parse_reason
 
         reward_entries.append(
             CryptoRewardIncomeEntry(
@@ -1837,6 +1885,7 @@ def _parse_income_file(path: Path, skipped_assets: Counter[tuple[str, str]]) -> 
                 operator_origin=operator_origin,
                 annex_hint="J",
                 review_required=review_required,
+                review_reason=review_reason,
                 description=description,
                 tax_classification=tax_classification,
                 foreign_tax_eur=foreign_tax_eur,

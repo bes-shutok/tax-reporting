@@ -1,4 +1,4 @@
-"""Custom exceptions for the shares reporting domain.
+"""Custom exceptions for the tax reporting domain.
 
 Provides specific exception types for different error scenarios
 to enable better error handling and user-friendly messages.
@@ -6,7 +6,7 @@ to enable better error handling and user-friendly messages.
 
 
 class SharesReportingError(Exception):
-    """Base exception for all shares reporting errors."""
+    """Base exception for all tax reporting errors."""
 
     pass
 
