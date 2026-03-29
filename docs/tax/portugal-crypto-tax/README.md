@@ -23,11 +23,34 @@ This folder stores official references and implementation notes used by the `Cry
 
 ## Report Mapping Used by the Code
 
+### Required to Load Crypto Data
+
 - Capital gains section source: `koinly_*_capital_gains_report_*.csv`
   - Required fields: `Date Sold`, `Date Acquired`, `Asset`, `Amount`, `Cost (EUR)`, `Proceeds (EUR)`, `Gain / loss`, `Holding period`, `Wallet Name`.
 - Rewards section source: `koinly_*_income_report_*.csv`
   - Required fields: `Date`, `Asset`, `Amount`, `Value (EUR)`, `Type`, `Description`, `Wallet Name`.
-- Reconciliation source: beginning and end holdings exports.
+
+At least one of these two files must be present or the crypto dataset is skipped.
+
+### Optional but Used When Present
+
+- Swap-history / audit-trail source: `koinly_*_transaction_history_*.csv`
+  - Used to recover both sides of `Exchange` rows and populate token swap history in the `Crypto` sheet.
+  - Key fields: `Date`, `Type`, `Tag`, `Sending Wallet`, `Sent Amount`, `Sent Currency`, `Receiving Wallet`, `Received Amount`, `Received Currency`, `TxHash`, `Description`.
+- Reconciliation source: `koinly_*_beginning_of_year_holdings_report_*.csv`
+  - Used for opening holdings reconciliation.
+- Reconciliation source: `koinly_*_end_of_year_holdings_report_*.csv`
+  - Used for closing holdings reconciliation.
+
+### Export Files Present but Not Loaded by the Crypto Workbook Builder
+
+- `koinly_*_buysell_report_*.csv`
+- `koinly_*_ledger_balance_report_*.csv`
+- `koinly_*_highest_balance_report_*.csv`
+- `koinly_*_expenses_report_*.csv`
+- `koinly_*_other_gains_report_*.csv`
+- `koinly_*_gifts_donations__lost_assets_*.csv`
+- Koinly PDFs, except for separate metadata/debugging workflows outside the main row loader
 
 ## Implementation Safeguards (2026-03-08)
 

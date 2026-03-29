@@ -538,13 +538,15 @@ If any are missing, clarify the plan first.
 
 ### File Structure and Usage
 
-Koinly generates multiple CSV files from tax reports. Not all are currently used by this repository.
+Koinly generates multiple CSV files from tax reports. Only a subset is loaded by the crypto workbook builder.
 
 | File | Contains Swap Data? | Current Usage | Swap Information |
 |------|---------------------|---------------|------------------|
 | `koinly_*_capital_gains_report_*.csv` | ❌ No | Used for capital entries | Only shows final asset |
 | `koinly_*_income_report_*.csv` | ❌ No | Used for reward entries | Single asset per row |
-| `koinly_*_transaction_history_*.csv` | ✅ **Yes** | **NOT CURRENTLY USED** | Shows both sides of swap |
+| `koinly_*_transaction_history_*.csv` | ✅ **Yes** | Used for swap-history lookup / audit trail | Shows both sides of swap |
+| `koinly_*_beginning_of_year_holdings_report_*.csv` | ❌ No | Used for opening holdings reconciliation | Holdings snapshot only |
+| `koinly_*_end_of_year_holdings_report_*.csv` | ❌ No | Used for closing holdings reconciliation | Holdings snapshot only |
 
 ### Token Swap History in transaction_history.csv
 
