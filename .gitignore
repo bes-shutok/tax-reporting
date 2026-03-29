@@ -74,11 +74,9 @@ resources/result/*
 /resources/source/tmp/*
 /tests/resources/tmp.*
 
-# Claude
-.claude/*
-.claude/settings.local.json
-
 # Configuration files with sensitive data
 config.ini
 !tests/config.ini
 *.txt
+
+/.ralphex/

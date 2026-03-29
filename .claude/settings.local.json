@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(how-to-write-skills)",
+      "Skill(fix-issues)",
+      "Bash(uv run:*)",
+      "Bash(uvx pytest:*)",
+      "Bash(git:*)",
+      "Bash(which pdftotext:*)",
+      "Bash(cd:*)",
+      "WebFetch(domain:info.portaldasfinancas.gov.pt)",
+      "WebFetch(domain:diariodarepublica.pt)",
+      "WebSearch",
+      "WebFetch(domain:cryptobooks.tax)",
+      "WebFetch(domain:mmc.pt)",
+      "WebFetch(domain:www.apeca.pt)",
+      "WebFetch(domain:www.cgd.pt)",
+      "WebFetch(domain:www.doutorfinancas.pt)",
+      "WebFetch(domain:www.occ.pt)",
+      "Bash(git commit:*)",
+      "Bash(use one:*)",
+      "Bash(same we should do the same cleanup why not extract the cleanup part?\":*)"
+    ]
+  }
+}
