@@ -26,6 +26,7 @@ This file provides guidance to coding agents when working with code in this repo
 - `TradeDate` is a `NamedTuple(year, month, day)`. Do not call `.date()` on it; use it directly or call `.to_datetime()`.
 - When classifying a dividend row as withholding tax, match only the literal string `"Withholding Tax"` — never match on bare `"Tax"`. Dividend descriptions routinely contain "Tax" as a word fragment (e.g. "Tax-Exempt Interest").
 - In `docs/tax/.../official/`, keep only source-origin files. Derived notes and numbered guidance belong outside `official/`, and `sources.md` must record issuing dates.
+- For external source archive provenance and freshness checks, see `docs/project-guidelines.md` #1.
 - For tax/origin web sources, prefer authoritative PDFs or extracted Markdown/PDF over raw HTML, and reuse local mirrors.
 - Under `docs/tax/`, use `*-tax` for tax-law archives and `*-origin` for chain/operator domicile archives.
 - Share crypto `País da Fonte` resolution across rewards and capital gains. Never use taxpayer residence.
@@ -68,177 +69,29 @@ This file provides guidance to coding agents when working with code in this repo
 
 ## Project Overview
 
-Tax reporting tool is a comprehensive financial application that processes Interactive Brokers and Koinly CSV reports to generate tax reporting data for capital gains, dividend income, and crypto rewards calculations. It matches buy/sell transactions within the same day to calculate capital gains, processes dividend payments with tax information, aggregates crypto data by Portuguese tax rules, and generates comprehensive Excel reports with currency conversion.
+Tax reporting tool processes Interactive Brokers and Koinly exports into Portuguese tax-reporting outputs for capital gains, dividends, and crypto rewards.
 
 ## Quick Start
 
-```bash
-# Using UV (recommended)
-uv run tax-reporting
-
-# Direct execution (alternative)
-uv run python ./src/shares_reporting/main.py
-
-# Ensure config.ini has all required currency exchange pairs
-# Update source files in /resources/source folder
-```
+- Main entry point: `uv run tax-reporting`
+- Alternative entry point: `uv run python ./src/shares_reporting/main.py`
+- For broader setup and command reference, see `README.md`.
 
 ## Environment and Dependency Management
 
-### Environment Setup
-```bash
-# Install UV (one-time setup)
-See https://docs.astral.sh/uv/getting-started/installation/
-
-# Install all dependencies (production + development)
-uv sync --extra dev
-
-# Install only production dependencies
-uv sync
-
-# Activate virtual environment
-source .venv/bin/activate
-
-# Exit virtual environment
-exit
-```
-
-### Development Commands Reference
-
-#### Setup and Dependency Management
-```bash
-# Add new dependency
-uv add <package_name>
-
-# Add development dependency
-uv add --dev <package_name>
-
-# Update dependencies
-uv lock --upgrade
-
-# Show dependency tree
-uv tree
-
-# Check for outdated dependencies
-uv pip list --outdated
-```
-
-#### Development Workflow
-```bash
-# Quick development cycle
-uv run pytest                     # Run tests (fast)
-uvx ruff check . --fix && uvx ruff format .  # Lint and format (fast)
-uv run tax-reporting       # Run the application
-```
-
-#### Quality Assurance
-```bash
-# Run all tests
-uv run pytest
-
-# Run with coverage
-uv run pytest --cov=src --cov-report=html
-
-# Linting and formatting
-uvx ruff check .
-uvx ruff format .
-uv run basedpyright src/ tests/  # Type checking
-```
-
-### Common Mistakes to Avoid
-- `uvx tax-reporting` - ❌ Won't work (project is not published to PyPI)
-- `uvx run tax-reporting` - ❌ Installs 'run' package, not what you want
-- `uv run tax-reporting` - ✅ Correct way to run the local application
-- `uvx pytest` - ❌ Runs pytest in an isolated env without the local package; `shares_reporting` import will fail
-- `uv run pytest` - ✅ Correct way to run tests (uses project's venv with local package installed)
-
-**Key point**: This project uses a local entry point defined in `pyproject.toml`, not a published PyPI package.
+- Use `uv`; the project entry point is local, not a published PyPI package.
+- Preferred test command: `uv run pytest`
+- See `README.md` for setup, dependency management, and the full command catalog.
 
 ## Architecture
 
-The project follows **professional layered architecture** with **Domain-Driven Design** principles:
-
-### Layered Architecture
-- **Domain Layer** (`src/shares_reporting/domain/`): Core business entities and rules
-  - `value_objects.py` - TradeDate, Currency, Company, TradeType
-  - `entities.py` - TradeAction, TradeCycle, CapitalGainLine
-  - `accumulators.py` - CapitalGainLineAccumulator, TradePartsWithinDay
-  - `collections.py` - Type aliases and collections
-  - `constants.py` - Domain constants
-  - `exceptions.py` - Domain exceptions
-- **Application Layer** (`src/shares_reporting/application/`): Business logic and orchestration
-  - `extraction/` - CSV data parsing package
-    - `models.py` - Data structures
-    - `contexts.py` - Parsing contexts
-    - `state_machine.py` - Parsing state machine
-    - `processing.py` - Core processing logic
-  - `transformation.py` - Capital gains calculation and trade matching
-  - `persisting.py` - Excel report generation with formulas (capital gains, dividend income, and crypto IRS-ready summary)
-  - `crypto_reporting.py` - Koinly crypto tax report ingestion, reward classification, chain derivation, operator-origin resolution, and IRS-ready aggregation
-- **Infrastructure Layer** (`src/shares_reporting/infrastructure/`): External concerns
-  - `config.py` - Configuration management and currency exchange rates
-  - `isin_country.py` - ISIN to country resolution
-  - `logging_config.py` - Logging configuration
-  - `validation.py` - Input validation
-- **Presentation Layer** (`src/shares_reporting/main.py`): Application entry point and orchestration
-
-### Core Business Logic Pipeline
-
-#### Data Processing Flow
-The system processes data through a sophisticated tax-compliant pipeline:
-1. **Extraction**: `parse_ib_export_all()` parses Interactive Brokers CSV files into domain objects (trades + dividends + security info)
-2. **Transformation**: `calculate_fifo_gains()` implements the core capital gains algorithm
-3. **Persistence**: `generate_tax_report()` creates Excel reports + `export_rollover_file()` for inventory rollover
-
-#### CSV Extraction Architecture
-
-The `extraction` package uses a **State Machine** pattern to parse complex Interactive Brokers CSV files:
-
-**Components:**
-- **`IBCsvStateMachine`**: Orchestrates the parsing process, transitioning between file sections. Supports optional Financial Instrument section validation for different file types.
-- **Contexts** (`contexts.py`): Specialized handlers for each CSV section:
-  - `FinancialInstrumentContext`: Extracts security info (ISIN, Country).
-  - `TradesContext`: Parses trade executions. Trades section is always required for real CSV files.
-  - `DividendsContext`: Extracts dividend records.
-  - `WithholdingTaxContext`: Parses tax records.
-- **Models** (`models.py`): Data structures for raw extracted data (`IBCsvData`, `IBCsvSection`).
-
-**Flow:**
-1. `IBCsvStateMachine` reads the CSV row by row.
-2. Detects section headers (e.g., "Financial Instrument Information", "Trades").
-3. Delegates row processing to the active `BaseSectionContext` subclass.
-4. Aggregates results into `IBCsvData` for downstream processing.
-
-**Configuration:**
-- **Export files**: Require both Trades and Financial Instrument sections (default behavior)
-- **Leftover files**: Require Trades section but Financial Instrument section is optional (for processing legacy trade data without security info)
-
-#### FIFO Algorithm Deep Dive
-
-The `calculate_fifo_gains()` function implements sophisticated capital gains calculation:
-
-**State Machine Design:**
-- **Company-Level Processing**: Each company/currency processed independently
-- **Daily Bucketing**: `split_by_days()` ensures tax compliance by date grouping
-- **FIFO Matching**: `capital_gains_for_company()` with `TradePartsWithinDay` queues
-- **Partial Matching**: `allocate_to_gain_line()` handles quantity differences
-- **Leftover Management**: `redistribute_unmatched_trades()` for inventory rollover to next year
-
-**Key Components:**
-- **`CapitalGainLineAccumulator`**: Builder pattern for capital gain calculations
-- **`TradePartsWithinDay`**: FIFO queue ensuring chronological trade matching
-- **State Transitions**: Each accumulator tracks buy/sell completion states
-- **Validation Rules**: Ensures quantities match and business constraints are met
-
-### Domain Model Details
-
-Rich domain models with proper separation of concerns:
-- **Value Objects** (Immutable): TradeDate, Currency, Company, TradeType with validation
-- **Entities** (Rich): TradeAction, TradeCycle, CapitalGainLine with business behavior
-- **Accumulators**: CapitalGainLineAccumulator, TradePartsWithinDay for complex calculations
-- **Collections**: Type aliases for trades, capital gains, and dividend income data structures
-
-**TradeDate key facts**: `TradeDate` is a `NamedTuple(year, month, day)` — it has **no `.date()` method**. Supports `>` / `<` / `==` comparison via tuple ordering. Use it directly in log messages (has `__repr__`) and comparisons. To convert to `datetime`, call `.to_datetime()`.
+- Layered architecture:
+  - Domain: `src/shares_reporting/domain/`
+  - Application: `src/shares_reporting/application/`
+  - Infrastructure: `src/shares_reporting/infrastructure/`
+  - Presentation: `src/shares_reporting/main.py`
+- Core pipeline: extract IB/Koinly data, transform into tax calculations, then persist workbook and rollover outputs.
+- For the fuller architectural walkthrough, see `README.md` and the source tree.
 
 ## Configuration Management
 
