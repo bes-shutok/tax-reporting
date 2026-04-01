@@ -10,6 +10,10 @@ Canonical layout for tax-related documentation in this repository.
 
 ## Directory Roles
 
+- `eu-crypto-tax/`
+  - EU-wide crypto regulation and reporting-law archive used when product or compliance questions depend on MiCA, DAC8, or other Union-level texts.
+  - Use this folder for questions such as "what does EU regulation require from a crypto service provider?" and "which EU reporting framework applies to crypto-asset service providers?".
+
 - `portugal-crypto-tax/`
   - Portugal-specific crypto tax law, AT forms, circulars, binding rulings, and filing-oriented notes.
   - Use this folder for questions such as "what does Portuguese tax law require?" and "which official IRS annex fields matter?".
@@ -26,6 +30,7 @@ Canonical layout for tax-related documentation in this repository.
 
 ## Non-duplication Rule
 
+- Do not duplicate EU-wide regulation findings inside `portugal-crypto-tax/`; keep EU texts in `eu-crypto-tax/` and reference them where needed.
 - Do not duplicate Portugal tax-law findings inside `crypto-origin/`.
 - Do not duplicate chain/operator domicile mapping files inside `portugal-crypto-tax/`.
 - If a filing rule depends on an origin mapping, keep the law in `portugal-crypto-tax/`, keep the mapping evidence in `crypto-origin/`, and reference both from the domain guideline.
