@@ -201,3 +201,15 @@ For project-specific domains (e.g., crypto tax):
 - Post-mortem: `docs/post-mortem/aggregate-crypto-rewards-review-analysis.md`
 - Crypto implementation: `docs/domain/crypto_implementation_guidelines.md`
 - Plan example: `docs/plans/aggregate-crypto-rewards-income.md`
+
+## Staged Replacement Planning
+
+When an existing feature is misleading or unsafe and the correct replacement design still
+needs research, split the work into two plans or phases:
+
+1. cleanup/removal plan that deletes the misleading behavior, updates tests, and keeps the UI honest
+2. follow-up research/implementation plan that designs and builds the replacement
+
+Do not combine "remove incorrect behavior", "invent new matching logic", and "research the
+true source of truth" into one implementation batch unless the replacement is already
+specified well enough to test deterministically.
