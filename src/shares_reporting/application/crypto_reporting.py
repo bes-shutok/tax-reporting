@@ -8,7 +8,7 @@ import re
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field, replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from functools import lru_cache
@@ -800,14 +800,9 @@ DATE_FORMATS: Final = (
     "%Y-%m-%d",
 )
 
-# Near-midnight cross-day swap history thresholds
-# Acquisition late hour (22+) or early hour (0-2) indicates near-midnight
-_NEAR_MIDNIGHT_ACQUISITION_LATEST_HOUR: Final = 22
-_NEAR_MIDNIGHT_ACQUISITION_EARLIEST_HOUR: Final = 2
-# Disposal early hour (0-4) indicates just after midnight
-_NEAR_MIDNIGHT_DISPOSAL_LATEST_HOUR: Final = 4
-# Maximum time between acquisition and disposal to consider "near-midnight" (6 hours)
-_NEAR_MIDNIGHT_MAX_SPAN_SECONDS: Final = 6 * 3600
+# Legacy swap-history heuristic removed (2026-04-05).
+# token_swap_history is intentionally blank until deterministic Koinly-first
+# origin matching is implemented. See docs/plans/ for the follow-up plan.
 
 
 def resolve_operator_origin(  # noqa: PLR0911, PLR0912
@@ -1266,11 +1261,7 @@ def load_koinly_crypto_report(koinly_dir: Path) -> CryptoTaxReport | None:
     year = _extract_tax_year(koinly_dir, capital_file, income_file)
     skipped_assets: Counter[tuple[str, str]] = Counter()
 
-    # Build swap lookup from transaction history for token swap history tracking
-    transaction_history_file = _find_report_file(koinly_dir, "transaction_history")
-    swap_lookup = _build_swap_lookup(transaction_history_file) if transaction_history_file else {}
-
-    capital_entries = _parse_capital_gains_file(capital_file, skipped_assets, swap_lookup) if capital_file else []
+    capital_entries = _parse_capital_gains_file(capital_file, skipped_assets) if capital_file else []
     reward_entries = _parse_income_file(income_file, skipped_assets) if income_file else []
 
     opening = _parse_holdings_file(
@@ -1408,9 +1399,7 @@ def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[Cr
                 review_required=any(e.review_required for e in group),
                 review_reason="; ".join(dict.fromkeys(e.review_reason for e in group if e.review_reason)) or None,
                 notes="; ".join(dict.fromkeys(e.notes for e in group if e.notes)),
-                token_swap_history="; ".join(
-                    dict.fromkeys(e.token_swap_history for e in group if e.token_swap_history)
-                ),
+                token_swap_history="",
             )
         )
     result.sort(key=lambda e: (e.disposal_date, e.asset, e.platform, e.holding_period))
@@ -1476,108 +1465,6 @@ def _validate_capital_entries_have_valid_countries(entries: list[CryptoCapitalGa
     )
 
 
-def _build_swap_lookup(
-    transaction_history_path: Path,
-) -> dict[tuple[str, str, str], list[tuple[datetime, str]]]:
-    """Build lookup of (wallet, date, received_currency) -> list of (timestamp, swap_history).
-
-    Parses transaction_history.csv for Type="exchange" rows and extracts
-    Sent Currency -> Received Currency swaps for matching with capital gains.
-
-    The received_currency in the key ensures that each disposal only gets swaps
-    that produced the specific asset being disposed, not all swaps from that day.
-
-    Args:
-        transaction_history_path: Path to the Koinly transaction_history CSV file.
-
-    Returns:
-        Dictionary keyed by (normalized_wallet, disposal_date, received_currency)
-        containing lists of (timestamp, swap_history) tuples. Each swap_history is
-        a string like "SUI → HASUI". Multiple swaps for the same key are stored
-        in time order. Returns empty dict if file doesn't exist or has no exchange rows.
-
-        The lookup stores swap entries with full datetime to ensure time-ordered matching:
-        a disposal at 14:00 only gets swaps that happened BEFORE 14:00 on the same day.
-    """
-    logger = logging.getLogger(__name__)
-    # Store list of (timestamp, swap_history) tuples for each (wallet, date, received_currency)
-    swap_lookup: dict[tuple[str, str, str], list[tuple[datetime, str]]] = {}
-
-    if not transaction_history_path.exists():
-        return swap_lookup
-
-    try:
-        rows = _read_koinly_rows(transaction_history_path)
-    except (ValueError, FileProcessingError) as e:
-        # Transaction history file may have different format or be corrupt
-        # Log and continue without swap data
-        logger.warning(
-            "Could not parse transaction history file %s: %s - swap history will not be available",
-            transaction_history_path.name,
-            e,
-        )
-        return swap_lookup
-
-    for row in rows:
-        # Only process exchange transactions (swaps)
-        if row.get("Type", "").strip().lower() != "exchange":
-            continue
-
-        # Extract wallet from Sending Wallet or Receiving Wallet
-        # Use normalized wallet name for consistent matching
-        sending_wallet = row.get("Sending Wallet", "").strip()
-        receiving_wallet = row.get("Receiving Wallet", "").strip()
-
-        # Use the receiving wallet as the primary key (where the swapped asset goes)
-        wallet = receiving_wallet or sending_wallet
-        if not wallet:
-            continue
-
-        normalized_wallet = _normalize_platform_name(wallet)
-
-        # Parse date and store full datetime for time-ordered matching
-        date_str = row.get("Date", "").strip()
-        if not date_str:
-            continue
-
-        try:
-            tx_datetime = _parse_koinly_datetime(date_str)
-        except ValueError:
-            # Skip rows with unparseable dates
-            continue
-
-        # Extract and normalize sent and received currencies
-        # Normalization handles character encoding issues (e.g., Cyrillic Т -> T)
-        sent_currency = _normalize_asset_ticker(row.get("Sent Currency", ""))
-        received_currency = _normalize_asset_ticker(row.get("Received Currency", ""))
-
-        if not sent_currency or not received_currency:
-            continue
-
-        # Create swap history string (e.g., "SUI → HASUI")
-        swap_history = f"{sent_currency} → {received_currency}"
-
-        # Store in lookup keyed by (wallet, date, received_currency) with full timestamp.
-        # Date is YYYY-MM-DD for matching, but we store the full datetime to enforce time ordering.
-        date_key = tx_datetime.strftime("%Y-%m-%d")
-        key = (normalized_wallet, date_key, received_currency)
-        if key in swap_lookup:
-            swap_lookup[key].append((tx_datetime, swap_history))
-        else:
-            swap_lookup[key] = [(tx_datetime, swap_history)]
-
-    if swap_lookup:
-        total_swaps = sum(len(swaps) for swaps in swap_lookup.values())
-        logger.info(
-            "Built swap lookup from transaction history: %d wallet-date-currency "
-            "combinations with %d total swap entries",
-            len(swap_lookup),
-            total_swaps,
-        )
-
-    return swap_lookup
-
-
 def _normalize_asset_ticker(asset: str) -> str:
     """Normalize common character encoding issues in asset tickers.
 
@@ -1621,13 +1508,9 @@ def _normalize_asset_ticker(asset: str) -> str:
 def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
     path: Path,
     skipped_assets: Counter[tuple[str, str]],
-    swap_lookup: dict[tuple[str, str, str], list[tuple[datetime, str]]] | None = None,
 ) -> list[CryptoCapitalGainEntry]:
     rows = _read_koinly_rows(path)
     capital_entries: list[CryptoCapitalGainEntry] = []
-
-    if swap_lookup is None:
-        swap_lookup = {}
 
     logger = logging.getLogger(__name__)
     for row_number, row in enumerate(rows, start=1):
@@ -1655,8 +1538,6 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
             transaction_date=disposal_date,
         )
         notes = row.get("Notes", "").strip()
-        # Zero-value entries are already filtered above,
-        # so all remaining entries have non-zero amounts and thus tax impact.
         missing_cost_with_impact = "missing cost basis" in notes.lower()
         review_required = operator_origin.review_required or missing_cost_with_impact
 
@@ -1667,111 +1548,6 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
         holding_period = row.get("Holding period", "").strip() or "Unknown"
         # PT-C-011: long-term (≥365 days) exempt gains → Anexo G1; short-term taxable → Anexo J
         annex_hint = "G1" if holding_period.lower().startswith("long") else "J"
-
-        # Extract disposal datetime for time-ordered swap lookup.
-        # A disposal only gets swap history from swaps that happened BEFORE it on the same day.
-        # This prevents earlier disposals from inheriting swaps that happened later.
-        try:
-            disposal_datetime = _parse_koinly_datetime(disposal_date)
-            disposal_date_only = disposal_datetime.strftime("%Y-%m-%d")
-        except ValueError:
-            # If datetime parsing fails, fall back to date-only matching (no time ordering)
-            disposal_date_only = disposal_date.split(" ")[0] if " " in disposal_date else disposal_date
-            disposal_datetime = None
-
-        # Extract acquisition date only (YYYY-MM-DD) for swap history validation.
-        # Swap history should only be assigned to lots that were acquired on the same day
-        # as the swap (and disposal). A lot acquired on a different date could not have
-        # come from same-day swaps. This prevents same-day swaps from bleeding onto
-        # older lots (e.g., a 2022-acquired LINK lot getting 2025 swap history).
-        try:
-            acquisition_datetime = _parse_koinly_datetime(acquisition_date)
-            acquisition_date_only = acquisition_datetime.strftime("%Y-%m-%d")
-        except ValueError:
-            acquisition_date_only = acquisition_date.split(" ")[0] if " " in acquisition_date else acquisition_date
-
-        # Swap history matching logic:
-        # - Use acquisition_date as the lookup key (the swap creates the lot at acquisition time).
-        # - For cross-day scenarios, check if it's a near-midnight case (acquisition late,
-        #   disposal early, within a few hours). If so, allow swap history from acquisition date.
-        # - If dates differ and not near-midnight, clear swap history (old lots shouldn't get
-        #   same-day swap history from newer swaps).
-        # - When same-day, only include swaps between acquisition and disposal (time-ordered).
-        # - This prevents swaps from bleeding onto old lots while handling near-midnight edge cases.
-        # - Use <= for disposal because Koinly truncates disposal times to minute precision
-        #   (e.g., "22:01" becomes "22:01:00"), while swap times have actual seconds.
-
-        # Determine lookup key based on date proximity and near-midnight check
-        swap_key: tuple[str, str, str] | tuple[()]
-        if acquisition_date_only != disposal_date_only:
-            # Cross-day scenario: check if near-midnight (short span crossing midnight)
-            if disposal_datetime and acquisition_datetime:
-                # Near-midnight: disposal is early morning (0-4) AND total span is less than 6 hours.
-                # This captures cross-day disposals where the holding period is short enough that
-                # the asset was clearly acquired from same-day swaps, even if acquisition was
-                # before the hard-coded 22:00 "late night" threshold (e.g., 21:59 -> 00:05).
-                is_near_midnight = (
-                    disposal_datetime.hour <= _NEAR_MIDNIGHT_DISPOSAL_LATEST_HOUR
-                    and 0 < (disposal_datetime - acquisition_datetime).total_seconds() < _NEAR_MIDNIGHT_MAX_SPAN_SECONDS
-                )
-                if is_near_midnight:
-                    # Use acquisition date for lookup (swap created the lot at acquisition time)
-                    swap_key = (platform, acquisition_date_only, asset)
-                else:
-                    # Not near-midnight: clear swap history for genuinely cross-day lots
-                    token_swap_history = ""
-                    swap_key = ()  # Empty key to skip lookup
-                # Lookup already handled above for non-near-midnight case
-            else:
-                # Missing timestamp info: can't verify near-midnight, clear swap history
-                token_swap_history = ""
-                swap_key = ()
-        else:
-            # Same-day acquisition and disposal: use disposal date for lookup
-            swap_key = (platform, disposal_date_only, asset)
-
-        # Only perform lookup if swap_key was set (not cleared above)
-        if swap_key:
-            matching_swaps = swap_lookup.get(swap_key, [])
-
-            if disposal_datetime and acquisition_datetime and matching_swaps:
-                # Truncate to minute precision for same-minute matching
-                acquisition_minute = acquisition_datetime.replace(second=0, microsecond=0)
-                # Filter swaps based on whether this is a same-day or cross-day scenario
-                if acquisition_date_only == disposal_date_only:
-                    # Same-day: swaps must occur at or before acquisition time.
-                    # A swap creates a lot at the moment of the swap, so only the most
-                    # recent swap before acquisition could have created this specific lot.
-                    # For example, if I swap USDT->ETH at 10:00 and BTC->ETH at 13:00,
-                    # a lot acquired at 13:05 could only have come from the 13:00 swap,
-                    # not the 10:00 swap which created a different lot.
-                    qualifying_swaps = [
-                        s for s in matching_swaps if s[0].replace(second=0, microsecond=0) <= acquisition_minute
-                    ]
-                    if qualifying_swaps:
-                        # Sort by timestamp descending and take only the most recent
-                        qualifying_swaps.sort(key=lambda x: x[0], reverse=True)
-                        matching_swaps = [qualifying_swaps[0]]
-                    else:
-                        matching_swaps = []
-                else:
-                    # Cross-day near-midnight: swaps must occur within a time window before
-                    # acquisition on the acquisition day. We use a 1-hour window to exclude
-                    # swaps from much earlier in the day that created different lots.
-                    # For example, a lot acquired at 23:55 should only get swaps from ~22:55
-                    # onwards, not a swap at 09:00 that morning.
-                    one_hour_before = acquisition_minute - timedelta(hours=1)
-                    matching_swaps = [
-                        s
-                        for s in matching_swaps
-                        if one_hour_before <= s[0].replace(second=0, microsecond=0) <= acquisition_minute
-                    ]
-                token_swap_history = "; ".join(s[1] for s in matching_swaps)
-            elif matching_swaps:
-                # Fallback: include all swaps if we couldn't parse disposal time
-                token_swap_history = "; ".join(s[1] for s in matching_swaps)
-            else:
-                token_swap_history = ""
 
         capital_entries.append(
             CryptoCapitalGainEntry(
@@ -1791,7 +1567,7 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
                 review_required=review_required,
                 review_reason=review_reason,
                 notes=notes,
-                token_swap_history=token_swap_history,
+                token_swap_history="",
             )
         )
 

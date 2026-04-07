@@ -204,7 +204,9 @@ Each disposal (alienação) should be reported as a separate line in the form
 for crypto. The "operation" is the **sale transaction**, not the individual FIFO lot allocation.
 Multiple FIFO lots matched to the same sale event (same timestamp, same asset,
 same wallet) can reasonably be reported as one aggregated line.
-> Source: cryptobooks.tax/pt-PT (undated, consulted 2026-03-14); not found verbatim in official circulars.
+> Source: CryptoBooks article "Declarar Cripto de Plataformas Estrangeiras: Anexo J IRS"
+> (`https://cryptobooks.tax/pt-PT/blog/declarar-criptoativos-anexo-j-modelo-3`), consulted 2026-04-07;
+> not found verbatim in official circulars.
 
 **PT-C-026** `[SECONDARY | ~2025]`
 The AT Portal das Finanças does **not support CSV or XML batch import** for Quadro 9.4.

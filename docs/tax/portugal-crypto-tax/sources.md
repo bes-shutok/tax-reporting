@@ -110,6 +110,14 @@ Retrieved on: 2026-04-01
 
 ## Non-downloaded but relevant references
 
+- CryptoBooks Anexo J article: https://cryptobooks.tax/pt-PT/blog/declarar-criptoativos-anexo-j-modelo-3
+  - Consulted: 2026-04-07
+  - Purpose: secondary Portuguese filing guidance used for the practical reading that each Quadro 9.4 line corresponds to a distinct event/gain.
+
+- Koinly CSV import help article: https://support.koinly.io/en/articles/9489978-how-to-import-a-csv-or-excel-file
+  - Consulted: 2026-04-07
+  - Purpose: product-description reference for walkthrough text explaining that Koinly imports transaction data from exchanges, wallets, and services and turns it into tax-report inputs.
+
 - Binance terms page: https://www.binance.com/en/terms
 - Bybit terms page: https://www.bybit.com/en/legal/terms-of-service/terms-of-service
 - Kraken legal page: https://www.kraken.com/legal

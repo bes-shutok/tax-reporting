@@ -65,6 +65,8 @@ This file provides guidance to coding agents when working with code in this repo
 - Before implementing new crypto features, read `docs/domain/crypto_implementation_guidelines.md` for lessons learned and common pitfalls to avoid.
 - Before changing cross-cutting report-generation behavior, read `docs/domain/shares_reporting_guidelines.md` and cite SRG rule IDs for repository-policy changes.
 - Before writing implementation plans, read `docs/domain/plan_quality_guidelines.md` for patterns that minimize review iterations.
+- Before writing or revising repository walkthroughs or presentation artifacts, read `docs/domain/plan_quality_guidelines.md` for presentation-artifact structure and placement.
+- When a crypto presentation or walkthrough makes legal or filing claims, verify the current source set in `docs/tax/portugal-crypto-tax/sources.md` and cite the mirrored official documents.
 - Use the authority level and source date in `crypto_rules.md` to check whether a rule may be stale for the current tax year.
 
 ## Project Overview

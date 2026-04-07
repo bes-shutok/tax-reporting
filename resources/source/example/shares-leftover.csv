@@ -1,2 +1,2 @@
 Trades,Header,DataDiscriminator,Asset Category,Currency,Symbol,Date/Time,Quantity,T. Price,C. Price,Proceeds,Comm/Fee,Basis,Realized P/L
-Trades,Data,Order,Stock,USD,MRNA,"2021-11-04, 10:57:20",2,286.06,572.12,0.34455725
+Trades,Data,Order,Stocks,USD,ACME,"2023-08-10, 11:00:00",20,15.00,15.20,,-0.40,,

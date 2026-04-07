@@ -213,3 +213,22 @@ needs research, split the work into two plans or phases:
 Do not combine "remove incorrect behavior", "invent new matching logic", and "research the
 true source of truth" into one implementation batch unless the replacement is already
 specified well enough to test deterministically.
+
+## Presentation Artifacts For Repository Value Demos
+
+When a plan includes explaining what the repository accomplishes, prefer a dedicated
+presentation artifact under `docs/presentation/` rather than overloading `README.md`.
+
+The first version should usually be Markdown slide notes that include:
+
+1. one section per slide
+2. draft wording for the message
+3. references to concrete demo assets, such as CSV inputs, generated workbooks, or screenshots
+4. explicit citation points for official sources when the slide makes legal or filing claims
+
+Prefer Markdown slide notes as the default first format because they are version-controlled,
+easy to review in pull requests, and require no separate presentation toolchain. Move format
+justification and other authoring meta-notes here or to similar guidance documents, not into
+the presentation artifact itself.
+
+Use `README.md` only as a short discovery pointer to the dedicated presentation artifact.
