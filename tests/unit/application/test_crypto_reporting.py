@@ -2223,8 +2223,9 @@ def test_all_iso_4217_fiat_currencies_classified_as_taxable_now():
     not just a hand-maintained allowlist. Previously missing codes like AFN, BWP, BND,
     MUR, MZN, and UZS are now correctly classified.
 
-    The only exception is GEL, which has a known collision with Gelato Network token
-    and is handled via the _CRYPTO_TOKEN_FIAT_COLLISIONS list.
+    The exceptions are GEL (Gelato Network token) and MNT (Mantle L2 token),
+    which have known collisions with ISO 4217 fiat codes and are handled via
+    the _CRYPTO_TOKEN_FIAT_COLLISIONS list.
     """
     # Previously missing ISO 4217 codes from external code review
     assert _classify_reward_tax_status("AFN") == RewardTaxClassification.TAXABLE_NOW  # Afghan Afghani
@@ -2238,8 +2239,9 @@ def test_all_iso_4217_fiat_currencies_classified_as_taxable_now():
     assert _classify_reward_tax_status("afn") == RewardTaxClassification.TAXABLE_NOW
     assert _classify_reward_tax_status("Bwp") == RewardTaxClassification.TAXABLE_NOW
 
-    # GEL is the exception due to Gelato token collision
+    # Exceptions due to crypto token collisions
     assert _classify_reward_tax_status("GEL") == RewardTaxClassification.DEFERRED_BY_LAW
+    assert _classify_reward_tax_status("MNT") == RewardTaxClassification.DEFERRED_BY_LAW
 
 
 def test_operator_origin_has_temporal_fields():
@@ -3451,3 +3453,483 @@ def test_loan_repayment_token_origin_is_blank_without_deterministic_linkage(tmp_
         f"token_swap_history for loan repayment must be blank (no deterministic linkage), "
         f"got: {entry.token_swap_history!r}"
     )
+
+
+def test_real_koinly_fixture_has_no_duplicate_aggregation_keys():
+    """Characterization test: loading the real koinly2025 fixture produces zero
+    duplicate rows when grouped by the full aggregation key
+    (disposal_date, asset, platform, holding_period).
+
+    If this test fails, _aggregate_capital_entries() or upstream parsing has
+    introduced a regression that splits same-key rows instead of collapsing them.
+    """
+    from collections import Counter
+    from pathlib import Path
+
+    koinly_dir = Path("resources/source/koinly2025")
+    report = load_koinly_crypto_report(koinly_dir)
+    if report is None:
+        pytest.skip("koinly2025 fixture directory not available")
+
+    keys = [(e.disposal_date, e.asset, e.platform, e.holding_period) for e in report.capital_entries]
+    dups = [(k, c) for k, c in Counter(keys).items() if c > 1]
+    assert dups == [], (
+        f"Duplicate aggregation keys found after loading koinly2025: {dups}. "
+        f"_aggregate_capital_entries() should collapse same-key rows."
+    )
+
+
+def test_acquisition_date_repeat_is_not_a_disposal_grouping_issue():
+    """Document that a repeated acquisition_date across multiple disposal events
+    is expected and must not be confused with a disposal-date grouping regression.
+
+    The reported 2024-07-27 11:03:00 timestamp was an acquisition date shared by
+    FIFO lots sold at different later disposal dates. Each disposal is a distinct
+    taxable event; the shared acquisition date simply reflects the common purchase
+    that was partially sold over time.
+    """
+    shared_acq = "2024-07-27 11:03:00"
+    entries = [
+        _make_entry(
+            disposal_date="2025-01-10 09:00:00",
+            acquisition_date=shared_acq,
+            amount=Decimal("10"),
+            gain_loss_eur=Decimal("1"),
+        ),
+        _make_entry(
+            disposal_date="2025-02-15 14:30:00",
+            acquisition_date=shared_acq,
+            amount=Decimal("15"),
+            gain_loss_eur=Decimal("2"),
+        ),
+        _make_entry(
+            disposal_date="2025-03-20 18:00:00",
+            acquisition_date=shared_acq,
+            amount=Decimal("5"),
+            gain_loss_eur=Decimal("0.5"),
+        ),
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 3, (
+        f"Expected 3 separate disposal rows (different disposal dates), got {len(result)}"
+    )
+    disposal_dates = [e.disposal_date for e in result]
+    assert disposal_dates == [
+        "2025-01-10 09:00:00",
+        "2025-02-15 14:30:00",
+        "2025-03-20 18:00:00",
+    ]
+    for r in result:
+        assert r.acquisition_date == shared_acq
+
+
+def test_same_disposal_date_allowed_when_other_grouping_dims_differ():
+    """Rows sharing a disposal_date are correctly kept separate when any other
+    aggregation dimension (asset, platform, holding_period) differs."""
+    shared_disposal = "2025-06-01 12:00:00"
+    entries = [
+        _make_entry(
+            disposal_date=shared_disposal,
+            asset="BTC",
+            platform="ByBit",
+            holding_period="Short term",
+            gain_loss_eur=Decimal("10"),
+        ),
+        _make_entry(
+            disposal_date=shared_disposal,
+            asset="ETH",
+            platform="ByBit",
+            holding_period="Short term",
+            gain_loss_eur=Decimal("20"),
+        ),
+        _make_entry(
+            disposal_date=shared_disposal,
+            asset="USDT",
+            platform="Kraken",
+            holding_period="Short term",
+            gain_loss_eur=Decimal("5"),
+        ),
+        _make_entry(
+            disposal_date=shared_disposal,
+            asset="USDT",
+            platform="ByBit",
+            holding_period="Long term",
+            gain_loss_eur=Decimal("3"),
+        ),
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 4, (
+        f"Expected 4 separate rows (different grouping dimensions), got {len(result)}"
+    )
+    result_keys = [(e.asset, e.platform, e.holding_period) for e in result]
+    expected_keys = [
+        ("BTC", "ByBit", "Short term"),
+        ("ETH", "ByBit", "Short term"),
+        ("USDT", "Kraken", "Short term"),
+        ("USDT", "ByBit", "Long term"),
+    ]
+    assert sorted(result_keys) == sorted(expected_keys)
+
+
+# --- Task 3: Long-term regression guards ---
+
+
+def test_aggregate_never_emits_duplicate_keys():
+    """Regression guard: _aggregate_capital_entries() must never emit two rows
+    sharing the same (disposal_date, asset, platform, holding_period) key.
+
+    This test feeds entries that form two identical aggregation keys plus one
+    distinct key and verifies:
+      - same-key entries collapse to one aggregated row
+      - no duplicate keys exist in the output
+    If this test fails, the aggregation function has a regression that splits
+    same-key rows instead of collapsing them.
+    """
+    from collections import Counter
+
+    shared_key_params = {
+        "disposal_date": "2025-03-15 14:30:00",
+        "asset": "USDT",
+        "platform": "ByBit",
+        "holding_period": "Short term",
+    }
+    entries = [
+        _make_entry(
+            **shared_key_params,
+            acquisition_date="2024-06-01 00:00:00",
+            amount=Decimal("50"),
+            cost_eur=Decimal("40"),
+            proceeds_eur=Decimal("45"),
+            gain_loss_eur=Decimal("5"),
+        ),
+        _make_entry(
+            **shared_key_params,
+            acquisition_date="2024-09-15 00:00:00",
+            amount=Decimal("30"),
+            cost_eur=Decimal("25"),
+            proceeds_eur=Decimal("28"),
+            gain_loss_eur=Decimal("3"),
+        ),
+        _make_entry(
+            disposal_date="2025-04-01 10:00:00",
+            asset="BTC",
+            platform="Kraken",
+            holding_period="Long term",
+            gain_loss_eur=Decimal("100"),
+        ),
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 2, f"Expected 2 aggregated rows, got {len(result)}"
+
+    keys = [(e.disposal_date, e.asset, e.platform, e.holding_period) for e in result]
+    dups = [(k, c) for k, c in Counter(keys).items() if c > 1]
+    assert dups == [], (
+        f"Duplicate aggregation keys in output: {dups}. "
+        f"_aggregate_capital_entries() must collapse same-key rows."
+    )
+
+    agg_usdt = next(e for e in result if e.asset == "USDT")
+    assert agg_usdt.amount == Decimal("80")
+    assert agg_usdt.cost_eur == Decimal("65")
+    assert agg_usdt.proceeds_eur == Decimal("73")
+    assert agg_usdt.gain_loss_eur == Decimal("8")
+    assert agg_usdt.acquisition_date == "2024-06-01 00:00:00"
+
+
+def test_same_timestamp_different_holding_period_stays_split():
+    """Regression guard: same disposal timestamp with different holding periods
+    must produce separate rows because the split is legally significant.
+
+    PT-C-011 requires distinguishing short-term (taxable) from long-term
+    (exempt) gains. If same-timestamp rows with different holding periods
+    were merged, exempt long-term gains would incorrectly offset taxable
+    short-term gains or vice versa.
+    """
+    shared_timestamp = "2025-07-27 11:03:00"
+    entries = [
+        _make_entry(
+            disposal_date=shared_timestamp,
+            acquisition_date="2024-01-15 00:00:00",
+            asset="ETH",
+            platform="Kraken",
+            holding_period="Short term",
+            amount=Decimal("5"),
+            cost_eur=Decimal("8000"),
+            proceeds_eur=Decimal("9000"),
+            gain_loss_eur=Decimal("1000"),
+        ),
+        _make_entry(
+            disposal_date=shared_timestamp,
+            acquisition_date="2023-06-15 00:00:00",
+            asset="ETH",
+            platform="Kraken",
+            holding_period="Long term",
+            amount=Decimal("3"),
+            cost_eur=Decimal("3000"),
+            proceeds_eur=Decimal("5400"),
+            gain_loss_eur=Decimal("2400"),
+        ),
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 2, (
+        f"Expected 2 separate rows (different holding periods), got {len(result)}"
+    )
+    by_period = {e.holding_period: e for e in result}
+    assert "Short term" in by_period
+    assert "Long term" in by_period
+
+    short = by_period["Short term"]
+    long = by_period["Long term"]
+    assert short.gain_loss_eur == Decimal("1000")
+    assert long.gain_loss_eur == Decimal("2400")
+    assert short.disposal_date == shared_timestamp
+    assert long.disposal_date == shared_timestamp
+
+
+# --- Task 4: MNT ticker collision tests ---
+
+
+def test_mnt_token_collision():
+    """MNT ticker collision between Mantle token (crypto) and Mongolian tögrög (fiat).
+
+    MNT rewards from ByBit/Koinly are Mantle L2 blockchain token, not Mongolian tögrög.
+    The crypto token must be classified as DEFERRED_BY_LAW per CRG-001, not TAXABLE_NOW.
+
+    The real Koinly dataset confirms 20 MNT reward rows from ByBit and Mantle wallets
+    in the income report, and 17 disposal rows in the capital gains report — all
+    referencing the Mantle blockchain token, not fiat currency.
+    """
+    assert _classify_reward_tax_status("MNT") == RewardTaxClassification.DEFERRED_BY_LAW
+    assert _classify_reward_tax_status("mnt") == RewardTaxClassification.DEFERRED_BY_LAW
+    assert _classify_reward_tax_status("Mnt") == RewardTaxClassification.DEFERRED_BY_LAW
+
+
+def test_capital_gains_fee_notes_do_not_create_reward_entries(tmp_path):
+    """Regression test: a capital-gains row with Notes = Fee must not create
+    or alter reward entries when both capital-gains and income reports are
+    loaded together via load_koinly_crypto_report().
+
+    The user reported a concern that capital-gains rows with Notes = Fee might
+    leak into the reward path. This test proves the boundary is clean: reward
+    entries come exclusively from the income report file.
+    """
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    (koinly_dir / "koinly_2025_capital_gains_report_test.csv").write_text(
+        "\n".join(
+            [
+                "Capital gains report 2025",
+                "",
+                ",".join(
+                    [
+                        "Date Sold",
+                        "Date Acquired",
+                        "Asset",
+                        "Amount",
+                        "Cost (EUR)",
+                        "Proceeds (EUR)",
+                        "Gain / loss",
+                        "Notes",
+                        "Wallet Name",
+                        "Holding period",
+                    ]
+                ),
+                ",".join(
+                    [
+                        "13/01/2025 13:01",
+                        "18/11/2024 00:15",
+                        "USDT",
+                        '"1,50000000"',
+                        '"1,25"',
+                        '"2,35"',
+                        '"1,10"',
+                        "Fee",
+                        "ByBit (2)",
+                        "Short term",
+                    ]
+                ),
+                ",".join(
+                    [
+                        "20/01/2025 10:10",
+                        "01/01/2024 00:00",
+                        "BTC",
+                        '"0,10000000"',
+                        '"3000,00"',
+                        '"3500,00"',
+                        '"500,00"',
+                        "Fee",
+                        "Kraken",
+                        "Long term",
+                    ]
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    (koinly_dir / "koinly_2025_income_report_test.csv").write_text(
+        "\n".join(
+            [
+                "Income report 2025",
+                "",
+                "Date,Asset,Amount,Value (EUR),Type,Description,Wallet Name",
+                '01/01/2025 00:01,WXT,"5,00000000","17,10",Reward,,Wirex',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = load_koinly_crypto_report(koinly_dir)
+
+    assert report is not None
+    assert len(report.capital_entries) == 2
+    assert all("Fee" in e.notes for e in report.capital_entries)
+    assert len(report.reward_entries) == 1
+    assert report.reward_entries[0].asset == "WXT"
+    assert report.reward_entries[0].value_eur == Decimal("17.10")
+
+
+def test_reward_parsing_independent_of_capital_gains_notes(tmp_path):
+    """Reward entries must depend only on the income report CSV, never on
+    Notes values from the capital-gains export.
+
+    This test loads the same income report twice: once with a capital-gains
+    file containing various Notes values, and once with no capital-gains file
+    at all. The reward entries must be identical in both cases.
+    """
+    koinly_dir_with_cg = tmp_path / "with_capital_gains"
+    koinly_dir_with_cg.mkdir()
+
+    income_csv = "\n".join(
+        [
+            "Income report 2025",
+            "",
+            "Date,Asset,Amount,Value (EUR),Type,Description,Wallet Name",
+            '01/01/2025 00:01,BTC,"0,01000000","500,00",Reward,,ByBit',
+            '02/01/2025 00:01,EUR,"10,00","10,00",Reward,Cashback,Kraken',
+        ]
+    )
+
+    (koinly_dir_with_cg / "koinly_2025_income_report_test.csv").write_text(income_csv, encoding="utf-8")
+    (koinly_dir_with_cg / "koinly_2025_capital_gains_report_test.csv").write_text(
+        "\n".join(
+            [
+                "Capital gains report 2025",
+                "",
+                ",".join(
+                    [
+                        "Date Sold",
+                        "Date Acquired",
+                        "Asset",
+                        "Amount",
+                        "Cost (EUR)",
+                        "Proceeds (EUR)",
+                        "Gain / loss",
+                        "Notes",
+                        "Wallet Name",
+                        "Holding period",
+                    ]
+                ),
+                ",".join(
+                    [
+                        "13/01/2025 13:01",
+                        "18/11/2024 00:15",
+                        "USDT",
+                        '"1,50000000"',
+                        '"1,25"',
+                        '"2,35"',
+                        '"1,10"',
+                        "Fee",
+                        "ByBit (2)",
+                        "Short term",
+                    ]
+                ),
+                ",".join(
+                    [
+                        "20/01/2025 10:10",
+                        "01/01/2024 00:00",
+                        "BTC",
+                        '"0,10000000"',
+                        '"3000,00"',
+                        '"3500,00"',
+                        '"500,00"',
+                        "Missing cost basis",
+                        "Kraken",
+                        "Long term",
+                    ]
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    koinly_dir_no_cg = tmp_path / "no_capital_gains"
+    koinly_dir_no_cg.mkdir()
+    (koinly_dir_no_cg / "koinly_2025_income_report_test.csv").write_text(income_csv, encoding="utf-8")
+
+    report_with_cg = load_koinly_crypto_report(koinly_dir_with_cg)
+    report_no_cg = load_koinly_crypto_report(koinly_dir_no_cg)
+
+    assert report_with_cg is not None
+    assert report_no_cg is not None
+
+    assert len(report_with_cg.reward_entries) == len(report_no_cg.reward_entries) == 2
+
+    rewards_with = sorted(report_with_cg.reward_entries, key=lambda r: (r.asset, r.date))
+    rewards_no = sorted(report_no_cg.reward_entries, key=lambda r: (r.asset, r.date))
+
+    for with_cg, no_cg in zip(rewards_with, rewards_no, strict=True):
+        assert with_cg.asset == no_cg.asset
+        assert with_cg.value_eur == no_cg.value_eur
+        assert with_cg.amount == no_cg.amount
+        assert with_cg.tax_classification == no_cg.tax_classification
+        assert with_cg.wallet == no_cg.wallet
+        assert with_cg.date == no_cg.date
+
+
+def test_mnt_reward_stays_deferred_through_full_parse(tmp_path):
+    """Parser-level regression: a reward row with Asset = MNT stays DEFERRED_BY_LAW
+    after load_koinly_crypto_report(), proving the collision list is applied during
+    income file parsing.
+
+    Without the MNT entry in _CRYPTO_TOKEN_FIAT_COLLISIONS, pycountry would classify
+    MNT as TAXABLE_NOW (fiat = Mongolian tögrög), which is wrong for the Mantle token.
+    """
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    (koinly_dir / "koinly_2025_income_report_test.csv").write_text(
+        "\n".join(
+            [
+                "Income report 2025",
+                "",
+                "Date,Asset,Amount,Value (EUR),Type,Description,Wallet Name",
+                '01/01/2025 00:01,MNT,"5,85000000","3,50",Reward,,ByBit (2)',
+                '02/01/2025 00:01,MNT,"44,91000000","25,00",Reward,,Mantle (MNT)',
+                '03/01/2025 00:01,EUR,"10,00","10,00",Reward,,Kraken',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = load_koinly_crypto_report(koinly_dir)
+
+    assert report is not None
+    mnt_rewards = [r for r in report.reward_entries if r.asset == "MNT"]
+    assert len(mnt_rewards) == 2
+    for reward in mnt_rewards:
+        assert reward.tax_classification == RewardTaxClassification.DEFERRED_BY_LAW, (
+            f"MNT reward must be DEFERRED_BY_LAW, got {reward.tax_classification}"
+        )
+
+    eur_reward = next(r for r in report.reward_entries if r.asset == "EUR")
+    assert eur_reward.tax_classification == RewardTaxClassification.TAXABLE_NOW

@@ -43,7 +43,7 @@ Specifically:
 
 - The repo is a Portugal-specific layer on top of generic crypto tax exports. It does not replace Koinly's import, matching, or gain-calculation engine; it prepares the output for Portuguese reporting.
 - The project is grounded in current official sources and professional guidance. Those materials are mirrored in the repo, tracked in source manifests, and re-checked before they are used in analysis or implementation.
-- Koinly FIFO rows are combined into one line per sale event, grouped by disposal date or timestamp, asset, platform, and holding period, because the Portuguese reporting unit is the disposal event (`alienação`), not many separate FIFO rows.
+- Koinly FIFO rows are combined into one line per sale event, grouped by disposal timestamp, asset, platform, and holding period. The current implementation groups at Koinly's minute-level timestamp precision. The official Anexo J Quadro 9.4 form only has Ano/Mês/Dia date columns -- no time-of-day field exists -- so day-level grouping would also be legally correct and would produce fewer lines (PT-C-020). Coarser grouping (per month, per year) is not acceptable.
 - Crypto rewards are classified as taxable now when paid in fiat money and deferred by law when paid in crypto, under CIRS article 5(11), and then grouped by income code and source country for Anexo J Quadro 8A.
 - `País da Fonte` is determined using Portuguese source-country rules tied to the operator or paying entity, because generic aggregators usually provide wallet or platform labels but not the country attribution needed for the tax return.
 - Sub-1-EUR lines are filtered out because they have no material tax impact and the AT portal requires manual entry per line.
@@ -68,7 +68,7 @@ Official sources say:
 - AT (Autoridade Tributaria e Aduaneira) informational booklet on criptoativos, issued 2026-01-12: confirms FIFO methodology, per-wallet FIFO application, and the reporting obligations for crypto-asset service providers.
   - Official source: `docs/tax/portugal-crypto-tax/official/at_folheto_criptoativos_2026-01-12.pdf`
 
-- AT Oficio Circulado 20269/2024 and the official Anexo J instructions define the shape of each reporting line in Quadro 9.4: source country, disposal date and value, acquisition date and value, expenses, foreign tax, counterparty country, and englobamento option.
+- AT Oficio Circulado 20269/2024 and the official Anexo J instructions define the shape of each reporting line in Quadro 9.4: source country, disposal date and value, acquisition date and value, expenses, foreign tax, counterparty country, and englobamento option. The date fields are Ano, Mês, Dia (day precision only); the form has no time-of-day columns.
   - Official source: `docs/tax/portugal-crypto-tax/official/at_oficio_circulado_20269_2024.pdf`
   - Official source: `docs/tax/portugal-crypto-tax/official/modelo3_anexo_j_2025.pdf`
 
@@ -80,7 +80,7 @@ Official sources say:
 
 Practical reading used by this repo:
 
-- The official texts do not literally say "aggregate Koinly FIFO rows by disposal date". What they do say is that the taxable moment is the `alienação onerosa`, and that each Quadro 9.4 line is structured around one disposal's sale and purchase fields.
+- The official texts do not literally say "aggregate Koinly FIFO rows by disposal date". What they do say is that the taxable moment is the `alienação onerosa`, and that each Quadro 9.4 line is structured around one disposal's sale and purchase fields. The official form confirms that dates are Ano/Mês/Dia with no time-of-day columns (modelo3_anexo_j_2025.pdf, approved by Portaria 104/2026). The repo currently groups at Koinly's minute-level precision; the form cannot represent that level of detail, so day-level grouping would be a valid simplification that reduces line count while staying within what the law requires.
 - A Portuguese practitioner guide makes the practical reading explicit: each Quadro 9.4 line corresponds to a distinct event or gain. The repo follows that interpretation and treats multiple FIFO rows belonging to the same disposal as supporting detail for one reporting line.
   - Practitioner guidance: `https://cryptobooks.tax/pt-PT/blog/declarar-criptoativos-anexo-j-modelo-3`
 - The repo still preserves holding-period splits inside the same disposal date because that distinction changes the Portuguese tax treatment and annex placement.
@@ -107,7 +107,7 @@ After: one aggregated line.
 Disposal: 15/03/2024 | BTC | Kraken | Short term | Amount: 0.00350000 | Cost: 35.00 EUR | Proceeds: 52.50 EUR | Gain: 17.50 EUR
 ```
 
-This single line is what goes on Anexo J Quadro 9.4 for foreign-source capital gains. The aggregation collapses the 350 FIFO rows into one reporting row. The underlying detail remains in the Koinly CSV source file for auditability.
+This single line is what goes on Anexo J Quadro 9.4 for foreign-source capital gains. The aggregation collapses the 350 FIFO rows into one reporting row. The official form only has Ano/Mês/Dia date columns (modelo3_anexo_j_2025.pdf), so the form cannot distinguish same-day disposals at different times -- the current minute-level grouping in the code may produce more rows than the form can represent, and day-level aggregation would be a valid simplification. The underlying detail remains in the Koinly CSV source file for auditability.
 
 Source: `resources/source/example/koinly2024/koinly_2024_capital_gains_report_xY9kLm2pQr_1700000000.csv` (rows 1-350).
 

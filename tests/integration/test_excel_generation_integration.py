@@ -912,6 +912,106 @@ class TestDividendExcelPersisting:
         # Verify the report was NOT created because generation failed
         assert not report_path.exists()
 
+    def test_crypto_sheet_capital_headers_distinguish_disposal_vs_acquisition_date(self, tmp_path):
+        """Assert the Crypto capital-gains header row has both 'Disposal date' and
+        'Acquisition date' as separate, explicitly named columns.
+
+        This guards against a future column rename or reordering that collapses
+        the two date fields into one ambiguous header, which would make it
+        impossible to tell whether a repeated timestamp is a disposal or
+        acquisition date in the generated workbook.
+        """
+        bybit_origin = resolve_operator_origin("ByBit")
+
+        crypto_report = CryptoTaxReport(
+            tax_year=2025,
+            capital_entries=[
+                CryptoCapitalGainEntry(
+                    disposal_date="2025-01-13 13:01:00",
+                    acquisition_date="2024-07-27 11:03:00",
+                    asset="USDT",
+                    amount=Decimal("1.5"),
+                    cost_eur=Decimal("1.25"),
+                    proceeds_eur=Decimal("1.35"),
+                    gain_loss_eur=Decimal("0.10"),
+                    holding_period="Short term",
+                    wallet="ByBit (2)",
+                    platform="ByBit",
+                    chain="ByBit",
+                    operator_origin=bybit_origin,
+                    annex_hint="J",
+                    review_required=bybit_origin.review_required,
+                    review_reason=bybit_origin.review_reason,
+                    notes="",
+                    token_swap_history="",
+                )
+            ],
+            reward_entries=[],
+            reconciliation=CryptoReconciliationSummary(
+                capital_rows=1,
+                reward_rows=0,
+                short_term_rows=1,
+                long_term_rows=0,
+                mixed_rows=0,
+                unknown_rows=0,
+                capital_cost_total_eur=Decimal("1.25"),
+                capital_proceeds_total_eur=Decimal("1.35"),
+                capital_gain_total_eur=Decimal("0.10"),
+                reward_total_eur=Decimal("0"),
+                opening_holdings=None,
+                closing_holdings=None,
+            ),
+            skipped_zero_value_tokens=[],
+            pdf_summary=None,
+        )
+
+        report_path = tmp_path / "crypto_date_headers_report.xlsx"
+        generate_tax_report(
+            extract=report_path,
+            capital_gain_lines_per_company={},
+            dividend_income_per_company={},
+            crypto_tax_report=crypto_report,
+        )
+
+        assert report_path.exists()
+
+        import openpyxl
+
+        workbook = openpyxl.load_workbook(report_path)
+        crypto_sheet = workbook["Crypto"]
+
+        header_row = None
+        for row in crypto_sheet.iter_rows(values_only=True):
+            if row and "Disposal date" in str(row[0] if row[0] else ""):
+                header_row = [str(c) if c is not None else "" for c in row]
+                break
+
+        assert header_row is not None, "Capital gains header row not found in Crypto sheet"
+
+        assert header_row[0] == "Disposal date", (
+            f"First capital gains header must be 'Disposal date', got {header_row[0]!r}"
+        )
+        assert "Acquisition date" in header_row, (
+            f"'Acquisition date' column missing from capital gains headers: {header_row}"
+        )
+        disposal_idx = header_row.index("Disposal date")
+        acquisition_idx = header_row.index("Acquisition date")
+        assert disposal_idx != acquisition_idx, (
+            "Disposal date and Acquisition date must be separate columns"
+        )
+
+        data_row = None
+        for row in crypto_sheet.iter_rows(values_only=True):
+            if row and row[0] == "2025-01-13 13:01:00":
+                data_row = row
+                break
+
+        assert data_row is not None, "Capital gains data row not found"
+        assert data_row[disposal_idx] == "2025-01-13 13:01:00"
+        assert data_row[acquisition_idx] == "2024-07-27 11:03:00"
+
+        workbook.close()
+
     def test_crypto_sheet_removed_on_partial_write_error(self, tmp_path):
         """Test that partial Crypto sheet is removed when error occurs during writing.
 

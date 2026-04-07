@@ -54,7 +54,7 @@ This will create a `.venv` folder in your project root that editors can detect a
   - `koinly_<year>_end_of_year_holdings_report_*.csv` - Closing balance (optional)
   - `koinly_<year>_complete_tax_report_*.pdf` - Period metadata (optional)
 
-  The tool automatically aggregates FIFO lot rows by (sale timestamp, asset, wallet, holding period) to reduce manual filing burden while preserving the taxable vs exempt breakdown required for Portuguese IRS (short-term gains are taxable, long-term gains are exempt). After aggregation, entries where |gain/loss| < 1 EUR are filtered as immaterial. See `docs/domain/crypto_rules.md` for Portuguese tax law details.
+  The tool automatically aggregates FIFO lot rows by (disposal date, asset, platform, holding period) to reduce manual filing burden while preserving the taxable vs exempt breakdown required for Portuguese IRS (short-term gains are taxable, long-term gains are exempt). After aggregation, entries where |gain/loss| < 1 EUR are filtered as immaterial. See `docs/domain/crypto_rules.md` for Portuguese tax law details.
 
   Chain derivation: The tool automatically derives blockchain chain information from wallet labels using trusted archived sources in `docs/tax/crypto-origin/`. Chain is reported as a separate column (e.g., "Ethereum", "Solana", "Berachain") alongside wallet/platform. Wallet aliases are normalized (e.g., "ByBit (2)" -> "ByBit") before aggregation.
 

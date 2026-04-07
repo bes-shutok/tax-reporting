@@ -334,6 +334,7 @@ class CryptoTaxReport:
 _CRYPTO_TOKEN_FIAT_COLLISIONS: Final[frozenset[str]] = frozenset(
     (
         "GEL",  # Gelato Network token (fiat GEL = Georgian Lari)
+        "MNT",  # Mantle token (fiat MNT = Mongolian tögrög)
     )
 )
 

@@ -152,18 +152,27 @@ disposals are declared in **Anexo J, Quadro 9.4** ("Alienação onerosa de cript
 não constituam valores mobiliários").
 > Source: Ofício Circulado 20269/2024, section 12.6, dated 2024-03-24.
 
-**PT-C-020** `[OFFICIAL | 2024-03-24]`
+**PT-C-020** `[OFFICIAL | 2026-03-05]`
 **Required fields per line in Quadro 9.4 (Anexo J):**
 - País da fonte (source country — country of the exchange)
-- Data de realização (disposal date)
+- Data de realização — **Ano, Mês, Dia** (disposal date, day precision only)
 - Valor de realização (proceeds in EUR)
-- Data de aquisição (acquisition date)
+- Data de aquisição — **Ano, Mês, Dia** (acquisition date, day precision only)
 - Valor de aquisição (cost in EUR)
 - Despesas e encargos (expenses and charges)
 - Imposto pago no estrangeiro (foreign tax paid)
 - País da contraparte (counterparty country)
 - Opção pelo englobamento (opt into progressive taxation: yes/no)
-> Source: Ofício Circulado 20269/2024, section 12.6, dated 2024-03-24.
+
+The form has **no time-of-day columns** — dates are captured as year, month, and day only.
+The same day-level precision applies to Anexo G Quadro 18A (domestic crypto, short-term) and
+Anexo G1 Quadro 7 (long-term exempt crypto). Aggregation coarser than day-level (e.g. per month
+or per year) would merge distinct disposal events and is not acceptable. Aggregation at day-level
+or finer is consistent with the form's design.
+> Source: Ofício Circulado 20269/2024, section 12.6, dated 2024-03-24; form columns confirmed in
+> modelo3_anexo_j_2025.pdf (in force from January 2026, approved by Portaria 104/2026, 2026-03-05);
+> no override found in Ofício Circulado 20278/2025 (dated 2025-03-17) or Portaria 104/2026
+> (dated 2026-03-05). Checked 2026-04-07.
 
 **PT-C-021** `[OFFICIAL | 2025-03-17]`
 The 2025 Modelo 3 update (for tax year 2024 filing) adjusted Quadro 9.4 by removing its
@@ -219,14 +228,21 @@ Every line in Quadro 9.4 must be entered manually through the portal's web inter
 
 These decisions are specific to this codebase and may be revised.
 
-**PT-C-027** `[IMPLEMENTATION DECISION | 2026-03-15]`
-The Crypto sheet aggregates FIFO lot rows by **(exact disposal timestamp, asset, wallet, holding_period)**
+**PT-C-027** `[IMPLEMENTATION DECISION | 2026-03-15, updated 2026-04-07]`
+The Crypto sheet aggregates FIFO lot rows by **(disposal date, asset, platform, holding_period)**
 before writing to Excel. This collapses multiple FIFO lot rows for the same real sale into
 one line per holding period, preserving the taxable vs exempt breakdown needed for correct filing
 (PT-C-011: short-term gains are taxable, long-term gains are exempt).
 Rationale: Koinly outputs one row per FIFO lot allocation; the "operação" for IRS purposes
 is the sale transaction, not the lot. The holding_period must be preserved to distinguish
 taxable short-term gains from exempt long-term gains.
+
+**Date precision constraint (PT-C-020):** the official Anexo J Quadro 9.4 form captures dates
+as Ano/Mês/Dia (year, month, day) — no time-of-day field exists. Aggregation must be at
+**day-level or finer**; coarser aggregation (per month, per year) would merge distinct
+disposal events and is not acceptable. The current implementation uses Koinly's minute-level
+timestamps internally for grouping, which is stricter than required; day-level grouping
+would also be legally correct per PT-C-020.
 
 **PT-C-028** `[IMPLEMENTATION DECISION | 2026-03-14]`
 After timestamp-level aggregation, lines where **|gain/loss| < 1 EUR** are excluded from
