@@ -43,7 +43,7 @@ This file provides guidance to coding agents when working with code in this repo
 - When the FIFO loop exits with remaining unmatched trades, use `logger.warning` (not `logger.debug`) so data-loss conditions are always visible in production logs.
 - When writing a partially-matched buy to the rollover CSV, the fee must be proportional: `proportional_fee = action.fee * (rolled_quantity / original_quantity)`.
 - Dividend per-symbol validation must run after all rows for all symbols are accumulated, not after each row. Mid-accumulation state can be temporarily invalid (e.g. reversal arrives before dividend). Symbols that fail post-accumulation validation are skipped with `logger.warning`; they must not abort processing of other symbols.
-- Aggregate crypto capital gains by `(disposal timestamp, asset, wallet, holding_period)` before reporting. Do not remove or bypass `_aggregate_capital_entries()`.
+- Aggregate crypto capital gains by `(disposal_date, asset, platform, holding_period)` before reporting. Do not remove or bypass `_aggregate_capital_entries()`.
 - After aggregation, exclude entries where `|gain/loss| < 1 EUR`. Do not remove `_filter_immaterial_entries()` or parameterize `_MATERIALITY_THRESHOLD` without a `crypto_rules.md` update.
 - Crypto reward income must be aggregated by `(income_code, source_country)` before inclusion in the IRS-ready filing table. Do not bypass or remove `aggregate_taxable_rewards()`.
 - Reward classification into taxable_now vs deferred_by_law must use `_classify_reward_tax_status()` and cite CRG-001/CRG-002 rule IDs.

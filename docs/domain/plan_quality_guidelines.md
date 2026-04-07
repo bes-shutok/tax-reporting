@@ -21,6 +21,21 @@ Every implementation task should include:
 4. **Acceptance criteria** - Definition of done
 5. **Testing requirements** - Including negative tests
 
+## Plan Revision History
+
+When updating an existing plan, preserve completed steps exactly as written unless the
+user explicitly asks to rewrite historical entries. Do not delete or replace completed
+tasks merely because new findings changed the next steps.
+
+If new investigation changes the follow-up work:
+
+1. keep completed sections intact as the historical record
+2. append new context or follow-on tasks below the preserved history
+3. clearly distinguish completed reasoning from newly opened work
+
+This keeps the plan usable both as an execution checklist and as an audit trail of why
+the direction changed.
+
 ### Pattern-Specific Specifications
 
 When specifying patterns in plans:

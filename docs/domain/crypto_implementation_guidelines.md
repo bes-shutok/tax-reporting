@@ -34,6 +34,7 @@ These ISO 4217 codes are NOT ordinary government-issued fiat currencies and must
 Some tickers represent both ISO 4217 fiat codes AND crypto token symbols. In these cases, the crypto token takes precedence (classify as `DEFERRED_BY_LAW`):
 
 - **GEL**: Georgian Lari (fiat) vs Gelato Network token (crypto) → crypto wins
+- **MNT**: Mongolian tögrög (fiat) vs Mantle L2 token (crypto) → crypto wins
 
 Maintain `_CRYPTO_TOKEN_FIAT_COLLISIONS` set in `crypto_reporting.py` for these known cases.
 
@@ -63,7 +64,7 @@ When testing fiat classification, include:
 - Major currencies (EUR, USD, GBP)
 - Previously missing codes (AED, THB, PHP, RSD, UAH, PKR, KZT, GEL, AMD)
 - Non-fiat exclusions (XAU, XAG, CLF, BOV, CHW)
-- Ticker collisions (GEL)
+- Ticker collisions (GEL, MNT)
 
 ## Wallet Normalization
 
@@ -533,6 +534,52 @@ Before implementing new crypto features, verify the plan has:
 - [ ] Acceptance criteria checklist
 
 If any are missing, clarify the plan first.
+
+## Aggregation Grouping Invariants
+
+### Expected Repeated Timestamps vs Forbidden Duplicate Aggregation Keys
+
+When reviewing crypto capital gains output, it is critical to distinguish between two
+different phenomena that can look similar in a spreadsheet:
+
+**Expected: repeated acquisition_date across disposal events.**
+A single purchase (e.g. 2024-07-27 11:03:00) may supply FIFO lots sold at multiple
+different later disposal dates. Each disposal is a separate taxable event. The shared
+acquisition timestamp simply reflects the common purchase that was partially sold over
+time. This is normal and does NOT indicate a grouping regression.
+
+**Expected: repeated disposal_date with a differing aggregation dimension.**
+Rows sharing a disposal_date but differing in `asset`, `platform`, or `holding_period`
+must stay separate. Each distinct `(disposal_date, asset, platform, holding_period)`
+tuple represents a separate aggregation group per PT-C-027.
+
+**Forbidden: duplicate rows with the same full aggregation key.**
+After `_aggregate_capital_entries()`, no two output rows may share the exact key
+`(disposal_date, asset, platform, holding_period)`. If they do, the aggregation
+function has a regression. The durable regression test
+`test_aggregate_never_emits_duplicate_keys` guards this invariant.
+
+### How to Diagnose a Reported Grouping Regression
+
+1. Identify the reported timestamp. Determine whether it appears in the `Acquisition date`
+   column or the `Disposal date` column.
+2. If the timestamp is an acquisition date shared across multiple disposals, this is
+   expected behavior (see above). No fix needed.
+3. If the timestamp is a disposal date, check the full aggregation key
+   `(disposal_date, asset, platform, holding_period)` for each supposedly-duplicate row.
+   If any key field differs, the rows are intentionally separate.
+4. Only if two rows share the identical 4-tuple key after aggregation is there a true
+   regression. File a bug referencing `test_aggregate_never_emits_duplicate_keys`.
+
+### Regression Tests
+
+| Test | Guard |
+|------|-------|
+| `test_aggregate_never_emits_duplicate_keys` | No duplicate aggregation keys in `_aggregate_capital_entries()` output |
+| `test_same_timestamp_different_holding_period_stays_split` | Same-timestamp rows with different holding periods stay separate (PT-C-011) |
+| `test_same_disposal_date_allowed_when_other_grouping_dims_differ` | Same disposal date with different asset/platform/holding_period stays separate |
+| `test_real_koinly_fixture_has_no_duplicate_aggregation_keys` | Real koinly2025 fixture has zero duplicate keys after full pipeline |
+| `test_acquisition_date_repeat_is_not_a_disposal_grouping_issue` | Shared acquisition date across multiple disposals is not a bug |
 
 ## Koinly Export Files
 

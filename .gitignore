@@ -81,3 +81,10 @@ config.ini
 /logs/
 
 /.ralphex/
+
+# LLM agent config (bootstrap-only, never committed)
+.claude/
+.opencode/
+.codex/
+.continue/
+.cursor/rules
