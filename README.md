@@ -46,7 +46,7 @@ This will create a `.venv` folder in your project root that editors can detect a
 - **Modern tooling**: Ruff linter/formatter, coverage reporting, professional packaging
 
 ### **Source Files Configuration**
-- **Input Data**: Add your Interactive Brokers CSV export to the `/resources/source` folder. See `/resources/shares_example.csv` for an example of the file format.
+- **Input Data**: Add your Interactive Brokers CSV export to the `/resources/source` folder. See `resources/source/example/ib_export.csv` for a fully synthetic example of the file format.
 - **Crypto Tax Data (Optional)**: For Portuguese crypto tax reporting, place Koinly export files in a `koinly*` subdirectory within `/resources/source`:
   - `koinly_<year>_capital_gains_report_*.csv` - Capital gains from crypto disposals
   - `koinly_<year>_income_report_*.csv` - Staking rewards, airdrops, and other income
@@ -111,6 +111,46 @@ uvx ruff check . --fix && uvx ruff format .  # Fix and format
 
 
 
+### Quick Start With Example Data
+
+The repository ships fully synthetic example data in `resources/source/example/` that exercises every major feature without requiring real tax files. All names, account numbers, and wallet identifiers are fictional; this data is not tax advice.
+
+**Example files:**
+- `resources/source/example/ib_export.csv` - Fake IB export with shares trades and dividends
+- `resources/source/example/shares-leftover.csv` - Leftover trades from a prior year for rollover integration
+- `resources/source/example/koinly2024/` - Fake Koinly exports for crypto capital gains and rewards
+
+**Features demonstrated:**
+- Shares capital gains (FIFO buy/sell matching)
+- Dividend income with withholding tax
+- Leftover/rollover integration from a previous tax cycle
+- Crypto capital gains aggregation (high-volume: 900+ raw disposal rows collapse to 4 report lines)
+- Crypto rewards income (160 reward rows: SOL staking, ETH rewards, and ADA airdrops classified as deferred-by-law, plus EUR referral rewards classified as taxable-now)
+- Token origin column (blank, by design - see below)
+
+**High-volume aggregation demonstration:** The example Koinly CSVs contain over 1000 synthetic crypto rows. The capital gains pipeline aggregates them by (sale date, asset, platform, holding period), then filters immaterial entries (|gain/loss| < 1 EUR), producing a compact report with only a handful of filing-facing lines. This demonstrates the core value of the tool: converting verbose exchange exports into concise Portuguese-reporting-ready output.
+
+**Run the example pipeline:**
+
+```bash
+# Run all example e2e tests to see the full pipeline in action
+uv run pytest tests/end_to_end/test_example_report_generation.py -v
+```
+
+The tests parse the example inputs, run FIFO matching and crypto aggregation, then write an `extract.xlsx` workbook to a temporary directory and verify its contents. The high-volume tests specifically check that 1000+ raw crypto rows produce a small, structured set of report lines. You can also run the application with the example data from Python:
+
+```bash
+uv run python -c "
+from pathlib import Path
+from shares_reporting.main import main
+main(Path('resources/source/example/ib_export.csv'), Path('resources/result/example'))
+"
+```
+
+This writes `resources/result/example/extract.xlsx` containing both the Reporting sheet (capital gains, dividends) and the Crypto sheet (capital gains, rewards). The `main()` function accepts a `source_file` parameter to override the default input path; see `src/shares_reporting/main.py` for the full API.
+
+**Token origin column:** The Crypto sheet includes a `Token origin` column that is currently blank. A previous version of the tool used a disposal-day guessing heuristic to infer swap origins, but that logic produced misleading results for some transaction types (for example, loan repayments matched to unrelated same-day events). The column now stays blank unless a deterministic, export-backed linkage is available. A future update will implement proper Koinly-first origin matching based on acquisition-side export fields.
+
 ### **Report Features**
 The tool generates comprehensive Excel reports with:
 - **Capital Gains Section**: Detailed buy/sell transaction matching with FIFO methodology
@@ -124,6 +164,10 @@ The tool generates comprehensive Excel reports with:
 - **Professional Formatting**: Currency display with 2 decimal places and proper Excel formulas
 - **Multi-Currency Support**: Automatic currency conversion with exchange rate tables
 - **ISIN Integration**: Automatic country of source detection from financial instrument data
+
+## Project Walkthrough
+
+For a detailed slide-by-slide walkthrough explaining what the project does, why it exists, and how the example data demonstrates its value, see `docs/presentation/project-walkthrough.md`. The walkthrough covers the problem statement, the legal basis for aggregation, concrete before/after examples from the synthetic dataset, and the recommended next steps.
 
 ## Roadmap & Future Development
 

@@ -516,8 +516,8 @@ class TestDividendExcelPersisting:
 
         workbook.close()
 
-    def test_crypto_sheet_contains_token_swap_history_column(self, tmp_path):
-        """Assert the Crypto worksheet contains token swap history column and values."""
+    def test_crypto_sheet_contains_token_origin_column(self, tmp_path):
+        """Assert the Crypto worksheet contains Token origin column with blank value after legacy removal."""
         bybit_origin = resolve_operator_origin("ByBit")
 
         crypto_report = CryptoTaxReport(
@@ -539,7 +539,7 @@ class TestDividendExcelPersisting:
                     annex_hint="J",
                     review_required=False,
                     notes="",
-                    token_swap_history="SUI → HASUI",  # noqa: S106
+                    token_swap_history="",
                 )
             ],
             reward_entries=[],
@@ -561,7 +561,7 @@ class TestDividendExcelPersisting:
             pdf_summary=None,
         )
 
-        report_path = tmp_path / "crypto_swap_history_report.xlsx"
+        report_path = tmp_path / "crypto_token_origin_report.xlsx"
         generate_tax_report(
             extract=report_path,
             capital_gain_lines_per_company={},
@@ -576,26 +576,21 @@ class TestDividendExcelPersisting:
         workbook = openpyxl.load_workbook(report_path)
         crypto_sheet = workbook["Crypto"]
 
-        # Find the capital gains header row and check for token swap history column
         capital_headers_found = False
-        swap_history_col_idx = None
+        token_origin_col_idx = None
 
         for row in crypto_sheet.iter_rows(values_only=True):
             if row and "Disposal date" in str(row[0] if row[0] else ""):
-                # Found capital gains headers
                 capital_headers_found = True
-                # Find the "Token swap history" column index
                 for col_idx, cell_value in enumerate(row):
-                    if cell_value == "Token swap history":
-                        swap_history_col_idx = col_idx + 1
+                    if cell_value == "Token origin":
+                        token_origin_col_idx = col_idx + 1
                         break
                 break
 
-        # Verify header was found
         assert capital_headers_found, "Capital gains headers not found"
-        assert swap_history_col_idx is not None, "Token swap history column not found in capital gains headers"
+        assert token_origin_col_idx is not None, "Token origin column not found in capital gains headers"
 
-        # Verify the swap history value is written in the data row
         capital_data_row = None
 
         for row in crypto_sheet.iter_rows(values_only=True):
@@ -605,9 +600,8 @@ class TestDividendExcelPersisting:
 
         assert capital_data_row is not None, "Capital data row not found"
 
-        # Check swap history value in data row (using 1-based column index)
-        swap_history = capital_data_row[swap_history_col_idx - 1]
-        assert swap_history == "SUI → HASUI", f"Expected 'SUI → HASUI' swap history, got {swap_history}"
+        token_origin_value = capital_data_row[token_origin_col_idx - 1]
+        assert token_origin_value in ("", None), f"Expected blank Token origin, got {token_origin_value!r}"
 
         workbook.close()
 

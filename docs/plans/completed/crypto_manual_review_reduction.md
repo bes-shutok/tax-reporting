@@ -4,6 +4,8 @@
 **Created:** 2026-03-25
 **Analysis:** Based on actual Koinly exports in `resources/source/koinly2025/`
 
+> **Superseded (2026-04-05):** The token swap history heuristic (Phase 1.3: `_build_swap_lookup`) was removed in the `remove-legacy-token-origin-and-add-safe-examples` plan because it produced misleading origin labels for loan-repayment rows. The workbook column was renamed from "Token swap history" to "Token origin" and is intentionally blank until deterministic Koinly-first origin matching is implemented. See `docs/plans/2026-04-05-koinly-first-token-origin.md` for the replacement design.
+
 ## Problem Statement
 
 1. Too many "YES" in Review flag column requiring manual attention

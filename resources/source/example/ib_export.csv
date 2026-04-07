@@ -1,0 +1,24 @@
+Statement,Header,Field Name,Field Value
+Statement,Data,BrokerName,Demo Broker LLC
+Statement,Data,Title,Activity Statement
+Statement,Data,Period,"January 1, 2024 - December 31, 2024"
+Statement,Data,WhenGenerated,"2025-01-15, 10:00:00 EST"
+Account Information,Header,Field Name,Field Value
+Account Information,Data,Name,Demo Taxpayer
+Account Information,Data,Account,U9999999
+Account Information,Data,Account Type,Individual
+Account Information,Data,Base Currency,EUR
+Financial Instrument Information,Header,Asset Category,Symbol,Description,Conid,Security ID,Underlying,Listing Exch,Multiplier,Type,Code
+Financial Instrument Information,Data,Stocks,ACME,ACME CORPORATION,10000001,US0000000001,ACME,NYSE,1,COMMON,
+Financial Instrument Information,Data,Stocks,GLOB,GLOBAL INDUSTRIES INC,10000002,GB0000000002,GLOB,LSE,1,COMMON,
+Trades,Header,DataDiscriminator,Asset Category,Currency,Symbol,Date/Time,Quantity,T. Price,C. Price,Proceeds,Comm/Fee,Basis,Realized P/L,MTM P/L,Code
+Trades,Data,Order,Stocks,USD,ACME,"2024-03-15, 10:30:00",50,20.00,20.50,-1000.00,-1.00,,0,,O
+Trades,Data,Order,Stocks,USD,ACME,"2024-06-20, 14:15:00",-30,25.00,24.80,750.00,-0.75,-600.60,148.65,6.00,C
+Trades,Data,Order,Stocks,USD,GLOB,"2024-04-10, 09:00:00",100,5.00,5.10,-500.00,-0.50,,0,,O
+Trades,Data,Order,Stocks,USD,GLOB,"2024-09-15, 11:00:00",-100,6.50,6.40,650.00,-0.65,-500.50,149.35,10.00,C
+Dividends,Header,Currency,Date,Description,Amount
+Dividends,Data,USD,2024-06-01,ACME(US0000000001) Cash Dividend USD 0.50 per Share (Ordinary Dividend),25.00
+Dividends,Data,USD,2024-09-01,GLOB(GB0000000002) Cash Dividend USD 0.10 per Share (Ordinary Dividend),10.00
+Withholding Tax,Header,Currency,Date,Description,Amount,Code
+Withholding Tax,Data,USD,2024-06-01,ACME(US0000000001) Cash Dividend USD 0.50 per Share - US Tax,-3.75,
+Withholding Tax,Data,USD,2024-09-01,GLOB(GB0000000002) Cash Dividend USD 0.10 per Share - GB Tax,-1.00,

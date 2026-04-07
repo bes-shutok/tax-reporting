@@ -540,42 +540,19 @@ If any are missing, clarify the plan first.
 
 Koinly generates multiple CSV files from tax reports. Only a subset is loaded by the crypto workbook builder.
 
-| File | Contains Swap Data? | Current Usage | Swap Information |
-|------|---------------------|---------------|------------------|
-| `koinly_*_capital_gains_report_*.csv` | ❌ No | Used for capital entries | Only shows final asset |
-| `koinly_*_income_report_*.csv` | ❌ No | Used for reward entries | Single asset per row |
-| `koinly_*_transaction_history_*.csv` | ✅ **Yes** | Used for swap-history lookup / audit trail | Shows both sides of swap |
-| `koinly_*_beginning_of_year_holdings_report_*.csv` | ❌ No | Used for opening holdings reconciliation | Holdings snapshot only |
-| `koinly_*_end_of_year_holdings_report_*.csv` | ❌ No | Used for closing holdings reconciliation | Holdings snapshot only |
+| File | Current Usage |
+|------|---------------|
+| `koinly_*_capital_gains_report_*.csv` | Used for capital entries |
+| `koinly_*_income_report_*.csv` | Used for reward entries |
+| `koinly_*_transaction_history_*.csv` | Not currently loaded; planned for Koinly-first origin matching |
+| `koinly_*_beginning_of_year_holdings_report_*.csv` | Used for opening holdings reconciliation |
+| `koinly_*_end_of_year_holdings_report_*.csv` | Used for closing holdings reconciliation |
 
-### Token Swap History in transaction_history.csv
+### Token Origin (formerly Token Swap History)
 
-**Location**: `resources/source/koinly*/koinly_*_transaction_history_*.csv`
+The legacy same-day disposal-context guessing heuristic was removed in the `remove-legacy-token-origin-and-add-safe-examples` plan (2026-04-05). The `Token origin` column in the Crypto sheet is intentionally blank until deterministic Koinly-first origin matching is implemented. See the follow-up plan at `docs/plans/2026-04-05-koinly-first-token-origin.md` for the replacement design.
 
-**Key columns for swaps**:
-- `Type`: Value `"exchange"` indicates a token swap
-- `Sent Currency`: Source token (e.g., `SUI`)
-- `Received Currency`: Destination token (e.g., `HASUI`)
-
-**Example swap row** (from 2025 export):
-```csv
-2025-02-16 17:10:42 UTC,exchange,"",Ledger SUI,"26,40816087",SUI,"29,83",Ledger SUI,"25,19665014",HASUI,"29,83"
-```
-
-This shows **SUI → HASUI swap** with:
-- Sent: 26.40816087 SUI (€29.83 cost basis)
-- Received: 25.19665014 HASUI (€29.83 cost basis)
-
-### Using Swap History for Audit Trail
-
-When implementing token swap history display:
-
-1. **Parse transaction_history.csv** for rows with `Type="exchange"`
-2. **Build lookup** by `(wallet, date)` → `"Sent Currency → Received Currency"`
-3. **Match to capital gains** rows by `(Wallet Name, Date Sold)`
-4. **Display in Crypto sheet** as new column `"Token swap history"`
-
-**Benefit**: Makes token migrations (SUI → HASUI, SUI → SSUI) visible for audit trail without manual cross-referencing.
+The `transaction_history.csv` file contains exchange rows that show both sides of a swap (e.g., SUI → HASUI) and will be the data source for the future deterministic origin feature.
 
 ### Manual Review Reduction Opportunities
 
@@ -590,7 +567,8 @@ Analysis of Koinly exports reveals these fixable false-positive triggers:
 ## References
 
 - Plan: `docs/plans/aggregate-crypto-rewards-income.md`
-- Plan: `docs/plans/crypto_manual_review_reduction.md` (token swap history)
+- Plan: `docs/plans/crypto_manual_review_reduction.md` (token swap history — superseded; heuristic removed 2026-04-05)
+- Plan: `docs/plans/2026-04-05-koinly-first-token-origin.md` (follow-up deterministic origin matching)
 - Rules: `docs/domain/crypto_rules.md`
 - Guidelines: `docs/domain/crypto_reporting_guidelines.md`
 - Chain sources: `docs/tax/crypto-origin/`
