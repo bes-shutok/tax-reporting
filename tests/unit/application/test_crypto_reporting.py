@@ -3982,6 +3982,322 @@ def test_mnt_reward_stays_deferred_through_full_parse(tmp_path):
     assert eur_reward.tax_classification == RewardTaxClassification.TAXABLE_NOW
 
 
+# --- Task 1: CapitalGainPeriodStats tests ---
+
+
+def test_capital_gain_period_stats_zero():
+    """CapitalGainPeriodStats construction with zero values and correct property access."""
+    from shares_reporting.application.crypto_reporting import CapitalGainPeriodStats
+
+    _zero = Decimal("0")
+    stats = CapitalGainPeriodStats(count=0, cost_total_eur=_zero, proceeds_total_eur=_zero, gain_loss_total_eur=_zero)
+    assert stats.count == 0
+    assert stats.cost_total_eur == Decimal("0")
+    assert stats.proceeds_total_eur == Decimal("0")
+    assert stats.gain_loss_total_eur == Decimal("0")
+
+
+def test_capital_gain_period_stats_from_entries():
+    """from_entries() correctly sums cost, proceeds, gain/loss and counts entries."""
+    from shares_reporting.application.crypto_reporting import CapitalGainPeriodStats
+
+    entries = [
+        _make_entry(cost_eur=Decimal("100"), proceeds_eur=Decimal("120"), gain_loss_eur=Decimal("20")),
+        _make_entry(cost_eur=Decimal("200"), proceeds_eur=Decimal("250"), gain_loss_eur=Decimal("50")),
+        _make_entry(cost_eur=Decimal("50"), proceeds_eur=Decimal("45"), gain_loss_eur=Decimal("-5")),
+    ]
+
+    stats = CapitalGainPeriodStats.from_entries(entries)
+
+    assert stats.count == 3
+    assert stats.cost_total_eur == Decimal("350")
+    assert stats.proceeds_total_eur == Decimal("415")
+    assert stats.gain_loss_total_eur == Decimal("65")
+
+
+def test_capital_gain_period_stats_from_empty_entries():
+    """from_entries() with empty list returns zero-stats."""
+    from shares_reporting.application.crypto_reporting import CapitalGainPeriodStats
+
+    stats = CapitalGainPeriodStats.from_entries([])
+
+    assert stats.count == 0
+    assert stats.cost_total_eur == Decimal("0")
+    assert stats.proceeds_total_eur == Decimal("0")
+    assert stats.gain_loss_total_eur == Decimal("0")
+
+
+# --- Task 2: CryptoCapitalGainStats aggregate tests ---
+
+
+def test_compute_capital_gain_stats_all_periods():
+    """Stats computed across all four holding periods with correct per-period and grand-total values."""
+    from shares_reporting.application.crypto_reporting import CryptoCapitalGainStats
+
+    entries = [
+        _make_entry(
+            holding_period="Short term", cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("120"), gain_loss_eur=Decimal("20"),
+        ),
+        _make_entry(
+            holding_period="Short term", cost_eur=Decimal("50"),
+            proceeds_eur=Decimal("60"), gain_loss_eur=Decimal("10"),
+        ),
+        _make_entry(
+            holding_period="Long term", cost_eur=Decimal("200"),
+            proceeds_eur=Decimal("250"), gain_loss_eur=Decimal("50"),
+        ),
+        _make_entry(
+            holding_period="Mixed", cost_eur=Decimal("80"),
+            proceeds_eur=Decimal("70"), gain_loss_eur=Decimal("-10"),
+        ),
+        _make_entry(
+            holding_period="Unknown", cost_eur=Decimal("30"),
+            proceeds_eur=Decimal("35"), gain_loss_eur=Decimal("5"),
+        ),
+    ]
+
+    stats = CryptoCapitalGainStats.from_entries(entries)
+
+    assert stats.short_term.count == 2
+    assert stats.short_term.cost_total_eur == Decimal("150")
+    assert stats.short_term.proceeds_total_eur == Decimal("180")
+    assert stats.short_term.gain_loss_total_eur == Decimal("30")
+
+    assert stats.long_term.count == 1
+    assert stats.long_term.cost_total_eur == Decimal("200")
+    assert stats.long_term.proceeds_total_eur == Decimal("250")
+    assert stats.long_term.gain_loss_total_eur == Decimal("50")
+
+    assert stats.mixed.count == 1
+    assert stats.mixed.cost_total_eur == Decimal("80")
+    assert stats.mixed.proceeds_total_eur == Decimal("70")
+    assert stats.mixed.gain_loss_total_eur == Decimal("-10")
+
+    assert stats.unknown.count == 1
+    assert stats.unknown.cost_total_eur == Decimal("30")
+    assert stats.unknown.proceeds_total_eur == Decimal("35")
+    assert stats.unknown.gain_loss_total_eur == Decimal("5")
+
+    assert stats.grand_total.count == 5
+    assert stats.grand_total.cost_total_eur == Decimal("460")
+    assert stats.grand_total.proceeds_total_eur == Decimal("535")
+    assert stats.grand_total.gain_loss_total_eur == Decimal("75")
+
+
+def test_compute_capital_gain_stats_single_period():
+    """Only one period has non-zero stats, others are zero."""
+    from shares_reporting.application.crypto_reporting import CryptoCapitalGainStats
+
+    entries = [
+        _make_entry(
+            holding_period="Long term", cost_eur=Decimal("500"),
+            proceeds_eur=Decimal("600"), gain_loss_eur=Decimal("100"),
+        ),
+        _make_entry(
+            holding_period="Long term", cost_eur=Decimal("300"),
+            proceeds_eur=Decimal("350"), gain_loss_eur=Decimal("50"),
+        ),
+    ]
+
+    stats = CryptoCapitalGainStats.from_entries(entries)
+
+    assert stats.short_term.count == 0
+    assert stats.short_term.cost_total_eur == Decimal("0")
+
+    assert stats.long_term.count == 2
+    assert stats.long_term.cost_total_eur == Decimal("800")
+    assert stats.long_term.gain_loss_total_eur == Decimal("150")
+
+    assert stats.mixed.count == 0
+    assert stats.unknown.count == 0
+
+    assert stats.grand_total.count == 2
+    assert stats.grand_total.cost_total_eur == Decimal("800")
+
+
+def test_compute_capital_gain_stats_empty():
+    """All periods and grand total are zero-stats from empty list."""
+    from shares_reporting.application.crypto_reporting import CryptoCapitalGainStats
+
+    stats = CryptoCapitalGainStats.from_entries([])
+
+    assert stats.short_term.count == 0
+    assert stats.long_term.count == 0
+    assert stats.mixed.count == 0
+    assert stats.unknown.count == 0
+    assert stats.grand_total.count == 0
+    assert stats.grand_total.cost_total_eur == Decimal("0")
+    assert stats.grand_total.proceeds_total_eur == Decimal("0")
+    assert stats.grand_total.gain_loss_total_eur == Decimal("0")
+
+
+def test_compute_capital_gain_stats_mixed_gains():
+    """Correct aggregation of positive and negative gains within a period."""
+    from shares_reporting.application.crypto_reporting import CryptoCapitalGainStats
+
+    entries = [
+        _make_entry(
+            holding_period="Short term", cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("150"), gain_loss_eur=Decimal("50"),
+        ),
+        _make_entry(
+            holding_period="Short term", cost_eur=Decimal("200"),
+            proceeds_eur=Decimal("100"), gain_loss_eur=Decimal("-100"),
+        ),
+        _make_entry(
+            holding_period="Short term", cost_eur=Decimal("50"),
+            proceeds_eur=Decimal("55"), gain_loss_eur=Decimal("5"),
+        ),
+    ]
+
+    stats = CryptoCapitalGainStats.from_entries(entries)
+
+    assert stats.short_term.count == 3
+    assert stats.short_term.cost_total_eur == Decimal("350")
+    assert stats.short_term.proceeds_total_eur == Decimal("305")
+    assert stats.short_term.gain_loss_total_eur == Decimal("-45")
+
+    assert stats.grand_total.count == 3
+    assert stats.grand_total.gain_loss_total_eur == Decimal("-45")
+
+
+def test_compute_capital_gain_stats_unrecognized_period(caplog):
+    """Grand total EUR amounts include all entries even when holding period is unrecognized."""
+    from shares_reporting.application.crypto_reporting import CryptoCapitalGainStats
+
+    entries = [
+        _make_entry(
+            holding_period="Short term", cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("150"), gain_loss_eur=Decimal("50"),
+        ),
+        _make_entry(
+            holding_period="Medium term", cost_eur=Decimal("200"),
+            proceeds_eur=Decimal("250"), gain_loss_eur=Decimal("50"),
+        ),
+    ]
+
+    stats = CryptoCapitalGainStats.from_entries(entries)
+
+    assert stats.short_term.count == 1
+    assert stats.long_term.count == 0
+    assert stats.mixed.count == 0
+    assert stats.unknown.count == 0
+    assert stats.grand_total.count == 2
+    assert stats.grand_total.cost_total_eur == Decimal("300")
+    assert stats.grand_total.proceeds_total_eur == Decimal("400")
+    assert stats.grand_total.gain_loss_total_eur == Decimal("100")
+    assert "Unrecognised" in caplog.text
+
+
+# --- Task 3: CryptoTaxReport integration of capital_gain_stats ---
+
+
+def test_crypto_tax_report_includes_capital_gain_stats():
+    """CryptoTaxReport has a capital_gain_stats field of type CryptoCapitalGainStats."""
+    from shares_reporting.application.crypto_reporting import (
+        CryptoCapitalGainStats,
+        CryptoReconciliationSummary,
+        CryptoTaxReport,
+    )
+
+    zero_stats = CryptoCapitalGainStats.from_entries([])
+    report = CryptoTaxReport(
+        tax_year=2025,
+        capital_entries=[],
+        reward_entries=[],
+        reconciliation=CryptoReconciliationSummary(
+            capital_rows=0,
+            reward_rows=0,
+            short_term_rows=0,
+            long_term_rows=0,
+            mixed_rows=0,
+            unknown_rows=0,
+            capital_cost_total_eur=Decimal("0"),
+            capital_proceeds_total_eur=Decimal("0"),
+            capital_gain_total_eur=Decimal("0"),
+            reward_total_eur=Decimal("0"),
+            opening_holdings=None,
+            closing_holdings=None,
+        ),
+        capital_gain_stats=zero_stats,
+    )
+
+    assert isinstance(report.capital_gain_stats, CryptoCapitalGainStats)
+    assert report.capital_gain_stats.grand_total.count == 0
+
+
+def test_crypto_tax_report_capital_gain_stats_computed_from_entries(tmp_path):
+    """load_koinly_crypto_report computes capital_gain_stats from capital entries."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    (koinly_dir / "koinly_2025_capital_gains_report_test.csv").write_text(
+        "\n".join(
+            [
+                "Capital gains report 2025",
+                "",
+                ",".join(
+                    [
+                        "Date Sold",
+                        "Date Acquired",
+                        "Asset",
+                        "Amount",
+                        "Cost (EUR)",
+                        "Proceeds (EUR)",
+                        "Gain / loss",
+                        "Notes",
+                        "Wallet Name",
+                        "Holding period",
+                    ]
+                ),
+                ",".join(
+                    [
+                        "15/01/2025 10:00",
+                        "01/06/2024 00:00",
+                        "BTC",
+                        '"0,50000000"',
+                        '"10000,00"',
+                        '"12000,00"',
+                        '"2000,00"',
+                        "",
+                        "ByBit (2)",
+                        "Short term",
+                    ]
+                ),
+                ",".join(
+                    [
+                        "20/02/2025 14:00",
+                        "01/01/2023 00:00",
+                        "ETH",
+                        '"1,00000000"',
+                        '"2000,00"',
+                        '"2500,00"',
+                        '"500,00"',
+                        "",
+                        "Kraken",
+                        "Long term",
+                    ]
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = load_koinly_crypto_report(koinly_dir)
+    assert report is not None
+
+    stats = report.capital_gain_stats
+    assert stats.short_term.count == 1
+    assert stats.short_term.gain_loss_total_eur == Decimal("2000")
+    assert stats.long_term.count == 1
+    assert stats.long_term.gain_loss_total_eur == Decimal("500")
+    assert stats.mixed.count == 0
+    assert stats.unknown.count == 0
+    assert stats.grand_total.count == 2
+    assert stats.grand_total.gain_loss_total_eur == Decimal("2500")
+
+
 def test_format_datetime_returns_date_only():
     assert _format_datetime(datetime(2025, 1, 13, 13, 1, 0, tzinfo=UTC)) == "2025-01-13"
 

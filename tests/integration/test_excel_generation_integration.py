@@ -6,6 +6,7 @@ import pytest
 
 from shares_reporting.application.crypto_reporting import (
     CryptoCapitalGainEntry,
+    CryptoCapitalGainStats,
     CryptoCompletePdfSummary,
     CryptoReconciliationSummary,
     CryptoRewardIncomeEntry,
@@ -280,29 +281,31 @@ class TestDividendExcelPersisting:
         bybit_origin = resolve_operator_origin("ByBit")
         wirex_origin = resolve_operator_origin("Wirex", transaction_type="crypto_deposit")
 
+        capital_entries = [
+            CryptoCapitalGainEntry(
+                disposal_date="2025-01-13",
+                acquisition_date="2024-11-18",
+                asset="USDT",
+                amount=Decimal("1.5"),
+                cost_eur=Decimal("1.25"),
+                proceeds_eur=Decimal("1.35"),
+                gain_loss_eur=Decimal("0.10"),
+                holding_period="Short term",
+                wallet="ByBit (2)",
+                platform="ByBit",
+                chain="ByBit",
+                operator_origin=bybit_origin,
+                annex_hint="J",
+                review_required=bybit_origin.review_required,
+                review_reason=bybit_origin.review_reason,
+                notes="",
+                token_swap_history="",
+            )
+        ]
+
         crypto_report = CryptoTaxReport(
             tax_year=2025,
-            capital_entries=[
-                CryptoCapitalGainEntry(
-                    disposal_date="2025-01-13",
-                    acquisition_date="2024-11-18",
-                    asset="USDT",
-                    amount=Decimal("1.5"),
-                    cost_eur=Decimal("1.25"),
-                    proceeds_eur=Decimal("1.35"),
-                    gain_loss_eur=Decimal("0.10"),
-                    holding_period="Short term",
-                    wallet="ByBit (2)",
-                    platform="ByBit",
-                    chain="ByBit",
-                    operator_origin=bybit_origin,
-                    annex_hint="J",
-                    review_required=bybit_origin.review_required,
-                    review_reason=bybit_origin.review_reason,
-                    notes="",
-                    token_swap_history="",
-                )
-            ],
+            capital_entries=capital_entries,
             reward_entries=[
                 CryptoRewardIncomeEntry(
                     date="2025-01-01",
@@ -343,6 +346,7 @@ class TestDividendExcelPersisting:
                     total_value_eur=Decimal("150.00"),
                 ),
             ),
+            capital_gain_stats=CryptoCapitalGainStats.from_entries(capital_entries),
             skipped_zero_value_tokens=[
                 CryptoSkippedZeroValueToken(source_section="capital_gains", asset="FEE", count=3),
                 CryptoSkippedZeroValueToken(source_section="income", asset="AAA", count=2),
@@ -391,29 +395,31 @@ class TestDividendExcelPersisting:
         bybit_origin = resolve_operator_origin("ByBit")
         wirex_origin = resolve_operator_origin("Wirex", transaction_type="crypto_deposit")
 
+        capital_entries = [
+            CryptoCapitalGainEntry(
+                disposal_date="2025-01-13",
+                acquisition_date="2024-11-18",
+                asset="USDT",
+                amount=Decimal("1.5"),
+                cost_eur=Decimal("1.25"),
+                proceeds_eur=Decimal("1.35"),
+                gain_loss_eur=Decimal("0.10"),
+                holding_period="Short term",
+                wallet="ByBit (2)",
+                platform="ByBit",
+                chain="ByBit",
+                operator_origin=bybit_origin,
+                annex_hint="J",
+                review_required=bybit_origin.review_required,
+                review_reason=bybit_origin.review_reason,
+                notes="",
+                token_swap_history="",
+            )
+        ]
+
         crypto_report = CryptoTaxReport(
             tax_year=2025,
-            capital_entries=[
-                CryptoCapitalGainEntry(
-                    disposal_date="2025-01-13",
-                    acquisition_date="2024-11-18",
-                    asset="USDT",
-                    amount=Decimal("1.5"),
-                    cost_eur=Decimal("1.25"),
-                    proceeds_eur=Decimal("1.35"),
-                    gain_loss_eur=Decimal("0.10"),
-                    holding_period="Short term",
-                    wallet="ByBit (2)",
-                    platform="ByBit",
-                    chain="ByBit",
-                    operator_origin=bybit_origin,
-                    annex_hint="J",
-                    review_required=bybit_origin.review_required,
-                    review_reason=bybit_origin.review_reason,
-                    notes="",
-                    token_swap_history="",
-                )
-            ],
+            capital_entries=capital_entries,
             reward_entries=[
                 CryptoRewardIncomeEntry(
                     date="2025-01-01",
@@ -446,6 +452,7 @@ class TestDividendExcelPersisting:
                 opening_holdings=None,
                 closing_holdings=None,
             ),
+            capital_gain_stats=CryptoCapitalGainStats.from_entries(capital_entries),
             skipped_zero_value_tokens=[],
             pdf_summary=None,
         )
@@ -520,28 +527,30 @@ class TestDividendExcelPersisting:
         """Assert the Crypto worksheet contains Token origin column with blank value after legacy removal."""
         bybit_origin = resolve_operator_origin("ByBit")
 
+        capital_entries = [
+            CryptoCapitalGainEntry(
+                disposal_date="2025-02-16",
+                acquisition_date="2025-02-16",
+                asset="HASUI",
+                amount=Decimal("29.83"),
+                cost_eur=Decimal("10.00"),
+                proceeds_eur=Decimal("15.00"),
+                gain_loss_eur=Decimal("5.00"),
+                holding_period="Short term",
+                wallet="Ledger SUI",
+                platform="Ledger",
+                chain="Sui",
+                operator_origin=bybit_origin,
+                annex_hint="J",
+                review_required=False,
+                notes="",
+                token_swap_history="",
+            )
+        ]
+
         crypto_report = CryptoTaxReport(
             tax_year=2025,
-            capital_entries=[
-                CryptoCapitalGainEntry(
-                    disposal_date="2025-02-16",
-                    acquisition_date="2025-02-16",
-                    asset="HASUI",
-                    amount=Decimal("29.83"),
-                    cost_eur=Decimal("10.00"),
-                    proceeds_eur=Decimal("15.00"),
-                    gain_loss_eur=Decimal("5.00"),
-                    holding_period="Short term",
-                    wallet="Ledger SUI",
-                    platform="Ledger",
-                    chain="Sui",
-                    operator_origin=bybit_origin,
-                    annex_hint="J",
-                    review_required=False,
-                    notes="",
-                    token_swap_history="",
-                )
-            ],
+            capital_entries=capital_entries,
             reward_entries=[],
             reconciliation=CryptoReconciliationSummary(
                 capital_rows=1,
@@ -557,6 +566,7 @@ class TestDividendExcelPersisting:
                 opening_holdings=None,
                 closing_holdings=None,
             ),
+            capital_gain_stats=CryptoCapitalGainStats.from_entries(capital_entries),
             skipped_zero_value_tokens=[],
             pdf_summary=None,
         )
@@ -610,29 +620,31 @@ class TestDividendExcelPersisting:
         bybit_origin = resolve_operator_origin("ByBit")
         wirex_origin = resolve_operator_origin("Wirex", transaction_type="crypto_deposit")
 
+        capital_entries = [
+            CryptoCapitalGainEntry(
+                disposal_date="2025-01-13",
+                acquisition_date="2024-11-18",
+                asset="USDT",
+                amount=Decimal("1.5"),
+                cost_eur=Decimal("1.25"),
+                proceeds_eur=Decimal("1.35"),
+                gain_loss_eur=Decimal("0.10"),
+                holding_period="Short term",
+                wallet="ByBit (2)",
+                platform="ByBit",
+                chain="ByBit",
+                operator_origin=bybit_origin,
+                annex_hint="J",
+                review_required=bybit_origin.review_required,
+                review_reason=bybit_origin.review_reason,
+                notes="",
+                token_swap_history="",
+            )
+        ]
+
         crypto_report = CryptoTaxReport(
             tax_year=2025,
-            capital_entries=[
-                CryptoCapitalGainEntry(
-                    disposal_date="2025-01-13",
-                    acquisition_date="2024-11-18",
-                    asset="USDT",
-                    amount=Decimal("1.5"),
-                    cost_eur=Decimal("1.25"),
-                    proceeds_eur=Decimal("1.35"),
-                    gain_loss_eur=Decimal("0.10"),
-                    holding_period="Short term",
-                    wallet="ByBit (2)",
-                    platform="ByBit",
-                    chain="ByBit",
-                    operator_origin=bybit_origin,
-                    annex_hint="J",
-                    review_required=bybit_origin.review_required,
-                    review_reason=bybit_origin.review_reason,
-                    notes="",
-                    token_swap_history="",
-                )
-            ],
+            capital_entries=capital_entries,
             reward_entries=[
                 CryptoRewardIncomeEntry(
                     date="2025-01-01",
@@ -664,6 +676,7 @@ class TestDividendExcelPersisting:
                 opening_holdings=None,
                 closing_holdings=None,
             ),
+            capital_gain_stats=CryptoCapitalGainStats.from_entries(capital_entries),
             skipped_zero_value_tokens=[],
             pdf_summary=None,
         )
@@ -851,28 +864,30 @@ class TestDividendExcelPersisting:
         from shares_reporting.domain.exceptions import FileProcessingError
 
         # Create a simple crypto report
+        capital_entries = [
+            CryptoCapitalGainEntry(
+                disposal_date="2025-01-13",
+                acquisition_date="2024-11-18",
+                asset="ETH",
+                amount=Decimal("1"),
+                cost_eur=Decimal("1000"),
+                proceeds_eur=Decimal("1200"),
+                gain_loss_eur=Decimal("200"),
+                holding_period="Short term",
+                wallet="Ledger ETH",
+                platform="Ledger ETH",
+                chain="Ethereum",
+                operator_origin=resolve_operator_origin("Ledger ETH"),
+                annex_hint="J",
+                review_required=False,
+                notes="",
+                token_swap_history="",
+            ),
+        ]
+
         crypto_report = CryptoTaxReport(
             tax_year=2025,
-            capital_entries=[
-                CryptoCapitalGainEntry(
-                    disposal_date="2025-01-13",
-                    acquisition_date="2024-11-18",
-                    asset="ETH",
-                    amount=Decimal("1"),
-                    cost_eur=Decimal("1000"),
-                    proceeds_eur=Decimal("1200"),
-                    gain_loss_eur=Decimal("200"),
-                    holding_period="Short term",
-                    wallet="Ledger ETH",
-                    platform="Ledger ETH",
-                    chain="Ethereum",
-                    operator_origin=resolve_operator_origin("Ledger ETH"),
-                    annex_hint="J",
-                    review_required=False,
-                    notes="",
-                    token_swap_history="",
-                ),
-            ],
+            capital_entries=capital_entries,
             reward_entries=[],
             reconciliation=CryptoReconciliationSummary(
                 capital_rows=1,
@@ -888,6 +903,7 @@ class TestDividendExcelPersisting:
                 opening_holdings=None,
                 closing_holdings=None,
             ),
+            capital_gain_stats=CryptoCapitalGainStats.from_entries(capital_entries),
             skipped_zero_value_tokens=[],
             pdf_summary=None,
         )
@@ -923,29 +939,31 @@ class TestDividendExcelPersisting:
         """
         bybit_origin = resolve_operator_origin("ByBit")
 
+        capital_entries = [
+            CryptoCapitalGainEntry(
+                disposal_date="2025-01-13",
+                acquisition_date="2024-07-27",
+                asset="USDT",
+                amount=Decimal("1.5"),
+                cost_eur=Decimal("1.25"),
+                proceeds_eur=Decimal("1.35"),
+                gain_loss_eur=Decimal("0.10"),
+                holding_period="Short term",
+                wallet="ByBit (2)",
+                platform="ByBit",
+                chain="ByBit",
+                operator_origin=bybit_origin,
+                annex_hint="J",
+                review_required=bybit_origin.review_required,
+                review_reason=bybit_origin.review_reason,
+                notes="",
+                token_swap_history="",
+            )
+        ]
+
         crypto_report = CryptoTaxReport(
             tax_year=2025,
-            capital_entries=[
-                CryptoCapitalGainEntry(
-                    disposal_date="2025-01-13",
-                    acquisition_date="2024-07-27",
-                    asset="USDT",
-                    amount=Decimal("1.5"),
-                    cost_eur=Decimal("1.25"),
-                    proceeds_eur=Decimal("1.35"),
-                    gain_loss_eur=Decimal("0.10"),
-                    holding_period="Short term",
-                    wallet="ByBit (2)",
-                    platform="ByBit",
-                    chain="ByBit",
-                    operator_origin=bybit_origin,
-                    annex_hint="J",
-                    review_required=bybit_origin.review_required,
-                    review_reason=bybit_origin.review_reason,
-                    notes="",
-                    token_swap_history="",
-                )
-            ],
+            capital_entries=capital_entries,
             reward_entries=[],
             reconciliation=CryptoReconciliationSummary(
                 capital_rows=1,
@@ -961,6 +979,7 @@ class TestDividendExcelPersisting:
                 opening_holdings=None,
                 closing_holdings=None,
             ),
+            capital_gain_stats=CryptoCapitalGainStats.from_entries(capital_entries),
             skipped_zero_value_tokens=[],
             pdf_summary=None,
         )
@@ -1024,28 +1043,30 @@ class TestDividendExcelPersisting:
         from shares_reporting.application.persisting import generate_tax_report
         from shares_reporting.domain.exceptions import FileProcessingError
 
+        capital_entries = [
+            CryptoCapitalGainEntry(
+                disposal_date="2025-01-15",
+                acquisition_date="2024-06-01",
+                asset="BTC",
+                amount=Decimal("0.5"),
+                cost_eur=Decimal("10000"),
+                proceeds_eur=Decimal("12000"),
+                gain_loss_eur=Decimal("2000"),
+                holding_period="Short term",
+                wallet="TestWallet",
+                platform="TestPlatform",
+                chain="Bitcoin",
+                operator_origin=resolve_operator_origin("TestPlatform", "crypto_disposal"),
+                annex_hint="G",
+                review_required=False,
+                notes="",
+                token_swap_history="",
+            ),
+        ]
+
         crypto_report = CryptoTaxReport(
             tax_year=2025,
-            capital_entries=[
-                CryptoCapitalGainEntry(
-                    disposal_date="2025-01-15",
-                    acquisition_date="2024-06-01",
-                    asset="BTC",
-                    amount=Decimal("0.5"),
-                    cost_eur=Decimal("10000"),
-                    proceeds_eur=Decimal("12000"),
-                    gain_loss_eur=Decimal("2000"),
-                    holding_period="Short term",
-                    wallet="TestWallet",
-                    platform="TestPlatform",
-                    chain="Bitcoin",
-                    operator_origin=resolve_operator_origin("TestPlatform", "crypto_disposal"),
-                    annex_hint="G",
-                    review_required=False,
-                    notes="",
-                    token_swap_history="",
-                ),
-            ],
+            capital_entries=capital_entries,
             reward_entries=[],
             reconciliation=CryptoReconciliationSummary(
                 capital_rows=1,
@@ -1061,6 +1082,7 @@ class TestDividendExcelPersisting:
                 opening_holdings=None,
                 closing_holdings=None,
             ),
+            capital_gain_stats=CryptoCapitalGainStats.from_entries(capital_entries),
             skipped_zero_value_tokens=[],
             pdf_summary=None,
         )
@@ -1094,3 +1116,231 @@ class TestDividendExcelPersisting:
 
         # Verify the report was NOT created because generation failed
         assert not report_path.exists()
+
+    def _build_crypto_report_with_stats(self):
+        """Build a CryptoTaxReport with known capital entries across holding periods.
+
+        Returns a report with:
+        - 2 short-term: cost=100, proceeds=120, gain=20; cost=50, proceeds=45, gain=-5
+        - 1 long-term: cost=200, proceeds=250, gain=50
+        - 1 mixed: cost=75, proceeds=80, gain=5
+        - 0 unknown
+        Grand total: count=4, cost=425, proceeds=495, gain/loss=70
+        """
+        ethereum_origin = resolve_operator_origin("Ethereum")
+
+        capital_entries = [
+            CryptoCapitalGainEntry(
+                disposal_date="2025-02-01",
+                acquisition_date="2025-01-15",
+                asset="ETH",
+                amount=Decimal("1"),
+                cost_eur=Decimal("100"),
+                proceeds_eur=Decimal("120"),
+                gain_loss_eur=Decimal("20"),
+                holding_period="Short term",
+                wallet="Ledger ETH",
+                platform="Ledger ETH",
+                chain="Ethereum",
+                operator_origin=ethereum_origin,
+                annex_hint="J",
+                review_required=False,
+                notes="",
+                token_swap_history="",
+            ),
+            CryptoCapitalGainEntry(
+                disposal_date="2025-03-01",
+                acquisition_date="2025-02-20",
+                asset="BTC",
+                amount=Decimal("0.5"),
+                cost_eur=Decimal("50"),
+                proceeds_eur=Decimal("45"),
+                gain_loss_eur=Decimal("-5"),
+                holding_period="Short term",
+                wallet="Ledger ETH",
+                platform="Ledger ETH",
+                chain="Ethereum",
+                operator_origin=ethereum_origin,
+                annex_hint="J",
+                review_required=False,
+                notes="",
+                token_swap_history="",
+            ),
+            CryptoCapitalGainEntry(
+                disposal_date="2025-06-01",
+                acquisition_date="2024-01-01",
+                asset="ETH",
+                amount=Decimal("2"),
+                cost_eur=Decimal("200"),
+                proceeds_eur=Decimal("250"),
+                gain_loss_eur=Decimal("50"),
+                holding_period="Long term",
+                wallet="Ledger ETH",
+                platform="Ledger ETH",
+                chain="Ethereum",
+                operator_origin=ethereum_origin,
+                annex_hint="G1",
+                review_required=False,
+                notes="",
+                token_swap_history="",
+            ),
+            CryptoCapitalGainEntry(
+                disposal_date="2025-04-01",
+                acquisition_date="mixed",
+                asset="SOL",
+                amount=Decimal("10"),
+                cost_eur=Decimal("75"),
+                proceeds_eur=Decimal("80"),
+                gain_loss_eur=Decimal("5"),
+                holding_period="Mixed",
+                wallet="Ledger ETH",
+                platform="Ledger ETH",
+                chain="Ethereum",
+                operator_origin=ethereum_origin,
+                annex_hint="J",
+                review_required=False,
+                notes="",
+                token_swap_history="",
+            ),
+        ]
+
+        return CryptoTaxReport(
+            tax_year=2025,
+            capital_entries=capital_entries,
+            reward_entries=[],
+            reconciliation=CryptoReconciliationSummary(
+                capital_rows=4,
+                reward_rows=0,
+                short_term_rows=2,
+                long_term_rows=1,
+                mixed_rows=1,
+                unknown_rows=0,
+                capital_cost_total_eur=Decimal("425"),
+                capital_proceeds_total_eur=Decimal("495"),
+                capital_gain_total_eur=Decimal("70"),
+                reward_total_eur=Decimal("0"),
+                opening_holdings=None,
+                closing_holdings=None,
+            ),
+            capital_gain_stats=CryptoCapitalGainStats.from_entries(capital_entries),
+            skipped_zero_value_tokens=[],
+            pdf_summary=None,
+        )
+
+    def test_crypto_sheet_contains_capital_gains_statistics_header(self, tmp_path):
+        """Verify the CAPITAL GAINS STATISTICS section header appears after capital gains detail rows."""
+        crypto_report = self._build_crypto_report_with_stats()
+
+        report_path = tmp_path / "crypto_stats_header.xlsx"
+        generate_tax_report(
+            extract=report_path,
+            capital_gain_lines_per_company={},
+            dividend_income_per_company={},
+            crypto_tax_report=crypto_report,
+        )
+
+        assert report_path.exists()
+
+        import openpyxl
+
+        workbook = openpyxl.load_workbook(report_path)
+        crypto_sheet = workbook["Crypto"]
+
+        labels = []
+        for row in crypto_sheet.iter_rows(values_only=True):
+            first_cell = row[0] if row else None
+            if isinstance(first_cell, str):
+                labels.append(first_cell)
+
+        assert "1b. CAPITAL GAINS STATISTICS" in labels, (
+            f"Expected '1b. CAPITAL GAINS STATISTICS' header in crypto sheet, got labels: {labels}"
+        )
+
+        assert "1. CAPITAL GAINS" in labels, "Section 1 header should still exist"
+
+        section_1_idx = labels.index("1. CAPITAL GAINS")
+        stats_idx = labels.index("1b. CAPITAL GAINS STATISTICS")
+        section_2_idx = labels.index("2. REWARDS INCOME - IRS-READY FILING SUMMARY")
+
+        assert section_1_idx < stats_idx, "Statistics section must appear after capital gains detail"
+        assert stats_idx < section_2_idx, "Statistics section must appear before rewards section"
+
+        workbook.close()
+
+    def test_crypto_sheet_capital_gains_statistics_values(self, tmp_path):  # noqa: PLR0915
+        """Verify per-period rows and Grand Total row contain correct values."""
+        crypto_report = self._build_crypto_report_with_stats()
+
+        report_path = tmp_path / "crypto_stats_values.xlsx"
+        generate_tax_report(
+            extract=report_path,
+            capital_gain_lines_per_company={},
+            dividend_income_per_company={},
+            crypto_tax_report=crypto_report,
+        )
+
+        assert report_path.exists()
+
+        import openpyxl
+
+        workbook = openpyxl.load_workbook(report_path)
+        crypto_sheet = workbook["Crypto"]
+
+        rows = list(crypto_sheet.iter_rows(values_only=True))
+
+        stats_start = None
+        for i, row in enumerate(rows):
+            if row and isinstance(row[0], str) and "1b. CAPITAL GAINS STATISTICS" in row[0]:
+                stats_start = i
+                break
+
+        assert stats_start is not None, "Statistics section not found"
+
+        header_row_idx = stats_start + 1
+        header_row = rows[header_row_idx]
+        assert "Holding Period" in str(header_row[0])
+        assert "Count" in str(header_row[1])
+        assert "Cost Total (EUR)" in str(header_row[2])
+        assert "Proceeds Total (EUR)" in str(header_row[3])
+        assert "Gain/Loss Total (EUR)" in str(header_row[4])
+
+        data_rows = {}
+        for row in rows[header_row_idx + 1 :]:
+            if row and row[0] is not None:
+                label = str(row[0])
+                if label in ("Short-term", "Long-term", "Mixed", "Unknown", "Grand Total"):
+                    data_rows[label] = row
+                else:
+                    break
+
+        assert "Short-term" in data_rows, "Short-term row missing"
+        assert data_rows["Short-term"][1] == 2
+        assert data_rows["Short-term"][2] == pytest.approx(150.0)
+        assert data_rows["Short-term"][3] == pytest.approx(165.0)
+        assert data_rows["Short-term"][4] == pytest.approx(15.0)
+
+        assert "Long-term" in data_rows, "Long-term row missing"
+        assert data_rows["Long-term"][1] == 1
+        assert data_rows["Long-term"][2] == pytest.approx(200.0)
+        assert data_rows["Long-term"][3] == pytest.approx(250.0)
+        assert data_rows["Long-term"][4] == pytest.approx(50.0)
+
+        assert "Mixed" in data_rows, "Mixed row missing"
+        assert data_rows["Mixed"][1] == 1
+        assert data_rows["Mixed"][2] == pytest.approx(75.0)
+        assert data_rows["Mixed"][3] == pytest.approx(80.0)
+        assert data_rows["Mixed"][4] == pytest.approx(5.0)
+
+        assert "Unknown" in data_rows, "Unknown row missing"
+        assert data_rows["Unknown"][1] == 0
+        assert data_rows["Unknown"][2] == pytest.approx(0.0)
+        assert data_rows["Unknown"][3] == pytest.approx(0.0)
+        assert data_rows["Unknown"][4] == pytest.approx(0.0)
+
+        assert "Grand Total" in data_rows, "Grand Total row missing"
+        assert data_rows["Grand Total"][1] == 4
+        assert data_rows["Grand Total"][2] == pytest.approx(425.0)
+        assert data_rows["Grand Total"][3] == pytest.approx(495.0)
+        assert data_rows["Grand Total"][4] == pytest.approx(70.0)
+
+        workbook.close()

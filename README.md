@@ -157,6 +157,7 @@ The tool generates comprehensive Excel reports with:
 - **Dividend Income Section**: Complete dividend reporting with tax information and original currency amounts
 - **Crypto Section** (if Koinly data provided):
   - Capital gains aggregated by sale event per holding period with sub-1-EUR immaterial entries filtered
+  - Capital gains statistics summary with per-holding-period breakdown (short-term, long-term, mixed, unknown) showing count, cost, proceeds, and gain/loss totals
   - Rewards income classified into taxable-now (fiat-denominated) vs deferred-by-law (crypto-denominated) per Portuguese tax law
   - IRS-ready aggregated summary for immediate Category E filing (taxable-now rewards grouped by income code + source country)
   - Chain derivation for blockchain context (e.g., Ethereum, Solana, Berachain) alongside wallet/platform

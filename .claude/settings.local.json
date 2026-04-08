@@ -19,7 +19,8 @@
       "WebFetch(domain:www.occ.pt)",
       "Bash(git commit:*)",
       "Bash(use one:*)",
-      "Bash(same we should do the same cleanup why not extract the cleanup part?\":*)"
+      "Bash(same we should do the same cleanup why not extract the cleanup part?\":*)",
+      "Bash(STATISTICS\" section in the crypto Excel sheet with grand totals computed:*)"
     ]
   }
 }

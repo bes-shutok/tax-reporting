@@ -548,6 +548,39 @@ def add_crypto_report_sheet(  # noqa: PLR0912, PLR0915
         worksheet.cell(row_no, 17, entry.token_swap_history or "")
         row_no += 1
 
+    # 1b. CAPITAL GAINS STATISTICS
+    row_no += 1
+    worksheet.cell(row_no, 1, "1b. CAPITAL GAINS STATISTICS").font = Font(bold=True)  # type: ignore[assignment]
+    row_no += 1
+
+    stats_headers = [
+        "Holding Period",
+        "Count",
+        "Cost Total (EUR)",
+        "Proceeds Total (EUR)",
+        "Gain/Loss Total (EUR)",
+    ]
+    for idx, header in enumerate(stats_headers, start=1):
+        header_cell = worksheet.cell(row_no, idx, header)
+        header_cell.font = Font(bold=True)  # type: ignore[assignment]
+    row_no += 1
+
+    stats = crypto_tax_report.capital_gain_stats
+    period_rows = [
+        ("Short-term", stats.short_term),
+        ("Long-term", stats.long_term),
+        ("Mixed", stats.mixed),
+        ("Unknown", stats.unknown),
+        ("Grand Total", stats.grand_total),
+    ]
+    for label, period_stats in period_rows:
+        worksheet.cell(row_no, 1, label)
+        worksheet.cell(row_no, 2, period_stats.count)
+        worksheet.cell(row_no, 3, float(period_stats.cost_total_eur))
+        worksheet.cell(row_no, 4, float(period_stats.proceeds_total_eur))
+        worksheet.cell(row_no, 5, float(period_stats.gain_loss_total_eur))
+        row_no += 1
+
     # Split reward entries for detailed sections (aggregated rewards already computed)
     taxable_now_entries = [
         e for e in crypto_tax_report.reward_entries if e.tax_classification == RewardTaxClassification.TAXABLE_NOW
