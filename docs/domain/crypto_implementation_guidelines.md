@@ -537,15 +537,15 @@ If any are missing, clarify the plan first.
 
 ## Aggregation Grouping Invariants
 
-### Expected Repeated Timestamps vs Forbidden Duplicate Aggregation Keys
+### Expected Repeated Dates vs Forbidden Duplicate Aggregation Keys
 
 When reviewing crypto capital gains output, it is critical to distinguish between two
 different phenomena that can look similar in a spreadsheet:
 
 **Expected: repeated acquisition_date across disposal events.**
-A single purchase (e.g. 2024-07-27 11:03:00) may supply FIFO lots sold at multiple
+A single purchase (e.g. 2024-07-27) may supply FIFO lots sold at multiple
 different later disposal dates. Each disposal is a separate taxable event. The shared
-acquisition timestamp simply reflects the common purchase that was partially sold over
+acquisition date simply reflects the common purchase that was partially sold over
 time. This is normal and does NOT indicate a grouping regression.
 
 **Expected: repeated disposal_date with a differing aggregation dimension.**
@@ -561,11 +561,11 @@ function has a regression. The durable regression test
 
 ### How to Diagnose a Reported Grouping Regression
 
-1. Identify the reported timestamp. Determine whether it appears in the `Acquisition date`
+1. Identify the reported date. Determine whether it appears in the `Acquisition date`
    column or the `Disposal date` column.
-2. If the timestamp is an acquisition date shared across multiple disposals, this is
+2. If the date is an acquisition date shared across multiple disposals, this is
    expected behavior (see above). No fix needed.
-3. If the timestamp is a disposal date, check the full aggregation key
+3. If the date is a disposal date, check the full aggregation key
    `(disposal_date, asset, platform, holding_period)` for each supposedly-duplicate row.
    If any key field differs, the rows are intentionally separate.
 4. Only if two rows share the identical 4-tuple key after aggregation is there a true
@@ -576,7 +576,7 @@ function has a regression. The durable regression test
 | Test | Guard |
 |------|-------|
 | `test_aggregate_never_emits_duplicate_keys` | No duplicate aggregation keys in `_aggregate_capital_entries()` output |
-| `test_same_timestamp_different_holding_period_stays_split` | Same-timestamp rows with different holding periods stay separate (PT-C-011) |
+| `test_same_timestamp_different_holding_period_stays_split` | Same-date rows with different holding periods stay separate (PT-C-011) |
 | `test_same_disposal_date_allowed_when_other_grouping_dims_differ` | Same disposal date with different asset/platform/holding_period stays separate |
 | `test_real_koinly_fixture_has_no_duplicate_aggregation_keys` | Real koinly2025 fixture has zero duplicate keys after full pipeline |
 | `test_acquisition_date_repeat_is_not_a_disposal_grouping_issue` | Shared acquisition date across multiple disposals is not a bug |

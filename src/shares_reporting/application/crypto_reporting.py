@@ -1354,7 +1354,7 @@ def _extract_tax_year(koinly_dir: Path, capital_file: Path | None, income_file: 
 
 
 def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[CryptoCapitalGainEntry]:
-    """Aggregate FIFO lot rows into one line per sale event (same timestamp + asset + platform + holding_period).
+    """Aggregate FIFO lot rows into one line per sale event (same date + asset + platform + holding_period).
 
     Rationale: the sale transaction is the reportable alienação in Portuguese IRS Quadro 9.4.
     FIFO lot allocation is an accounting method, not a separate disposal event (PT-C-025, PT-C-027).
@@ -1797,7 +1797,7 @@ def _parse_koinly_datetime(value: str) -> datetime:
 
 
 def _format_datetime(value: datetime) -> str:
-    return value.strftime("%Y-%m-%d %H:%M:%S")
+    return value.strftime("%Y-%m-%d")
 
 
 def _parse_koinly_decimal(value: str) -> Decimal:

@@ -284,8 +284,8 @@ class TestDividendExcelPersisting:
             tax_year=2025,
             capital_entries=[
                 CryptoCapitalGainEntry(
-                    disposal_date="2025-01-13 13:01:00",
-                    acquisition_date="2024-11-18 00:15:00",
+                    disposal_date="2025-01-13",
+                    acquisition_date="2024-11-18",
                     asset="USDT",
                     amount=Decimal("1.5"),
                     cost_eur=Decimal("1.25"),
@@ -305,7 +305,7 @@ class TestDividendExcelPersisting:
             ],
             reward_entries=[
                 CryptoRewardIncomeEntry(
-                    date="2025-01-01 00:01:00",
+                    date="2025-01-01",
                     asset="WXT",
                     amount=Decimal("5"),
                     value_eur=Decimal("17.10"),
@@ -395,8 +395,8 @@ class TestDividendExcelPersisting:
             tax_year=2025,
             capital_entries=[
                 CryptoCapitalGainEntry(
-                    disposal_date="2025-01-13 13:01:00",
-                    acquisition_date="2024-11-18 00:15:00",
+                    disposal_date="2025-01-13",
+                    acquisition_date="2024-11-18",
                     asset="USDT",
                     amount=Decimal("1.5"),
                     cost_eur=Decimal("1.25"),
@@ -416,7 +416,7 @@ class TestDividendExcelPersisting:
             ],
             reward_entries=[
                 CryptoRewardIncomeEntry(
-                    date="2025-01-01 00:01:00",
+                    date="2025-01-01",
                     asset="WXT",
                     amount=Decimal("5"),
                     value_eur=Decimal("17.10"),
@@ -500,9 +500,9 @@ class TestDividendExcelPersisting:
         reward_data_row = None
 
         for row in crypto_sheet.iter_rows(values_only=True):
-            if row and row[0] == "2025-01-13 13:01:00":
+            if row and row[0] == "2025-01-13":
                 capital_data_row = row
-            elif row and row[0] == "2025-01-01 00:01:00":
+            elif row and row[0] == "2025-01-01":
                 reward_data_row = row
 
         assert capital_data_row is not None, "Capital data row not found"
@@ -524,8 +524,8 @@ class TestDividendExcelPersisting:
             tax_year=2025,
             capital_entries=[
                 CryptoCapitalGainEntry(
-                    disposal_date="2025-02-16 12:00:00",
-                    acquisition_date="2025-02-16 10:00:00",
+                    disposal_date="2025-02-16",
+                    acquisition_date="2025-02-16",
                     asset="HASUI",
                     amount=Decimal("29.83"),
                     cost_eur=Decimal("10.00"),
@@ -594,7 +594,7 @@ class TestDividendExcelPersisting:
         capital_data_row = None
 
         for row in crypto_sheet.iter_rows(values_only=True):
-            if row and row[0] == "2025-02-16 12:00:00":
+            if row and row[0] == "2025-02-16":
                 capital_data_row = row
                 break
 
@@ -614,8 +614,8 @@ class TestDividendExcelPersisting:
             tax_year=2025,
             capital_entries=[
                 CryptoCapitalGainEntry(
-                    disposal_date="2025-01-13 13:01:00",
-                    acquisition_date="2024-11-18 00:15:00",
+                    disposal_date="2025-01-13",
+                    acquisition_date="2024-11-18",
                     asset="USDT",
                     amount=Decimal("1.5"),
                     cost_eur=Decimal("1.25"),
@@ -635,7 +635,7 @@ class TestDividendExcelPersisting:
             ],
             reward_entries=[
                 CryptoRewardIncomeEntry(
-                    date="2025-01-01 00:01:00",
+                    date="2025-01-01",
                     asset="WXT",
                     amount=Decimal("5"),
                     value_eur=Decimal("17.10"),
@@ -692,11 +692,11 @@ class TestDividendExcelPersisting:
         for row in crypto_sheet.iter_rows(values_only=True):
             if row and isinstance(row[0], str) and "DEFERRED BY LAW" in row[0]:
                 in_deferred = True
-            if in_deferred and row and row[0] == "2025-01-01 00:01:00":
+            if in_deferred and row and row[0] == "2025-01-01":
                 reward_review_cell = row[9] if len(row) > 9 else None
                 found_reward_review = True
                 break
-            if row and row[0] == "2025-01-13 13:01:00":
+            if row and row[0] == "2025-01-13":
                 capital_review_cell = row[14] if len(row) > 14 else None
                 found_capital_review = True
 
@@ -855,8 +855,8 @@ class TestDividendExcelPersisting:
             tax_year=2025,
             capital_entries=[
                 CryptoCapitalGainEntry(
-                    disposal_date="2025-01-13 13:01:00",
-                    acquisition_date="2024-11-18 00:15:00",
+                    disposal_date="2025-01-13",
+                    acquisition_date="2024-11-18",
                     asset="ETH",
                     amount=Decimal("1"),
                     cost_eur=Decimal("1000"),
@@ -927,8 +927,8 @@ class TestDividendExcelPersisting:
             tax_year=2025,
             capital_entries=[
                 CryptoCapitalGainEntry(
-                    disposal_date="2025-01-13 13:01:00",
-                    acquisition_date="2024-07-27 11:03:00",
+                    disposal_date="2025-01-13",
+                    acquisition_date="2024-07-27",
                     asset="USDT",
                     amount=Decimal("1.5"),
                     cost_eur=Decimal("1.25"),
@@ -1002,13 +1002,13 @@ class TestDividendExcelPersisting:
 
         data_row = None
         for row in crypto_sheet.iter_rows(values_only=True):
-            if row and row[0] == "2025-01-13 13:01:00":
+            if row and row[0] == "2025-01-13":
                 data_row = row
                 break
 
         assert data_row is not None, "Capital gains data row not found"
-        assert data_row[disposal_idx] == "2025-01-13 13:01:00"
-        assert data_row[acquisition_idx] == "2024-07-27 11:03:00"
+        assert data_row[disposal_idx] == "2025-01-13"
+        assert data_row[acquisition_idx] == "2024-07-27"
 
         workbook.close()
 
