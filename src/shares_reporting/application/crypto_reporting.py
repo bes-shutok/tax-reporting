@@ -191,6 +191,100 @@ class OperatorOrigin:
 
 
 @dataclass(frozen=True)
+class CapitalGainPeriodStats:
+    """Per-holding-period capital gain statistics for the statistics section.
+
+    Summarises count, cost, proceeds, and gain/loss for one holding-period bucket.
+    Construct via ``from_entries()`` to aggregate from ``CryptoCapitalGainEntry`` rows.
+    """
+
+    count: int
+    cost_total_eur: Decimal
+    proceeds_total_eur: Decimal
+    gain_loss_total_eur: Decimal
+
+    @classmethod
+    def from_entries(cls, entries: list[CryptoCapitalGainEntry]) -> CapitalGainPeriodStats:
+        """Aggregate a list of capital gain entries into period statistics.
+
+        Args:
+            entries: Capital gain entries all belonging to the same holding period.
+
+        Returns:
+            CapitalGainPeriodStats with summed totals and entry count.
+        """
+        return cls(
+            count=len(entries),
+            cost_total_eur=sum((e.cost_eur for e in entries), start=ZERO),
+            proceeds_total_eur=sum((e.proceeds_eur for e in entries), start=ZERO),
+            gain_loss_total_eur=sum((e.gain_loss_eur for e in entries), start=ZERO),
+        )
+
+
+@dataclass(frozen=True)
+class CryptoCapitalGainStats:
+    """Aggregate capital gain statistics across all holding periods.
+
+    Provides per-period breakdowns (short-term, long-term, mixed, unknown) and
+    a grand total row for the CAPITAL GAINS STATISTICS Excel section.
+    Construct via ``from_entries()`` to group ``CryptoCapitalGainEntry`` rows
+    by holding period and delegate to ``CapitalGainPeriodStats.from_entries()``.
+    """
+
+    short_term: CapitalGainPeriodStats
+    long_term: CapitalGainPeriodStats
+    mixed: CapitalGainPeriodStats
+    unknown: CapitalGainPeriodStats
+    grand_total: CapitalGainPeriodStats
+
+    @classmethod
+    def from_entries(cls, entries: list[CryptoCapitalGainEntry]) -> CryptoCapitalGainStats:
+        """Group entries by holding period and compute per-period plus grand-total stats.
+
+        Args:
+            entries: Capital gain entries (post-aggregation, post-materiality-filter).
+
+        Returns:
+            CryptoCapitalGainStats with per-period breakdowns and grand total.
+        """
+        short_term = [e for e in entries if e.holding_period.lower().startswith("short")]
+        long_term = [e for e in entries if e.holding_period.lower().startswith("long")]
+        mixed = [e for e in entries if e.holding_period.lower() == "mixed"]
+        unknown = [e for e in entries if e.holding_period.lower() == "unknown"]
+
+        logger = logging.getLogger(__name__)
+        categorised_count = len(short_term) + len(long_term) + len(mixed) + len(unknown)
+        if categorised_count != len(entries):
+            unclassified = {
+                e.holding_period
+                for e in entries
+                if not e.holding_period.lower().startswith(("short", "long"))
+                and e.holding_period.lower() not in ("mixed", "unknown")
+            }
+            logger.warning(
+                "Capital gain stats: %d entries but only %d categorised by holding period. "
+                "Unrecognised values: %s",
+                len(entries),
+                categorised_count,
+                sorted(unclassified),
+            )
+
+        st = CapitalGainPeriodStats.from_entries(short_term)
+        lt = CapitalGainPeriodStats.from_entries(long_term)
+        mx = CapitalGainPeriodStats.from_entries(mixed)
+        uk = CapitalGainPeriodStats.from_entries(unknown)
+
+        grand_total = CapitalGainPeriodStats(
+            count=len(entries),
+            cost_total_eur=sum((e.cost_eur for e in entries), start=ZERO),
+            proceeds_total_eur=sum((e.proceeds_eur for e in entries), start=ZERO),
+            gain_loss_total_eur=sum((e.gain_loss_eur for e in entries), start=ZERO),
+        )
+
+        return cls(short_term=st, long_term=lt, mixed=mx, unknown=uk, grand_total=grand_total)
+
+
+@dataclass(frozen=True)
 class CryptoCapitalGainEntry:
     """Single taxable crypto disposal row for reporting."""
 
@@ -324,6 +418,7 @@ class CryptoTaxReport:
     capital_entries: list[CryptoCapitalGainEntry]
     reward_entries: list[CryptoRewardIncomeEntry]
     reconciliation: CryptoReconciliationSummary
+    capital_gain_stats: CryptoCapitalGainStats
     skipped_zero_value_tokens: list[CryptoSkippedZeroValueToken] = field(default_factory=list)
     pdf_summary: CryptoCompletePdfSummary | None = None
 
@@ -1321,11 +1416,14 @@ def load_koinly_crypto_report(koinly_dir: Path) -> CryptoTaxReport | None:
     complete_tax_report_file = _find_report_path(koinly_dir, "complete_tax_report", ".pdf")
     pdf_summary = _parse_complete_tax_report_pdf(complete_tax_report_file) if complete_tax_report_file else None
 
+    capital_gain_stats = CryptoCapitalGainStats.from_entries(capital_entries)
+
     return CryptoTaxReport(
         tax_year=year,
         capital_entries=capital_entries,
         reward_entries=reward_entries,
         reconciliation=reconciliation,
+        capital_gain_stats=capital_gain_stats,
         skipped_zero_value_tokens=skipped_zero_value_tokens,
         pdf_summary=pdf_summary,
     )

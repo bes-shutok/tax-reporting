@@ -239,6 +239,9 @@ def test_example_high_volume_crypto_sheet_is_compact(tmp_path: Path):
     assert asset_col is not None, "Asset column header not found in Crypto sheet"
     capital_data_rows = 0
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+        first_val = row[0].value if row else None
+        if isinstance(first_val, str) and "CAPITAL GAINS STATISTICS" in first_val:
+            break
         asset_val = row[asset_col - 1].value if asset_col <= len(row) else None
         if asset_val and isinstance(asset_val, str) and asset_val.strip():
             capital_data_rows += 1

@@ -50,6 +50,7 @@ This file provides guidance to coding agents when working with code in this repo
 - Crypto worksheet must present rewards in two sections: IRS-ready filing summary (taxable_now only) and support detail (both classifications).
 - The aggregation step must fail with `FileProcessingError` if any taxable-now row cannot be assigned all mandatory IRS fields (valid Tabela X country code).
 - When `review_required=True` is set on `CryptoCapitalGainEntry` or `CryptoRewardIncomeEntry`, the `review_reason` field must contain a specific, actionable explanation. The Excel output shows "YES: \<reason\>" rather than a bare boolean. See PT-C-030.
+- Crypto capital gains statistics must be computed via `CryptoCapitalGainStats.from_entries()` and rendered as the "1b. CAPITAL GAINS STATISTICS" Excel section. Do not remove or bypass this section. The grand total EUR amounts must be computed from the full entries list, not by summing per-period subtotals, so that unrecognized holding periods do not produce inconsistent statistics.
 
 ### 4. Agent Workflow Rules
 
@@ -162,12 +163,12 @@ The project follows **professional testing best practices** with a **3-tier test
 ### Test Structure
 ```
 tests/
-├── unit/          # 156 unit tests - Fast component tests
+├── unit/          # 410 unit tests - Fast component tests
 │   ├── domain/    # Domain layer unit tests
 │   ├── infrastructure/  # Infrastructure layer unit tests
 │   └── application/ # Application layer unit tests
-├── integration/   # 48 integration tests - Component interaction tests
-└── end_to_end/    # 6 e2e tests - Full workflow tests
+├── integration/   # 27 integration tests - Component interaction tests
+└── end_to_end/    # 25 e2e tests - Full workflow tests
 ```
 
 ### Testing Commands
@@ -481,6 +482,7 @@ tax-reporting/
 │       │   │   ├── contexts.py
 │       │   │   ├── state_machine.py
 │       │   │   └── processing.py
+│       │   ├── crypto_reporting.py # Crypto tax models and Koinly parsing
 │       │   ├── transformation.py # Capital gains calculation
 │       │   └── persisting.py    # Excel/CSV generation
 │       └── infrastructure/    # Infrastructure layer
@@ -490,12 +492,12 @@ tax-reporting/
 │           ├── logging_config.py # Logging configuration
 │           └── validation.py    # Input validation
 ├── tests/                  # Test suite
-│   ├── unit/               # Unit tests (156 tests)
+│   ├── unit/               # Unit tests (410 tests)
 │   │   ├── domain/         # Domain layer unit tests
 │   │   ├── infrastructure/ # Infrastructure layer unit tests
 │   │   └── application/    # Application layer unit tests
-│   ├── integration/        # Integration tests (48 tests)
-│   ├── end_to_end/         # End-to-end tests (6 tests)
+│   ├── integration/        # Integration tests (27 tests)
+│   ├── end_to_end/         # End-to-end tests (25 tests)
 │   └── conftest.py         # Pytest configuration and fixtures
 ├── resources/              # Data directories
 │   ├── source/             # Input CSV files
