@@ -211,7 +211,7 @@ transactions has been found in any of the documents reviewed.
 Each disposal (alienação) should be reported as a separate line in the form
 ("uma linha por cada operação"). However, the AT circulars do not explicitly state this
 for crypto. The "operation" is the **sale transaction**, not the individual FIFO lot allocation.
-Multiple FIFO lots matched to the same sale event (same timestamp, same asset,
+Multiple FIFO lots matched to the same sale event (same disposal date, same asset,
 same wallet) can reasonably be reported as one aggregated line.
 > Source: CryptoBooks article "Declarar Cripto de Plataformas Estrangeiras: Anexo J IRS"
 > (`https://cryptobooks.tax/pt-PT/blog/declarar-criptoativos-anexo-j-modelo-3`), consulted 2026-04-07;
@@ -240,12 +240,11 @@ taxable short-term gains from exempt long-term gains.
 **Date precision constraint (PT-C-020):** the official Anexo J Quadro 9.4 form captures dates
 as Ano/Mês/Dia (year, month, day) — no time-of-day field exists. Aggregation must be at
 **day-level or finer**; coarser aggregation (per month, per year) would merge distinct
-disposal events and is not acceptable. The current implementation uses Koinly's minute-level
-timestamps internally for grouping, which is stricter than required; day-level grouping
-would also be legally correct per PT-C-020.
+disposal events and is not acceptable. The current implementation uses day-level dates
+internally for grouping, matching the Anexo J form's Ano/Mes/Dia precision (PT-C-020).
 
 **PT-C-028** `[IMPLEMENTATION DECISION | 2026-03-14]`
-After timestamp-level aggregation, lines where **|gain/loss| < 1 EUR** are excluded from
+After day-level aggregation, lines where **|gain/loss| < 1 EUR** are excluded from
 the capital gains section of the Crypto sheet.
 Rationale: these have no material tax impact (total excluded gain across the 2025 dataset
 was ~6 EUR out of −1,452 EUR total). The AT portal requires manual entry of every line;

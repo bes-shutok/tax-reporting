@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -14,6 +15,7 @@ from shares_reporting.application.crypto_reporting import (
     _classify_reward_tax_status,
     _derive_chain,
     _filter_immaterial_entries,
+    _format_datetime,
     _is_temporally_valid,
     _is_valid_tabela_x_country,
     _parse_koinly_decimal,
@@ -39,8 +41,8 @@ _TEST_OPERATOR = OperatorOrigin(
 
 
 def _make_entry(  # noqa: PLR0913
-    disposal_date: str = "2025-01-13 13:01:00",
-    acquisition_date: str = "2024-11-18 00:15:00",
+    disposal_date: str = "2025-01-13",
+    acquisition_date: str = "2024-11-18",
     asset: str = "USDT",
     amount: Decimal = Decimal("1"),
     cost_eur: Decimal = Decimal("1"),
@@ -189,6 +191,12 @@ def test_load_koinly_crypto_report_parses_core_sections(tmp_path):
     long_term_entry = next(e for e in report.capital_entries if e.holding_period == "Long term")
     assert short_term_entry.annex_hint == "J"
     assert long_term_entry.annex_hint == "G1"
+    assert short_term_entry.disposal_date == "2025-01-13"
+    assert short_term_entry.acquisition_date == "2024-11-18"
+    assert long_term_entry.disposal_date == "2025-01-20"
+    assert long_term_entry.acquisition_date == "2024-01-01"
+    assert report.reward_entries[0].date == "2025-01-01"
+    assert report.reward_entries[1].date == "2025-01-02"
 
 
 def test_resolve_operator_origin_splits_wirex_by_transaction_type():
@@ -610,21 +618,21 @@ def test_aggregate_same_timestamp_collapses_to_one_row():
     """Multiple FIFO lot rows with same (disposal_date, asset, wallet, holding_period) collapse to one row."""
     entries = [
         _make_entry(
-            acquisition_date="2024-01-01 00:00:00",
+            acquisition_date="2024-01-01",
             amount=Decimal("10"),
             cost_eur=Decimal("8"),
             proceeds_eur=Decimal("9"),
             gain_loss_eur=Decimal("1"),
         ),
         _make_entry(
-            acquisition_date="2024-06-01 00:00:00",
+            acquisition_date="2024-06-01",
             amount=Decimal("20"),
             cost_eur=Decimal("16"),
             proceeds_eur=Decimal("18"),
             gain_loss_eur=Decimal("2"),
         ),
         _make_entry(
-            acquisition_date="2024-11-18 00:15:00",
+            acquisition_date="2024-11-18",
             amount=Decimal("30"),
             cost_eur=Decimal("24"),
             proceeds_eur=Decimal("27"),
@@ -640,24 +648,63 @@ def test_aggregate_same_timestamp_collapses_to_one_row():
     assert agg.cost_eur == Decimal("48")
     assert agg.proceeds_eur == Decimal("54")
     assert agg.gain_loss_eur == Decimal("6")
-    # earliest acquisition date
-    assert agg.acquisition_date == "2024-01-01 00:00:00"
-    assert agg.disposal_date == "2025-01-13 13:01:00"
+    assert agg.acquisition_date == "2024-01-01"
+    assert agg.disposal_date == "2025-01-13"
     assert agg.asset == "USDT"
     assert agg.wallet == "ByBit"
 
 
 def test_aggregate_different_timestamps_stay_separate():
     entries = [
-        _make_entry(disposal_date="2025-01-13 13:01:00", gain_loss_eur=Decimal("2")),
-        _make_entry(disposal_date="2025-01-14 09:00:00", gain_loss_eur=Decimal("3")),
+        _make_entry(disposal_date="2025-01-13", gain_loss_eur=Decimal("2")),
+        _make_entry(disposal_date="2025-01-14", gain_loss_eur=Decimal("3")),
     ]
 
     result = _aggregate_capital_entries(entries)
 
     assert len(result) == 2
     dates = {e.disposal_date for e in result}
-    assert dates == {"2025-01-13 13:01:00", "2025-01-14 09:00:00"}
+    assert dates == {"2025-01-13", "2025-01-14"}
+
+    same_day_entries = [
+        _make_entry(disposal_date="2025-03-15", acquisition_date="2024-01-01", gain_loss_eur=Decimal("1")),
+        _make_entry(disposal_date="2025-03-15", acquisition_date="2024-06-01", gain_loss_eur=Decimal("2")),
+    ]
+    same_day_result = _aggregate_capital_entries(same_day_entries)
+    assert len(same_day_result) == 1
+    assert same_day_result[0].gain_loss_eur == Decimal("3")
+
+
+def test_aggregate_same_day_different_times_collapses_to_one_row():
+    """Entries with same-day disposal dates that previously had different timestamps must now collapse."""
+    entries = [
+        _make_entry(
+            disposal_date="2025-03-15",
+            acquisition_date="2024-01-01",
+            amount=Decimal("5"),
+            cost_eur=Decimal("4000"),
+            proceeds_eur=Decimal("4500"),
+            gain_loss_eur=Decimal("500"),
+        ),
+        _make_entry(
+            disposal_date="2025-03-15",
+            acquisition_date="2024-06-01",
+            amount=Decimal("3"),
+            cost_eur=Decimal("2400"),
+            proceeds_eur=Decimal("2700"),
+            gain_loss_eur=Decimal("300"),
+        ),
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 1
+    agg = result[0]
+    assert agg.amount == Decimal("8")
+    assert agg.cost_eur == Decimal("6400")
+    assert agg.proceeds_eur == Decimal("7200")
+    assert agg.gain_loss_eur == Decimal("800")
+    assert agg.acquisition_date == "2024-01-01"
 
 
 def test_aggregate_different_assets_stay_separate():
@@ -758,8 +805,8 @@ def test_aggregate_notes_deduped_and_joined():
 
 def test_aggregate_single_entry_unchanged():
     entry = _make_entry(
-        disposal_date="2025-03-01 10:00:00",
-        acquisition_date="2024-01-15 00:00:00",
+        disposal_date="2025-03-01",
+        acquisition_date="2024-01-15",
         asset="ETH",
         amount=Decimal("2"),
         cost_eur=Decimal("4000"),
@@ -799,17 +846,17 @@ def test_aggregate_wallet_aliases_collapse_to_same_account():
     assert result[0].platform == "ByBit"
 
 
-def test_aggregate_different_wallet_aliases_with_different_timestamps_stay_separate():
-    """Different timestamps should still stay separate even with normalized wallet."""
+def test_aggregate_different_wallet_aliases_with_different_dates_stay_separate():
+    """Different disposal dates should still stay separate even with normalized wallet."""
     entries = [
         _make_entry(
-            disposal_date="2025-01-13 13:01:00",
+            disposal_date="2025-01-13",
             wallet="ByBit",
             platform="ByBit",
             gain_loss_eur=Decimal("2"),
         ),
         _make_entry(
-            disposal_date="2025-01-14 09:00:00",
+            disposal_date="2025-01-14",
             wallet="ByBit (2)",
             platform="ByBit",
             gain_loss_eur=Decimal("3"),
@@ -818,10 +865,10 @@ def test_aggregate_different_wallet_aliases_with_different_timestamps_stay_separ
 
     result = _aggregate_capital_entries(entries)
 
-    # Different timestamps = different sale events, stay separate
+    # Different dates = different sale events, stay separate
     assert len(result) == 2
-    timestamps = {e.disposal_date for e in result}
-    assert timestamps == {"2025-01-13 13:01:00", "2025-01-14 09:00:00"}
+    dates = {e.disposal_date for e in result}
+    assert dates == {"2025-01-13", "2025-01-14"}
     # Both should have normalized platform
     assert all(e.platform == "ByBit" for e in result)
 
@@ -948,14 +995,14 @@ def test_parse_capital_gains_file_aggregates_dust_rows(tmp_path):
     assert report.reconciliation.short_term_rows == 1
     agg = report.capital_entries[0]
     assert agg.asset == "USDT"
-    assert agg.disposal_date == "2025-01-13 13:01:00"
+    assert agg.disposal_date == "2025-01-13"
     assert agg.wallet == "ByBit"
     assert agg.amount == Decimal("103") * Decimal("0.10000000")
     assert agg.cost_eur == Decimal("103")
     assert agg.proceeds_eur == Decimal("103") * Decimal("1.20")
     assert agg.gain_loss_eur == Decimal("103") * Decimal("0.20")
     # earliest acquisition date among 103 lots
-    assert agg.acquisition_date == "2024-01-01 00:00:00"
+    assert agg.acquisition_date == "2024-01-01"
 
 
 def test_parse_capital_gains_file_filters_sub_1_eur_after_aggregation(tmp_path, caplog):
@@ -1373,7 +1420,7 @@ def test_aggregate_taxable_rewards_by_income_code_and_country():
     entries = [
         # Two EUR rewards from Kraken (Ireland) - same income code "401", same country "IE"
         CryptoRewardIncomeEntry(
-            date="2025-01-01 00:00:00",
+            date="2025-01-01",
             asset="EUR",
             amount=Decimal("100"),
             value_eur=Decimal("100"),
@@ -1390,7 +1437,7 @@ def test_aggregate_taxable_rewards_by_income_code_and_country():
             foreign_tax_eur=ZERO,
         ),
         CryptoRewardIncomeEntry(
-            date="2025-01-02 00:00:00",
+            date="2025-01-02",
             asset="EUR",
             amount=Decimal("50"),
             value_eur=Decimal("50"),
@@ -1408,7 +1455,7 @@ def test_aggregate_taxable_rewards_by_income_code_and_country():
         ),
         # USD reward from Bybit (UAE) - different country, different aggregation group
         CryptoRewardIncomeEntry(
-            date="2025-01-03 00:00:00",
+            date="2025-01-03",
             asset="USD",
             amount=Decimal("200"),
             value_eur=Decimal("185"),
@@ -1426,7 +1473,7 @@ def test_aggregate_taxable_rewards_by_income_code_and_country():
         ),
         # Staking reward from Gate.io (Malta) - different income code "401" but default for staking
         CryptoRewardIncomeEntry(
-            date="2025-01-04 00:00:00",
+            date="2025-01-04",
             asset="EUR",
             amount=Decimal("75"),
             value_eur=Decimal("75"),
@@ -1444,7 +1491,7 @@ def test_aggregate_taxable_rewards_by_income_code_and_country():
         ),
         # Crypto-denominated reward (deferred) - should NOT be aggregated
         CryptoRewardIncomeEntry(
-            date="2025-01-05 00:00:00",
+            date="2025-01-05",
             asset="BTC",
             amount=Decimal("0.01"),
             value_eur=Decimal("500"),
@@ -1499,7 +1546,7 @@ def test_aggregate_taxable_rewards_filters_out_deferred_rewards():
     entries = [
         # Taxable now
         CryptoRewardIncomeEntry(
-            date="2025-01-01 00:00:00",
+            date="2025-01-01",
             asset="EUR",
             amount=Decimal("100"),
             value_eur=Decimal("100"),
@@ -1517,7 +1564,7 @@ def test_aggregate_taxable_rewards_filters_out_deferred_rewards():
         ),
         # Deferred (crypto)
         CryptoRewardIncomeEntry(
-            date="2025-01-02 00:00:00",
+            date="2025-01-02",
             asset="BTC",
             amount=Decimal("0.01"),
             value_eur=Decimal("500"),
@@ -1535,7 +1582,7 @@ def test_aggregate_taxable_rewards_filters_out_deferred_rewards():
         ),
         # Another deferred
         CryptoRewardIncomeEntry(
-            date="2025-01-03 00:00:00",
+            date="2025-01-03",
             asset="USDT",
             amount=Decimal("10"),
             value_eur=Decimal("10"),
@@ -1567,7 +1614,7 @@ def test_aggregate_taxable_rewards_with_foreign_tax():
 
     entries = [
         CryptoRewardIncomeEntry(
-            date="2025-01-01 00:00:00",
+            date="2025-01-01",
             asset="EUR",
             amount=Decimal("100"),
             value_eur=Decimal("100"),
@@ -1584,7 +1631,7 @@ def test_aggregate_taxable_rewards_with_foreign_tax():
             foreign_tax_eur=Decimal("5"),
         ),
         CryptoRewardIncomeEntry(
-            date="2025-01-02 00:00:00",
+            date="2025-01-02",
             asset="EUR",
             amount=Decimal("50"),
             value_eur=Decimal("50"),
@@ -1622,7 +1669,7 @@ def test_aggregate_taxable_rewards_no_taxable_entries():
 
     entries = [
         CryptoRewardIncomeEntry(
-            date="2025-01-01 00:00:00",
+            date="2025-01-01",
             asset="BTC",
             amount=Decimal("0.01"),
             value_eur=Decimal("500"),
@@ -1651,7 +1698,7 @@ def test_aggregate_taxable_rewards_fails_on_invalid_country():
 
     entries = [
         CryptoRewardIncomeEntry(
-            date="2025-01-01 00:00:00",
+            date="2025-01-01",
             asset="EUR",
             amount=Decimal("100"),
             value_eur=Decimal("100"),
@@ -1686,7 +1733,7 @@ def test_aggregate_taxable_rewards_wallet_aliases_collapse():
 
     entries = [
         CryptoRewardIncomeEntry(
-            date="2025-01-01 00:00:00",
+            date="2025-01-01",
             asset="EUR",
             amount=Decimal("100"),
             value_eur=Decimal("100"),
@@ -1703,7 +1750,7 @@ def test_aggregate_taxable_rewards_wallet_aliases_collapse():
             foreign_tax_eur=ZERO,
         ),
         CryptoRewardIncomeEntry(
-            date="2025-01-02 00:00:00",
+            date="2025-01-02",
             asset="EUR",
             amount=Decimal("50"),
             value_eur=Decimal("50"),
@@ -1740,7 +1787,7 @@ def test_aggregate_taxable_rewards_different_platforms_stay_separate():
 
     entries = [
         CryptoRewardIncomeEntry(
-            date="2025-01-01 00:00:00",
+            date="2025-01-01",
             asset="EUR",
             amount=Decimal("100"),
             value_eur=Decimal("100"),
@@ -1757,7 +1804,7 @@ def test_aggregate_taxable_rewards_different_platforms_stay_separate():
             foreign_tax_eur=ZERO,
         ),
         CryptoRewardIncomeEntry(
-            date="2025-01-02 00:00:00",
+            date="2025-01-02",
             asset="EUR",
             amount=Decimal("50"),
             value_eur=Decimal("50"),
@@ -1840,7 +1887,7 @@ def test_aggregate_preserves_reconciliation_trail():
 
     entries = [
         CryptoRewardIncomeEntry(
-            date=f"2025-01-{i:02d} 00:00:00",
+            date=f"2025-01-{i:02d}",
             asset="EUR",
             amount=Decimal("10"),
             value_eur=Decimal("10"),
@@ -1934,7 +1981,7 @@ def test_validate_capital_entries_includes_detailed_error_info():
 
     entries = [
         _make_entry(
-            disposal_date="2025-01-15 10:00:00",
+            disposal_date="2025-01-15",
             asset="BTC",
             wallet="SomeUnknownWallet",
             platform="SomeUnknownWallet",
@@ -2936,17 +2983,17 @@ def test_aggregate_capital_entries_produces_blank_swap_history():
     """Aggregation should produce blank swap history when all entries have blank token_swap_history."""
     entries = [
         _make_entry(
-            disposal_date="2025-02-16 10:00:00",
+            disposal_date="2025-02-16",
             wallet="Ledger SUI",
             platform="Ledger SUI",
         ),
         _make_entry(
-            disposal_date="2025-02-16 10:00:00",
+            disposal_date="2025-02-16",
             wallet="Ledger SUI",
             platform="Ledger SUI",
         ),
         _make_entry(
-            disposal_date="2025-02-16 10:00:00",
+            disposal_date="2025-02-16",
             wallet="Ledger SUI",
             platform="Ledger SUI",
         ),
@@ -3483,27 +3530,27 @@ def test_acquisition_date_repeat_is_not_a_disposal_grouping_issue():
     """Document that a repeated acquisition_date across multiple disposal events
     is expected and must not be confused with a disposal-date grouping regression.
 
-    The reported 2024-07-27 11:03:00 timestamp was an acquisition date shared by
+    The reported 2024-07-27 date was an acquisition date shared by
     FIFO lots sold at different later disposal dates. Each disposal is a distinct
     taxable event; the shared acquisition date simply reflects the common purchase
     that was partially sold over time.
     """
-    shared_acq = "2024-07-27 11:03:00"
+    shared_acq = "2024-07-27"
     entries = [
         _make_entry(
-            disposal_date="2025-01-10 09:00:00",
+            disposal_date="2025-01-10",
             acquisition_date=shared_acq,
             amount=Decimal("10"),
             gain_loss_eur=Decimal("1"),
         ),
         _make_entry(
-            disposal_date="2025-02-15 14:30:00",
+            disposal_date="2025-02-15",
             acquisition_date=shared_acq,
             amount=Decimal("15"),
             gain_loss_eur=Decimal("2"),
         ),
         _make_entry(
-            disposal_date="2025-03-20 18:00:00",
+            disposal_date="2025-03-20",
             acquisition_date=shared_acq,
             amount=Decimal("5"),
             gain_loss_eur=Decimal("0.5"),
@@ -3517,9 +3564,9 @@ def test_acquisition_date_repeat_is_not_a_disposal_grouping_issue():
     )
     disposal_dates = [e.disposal_date for e in result]
     assert disposal_dates == [
-        "2025-01-10 09:00:00",
-        "2025-02-15 14:30:00",
-        "2025-03-20 18:00:00",
+        "2025-01-10",
+        "2025-02-15",
+        "2025-03-20",
     ]
     for r in result:
         assert r.acquisition_date == shared_acq
@@ -3528,7 +3575,7 @@ def test_acquisition_date_repeat_is_not_a_disposal_grouping_issue():
 def test_same_disposal_date_allowed_when_other_grouping_dims_differ():
     """Rows sharing a disposal_date are correctly kept separate when any other
     aggregation dimension (asset, platform, holding_period) differs."""
-    shared_disposal = "2025-06-01 12:00:00"
+    shared_disposal = "2025-06-01"
     entries = [
         _make_entry(
             disposal_date=shared_disposal,
@@ -3592,7 +3639,7 @@ def test_aggregate_never_emits_duplicate_keys():
     from collections import Counter
 
     shared_key_params = {
-        "disposal_date": "2025-03-15 14:30:00",
+        "disposal_date": "2025-03-15",
         "asset": "USDT",
         "platform": "ByBit",
         "holding_period": "Short term",
@@ -3600,7 +3647,7 @@ def test_aggregate_never_emits_duplicate_keys():
     entries = [
         _make_entry(
             **shared_key_params,
-            acquisition_date="2024-06-01 00:00:00",
+            acquisition_date="2024-06-01",
             amount=Decimal("50"),
             cost_eur=Decimal("40"),
             proceeds_eur=Decimal("45"),
@@ -3608,14 +3655,14 @@ def test_aggregate_never_emits_duplicate_keys():
         ),
         _make_entry(
             **shared_key_params,
-            acquisition_date="2024-09-15 00:00:00",
+            acquisition_date="2024-09-15",
             amount=Decimal("30"),
             cost_eur=Decimal("25"),
             proceeds_eur=Decimal("28"),
             gain_loss_eur=Decimal("3"),
         ),
         _make_entry(
-            disposal_date="2025-04-01 10:00:00",
+            disposal_date="2025-04-01",
             asset="BTC",
             platform="Kraken",
             holding_period="Long term",
@@ -3639,7 +3686,7 @@ def test_aggregate_never_emits_duplicate_keys():
     assert agg_usdt.cost_eur == Decimal("65")
     assert agg_usdt.proceeds_eur == Decimal("73")
     assert agg_usdt.gain_loss_eur == Decimal("8")
-    assert agg_usdt.acquisition_date == "2024-06-01 00:00:00"
+    assert agg_usdt.acquisition_date == "2024-06-01"
 
 
 def test_same_timestamp_different_holding_period_stays_split():
@@ -3651,11 +3698,11 @@ def test_same_timestamp_different_holding_period_stays_split():
     were merged, exempt long-term gains would incorrectly offset taxable
     short-term gains or vice versa.
     """
-    shared_timestamp = "2025-07-27 11:03:00"
+    shared_timestamp = "2025-07-27"
     entries = [
         _make_entry(
             disposal_date=shared_timestamp,
-            acquisition_date="2024-01-15 00:00:00",
+            acquisition_date="2024-01-15",
             asset="ETH",
             platform="Kraken",
             holding_period="Short term",
@@ -3666,7 +3713,7 @@ def test_same_timestamp_different_holding_period_stays_split():
         ),
         _make_entry(
             disposal_date=shared_timestamp,
-            acquisition_date="2023-06-15 00:00:00",
+            acquisition_date="2023-06-15",
             asset="ETH",
             platform="Kraken",
             holding_period="Long term",
@@ -3933,3 +3980,11 @@ def test_mnt_reward_stays_deferred_through_full_parse(tmp_path):
 
     eur_reward = next(r for r in report.reward_entries if r.asset == "EUR")
     assert eur_reward.tax_classification == RewardTaxClassification.TAXABLE_NOW
+
+
+def test_format_datetime_returns_date_only():
+    assert _format_datetime(datetime(2025, 1, 13, 13, 1, 0, tzinfo=UTC)) == "2025-01-13"
+
+
+def test_format_datetime_epoch_sentinel_returns_1970_01_01():
+    assert _format_datetime(datetime(1970, 1, 1, 0, 0, 0, tzinfo=UTC)) == "1970-01-01"
