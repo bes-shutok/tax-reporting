@@ -524,7 +524,7 @@ class TestDividendExcelPersisting:
         workbook.close()
 
     def test_crypto_sheet_contains_token_origin_column(self, tmp_path):
-        """Assert the Crypto worksheet contains Token origin column with blank value after legacy removal."""
+        """Assert the Crypto worksheet Token origin column shows blank for unknown origin."""
         bybit_origin = resolve_operator_origin("ByBit")
 
         capital_entries = [
@@ -612,6 +612,179 @@ class TestDividendExcelPersisting:
 
         token_origin_value = capital_data_row[token_origin_col_idx - 1]
         assert token_origin_value in ("", None), f"Expected blank Token origin, got {token_origin_value!r}"
+
+        workbook.close()
+
+    def test_crypto_sheet_token_origin_non_blank_when_resolved(self, tmp_path):
+        """Assert Token origin column shows non-blank value when resolver found a match."""
+        kraken_origin = resolve_operator_origin("Kraken")
+
+        capital_entries = [
+            CryptoCapitalGainEntry(
+                disposal_date="2025-03-15",
+                acquisition_date="2025-01-15",
+                asset="BTC",
+                amount=Decimal("0.001"),
+                cost_eur=Decimal("50.00"),
+                proceeds_eur=Decimal("55.00"),
+                gain_loss_eur=Decimal("5.00"),
+                holding_period="Short term",
+                wallet="Kraken",
+                platform="Kraken",
+                chain="Kraken",
+                operator_origin=kraken_origin,
+                annex_hint="J",
+                review_required=False,
+                notes="",
+                token_swap_history="EUR (direct_purchase, medium confidence)",
+            )
+        ]
+
+        crypto_report = CryptoTaxReport(
+            tax_year=2025,
+            capital_entries=capital_entries,
+            reward_entries=[],
+            reconciliation=CryptoReconciliationSummary(
+                capital_rows=1,
+                reward_rows=0,
+                short_term_rows=1,
+                long_term_rows=0,
+                mixed_rows=0,
+                unknown_rows=0,
+                capital_cost_total_eur=Decimal("50.00"),
+                capital_proceeds_total_eur=Decimal("55.00"),
+                capital_gain_total_eur=Decimal("5.00"),
+                reward_total_eur=Decimal("0"),
+                opening_holdings=None,
+                closing_holdings=None,
+            ),
+            capital_gain_stats=CryptoCapitalGainStats.from_entries(capital_entries),
+            skipped_zero_value_tokens=[],
+            pdf_summary=None,
+        )
+
+        report_path = tmp_path / "crypto_token_origin_resolved_report.xlsx"
+        generate_tax_report(
+            extract=report_path,
+            capital_gain_lines_per_company={},
+            dividend_income_per_company={},
+            crypto_tax_report=crypto_report,
+        )
+
+        assert report_path.exists()
+
+        import openpyxl
+
+        workbook = openpyxl.load_workbook(report_path)
+        crypto_sheet = workbook["Crypto"]
+
+        token_origin_col_idx = None
+        for row in crypto_sheet.iter_rows(values_only=True):
+            if row and "Disposal date" in str(row[0] if row[0] else ""):
+                for col_idx, cell_value in enumerate(row):
+                    if cell_value == "Token origin":
+                        token_origin_col_idx = col_idx + 1
+                        break
+                break
+
+        assert token_origin_col_idx is not None, "Token origin column not found"
+
+        capital_data_row = None
+        for row in crypto_sheet.iter_rows(values_only=True):
+            if row and row[0] == "2025-03-15":
+                capital_data_row = row
+                break
+
+        assert capital_data_row is not None, "Capital data row not found"
+
+        token_origin_value = capital_data_row[token_origin_col_idx - 1]
+        assert token_origin_value == "EUR (direct_purchase, medium confidence)", (
+            f"Expected resolved Token origin, got {token_origin_value!r}"
+        )
+
+        workbook.close()
+
+    def test_crypto_sheet_token_origin_shows_confidence_level(self, tmp_path):
+        """Assert Token origin column includes the confidence level string."""
+        kraken_origin = resolve_operator_origin("Kraken")
+
+        capital_entries = [
+            CryptoCapitalGainEntry(
+                disposal_date="2025-03-15",
+                acquisition_date="2025-01-15",
+                asset="BTC",
+                amount=Decimal("0.001"),
+                cost_eur=Decimal("50.00"),
+                proceeds_eur=Decimal("55.00"),
+                gain_loss_eur=Decimal("5.00"),
+                holding_period="Short term",
+                wallet="Kraken",
+                platform="Kraken",
+                chain="Kraken",
+                operator_origin=kraken_origin,
+                annex_hint="J",
+                review_required=False,
+                notes="",
+                token_swap_history="ETH (swap_conversion, high confidence)",
+            )
+        ]
+
+        crypto_report = CryptoTaxReport(
+            tax_year=2025,
+            capital_entries=capital_entries,
+            reward_entries=[],
+            reconciliation=CryptoReconciliationSummary(
+                capital_rows=1,
+                reward_rows=0,
+                short_term_rows=1,
+                long_term_rows=0,
+                mixed_rows=0,
+                unknown_rows=0,
+                capital_cost_total_eur=Decimal("50.00"),
+                capital_proceeds_total_eur=Decimal("55.00"),
+                capital_gain_total_eur=Decimal("5.00"),
+                reward_total_eur=Decimal("0"),
+                opening_holdings=None,
+                closing_holdings=None,
+            ),
+            capital_gain_stats=CryptoCapitalGainStats.from_entries(capital_entries),
+            skipped_zero_value_tokens=[],
+            pdf_summary=None,
+        )
+
+        report_path = tmp_path / "crypto_token_origin_confidence_report.xlsx"
+        generate_tax_report(
+            extract=report_path,
+            capital_gain_lines_per_company={},
+            dividend_income_per_company={},
+            crypto_tax_report=crypto_report,
+        )
+
+        import openpyxl
+
+        workbook = openpyxl.load_workbook(report_path)
+        crypto_sheet = workbook["Crypto"]
+
+        token_origin_col_idx = None
+        for row in crypto_sheet.iter_rows(values_only=True):
+            if row and "Disposal date" in str(row[0] if row[0] else ""):
+                for col_idx, cell_value in enumerate(row):
+                    if cell_value == "Token origin":
+                        token_origin_col_idx = col_idx + 1
+                        break
+                break
+
+        capital_data_row = None
+        for row in crypto_sheet.iter_rows(values_only=True):
+            if row and row[0] == "2025-03-15":
+                capital_data_row = row
+                break
+
+        assert capital_data_row is not None
+        token_origin_value = str(capital_data_row[token_origin_col_idx - 1])
+        assert "high confidence" in token_origin_value, (
+            f"Expected confidence level in Token origin, got {token_origin_value!r}"
+        )
 
         workbook.close()
 

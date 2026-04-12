@@ -175,7 +175,7 @@ Demo assets:
 
 ## Slide 8: Recommended Next Steps
 
-1. Token origin matching: The current "Token origin" column is intentionally blank because the removed legacy heuristic (same-day disposal matching) was unreliable. A Koinly-first implementation using deterministic acquisition-side fields from the Koinly transaction history is planned -- see the follow-up plan referenced in `docs/plans/`.
+1. Token origin matching: The "Token origin" column is now populated by `TokenOriginResolver` using implicit `(date, asset, wallet)` correlation with the Koinly transaction history CSV. Each resolved origin shows a confidence level (high/medium/low). Rows where no match is found remain blank. See CRG-015 in `docs/domain/crypto_reporting_guidelines.md` and `docs/domain/crypto_implementation_guidelines.md` for details.
 
 2. More asset types: The current IB pipeline handles shares and dividends. Futures, options, and fixed income are on the roadmap.
 

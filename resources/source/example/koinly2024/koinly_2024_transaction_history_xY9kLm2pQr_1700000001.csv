@@ -1,0 +1,12 @@
+Transaction history 2024
+Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),TxSrc,TxDest,TxHash,Description
+01/01/2024 08:00,fiat_deposit,,Bank Account,"100,00",EUR,"0,00",Kraken,"0,00100000",BTC,"50,00","1,00",EUR,"0,00","50,00","0,50",,,,Bought BTC on Kraken
+01/01/2024 09:01,fiat_deposit,,Bank Account,"100,00",EUR,"0,00",Kraken,"0,00100000",BTC,"50,00","1,00",EUR,"0,00","50,00","0,50",,,,Bought BTC on Kraken
+02/01/2024 10:02,crypto_deposit,,ByBit,"0,50000000",BTC,"25,00",Kraken,"0,00100000",BTC,"50,00","0,00",EUR,"0,00","50,00","0,00",bybit-deposit-addr,kraken-receive-addr,0xFAKEHASH123abc,Deposit BTC to Kraken
+03/01/2024 12:14,crypto_deposit,reward,,,,,Kraken,"0,00100000",BTC,"50,00","0,00",EUR,"0,00","50,00","0,00",,,0xFAKEHASH456def,Reward BTC on Kraken
+01/04/2024 09:00,exchange,,Binance,"200,00",EUR,"0,00",Binance,"0,00100000",ETH,"80,00","0,50",EUR,"0,00","80,00","0,25",,,0xFAKEHASH789ghi,Exchanged EUR for ETH on Binance
+01/04/2024 10:01,exchange,,Binance,"0,50000000",BTC,"200,00",Binance,"0,00100000",ETH,"80,00","0,50",EUR,"0,00","80,00","0,25",,,0xFAKEHASH012jkl,Exchanged BTC for ETH on Binance
+01/04/2024 11:02,crypto_deposit,,Kraken,"0,50000000",ETH,"40,00",Binance,"0,00100000",ETH,"80,00","0,00",EUR,"0,00","80,00","0,00",kraken-deposit-addr,binance-receive-addr,0xFAKEHASH345mno,Transfer ETH from Kraken to Binance
+02/04/2024 12:03,crypto_deposit,lending_interest,,,,,Binance,"0,00100000",ETH,"80,00","0,00",EUR,"0,00","80,00","0,00",,,0xFAKEHASH678pqr,Lending interest ETH on Binance
+01/01/2023 10:00,fiat_deposit,,Bank Account,"100,00",EUR,"0,00",Kraken,"0,02000000",SOL,"50,00","1,00",EUR,"0,00","50,00","0,50",,,,Bought SOL on Kraken
+01/06/2024 11:00,exchange,,Binance,"20,00",EUR,"0,00",Binance,"5,00000000",ADA,"10,00","0,10",EUR,"0,00","10,00","0,05",,,0xFAKEHASH901stu,Exchanged EUR for ADA on Binance

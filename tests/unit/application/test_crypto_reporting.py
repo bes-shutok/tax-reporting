@@ -8,9 +8,12 @@ from decimal import Decimal
 import pytest
 
 from shares_reporting.application.crypto_reporting import (
+    AcquisitionMethod,
     CryptoCapitalGainEntry,
     OperatorOrigin,
     RewardTaxClassification,
+    TokenOrigin,
+    TokenOriginResolver,
     _aggregate_capital_entries,
     _classify_reward_tax_status,
     _derive_chain,
@@ -3007,6 +3010,213 @@ def test_aggregate_capital_entries_produces_blank_swap_history():
     )
 
 
+def test_aggregate_origin_field_single_origin():
+    """When all lots share the same origin, aggregation returns it."""
+    entries = [
+        _make_entry(
+            disposal_date="2025-02-16",
+            wallet="Kraken",
+            platform="Kraken",
+            token_swap_history="EUR (direct_purchase, medium confidence)",
+        ),
+        _make_entry(
+            disposal_date="2025-02-16",
+            wallet="Kraken",
+            platform="Kraken",
+            token_swap_history="EUR (direct_purchase, medium confidence)",
+        ),
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 1
+    assert result[0].token_swap_history == "EUR (direct_purchase, medium confidence)"
+
+
+def test_aggregate_origin_field_multiple_origins():
+    """When lots have different origins, aggregation joins them with '; '."""
+    entries = [
+        _make_entry(
+            disposal_date="2025-02-16",
+            wallet="Kraken",
+            platform="Kraken",
+            token_swap_history="EUR (direct_purchase, medium confidence)",
+        ),
+        _make_entry(
+            disposal_date="2025-02-16",
+            wallet="Kraken",
+            platform="Kraken",
+            token_swap_history="BTC (swap_conversion, high confidence)",
+        ),
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 1
+    assert "EUR (direct_purchase, medium confidence)" in result[0].token_swap_history
+    assert "BTC (swap_conversion, high confidence)" in result[0].token_swap_history
+    assert "; " in result[0].token_swap_history
+
+
+def test_aggregate_origin_field_mixed_empty_and_nonempty():
+    """When some lots have origin and others are blank, aggregation appends an unresolved indicator."""
+    entries = [
+        _make_entry(
+            disposal_date="2025-02-16",
+            wallet="Kraken",
+            platform="Kraken",
+            token_swap_history="EUR (direct_purchase, medium confidence)",
+        ),
+        _make_entry(
+            disposal_date="2025-02-16",
+            wallet="Kraken",
+            platform="Kraken",
+            token_swap_history="",
+        ),
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 1
+    assert "EUR (direct_purchase, medium confidence)" in result[0].token_swap_history
+    assert "1 lot unresolved" in result[0].token_swap_history
+
+
+def test_aggregate_origin_field_all_blank():
+    """When all lots have blank origin, aggregation returns empty string."""
+    entries = [
+        _make_entry(
+            disposal_date="2025-02-16",
+            wallet="Kraken",
+            platform="Kraken",
+            token_swap_history="",
+        ),
+        _make_entry(
+            disposal_date="2025-02-16",
+            wallet="Kraken",
+            platform="Kraken",
+            token_swap_history="",
+        ),
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 1
+    assert result[0].token_swap_history == ""
+
+
+def test_aggregate_origin_field_plural_unresolved():
+    """When multiple unknown lots exist, aggregation uses plural indicator."""
+    entries = [
+        _make_entry(
+            disposal_date="2025-02-16",
+            wallet="Kraken",
+            platform="Kraken",
+            token_swap_history="EUR (direct_purchase, medium confidence)",
+        ),
+        _make_entry(
+            disposal_date="2025-02-16",
+            wallet="Kraken",
+            platform="Kraken",
+            token_swap_history="",
+        ),
+        _make_entry(
+            disposal_date="2025-02-16",
+            wallet="Kraken",
+            platform="Kraken",
+            token_swap_history="",
+        ),
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 1
+    assert "EUR (direct_purchase, medium confidence)" in result[0].token_swap_history
+    assert "2 lots unresolved" in result[0].token_swap_history
+
+
+def test_parse_capital_gains_file_with_populated_resolver(tmp_path):
+    """_parse_capital_gains_file populates token_swap_history from the origin resolver."""
+    th_csv = tmp_path / "th.csv"
+    th_csv.write_text(
+        "\n".join(
+            [
+                "Transaction report 2025",
+                "",
+                (
+                    "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
+                    "Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,"
+                    "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
+                    "TxSrc,TxDest,TxHash,Description"
+                ),
+                (
+                    '2025-01-15 10:00:00 UTC,exchange,"",Kraken,"1000,00",EUR,'
+                    '"1000,00",Kraken,"0,10",BTC,"1000,00","","","","","","",""'
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    capital_csv = tmp_path / "capital.csv"
+    capital_csv.write_text(
+        "\n".join(
+            [
+                "Capital gains report 2025",
+                "",
+                ",".join(
+                    [
+                        "Date Sold",
+                        "Date Acquired",
+                        "Asset",
+                        "Amount",
+                        "Cost (EUR)",
+                        "Proceeds (EUR)",
+                        "Gain / loss",
+                        "Notes",
+                        "Wallet Name",
+                        "Holding period",
+                    ]
+                ),
+                ",".join(
+                    [
+                        "15/03/2025 12:00",
+                        "15/01/2025 10:00",
+                        "BTC",
+                        '"0,10"',
+                        '"1000,00"',
+                        '"1200,00"',
+                        '"200,00"',
+                        "",
+                        "Kraken",
+                        "Short term",
+                    ]
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    from collections import Counter
+
+    from shares_reporting.application.crypto_reporting import TokenOriginResolver, _parse_capital_gains_file
+
+    resolver = TokenOriginResolver(th_csv)
+    skipped: Counter[tuple[str, str]] = Counter()
+    entries = _parse_capital_gains_file(capital_csv, skipped, resolver)
+
+    assert len(entries) == 1
+    assert entries[0].token_swap_history != "", (
+        "Expected resolved origin, got blank token_swap_history"
+    )
+    assert "EUR" in entries[0].token_swap_history, (
+        f"Expected origin containing 'EUR', got: {entries[0].token_swap_history!r}"
+    )
+    assert "swap_conversion" in entries[0].token_swap_history, (
+        f"Expected swap_conversion method, got: {entries[0].token_swap_history!r}"
+    )
+
+
 
 # --- Review reason tests ---
 
@@ -3114,10 +3324,10 @@ def test_capital_entry_review_reason_missing_cost_basis(tmp_path):
 
     from collections import Counter
 
-    from shares_reporting.application.crypto_reporting import _parse_capital_gains_file
+    from shares_reporting.application.crypto_reporting import TokenOriginResolver, _parse_capital_gains_file
 
     skipped = Counter()
-    entries = _parse_capital_gains_file(csv_file, skipped)
+    entries = _parse_capital_gains_file(csv_file, skipped, TokenOriginResolver())
     assert len(entries) == 1
     entry = entries[0]
     assert entry.review_required is True
@@ -3212,10 +3422,10 @@ def test_bybit_review_reason_propagates_through_capital_gains_csv(tmp_path):
 
     from collections import Counter
 
-    from shares_reporting.application.crypto_reporting import _parse_capital_gains_file
+    from shares_reporting.application.crypto_reporting import TokenOriginResolver, _parse_capital_gains_file
 
     skipped = Counter()
-    entries = _parse_capital_gains_file(csv_file, skipped)
+    entries = _parse_capital_gains_file(csv_file, skipped, TokenOriginResolver())
     assert len(entries) == 1
     entry = entries[0]
     assert entry.review_required is True
@@ -3305,10 +3515,10 @@ def test_zero_value_entries_never_reach_report(tmp_path):
 
     from collections import Counter
 
-    from shares_reporting.application.crypto_reporting import _parse_capital_gains_file
+    from shares_reporting.application.crypto_reporting import TokenOriginResolver, _parse_capital_gains_file
 
     skipped = Counter()
-    entries = _parse_capital_gains_file(csv_file, skipped)
+    entries = _parse_capital_gains_file(csv_file, skipped, TokenOriginResolver())
     assert len(entries) == 0
     assert skipped[("capital_gains", "FEE1")] == 1
     assert skipped[("capital_gains", "FEE2")] == 1
@@ -3319,19 +3529,17 @@ def test_zero_value_entries_never_reach_report(tmp_path):
 # =============================================================================
 
 
-def test_capital_row_does_not_inherit_origin_from_same_day_exchange_heuristic(tmp_path):
-    """Capital entries must not inherit token_swap_history from disposal-day exchange row matching.
+def test_capital_row_origin_resolved_from_acquisition_side_exchange(tmp_path):
+    """Capital entries resolve token origin from the acquisition-side transaction history.
 
-    The legacy heuristic inferred origin from same-day `exchange` rows in Koinly
-    transaction_history. That behaviour is misleading because it can show a swap
-    string that describes a nearby same-day event rather than a deterministic
-    Koinly-exported linkage for the disposed lot. After this cleanup, the
-    token_swap_history field must always be blank.
+    When the Koinly transaction history contains an exchange (swap) row that matches
+    the capital gains row's acquisition date, asset, and wallet, the resolver
+    populates token_swap_history with the swap details and confidence level.
     """
     koinly_dir = tmp_path / "koinly2025"
     koinly_dir.mkdir()
 
-    # Transaction history with a same-day exchange (swap) row
+    # Transaction history with an exchange (swap) row acquiring HASUI
     (koinly_dir / "koinly_2025_transaction_history.csv").write_text(
         "\n".join(
             [
@@ -3353,7 +3561,7 @@ def test_capital_row_does_not_inherit_origin_from_same_day_exchange_heuristic(tm
         encoding="utf-8",
     )
 
-    # Capital gains with same-day HASUI disposal that previously matched the swap
+    # Capital gains with HASUI disposal whose acquisition date matches the exchange
     (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(
         "\n".join(
             [
@@ -3403,25 +3611,29 @@ def test_capital_row_does_not_inherit_origin_from_same_day_exchange_heuristic(tm
     assert len(report.capital_entries) == 1
     entry = report.capital_entries[0]
 
-    # The legacy heuristic would have set "SUI → HASUI" here.
-    # After removal, it must be blank.
-    assert entry.token_swap_history == "", (
-        f"token_swap_history must be blank after legacy heuristic removal, "
+    assert "SUI" in entry.token_swap_history, (
+        f"Expected resolved origin containing 'SUI' from acquisition-side exchange, "
         f"got: {entry.token_swap_history!r}"
+    )
+    assert "swap_conversion" in entry.token_swap_history, (
+        f"Expected swap_conversion method, got: {entry.token_swap_history!r}"
+    )
+    assert "confidence" in entry.token_swap_history, (
+        f"Expected confidence level in origin string, got: {entry.token_swap_history!r}"
     )
 
 
-def test_loan_repayment_token_origin_is_blank_without_deterministic_linkage(tmp_path):
-    """Loan repayment scenario (e.g. WBTC -> LBTC) must show blank origin, not inferred swap text.
+def test_loan_repayment_origin_resolved_from_acquisition_side_exchange(tmp_path):
+    """Loan repayment scenario (e.g. WBTC -> LBTC) resolves origin from the exchange row.
 
-    Regression for the 2025-05-22 style scenario: without deterministic Koinly-exported
-    acquisition linkage, the origin field must be blank rather than guessing from same-day
-    disposal context.
+    When the transaction history shows a WBTC -> LBTC exchange that matches the
+    acquisition date, asset, and wallet of a capital gains row, the resolver
+    identifies the swap_conversion origin.
     """
     koinly_dir = tmp_path / "koinly2025"
     koinly_dir.mkdir()
 
-    # Transaction history with a swap that was previously matched to loan repayments
+    # Transaction history with a WBTC -> LBTC exchange matching the acquisition
     (koinly_dir / "koinly_2025_transaction_history.csv").write_text(
         "\n".join(
             [
@@ -3433,7 +3645,7 @@ def test_loan_repayment_token_origin_is_blank_without_deterministic_linkage(tmp_
                     "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
                     "TxSrc,TxDest,TxHash,Description"
                 ),
-                # A WBTC -> LBTC exchange on the same day as a disposal
+                # A WBTC -> LBTC exchange on the same day as the acquisition
                 (
                     '2025-05-22 14:00:00 UTC,exchange,"",Ledger SUI,"0,50",WBTC,'
                     '"450,00",Ledger SUI,"0,50",LBTC,"450,00","","","","450,00","",'
@@ -3444,7 +3656,7 @@ def test_loan_repayment_token_origin_is_blank_without_deterministic_linkage(tmp_
         encoding="utf-8",
     )
 
-    # Capital gains with LBTC disposal on the same day
+    # Capital gains with LBTC disposal whose acquisition date matches the exchange
     (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(
         "\n".join(
             [
@@ -3494,11 +3706,98 @@ def test_loan_repayment_token_origin_is_blank_without_deterministic_linkage(tmp_
     assert len(report.capital_entries) == 1
     entry = report.capital_entries[0]
 
-    # The legacy heuristic would have inferred "WBTC → LBTC" from same-day exchange matching.
-    # After removal, it must be blank - no deterministic Koinly-exported linkage exists.
-    assert entry.token_swap_history == "", (
-        f"token_swap_history for loan repayment must be blank (no deterministic linkage), "
+    assert "WBTC" in entry.token_swap_history, (
+        f"Expected resolved origin containing 'WBTC' from exchange, "
         f"got: {entry.token_swap_history!r}"
+    )
+    assert "swap_conversion" in entry.token_swap_history, (
+        f"Expected swap_conversion method, got: {entry.token_swap_history!r}"
+    )
+
+
+def test_origin_not_resolved_from_disposal_date_only(tmp_path):
+    """Origin must NOT match on disposal date — only acquisition date is used.
+
+    Regression guard: if the resolver or pipeline ever switches to matching on
+    disposal date (the removed heuristic), this test would silently pass without
+    catching the regression.
+    """
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(
+        "\n".join(
+            [
+                "Transaction report 2025",
+                "",
+                (
+                    "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
+                    "Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,"
+                    "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
+                    "TxSrc,TxDest,TxHash,Description"
+                ),
+                # Exchange on 2025-05-22 (matches disposal date, NOT acquisition date)
+                (
+                    '2025-05-22 14:00:00 UTC,exchange,"",Kraken,3000,USDT,3000,'
+                    'Kraken,1,ETH,3000,,,,,,abc,def,tx_match_disposal,trade\n'
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    # Capital gains row: sold on 2025-05-22, acquired on 2025-03-15
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(
+        "\n".join(
+            [
+                "Capital gains report 2025",
+                "",
+                ",".join(
+                    [
+                        "Date Sold",
+                        "Date Acquired",
+                        "Asset",
+                        "Amount",
+                        "Cost (EUR)",
+                        "Proceeds (EUR)",
+                        "Gain / loss",
+                        "Notes",
+                        "Wallet Name",
+                        "Holding period",
+                    ]
+                ),
+                ",".join(
+                    [
+                        "22/05/2025 15:00",
+                        "15/03/2025 10:00",
+                        "ETH",
+                        "1",
+                        "2000",
+                        "3000",
+                        "1000",
+                        "",
+                        "Kraken",
+                        "Short term",
+                    ]
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    (koinly_dir / "koinly_2025_income_report.csv").write_text(
+        "Income report 2025\n\nDate,Asset,Amount,Value (EUR),Type,Description,Wallet Name\n",
+        encoding="utf-8",
+    )
+
+    report = load_koinly_crypto_report(koinly_dir)
+
+    assert report is not None
+    assert len(report.capital_entries) == 1
+    entry = report.capital_entries[0]
+
+    assert entry.token_swap_history == "", (
+        f"Expected blank origin (disposal date must not match), got: {entry.token_swap_history!r}"
     )
 
 
@@ -4304,3 +4603,171 @@ def test_format_datetime_returns_date_only():
 
 def test_format_datetime_epoch_sentinel_returns_1970_01_01():
     assert _format_datetime(datetime(1970, 1, 1, 0, 0, 0, tzinfo=UTC)) == "1970-01-01"
+
+
+class TestTokenOriginResolver:
+    """Token origin resolver tests using implicit (date, asset, wallet) correlation."""
+
+    _TH_HEADER = (
+        "Transaction report 2025\n"
+        "\n"
+        "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
+        "Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,"
+        "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
+        "TxSrc,TxDest,TxHash,Description"
+    )
+
+    def _write_th(self, tmp_path, data_rows: str):
+        path = tmp_path / "th.csv"
+        path.write_text(f"{self._TH_HEADER}\n{data_rows}", encoding="utf-8")
+        return path
+
+    def test_token_origin_resolver_swap_with_hash_high_confidence(self, tmp_path) -> None:
+        path = self._write_th(
+            tmp_path,
+            '2025-01-15 10:30:00 UTC,exchange,,Kraken,100,BTC,5000,'
+            "Kraken,2.5,ETH,5000,,,,,,abc,def,hash123,trade\n",
+        )
+        resolver = TokenOriginResolver(path)
+        origin = resolver.resolve("2025-01-15", "ETH", "Kraken")
+        assert origin.acquisition_method == AcquisitionMethod.SWAP_CONVERSION
+        assert origin.acquired_from_asset == "BTC"
+        assert origin.acquired_from_platform == "Kraken"
+        assert origin.confidence == "high"
+
+    def test_token_origin_resolver_reward_deposit(self, tmp_path) -> None:
+        path = self._write_th(
+            tmp_path,
+            "2025-03-10 08:00:00 UTC,crypto_deposit,Reward,,,,,"
+            'ByBit,5,SOL,50,,,,,,,,,\n',
+        )
+        resolver = TokenOriginResolver(path)
+        origin = resolver.resolve("2025-03-10", "SOL", "ByBit")
+        assert origin.acquisition_method == AcquisitionMethod.REWARD
+        assert origin.confidence == "medium"
+
+    def test_token_origin_resolver_unknown_when_no_match(self, tmp_path) -> None:
+        path = self._write_th(
+            tmp_path,
+            '2025-01-15 10:30:00 UTC,exchange,,Kraken,100,BTC,5000,'
+            "Kraken,2.5,ETH,5000,,,,,,abc,def,hash123,trade\n",
+        )
+        resolver = TokenOriginResolver(path)
+        origin = resolver.resolve("2025-06-01", "BTC", "UnknownWallet")
+        assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
+        assert origin.confidence == "low"
+
+    def test_token_origin_resolver_unknown_when_no_transaction_history(self) -> None:
+        resolver = TokenOriginResolver(None)
+        origin = resolver.resolve("2025-01-15", "BTC", "Kraken")
+        assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
+        assert origin.confidence == "low"
+
+    def test_token_origin_resolver_epoch_date_returns_unknown(self, tmp_path) -> None:
+        path = self._write_th(tmp_path, "")
+        resolver = TokenOriginResolver(path)
+        origin = resolver.resolve("1970-01-01", "BTC", "Kraken")
+        assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
+        assert origin.confidence == "low"
+
+    def test_token_origin_resolver_direct_purchase_fiat_deposit(self, tmp_path) -> None:
+        path = self._write_th(
+            tmp_path,
+            '2025-02-20 14:00:00 UTC,fiat_deposit,,Bank,5000,EUR,5000,'
+            "Kraken,0.5,BTC,5000,,,,,,,,,\n",
+        )
+        resolver = TokenOriginResolver(path)
+        origin = resolver.resolve("2025-02-20", "BTC", "Kraken")
+        assert origin.acquisition_method == AcquisitionMethod.DIRECT_PURCHASE
+        assert origin.acquired_from_asset == "EUR"
+
+    def test_token_origin_resolver_defi_yield_lending_interest(self, tmp_path) -> None:
+        path = self._write_th(
+            tmp_path,
+            "2025-04-01 00:00:00 UTC,crypto_deposit,Lending interest,,,,,"
+            'Ethereum,0.1,USDT,100,,,,,,,,,\n',
+        )
+        resolver = TokenOriginResolver(path)
+        origin = resolver.resolve("2025-04-01", "USDT", "Ethereum")
+        assert origin.acquisition_method == AcquisitionMethod.DEFI_YIELD
+
+    def test_token_origin_resolver_medium_confidence_without_hash(self, tmp_path) -> None:
+        path = self._write_th(
+            tmp_path,
+            "2025-05-10 09:00:00 UTC,crypto_deposit,Reward,,,,,"
+            'Kraken,10,ETH,200,,,,,,,,,\n',
+        )
+        resolver = TokenOriginResolver(path)
+        origin = resolver.resolve("2025-05-10", "ETH", "Kraken")
+        assert origin.confidence == "medium"
+
+    def test_token_origin_resolver_low_confidence_missing_cost_basis(self, tmp_path) -> None:
+        path = self._write_th(
+            tmp_path,
+            '2025-01-15 10:30:00 UTC,exchange,,Kraken,100,BTC,5000,'
+            "Kraken,2.5,ETH,5000,,,,,,abc,def,hash123,trade\n",
+        )
+        resolver = TokenOriginResolver(path)
+        origin = resolver.resolve("2025-01-15", "ETH", "Kraken", notes="Missing cost basis")
+        assert origin.confidence == "low"
+
+    def test_token_origin_resolver_cashback_is_reward(self, tmp_path) -> None:
+        path = self._write_th(
+            tmp_path,
+            "2025-06-01 12:00:00 UTC,crypto_deposit,Cashback,,,,,"
+            'Wirex,10,WXT,5,,,,,,,,,\n',
+        )
+        resolver = TokenOriginResolver(path)
+        origin = resolver.resolve("2025-06-01", "WXT", "Wirex")
+        assert origin.acquisition_method == AcquisitionMethod.REWARD
+
+    def test_token_origin_resolver_transfer_generic_deposit(self, tmp_path) -> None:
+        path = self._write_th(
+            tmp_path,
+            "2025-07-01 09:00:00 UTC,crypto_deposit,,,,,,"
+            'Binance,1,BTC,50000,,,,,,,,,\n',
+        )
+        resolver = TokenOriginResolver(path)
+        origin = resolver.resolve("2025-07-01", "BTC", "Binance")
+        assert origin.acquisition_method == AcquisitionMethod.TRANSFER
+
+    def test_token_origin_str_format(self) -> None:
+        origin = TokenOrigin(
+            acquired_from_asset="BTC",
+            acquired_from_platform="Kraken",
+            acquisition_method=AcquisitionMethod.SWAP_CONVERSION,
+            confidence="medium",
+        )
+        assert str(origin) == "BTC (swap_conversion, medium confidence)"
+
+    def test_token_origin_str_unknown_is_empty(self) -> None:
+        origin = TokenOrigin(
+            acquired_from_asset="Unknown",
+            acquired_from_platform="Unknown",
+            acquisition_method=AcquisitionMethod.UNKNOWN,
+            confidence="low",
+        )
+        assert str(origin) == ""
+
+    def test_token_origin_resolver_bybit_alias_normalized(self, tmp_path) -> None:
+        path = self._write_th(
+            tmp_path,
+            "2025-01-01 00:15:00 UTC,crypto_deposit,Reward,,,,,"
+            '"ByBit (2)","0,25",USDT,"0,24",,,,,,,,,\n',
+        )
+        resolver = TokenOriginResolver(path)
+        origin = resolver.resolve("2025-01-01", "USDT", "ByBit (2)")
+        assert origin.acquisition_method == AcquisitionMethod.REWARD
+
+    def test_token_origin_resolver_prefers_hash_over_no_hash(self, tmp_path) -> None:
+        path = self._write_th(
+            tmp_path,
+            "2025-01-15 08:00:00 UTC,crypto_deposit,Reward,,,,,"
+            'Kraken,10,ETH,200,,,,,,,,,\n'
+            '2025-01-15 10:30:00 UTC,exchange,,Kraken,100,BTC,5000,'
+            "Kraken,10,ETH,5000,,,,,,abc,def,hash123,trade\n",
+        )
+        resolver = TokenOriginResolver(path)
+        origin = resolver.resolve("2025-01-15", "ETH", "Kraken")
+        assert origin.acquisition_method == AcquisitionMethod.SWAP_CONVERSION
+        assert origin.confidence == "high"

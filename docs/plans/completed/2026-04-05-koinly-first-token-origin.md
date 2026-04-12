@@ -27,15 +27,15 @@ Files:
 - `src/shares_reporting/application/crypto_reporting.py`
 - `tests/unit/application/test_crypto_reporting.py`
 
-- [ ] Define a `TokenOrigin` dataclass (or TypedDict) that captures: `acquired_from_asset`, `acquired_from_platform`, `acquisition_method` (enum: `direct_purchase`, `swap_conversion`, `bridge_transfer`, `defi_yield`, `reward`, `transfer`, `unknown`), and an optional `confidence` field (`high`/`medium`/`low`).
-- [ ] Add a correlation contract comment block in `crypto_reporting.py` explaining that origin derivation relies on implicit `(date, asset, wallet)` matching between the capital gains report and transaction history, not on explicit foreign keys.
-- [ ] Write failing tests: given a capital gains row with `Date Acquired`, `Asset`, `Wallet Name`, and a transaction history containing a matching acquisition event, the origin resolver returns the correct `TokenOrigin`.
-- [ ] Write failing tests: given a capital gains row where no matching transaction history row exists (CEX internal, or history gap), the origin resolver returns `TokenOrigin(acquisition_method=unknown)`.
-- [ ] Run RED: `uv run pytest tests/unit/application/test_crypto_reporting.py -k "token_origin_resolver"`
-- [ ] Implement the resolver: parse the transaction history to build an acquisition-side lookup, match capital gains rows to acquisition events, and populate `TokenOrigin`.
-- [ ] Run GREEN: `uv run pytest tests/unit/application/test_crypto_reporting.py -k "token_origin_resolver"`
-- [ ] Refactor: extract the resolver into its own module (`crypto_origin_resolver.py`) if the code exceeds ~100 lines.
-- [ ] Negative requirements:
+- [x] Define a `TokenOrigin` dataclass (or TypedDict) that captures: `acquired_from_asset`, `acquired_from_platform`, `acquisition_method` (enum: `direct_purchase`, `swap_conversion`, `bridge_transfer`, `defi_yield`, `reward`, `transfer`, `unknown`), and an optional `confidence` field (`high`/`medium`/`low`).
+- [x] Add a correlation contract comment block in `crypto_reporting.py` explaining that origin derivation relies on implicit `(date, asset, wallet)` matching between the capital gains report and transaction history, not on explicit foreign keys.
+- [x] Write failing tests: given a capital gains row with `Date Acquired`, `Asset`, `Wallet Name`, and a transaction history containing a matching acquisition event, the origin resolver returns the correct `TokenOrigin`.
+- [x] Write failing tests: given a capital gains row where no matching transaction history row exists (CEX internal, or history gap), the origin resolver returns `TokenOrigin(acquisition_method=unknown)`.
+- [x] Run RED: `uv run pytest tests/unit/application/test_crypto_reporting.py -k "token_origin_resolver"`
+- [x] Implement the resolver: parse the transaction history to build an acquisition-side lookup, match capital gains rows to acquisition events, and populate `TokenOrigin`.
+- [x] Run GREEN: `uv run pytest tests/unit/application/test_crypto_reporting.py -k "token_origin_resolver"`
+- [x] Refactor: extract the resolver into its own module (`crypto_origin_resolver.py`) if the code exceeds ~100 lines.
+- [x] Negative requirements:
   - Do not reintroduce same-day disposal-context matching (the removed heuristic).
   - Do not treat implicit date/asset/wallet correlation as equivalent to a direct transaction-id link. Mark confidence as `medium` for correlated matches, `high` only if a hash or explicit identifier is available.
   - Do not derive origin for rows where the acquisition date predates the Koinly account history (use `unknown`).
@@ -47,14 +47,14 @@ Files:
 - `tests/unit/application/test_crypto_reporting.py`
 - `tests/integration/test_excel_generation_integration.py`
 
-- [ ] Wire the new origin resolver into the capital-gains pipeline in `crypto_reporting.py`, passing the transaction history path at the call site where `token_swap_history` is currently set to `""`.
-- [ ] Update `CryptoCapitalGainEntry.token_swap_history` to carry the resolved origin string (format: `"BTC (swap_conversion, medium confidence)"` or `""` for unknown).
-- [ ] Write integration test: the workbook's `Token origin` column shows a non-blank value for rows where the resolver found a match, and blank for unknown.
-- [ ] Write integration test: the workbook's `Token origin` column shows the confidence level.
-- [ ] Run GREEN: `uv run pytest tests/integration/test_excel_generation_integration.py -k "token_origin"`
-- [ ] Update the example dataset (`resources/source/example/`) to include a transaction history file so the e2e example tests exercise origin resolution.
-- [ ] Run GREEN: `uv run pytest tests/end_to_end/test_example_report_generation.py`
-- [ ] Negative requirements:
+- [x] Wire the new origin resolver into the capital-gains pipeline in `crypto_reporting.py`, passing the transaction history path at the call site where `token_swap_history` is currently set to `""`.
+- [x] Update `CryptoCapitalGainEntry.token_swap_history` to carry the resolved origin string (format: `"BTC (swap_conversion, medium confidence)"` or `""` for unknown).
+- [x] Write integration test: the workbook's `Token origin` column shows a non-blank value for rows where the resolver found a match, and blank for unknown.
+- [x] Write integration test: the workbook's `Token origin` column shows the confidence level.
+- [x] Run GREEN: `uv run pytest tests/integration/test_excel_generation_integration.py -k "token_origin"`
+- [x] Update the example dataset (`resources/source/example/`) to include a transaction history file so the e2e example tests exercise origin resolution.
+- [x] Run GREEN: `uv run pytest tests/end_to_end/test_example_report_generation.py`
+- [x] Negative requirements:
   - Do not remove the `Token origin` column or rename it.
   - Do not suppress `unknown` origin rows from the report.
   - Do not commit real wallet hashes or identifiers to the example dataset.
@@ -64,14 +64,14 @@ Files:
 - `src/shares_reporting/application/crypto_origin_resolver.py` (or inline in `crypto_reporting.py`)
 - `tests/unit/application/test_crypto_origin_resolver.py`
 
-- [ ] Handle the case where multiple transaction history rows match the same `(date, asset, wallet)` tuple (e.g., several small deposits on the same day). Resolve by choosing the closest timestamp or aggregating.
-- [ ] Handle the case where `Date Acquired` is `1970-01-01` (Koinly's fallback for unknown acquisition date). Always return `unknown` origin.
-- [ ] Handle the case where the transaction history contains `exchange` rows where both sent and received assets are crypto (e.g., BTC -> WBTC). Derive `swap_conversion` origin from the sent side.
-- [ ] Handle the case where the transaction history contains bridge/transfer rows. Derive `bridge_transfer` origin from the source chain.
-- [ ] Handle the case where the capital gains row has `Notes = "Missing cost basis"`. Set `confidence = low`.
-- [ ] Write failing tests for each edge case, then implement and run GREEN.
-- [ ] Run: `uv run pytest tests/unit/application/test_crypto_origin_resolver.py`
-- [ ] Negative requirements:
+- [x] Handle the case where multiple transaction history rows match the same `(date, asset, wallet)` tuple (e.g., several small deposits on the same day). Resolve by choosing the closest timestamp or aggregating.
+- [x] Handle the case where `Date Acquired` is `1970-01-01` (Koinly's fallback for unknown acquisition date). Always return `unknown` origin.
+- [x] Handle the case where the transaction history contains `exchange` rows where both sent and received assets are crypto (e.g., BTC -> WBTC). Derive `swap_conversion` origin from the sent side.
+- [x] Handle the case where the transaction history contains bridge/transfer rows. Derive `bridge_transfer` origin from the source chain.
+- [x] Handle the case where the capital gains row has `Notes = "Missing cost basis"`. Set `confidence = low`.
+- [x] Write failing tests for each edge case, then implement and run GREEN.
+- [x] Run: `uv run pytest tests/unit/application/test_crypto_origin_resolver.py`
+- [x] Negative requirements:
   - Do not raise exceptions on ambiguous matches; return the best-effort match with reduced confidence.
   - Do not assume the transaction history is complete or covers all acquisition dates.
 
@@ -81,11 +81,11 @@ Files:
 - `docs/domain/crypto_implementation_guidelines.md`
 - `README.md`
 
-- [ ] Add a CRG rule (e.g., CRG-015) documenting the origin resolution strategy: implicit `(date, asset, wallet)` correlation, confidence levels, and fallback to `unknown`.
-- [ ] Update `crypto_implementation_guidelines.md` with a "Token Origin Resolution" section describing the resolver, its inputs, outputs, and edge cases.
-- [ ] Update `README.md` to reflect that `Token origin` is now populated with confidence levels for rows where acquisition-side correlation is possible.
-- [ ] Update the example workflow note to mention that the example dataset now includes origin resolution.
-- [ ] Negative requirements:
+- [x] Add a CRG rule (e.g., CRG-015) documenting the origin resolution strategy: implicit `(date, asset, wallet)` correlation, confidence levels, and fallback to `unknown`.
+- [x] Update `crypto_implementation_guidelines.md` with a "Token Origin Resolution" section describing the resolver, its inputs, outputs, and edge cases.
+- [x] Update `README.md` to reflect that `Token origin` is now populated with confidence levels for rows where acquisition-side correlation is possible.
+- [x] Update the example workflow note to mention that the example dataset now includes origin resolution.
+- [x] Negative requirements:
   - Do not describe implicit correlation as "gold source" or "exact". Use language like "best-effort correlation from Koinly export data".
   - Do not remove the disclaimer that origin values should be reviewed.
 

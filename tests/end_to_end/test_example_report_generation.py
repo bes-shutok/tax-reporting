@@ -2,11 +2,12 @@
 
 The example data under resources/source/example/ is fully synthetic and exercises every
 major feature: shares capital gains, dividends, rollover/leftover integration, crypto
-capital events, crypto rewards, and blank Token origin after legacy removal.
+capital events, crypto rewards, and Token origin resolution via transaction history.
 """
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from pathlib import Path
 
@@ -74,12 +75,20 @@ def test_example_crypto_report_loads():
 
 
 @pytest.mark.e2e
-def test_example_crypto_token_origin_is_blank():
+def test_example_crypto_token_origin_is_resolved():
     crypto = load_koinly_crypto_report(EXAMPLE_KOINLY_DIR)
     assert crypto is not None
-    for entry in crypto.capital_entries:
-        assert entry.token_swap_history == "", (
-            f"Token origin should be blank for {entry.asset}, got '{entry.token_swap_history}'"
+    non_blank = [e for e in crypto.capital_entries if e.token_swap_history]
+    assert len(non_blank) >= 1, (
+        "At least one capital entry should have non-blank Token origin from transaction history"
+    )
+    for entry in non_blank:
+        assert "confidence" in entry.token_swap_history, (
+            f"Token origin for {entry.asset} should include confidence level, got '{entry.token_swap_history}'"
+        )
+        assert not re.match(r"^[\d.,]+$", entry.token_swap_history.split()[0]), (
+            f"Token origin for {entry.asset} starts with numeric value, "
+            f"likely a CSV column alignment issue: '{entry.token_swap_history}'"
         )
 
 
@@ -106,7 +115,7 @@ def test_example_full_pipeline_generates_excel(tmp_path: Path):
 
 
 @pytest.mark.e2e
-def test_example_crypto_sheet_has_blank_token_origin(tmp_path: Path):
+def test_example_crypto_sheet_has_resolved_token_origin(tmp_path: Path):
     ib_data = parse_ib_export_all(EXAMPLE_IB_EXPORT)
     leftover_trades: TradeCyclePerCompany = {}
     capital_gains = {}
@@ -128,16 +137,20 @@ def test_example_crypto_sheet_has_blank_token_origin(tmp_path: Path):
             break
     assert token_origin_col is not None, "Token origin column header not found"
     assert header_row_num is not None
-    checked = 0
+    resolved_count = 0
     for row in ws.iter_rows(min_row=header_row_num + 1, max_row=ws.max_row):
         origin_val = row[token_origin_col - 1].value if token_origin_col <= len(row) else None
         asset = row[2].value if len(row) > 2 else None
-        if asset and isinstance(asset, str) and asset.strip():
-            assert origin_val is None or origin_val == "", (
-                f"Token origin should be blank for asset {asset}, got {origin_val!r}"
-            )
-            checked += 1
-    assert checked >= 1, "No capital gains data rows found to verify"
+        if (
+            asset
+            and isinstance(asset, str)
+            and asset.strip()
+            and origin_val
+            and isinstance(origin_val, str)
+            and "confidence" in origin_val
+        ):
+            resolved_count += 1
+    assert resolved_count >= 1, "At least one row should have resolved Token origin with confidence level"
     wb.close()
 
 
