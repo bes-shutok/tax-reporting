@@ -93,3 +93,21 @@ Chain-origin mappings collected so far include:
 - `TON -> Switzerland`
 - `Ethereum -> Switzerland`
 - `Aptos -> Cayman Islands`
+
+## Token Origin Resolution
+
+**CRG-015**
+Token origin is derived from implicit `(date, asset, wallet)` correlation between the Koinly capital gains report and the Koinly transaction history. The capital gains CSV provides no transaction ID, lot ID, or hash that directly links to the transaction history, so all matching is best-effort correlation — not a direct foreign-key link.
+
+Origin resolution uses the `TokenOriginResolver` class:
+
+- **Inputs**: Koinly transaction history CSV (parsed at construction time to build a lookup indexed by `(date, asset, wallet)`).
+- **Matching**: For each capital gains row, the resolver looks up acquisition events matching `(Date Acquired, Asset, normalized wallet)` from the transaction history.
+- **Acquisition methods**: `direct_purchase`, `swap_conversion`, `bridge_transfer`, `defi_yield`, `reward`, `transfer`, `unknown`.
+- **Confidence levels**:
+  - `high` — the transaction history row has a `TxHash` or other explicit on-chain identifier.
+  - `medium` — matched via implicit date/asset/wallet correlation only.
+  - `low` — ambiguous match (multiple conflicting records for the same key), capital gains row has `Missing cost basis`, or no match found.
+- **Fallback**: When no matching transaction history row exists (CEX internal fills, history gaps, pre-Koinly acquisition dates, or epoch date `1970-01-01`), the resolver returns `unknown` with `low` confidence. It never guesses.
+- **Output format**: The `Token origin` column shows `"FROM_ASSET (method, confidence confidence)"` for resolved rows, or blank for unknown.
+- **Disclaimer**: Origin values are best-effort correlation from Koinly export data and should be reviewed against source documents before filing.

@@ -53,6 +53,7 @@ This will create a `.venv` folder in your project root that editors can detect a
   - `koinly_<year>_beginning_of_year_holdings_report_*.csv` - Opening balance (optional)
   - `koinly_<year>_end_of_year_holdings_report_*.csv` - Closing balance (optional)
   - `koinly_<year>_complete_tax_report_*.pdf` - Period metadata (optional)
+  - `koinly_<year>_transaction_history_*.csv` - Transaction history for token origin resolution (optional)
 
   The tool automatically aggregates FIFO lot rows by (disposal date, asset, platform, holding period) to reduce manual filing burden while preserving the taxable vs exempt breakdown required for Portuguese IRS (short-term gains are taxable, long-term gains are exempt). After aggregation, entries where |gain/loss| < 1 EUR are filtered as immaterial. See `docs/domain/crypto_rules.md` for Portuguese tax law details.
 
@@ -118,7 +119,7 @@ The repository ships fully synthetic example data in `resources/source/example/`
 **Example files:**
 - `resources/source/example/ib_export.csv` - Fake IB export with shares trades and dividends
 - `resources/source/example/shares-leftover.csv` - Leftover trades from a prior year for rollover integration
-- `resources/source/example/koinly2024/` - Fake Koinly exports for crypto capital gains and rewards
+- `resources/source/example/koinly2024/` - Fake Koinly exports for crypto capital gains, rewards, and transaction history (for token origin resolution)
 
 **Features demonstrated:**
 - Shares capital gains (FIFO buy/sell matching)
@@ -126,7 +127,7 @@ The repository ships fully synthetic example data in `resources/source/example/`
 - Leftover/rollover integration from a previous tax cycle
 - Crypto capital gains aggregation (high-volume: 900+ raw disposal rows collapse to 4 report lines)
 - Crypto rewards income (160 reward rows: SOL staking, ETH rewards, and ADA airdrops classified as deferred-by-law, plus EUR referral rewards classified as taxable-now)
-- Token origin column (blank, by design - see below)
+- Token origin column populated with confidence levels for rows where acquisition-side correlation matches the transaction history
 
 **High-volume aggregation demonstration:** The example Koinly CSVs contain over 1000 synthetic crypto rows. The capital gains pipeline aggregates them by (sale date, asset, platform, holding period), then filters immaterial entries (|gain/loss| < 1 EUR), producing a compact report with only a handful of filing-facing lines. This demonstrates the core value of the tool: converting verbose exchange exports into concise Portuguese-reporting-ready output.
 
@@ -149,7 +150,7 @@ main(Path('resources/source/example/ib_export.csv'), Path('resources/result/exam
 
 This writes `resources/result/example/extract.xlsx` containing both the Reporting sheet (capital gains, dividends) and the Crypto sheet (capital gains, rewards). The `main()` function accepts a `source_file` parameter to override the default input path; see `src/shares_reporting/main.py` for the full API.
 
-**Token origin column:** The Crypto sheet includes a `Token origin` column that is currently blank. A previous version of the tool used a disposal-day guessing heuristic to infer swap origins, but that logic produced misleading results for some transaction types (for example, loan repayments matched to unrelated same-day events). The column now stays blank unless a deterministic, export-backed linkage is available. A future update will implement proper Koinly-first origin matching based on acquisition-side export fields.
+**Token origin column:** The Crypto sheet includes a `Token origin` column that shows the acquisition origin of disposed tokens where the resolver could correlate them to a transaction history event. Origins are resolved by implicit `(date, asset, wallet)` correlation between the capital gains report and the Koinly transaction history CSV. Each resolved origin shows the source asset, acquisition method (e.g., `swap_conversion`, `bridge_transfer`, `direct_purchase`), and a confidence level (`high` = on-chain hash present, `medium` = correlated only, `low` = ambiguous or missing cost basis). Rows where no match is found remain blank. Origin values are best-effort correlation from Koinly export data and should be reviewed against source documents before filing.
 
 ### **Report Features**
 The tool generates comprehensive Excel reports with:

@@ -94,6 +94,18 @@ class RewardTaxClassification(Enum):
     DEFERRED_BY_LAW = "deferred_by_law"
 
 
+class AcquisitionMethod(Enum):
+    """Method by which a token was acquired, derived from Koinly transaction history."""
+
+    DIRECT_PURCHASE = "direct_purchase"
+    SWAP_CONVERSION = "swap_conversion"
+    BRIDGE_TRANSFER = "bridge_transfer"
+    DEFI_YIELD = "defi_yield"
+    REWARD = "reward"
+    TRANSFER = "transfer"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True)
 class OperatorOrigin:
     """Operator and jurisdiction metadata for a wallet platform.
@@ -188,6 +200,37 @@ class OperatorOrigin:
         object.__setattr__(self, "service_start_date", normalized_service_start)
         object.__setattr__(self, "valid_from", normalized_from)
         object.__setattr__(self, "valid_until", normalized_until)
+
+
+@dataclass(frozen=True)
+class TokenOrigin:
+    """Deterministic origin of a token acquired via Koinly-tracked transactions.
+
+    Populated from implicit (date, asset, wallet) correlation between the capital
+    gains report and transaction history. This is NOT a direct foreign-key link;
+    confidence reflects the strength of the correlation.
+    """
+
+    acquired_from_asset: str
+    acquired_from_platform: str
+    acquisition_method: AcquisitionMethod
+    confidence: str
+
+    @classmethod
+    def unknown(cls) -> TokenOrigin:
+        """Return the canonical unknown-origin sentinel."""
+        return cls(
+            acquired_from_asset="Unknown",
+            acquired_from_platform="Unknown",
+            acquisition_method=AcquisitionMethod.UNKNOWN,
+            confidence="low",
+        )
+
+    def __str__(self) -> str:
+        """Format origin as 'FROM_ASSET (method, confidence confidence)' or blank for unknown."""
+        if self.acquisition_method == AcquisitionMethod.UNKNOWN:
+            return ""
+        return f"{self.acquired_from_asset} ({self.acquisition_method.value}, {self.confidence} confidence)"
 
 
 @dataclass(frozen=True)
@@ -896,9 +939,184 @@ DATE_FORMATS: Final = (
     "%Y-%m-%d",
 )
 
-# Legacy swap-history heuristic removed (2026-04-05).
-# token_swap_history is intentionally blank until deterministic Koinly-first
-# origin matching is implemented. See docs/plans/ for the follow-up plan.
+# ---------------------------------------------------------------------------
+# Token Origin Resolution — Correlation Contract
+# ---------------------------------------------------------------------------
+# Origin derivation relies on implicit (date, asset, wallet) matching between
+# the Koinly capital gains report and the transaction history CSV. The capital
+# gains report contains NO transaction IDs, lot IDs, or hashes that directly
+# link to the transaction history.
+#
+# Correlation key: (acquisition_date, received_currency, receiving_wallet)
+# Confidence levels:
+#   high   — a TxHash or other explicit on-chain identifier is present
+#   medium — matched via implicit date/asset/wallet correlation only
+#   low    — match is ambiguous, capital gains row has special flags, or no match
+#
+# Fallback: When no matching transaction history row exists (CEX internal fills,
+# history gaps, pre-Koinly acquisition dates), the resolver returns unknown.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _AcquisitionRecord:
+    """Internal record for a transaction history acquisition event."""
+
+    from_asset: str
+    from_platform: str
+    method: AcquisitionMethod
+    confidence: str
+
+
+class TokenOriginResolver:
+    """Resolve token acquisition origins by correlating capital gains with transaction history.
+
+    Parses the Koinly transaction history CSV once at construction time and builds
+    an internal lookup indexed by (date, asset, wallet). The ``resolve()`` method
+    then matches capital gains rows to acquisition events and returns a ``TokenOrigin``.
+    """
+
+    def __init__(self, transaction_history_path: Path | None = None) -> None:
+        """Build the acquisition-event lookup from the transaction history CSV."""
+        self._lookup: dict[tuple[str, str, str], list[_AcquisitionRecord]] = {}
+        if transaction_history_path is not None and transaction_history_path.exists():
+            try:
+                self._build_lookup(transaction_history_path)
+            except Exception as e:
+                self._lookup.clear()
+                logging.getLogger(__name__).warning(
+                    "Failed to parse transaction history %s: %s; origin resolution will return unknown for all rows",
+                    transaction_history_path.name,
+                    e,
+                )
+
+    def _build_lookup(self, path: Path) -> None:
+        for row in _read_koinly_rows(path):
+            self._index_row(row)
+
+    def _index_row(self, row: dict[str, str]) -> None:  # noqa: PLR0912
+        logger = logging.getLogger(__name__)
+        tx_type = row.get("Type", "").strip().lower()
+        date_str = row.get("Date", "").strip()
+        if not date_str:
+            return
+
+        try:
+            dt = _parse_koinly_datetime(date_str)
+            date_key = _format_datetime(dt)
+        except ValueError:
+            logger.warning("Skipping transaction history row with unparseable date: %s", date_str)
+            return
+
+        received_currency = row.get("Received Currency", "").strip()
+        receiving_wallet = row.get("Receiving Wallet", "").strip()
+        if not received_currency:
+            return
+
+        asset = _normalize_asset_ticker(received_currency)
+        normalized_wallet = _normalize_platform_name(receiving_wallet)
+        key = (date_key, asset, normalized_wallet)
+
+        sent_currency = row.get("Sent Currency", "").strip()
+        sent_wallet = row.get("Sending Wallet", "").strip()
+        tag = row.get("Tag", "").strip().lower()
+        tx_hash = row.get("TxHash", "").strip()
+
+        if tx_type == "exchange":
+            if not sent_currency:
+                return
+            method = AcquisitionMethod.SWAP_CONVERSION
+            from_asset = _normalize_asset_ticker(sent_currency)
+            from_platform = _normalize_platform_name(sent_wallet) if sent_wallet else normalized_wallet
+        elif tx_type == "transfer":
+            method = AcquisitionMethod.BRIDGE_TRANSFER
+            from_asset = _normalize_asset_ticker(sent_currency) if sent_currency else asset
+            from_platform = _normalize_platform_name(sent_wallet) if sent_wallet else normalized_wallet
+        elif tx_type == "buy":
+            if not sent_currency:
+                return
+            method = AcquisitionMethod.DIRECT_PURCHASE
+            from_asset = _normalize_asset_ticker(sent_currency)
+            from_platform = _normalize_platform_name(sent_wallet) if sent_wallet else normalized_wallet
+        elif tx_type in ("crypto_deposit", "fiat_deposit"):
+            if tag in ("reward", "cashback"):
+                method = AcquisitionMethod.REWARD
+            elif tag in ("lending", "lending_interest", "lending interest", "interest"):
+                method = AcquisitionMethod.DEFI_YIELD
+            elif tx_type == "fiat_deposit":
+                method = AcquisitionMethod.DIRECT_PURCHASE
+            else:
+                method = AcquisitionMethod.TRANSFER
+            from_asset = _normalize_asset_ticker(sent_currency) if sent_currency else asset
+            from_platform = _normalize_platform_name(sent_wallet) if sent_wallet else normalized_wallet
+        else:
+            return
+
+        confidence = "high" if tx_hash else "medium"
+        record = _AcquisitionRecord(
+            from_asset=from_asset,
+            from_platform=from_platform,
+            method=method,
+            confidence=confidence,
+        )
+
+        self._lookup.setdefault(key, []).append(record)
+
+    _CONFIDENCE_RANK = {"high": 2, "medium": 1, "low": 0}
+
+    def resolve(self, acquisition_date: str, asset: str, wallet: str, notes: str = "") -> TokenOrigin:
+        """Resolve token origin from acquisition metadata.
+
+        Args:
+            acquisition_date: ISO date string (YYYY-MM-DD) from the capital gains row.
+            asset: Normalized asset ticker.
+            wallet: Raw or normalized wallet name.
+            notes: Notes from the capital gains row (for confidence adjustment).
+
+        Returns:
+            TokenOrigin with resolved acquisition details, or unknown if no match.
+        """
+        logger = logging.getLogger(__name__)
+        if acquisition_date.startswith("1970-"):
+            return TokenOrigin.unknown()
+
+        normalized_wallet = _normalize_platform_name(wallet)
+        key = (acquisition_date, asset, normalized_wallet)
+        records = self._lookup.get(key, [])
+
+        if not records:
+            return TokenOrigin.unknown()
+
+        best = max(records, key=lambda r: self._CONFIDENCE_RANK.get(r.confidence, 0))
+
+        confidence = best.confidence
+        if len(records) > 1:
+            same_confidence = [r for r in records if r.confidence == best.confidence]
+            if len(same_confidence) > 1:
+                agree = all(
+                    r.method == best.method
+                    and r.from_asset == best.from_asset
+                    and r.from_platform == best.from_platform
+                    for r in same_confidence
+                )
+                if not agree:
+                    logger.warning(
+                        "Origin records disagree for %s at %s on %s — returning unknown",
+                        asset,
+                        wallet,
+                        acquisition_date,
+                    )
+                    return TokenOrigin.unknown()
+
+        if "missing cost basis" in notes.lower():
+            confidence = "low"
+
+        return TokenOrigin(
+            acquired_from_asset=best.from_asset,
+            acquired_from_platform=best.from_platform,
+            acquisition_method=best.method,
+            confidence=confidence,
+        )
 
 
 def resolve_operator_origin(  # noqa: PLR0911, PLR0912
@@ -1357,7 +1575,12 @@ def load_koinly_crypto_report(koinly_dir: Path) -> CryptoTaxReport | None:
     year = _extract_tax_year(koinly_dir, capital_file, income_file)
     skipped_assets: Counter[tuple[str, str]] = Counter()
 
-    capital_entries = _parse_capital_gains_file(capital_file, skipped_assets) if capital_file else []
+    transaction_history_file = _find_report_file(koinly_dir, "transaction_history")
+    origin_resolver = TokenOriginResolver(transaction_history_file)
+
+    capital_entries = (
+        _parse_capital_gains_file(capital_file, skipped_assets, origin_resolver) if capital_file else []
+    )
     reward_entries = _parse_income_file(income_file, skipped_assets) if income_file else []
 
     opening = _parse_holdings_file(
@@ -1451,6 +1674,26 @@ def _extract_tax_year(koinly_dir: Path, capital_file: Path | None, income_file: 
     return datetime.now(tz=UTC).year
 
 
+def _aggregate_origin_field(group: list[CryptoCapitalGainEntry]) -> str:
+    """Derive the aggregated Token origin string from a group of FIFO lot rows.
+
+    If all lots share the same origin string, return it. Otherwise concatenate
+    unique, non-empty origins (preserving insertion order) with '; ' separator.
+    When some lots have unknown origin, an indicator is appended so the user
+    cannot mistake a partial result for full resolution.
+    """
+    unique_origins = list(dict.fromkeys(e.token_swap_history for e in group if e.token_swap_history))
+    unknown_count = sum(1 for e in group if not e.token_swap_history)
+    if not unique_origins:
+        return ""
+    parts = list(unique_origins)
+    if unknown_count > 0:
+        parts.append(f"{unknown_count} lot{'s' if unknown_count != 1 else ''} unresolved")
+    if len(parts) == 1:
+        return parts[0]
+    return "; ".join(parts)
+
+
 def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[CryptoCapitalGainEntry]:
     """Aggregate FIFO lot rows into one line per sale event (same date + asset + platform + holding_period).
 
@@ -1498,7 +1741,7 @@ def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[Cr
                 review_required=any(e.review_required for e in group),
                 review_reason="; ".join(dict.fromkeys(e.review_reason for e in group if e.review_reason)) or None,
                 notes="; ".join(dict.fromkeys(e.notes for e in group if e.notes)),
-                token_swap_history="",
+                token_swap_history=_aggregate_origin_field(group),
             )
         )
     result.sort(key=lambda e: (e.disposal_date, e.asset, e.platform, e.holding_period))
@@ -1607,6 +1850,7 @@ def _normalize_asset_ticker(asset: str) -> str:
 def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
     path: Path,
     skipped_assets: Counter[tuple[str, str]],
+    origin_resolver: TokenOriginResolver,
 ) -> list[CryptoCapitalGainEntry]:
     rows = _read_koinly_rows(path)
     capital_entries: list[CryptoCapitalGainEntry] = []
@@ -1648,6 +1892,9 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
         # PT-C-011: long-term (≥365 days) exempt gains → Anexo G1; short-term taxable → Anexo J
         annex_hint = "G1" if holding_period.lower().startswith("long") else "J"
 
+        origin = origin_resolver.resolve(acquisition_date, asset, wallet, notes)
+        token_origin_str = str(origin)
+
         capital_entries.append(
             CryptoCapitalGainEntry(
                 disposal_date=disposal_date,
@@ -1666,7 +1913,7 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
                 review_required=review_required,
                 review_reason=review_reason,
                 notes=notes,
-                token_swap_history="",
+                token_swap_history=token_origin_str,
             )
         )
 

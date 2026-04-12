@@ -80,7 +80,12 @@ def test_file(tmp_path: Path) -> Path:
 - Remove parameters that always have the same value (e.g. `require_trades_section=True` → hardcode it).
 - Do not add features "just in case".
 
-## 12. Test Real Behavior, Not Implementation Details
+## 12. Excel/openpyxl Column Width
+- openpyxl stores formulas as strings; `cell.value` returns the raw formula (e.g., `"=USD EUR*(1234.56)"`), not the computed result.
+- Auto-width logic must skip formula cells (`cell.data_type == "f"`) and size columns from headers + non-formula values only.
+- The crypto sheet auto-width block has a missing `default=0` in `max()` that raises `ValueError` on empty columns — always provide `default=0` when calling `max()` on a generator.
+
+## 13. Test Real Behavior, Not Implementation Details
 - Verify that a feature works end-to-end, not just that it returns a certain value.
 - Use realistic test data; check that integrated components produce correct outputs.
 

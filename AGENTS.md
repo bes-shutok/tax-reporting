@@ -51,6 +51,9 @@ This file provides guidance to coding agents when working with code in this repo
 - The aggregation step must fail with `FileProcessingError` if any taxable-now row cannot be assigned all mandatory IRS fields (valid Tabela X country code).
 - When `review_required=True` is set on `CryptoCapitalGainEntry` or `CryptoRewardIncomeEntry`, the `review_reason` field must contain a specific, actionable explanation. The Excel output shows "YES: \<reason\>" rather than a bare boolean. See PT-C-030.
 - Crypto capital gains statistics must be computed via `CryptoCapitalGainStats.from_entries()` and rendered as the "1b. CAPITAL GAINS STATISTICS" Excel section. Do not remove or bypass this section. The grand total EUR amounts must be computed from the full entries list, not by summing per-period subtotals, so that unrecognized holding periods do not produce inconsistent statistics.
+- Token origin resolution must use `TokenOriginResolver` and implicit `(date, asset, wallet)` correlation with the Koinly transaction history. The resolver never guesses; unmatched rows return `unknown` (blank in the workbook). Do not reintroduce same-day disposal-context matching.
+- When aggregating capital entries, the `token_swap_history` field is derived via `_aggregate_origin_field()`: if all lots in a group share the same origin, it is used; otherwise unique non-empty origins are joined with '; '; when some lots have unknown origin, an "N lot(s) unresolved" indicator is appended so the user cannot mistake a partial result for full resolution.
+- Koinly transaction history files use the naming pattern `*transaction_history*.csv` (matching the real Koinly export convention), not `*transactions_report*.csv`.
 
 ### 4. Agent Workflow Rules
 
@@ -163,11 +166,11 @@ The project follows **professional testing best practices** with a **3-tier test
 ### Test Structure
 ```
 tests/
-├── unit/          # 410 unit tests - Fast component tests
+├── unit/          # 457 unit tests - Fast component tests
 │   ├── domain/    # Domain layer unit tests
 │   ├── infrastructure/  # Infrastructure layer unit tests
 │   └── application/ # Application layer unit tests
-├── integration/   # 27 integration tests - Component interaction tests
+├── integration/   # 29 integration tests - Component interaction tests
 └── end_to_end/    # 25 e2e tests - Full workflow tests
 ```
 
@@ -482,7 +485,7 @@ tax-reporting/
 │       │   │   ├── contexts.py
 │       │   │   ├── state_machine.py
 │       │   │   └── processing.py
-│       │   ├── crypto_reporting.py # Crypto tax models and Koinly parsing
+│       │   ├── crypto_reporting.py # Crypto tax models, Koinly parsing, and TokenOriginResolver
 │       │   ├── transformation.py # Capital gains calculation
 │       │   └── persisting.py    # Excel/CSV generation
 │       └── infrastructure/    # Infrastructure layer
@@ -492,11 +495,11 @@ tax-reporting/
 │           ├── logging_config.py # Logging configuration
 │           └── validation.py    # Input validation
 ├── tests/                  # Test suite
-│   ├── unit/               # Unit tests (410 tests)
+│   ├── unit/               # Unit tests (457 tests)
 │   │   ├── domain/         # Domain layer unit tests
 │   │   ├── infrastructure/ # Infrastructure layer unit tests
 │   │   └── application/    # Application layer unit tests
-│   ├── integration/        # Integration tests (27 tests)
+│   ├── integration/        # Integration tests (29 tests)
 │   ├── end_to_end/         # End-to-end tests (25 tests)
 │   └── conftest.py         # Pytest configuration and fixtures
 ├── resources/              # Data directories

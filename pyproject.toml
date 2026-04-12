@@ -164,6 +164,8 @@ ignore = [
     "DTZ005",
     # Magic numbers are acceptable in some domain contexts
     "S105",
+    # False positive: token_swap_history is not a secret, it describes token origin
+    "S106",
     # Allow missing docstrings for trivial getter/setter methods
     "D102",
 ]

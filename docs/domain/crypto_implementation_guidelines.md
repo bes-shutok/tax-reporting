@@ -591,15 +591,98 @@ Koinly generates multiple CSV files from tax reports. Only a subset is loaded by
 |------|---------------|
 | `koinly_*_capital_gains_report_*.csv` | Used for capital entries |
 | `koinly_*_income_report_*.csv` | Used for reward entries |
-| `koinly_*_transaction_history_*.csv` | Not currently loaded; planned for Koinly-first origin matching |
+| `koinly_*_transaction_history_*.csv` | Used for token origin resolution via `TokenOriginResolver` |
 | `koinly_*_beginning_of_year_holdings_report_*.csv` | Used for opening holdings reconciliation |
 | `koinly_*_end_of_year_holdings_report_*.csv` | Used for closing holdings reconciliation |
 
-### Token Origin (formerly Token Swap History)
+### Token Origin
 
-The legacy same-day disposal-context guessing heuristic was removed in the `remove-legacy-token-origin-and-add-safe-examples` plan (2026-04-05). The `Token origin` column in the Crypto sheet is intentionally blank until deterministic Koinly-first origin matching is implemented. See the follow-up plan at `docs/plans/2026-04-05-koinly-first-token-origin.md` for the replacement design.
+The legacy same-day disposal-context guessing heuristic was removed in the `remove-legacy-token-origin-and-add-safe-examples` plan (2026-04-05). It has been replaced by the `TokenOriginResolver` described below.
 
-The `transaction_history.csv` file contains exchange rows that show both sides of a swap (e.g., SUI → HASUI) and will be the data source for the future deterministic origin feature.
+## Token Origin Resolution
+
+### Overview
+
+The `TokenOriginResolver` populates the `Token origin` column in the Crypto sheet by correlating capital gains rows with the Koinly transaction history. Because the Koinly capital gains CSV provides no transaction ID, lot ID, or hash, all matching is implicit via `(date, asset, wallet)` correlation. This is best-effort, not exact.
+
+### Data Model
+
+```python
+class AcquisitionMethod(Enum):
+    DIRECT_PURCHASE = "direct_purchase"
+    SWAP_CONVERSION = "swap_conversion"
+    BRIDGE_TRANSFER = "bridge_transfer"
+    DEFI_YIELD = "defi_yield"
+    REWARD = "reward"
+    TRANSFER = "transfer"
+    UNKNOWN = "unknown"
+
+@dataclass(frozen=True)
+class TokenOrigin:
+    acquired_from_asset: str
+    acquired_from_platform: str
+    acquisition_method: AcquisitionMethod
+    confidence: str  # "high", "medium", or "low"
+```
+
+### Inputs
+
+| Input | Source | Purpose |
+|-------|--------|---------|
+| Transaction history CSV | `koinly_*_transaction_history_*.csv` | Parsed once at resolver construction; builds a lookup indexed by `(date, asset, wallet)` |
+| Capital gains row fields | `Date Acquired`, `Asset`, `Wallet Name`, `Notes` | Used to query the lookup at resolve time |
+
+### Resolution Logic
+
+1. Parse the transaction history CSV at construction, indexing each row by `(date, received_currency, normalized_wallet)`.
+2. For each capital gains row, call `resolve(acquisition_date, asset, wallet, notes)`.
+3. Look up matching acquisition records. If none found, return `unknown` with `low` confidence.
+4. If the acquisition date is `1970-01-01` (Koinly's fallback for unknown), always return `unknown`.
+5. Among multiple matches, select the record with the highest confidence. If multiple records share the same top confidence but disagree on method or source asset, downgrade to `low`.
+6. If the capital gains row has `Missing cost basis` in notes, override confidence to `low`.
+
+### Confidence Levels
+
+| Level | When Assigned |
+|-------|--------------|
+| `high` | Transaction history row has a `TxHash` (explicit on-chain identifier) |
+| `medium` | Matched via implicit date/asset/wallet correlation only |
+| `low` | No match, ambiguous match, or `Missing cost basis` flag |
+
+### Transaction Type Mapping
+
+| Transaction History `Type` | Acquisition Method |
+|---------------------------|-------------------|
+| `exchange` | `swap_conversion` |
+| `transfer` | `bridge_transfer` |
+| `crypto_deposit` or `fiat_deposit` with `reward`/`cashback` tag | `reward` |
+| `crypto_deposit` or `fiat_deposit` with `lending`/`interest` tag | `defi_yield` |
+| `fiat_deposit` (no special tag) | `direct_purchase` |
+| `crypto_deposit` (no special tag) | `transfer` |
+
+### Output Format
+
+The `Token origin` column in the workbook renders as:
+- Non-blank: `"FROM_ASSET (method, confidence confidence)"` (e.g., `"BTC (swap_conversion, medium confidence)"`)
+- Blank: when method is `unknown`
+
+### Edge Cases
+
+| Edge Case | Behaviour |
+|-----------|-----------|
+| No transaction history file | Resolver constructed with no lookup; all resolves return `unknown` |
+| Acquisition date = `1970-01-01` | Returns `unknown` immediately |
+| Multiple matches for same key | Best-confidence record selected; if tied and conflicting, confidence downgraded to `low` |
+| `Missing cost basis` in notes | Confidence forced to `low` regardless of match quality |
+| Pre-Koinly acquisition dates | No match in lookup; returns `unknown` |
+
+### Testing Requirements
+
+- Test positive matches (exchange, transfer, deposit rows in transaction history)
+- Test fallback to `unknown` (no history file, no matching date, epoch date)
+- Test multiple-match disambiguation (same confidence, conflicting methods)
+- Test confidence downgrade for `Missing cost basis`
+- Test that the workbook `Token origin` column shows the expected string format
 
 ### Manual Review Reduction Opportunities
 
@@ -615,7 +698,7 @@ Analysis of Koinly exports reveals these fixable false-positive triggers:
 
 - Plan: `docs/plans/aggregate-crypto-rewards-income.md`
 - Plan: `docs/plans/crypto_manual_review_reduction.md` (token swap history — superseded; heuristic removed 2026-04-05)
-- Plan: `docs/plans/2026-04-05-koinly-first-token-origin.md` (follow-up deterministic origin matching)
+- Plan: `docs/plans/2026-04-05-koinly-first-token-origin.md` (implemented: deterministic origin matching via `TokenOriginResolver`)
 - Rules: `docs/domain/crypto_rules.md`
 - Guidelines: `docs/domain/crypto_reporting_guidelines.md`
 - Chain sources: `docs/tax/crypto-origin/`
