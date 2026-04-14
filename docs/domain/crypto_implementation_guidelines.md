@@ -127,6 +127,8 @@ All exception paths must:
 ```python
 from contextlib import contextmanager
 
+_CRYPTO_SHEET_NAMES = ("Crypto Gains", "Crypto Rewards", "Crypto Reconciliation")
+
 @contextmanager
 def _crypto_sheet_cleanup(workbook, extract):
     """Ensure cleanup on any exception from crypto sheet generation."""
@@ -134,8 +136,9 @@ def _crypto_sheet_cleanup(workbook, extract):
         yield
     except Exception:
         # Same cleanup regardless of exception type
-        if "Crypto" in workbook.sheetnames:
-            del workbook["Crypto"]
+        for name in _CRYPTO_SHEET_NAMES:
+            if name in workbook.sheetnames:
+                workbook.remove(workbook[name])
         workbook.close()
         safe_remove_file(extract)
         raise  # Re-raise after cleanup
@@ -148,7 +151,9 @@ def generate_tax_report(...) -> bool:
             # Validation FIRST - may raise FileProcessingError
             aggregated_rewards = aggregate_taxable_rewards(crypto_tax_report)
             # Rendering SECOND - may raise any exception
-            add_crypto_report_sheet(workbook, crypto_tax_report, aggregated_rewards)
+            write_crypto_gains_sheet(workbook, crypto_tax_report)
+            write_crypto_rewards_sheet(workbook, crypto_tax_report, aggregated_rewards)
+            write_crypto_reconciliation_sheet(workbook, crypto_tax_report)
             crypto_sheet_created = True
 
     # Continue with rest of report...
@@ -163,12 +168,11 @@ def generate_tax_report(...) -> bool:
     try:
         if crypto_tax_report:
             aggregated_rewards = aggregate_taxable_rewards(crypto_tax_report)
-            add_crypto_report_sheet(workbook, crypto_tax_report, aggregated_rewards)
+            write_crypto_gains_sheet(workbook, crypto_tax_report)
+            write_crypto_rewards_sheet(workbook, crypto_tax_report, aggregated_rewards)
+            write_crypto_reconciliation_sheet(workbook, crypto_tax_report)
             crypto_sheet_created = True
     except Exception:
-        # All exceptions get the same cleanup
-        if "Crypto" in workbook.sheetnames:
-            del workbook["Crypto"]
         workbook.close()
         safe_remove_file(extract)
         raise  # Re-raise to fail the report
@@ -489,17 +493,19 @@ filtered = [e for e in entries if abs(e.gain_loss_eur) >= 1]
 ```python
 # ❌ WRONG - User has no idea crypto was skipped
 try:
-    add_crypto_report_sheet(...)
+    write_crypto_gains_sheet(workbook, crypto_tax_report)
+    write_crypto_rewards_sheet(workbook, crypto_tax_report, aggregated_rewards)
+    write_crypto_reconciliation_sheet(workbook, crypto_tax_report)
 except Exception as e:
     logger.warning("Crypto failed, continuing: %s", e)
     # Returns successfully but report is incomplete!
 
 # ✅ CORRECT - Clean up and re-raise
 try:
-    add_crypto_report_sheet(...)
+    write_crypto_gains_sheet(workbook, crypto_tax_report)
+    write_crypto_rewards_sheet(workbook, crypto_tax_report, aggregated_rewards)
+    write_crypto_reconciliation_sheet(workbook, crypto_tax_report)
 except Exception as e:
-    if "Crypto" in workbook.sheetnames:
-        del workbook["Crypto"]
     workbook.close()
     safe_remove_file(extract)
     raise  # Let the user know something failed

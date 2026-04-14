@@ -6,6 +6,7 @@ for capital gains, dividend income, and crypto rewards.
 
 from __future__ import annotations
 
+import argparse
 import logging
 import re
 import sys
@@ -26,6 +27,72 @@ from .infrastructure.logging_config import configure_application_logging, create
 from .infrastructure.validation import validate_output_directory
 
 
+def _build_arg_parser() -> argparse.ArgumentParser:
+    """Build and return the CLI argument parser.
+
+    Returns:
+        ArgumentParser: Configured argument parser with all CLI options.
+    """
+    parser = argparse.ArgumentParser(
+        prog="tax-reporting",
+        description="Generate Portuguese tax reports from Interactive Brokers and Koinly exports.",
+    )
+
+    parser.add_argument(
+        "--example",
+        action="store_true",
+        help="Use example data from resources/source/example/ and output to resources/result/example/",
+    )
+
+    parser.add_argument(
+        "--source-file",
+        type=str,
+        metavar="PATH",
+        help="Path to the source IB export CSV file (default: resources/source/ib_export.csv)",
+    )
+
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        metavar="PATH",
+        help="Directory for output files (default: resources/result)",
+    )
+
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        metavar="LEVEL",
+        help="Set logging level (default: INFO)",
+    )
+
+    return parser
+
+
+def _validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """Validate parsed CLI arguments.
+
+    Args:
+        args: Parsed arguments from argparse.
+        parser: The argument parser (used for error reporting).
+
+    Raises:
+        SystemExit: If argument validation fails.
+    """
+    if args.example and args.source_file is not None:
+        parser.error("--example cannot be used with --source-file")
+
+    if args.example and args.output_dir is not None:
+        parser.error("--example cannot be used with --output-dir")
+
+    # Validate example files exist when --example is used
+    if args.example:
+        project_root = Path(__file__).parent.parent.parent
+        example_source = project_root / "resources/source/example/ib_export.csv"
+        if not example_source.exists():
+            parser.error(f"Example source file not found: {example_source}")
+
+
 def main(  # noqa: PLR0912, PLR0915
     source_file: Path | None = None, output_dir: Path | None = None, log_level: str = "INFO"
 ) -> None:
@@ -36,19 +103,19 @@ def main(  # noqa: PLR0912, PLR0915
         output_dir: Directory for output files
         log_level: Logging level
     """
-    # Set up logging
-    log_file = Path("logs", "tax-reporting.log") if output_dir else None
+    # Apply default paths before setting up logging
+    if source_file is None:
+        source_file = Path("resources/source", "ib_export.csv")
+    if output_dir is None:
+        output_dir = Path("resources/result")
+
+    # Set up logging (always enabled since we always have an output directory)
+    log_file = Path("logs", "tax-reporting.log")
     configure_application_logging(level=log_level, log_file=log_file)
     logger = create_module_logger(__name__)
 
     try:
         final_report_type = "capital gains"
-        # Default paths
-        if source_file is None:
-            source_file = Path("resources/source", "ib_export.csv")
-
-        if output_dir is None:
-            output_dir = Path("resources/result")
 
         extract_path = output_dir / "extract.xlsx"
         leftover_path = output_dir / "shares-leftover.csv"
@@ -246,5 +313,32 @@ def _resolve_koinly_directory(base_dir: Path, tax_year_hint: int | None) -> Path
     return max(candidates, key=lambda path: (_extract_year(path.name) or -1, path.name.lower()))
 
 
+def cli() -> None:
+    """CLI entry point that parses arguments and calls main()."""
+    parser = _build_arg_parser()
+    args = parser.parse_args()
+
+    # Validate argument combinations
+    _validate_args(args, parser)
+
+    # Resolve example flag paths
+    source_file = args.source_file
+    output_dir = args.output_dir
+    if args.example:
+        # Resolve paths relative to project root for consistent behavior from any working directory
+        project_root = Path(__file__).parent.parent.parent
+        source_file = str(project_root / "resources/source/example/ib_export.csv")
+        output_dir = str(project_root / "resources/result/example")
+
+    # Convert string paths to Path objects (or None)
+    source_file_path = Path(source_file) if source_file is not None else None
+    output_dir_path = Path(output_dir) if output_dir is not None else None
+
+    # Apply default log level if not specified
+    log_level = args.log_level if args.log_level is not None else "INFO"
+
+    main(source_file=source_file_path, output_dir=output_dir_path, log_level=log_level)
+
+
 if __name__ == "__main__":
-    main()
+    cli()

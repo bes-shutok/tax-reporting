@@ -117,3 +117,51 @@ SAMPLE_DIVIDEND_AMOUNT = Decimal("24.00")
 SAMPLE_TAX_AMOUNT = Decimal("3.60")
 SAMPLE_QUANTITY = 100
 SAMPLE_PRICE = Decimal("150.25")
+
+
+@pytest.fixture
+def operator_origin_defaults():
+    """Provide default OperatorOrigin values for crypto sheet tests.
+
+    Returns a dict of defaults that can be updated with overrides.
+    Tests can call OperatorOrigin(**operator_origin_defaults()) or
+    update the dict before passing to OperatorOrigin().
+    """
+    return {
+        "platform": "TestPlatform",
+        "service_scope": "crypto",
+        "operator_entity": "Test Entity",
+        "operator_country": "US",
+        "source_url": "https://example.com",
+        "source_checked_on": "2026-01-01",
+        "confidence": "high",
+        "review_required": False,
+    }
+
+
+# Module-level helper for creating OperatorOrigin objects in crypto sheet tests
+_OPERATOR_ORIGIN_DEFAULTS = {
+    "platform": "TestPlatform",
+    "service_scope": "crypto",
+    "operator_entity": "Test Entity",
+    "operator_country": "US",
+    "source_url": "https://example.com",
+    "source_checked_on": "2026-01-01",
+    "confidence": "high",
+    "review_required": False,
+}
+
+
+def make_operator_origin(**overrides: object):
+    """Create OperatorOrigin with defaults plus any overrides.
+
+    This is a module-level helper (not a fixture) for use in crypto sheet tests.
+    Import as: from tests.conftest import make_operator_origin
+
+    Note: Import is deferred to avoid circular dependency at conftest load time.
+    """
+    from shares_reporting.application.crypto_reporting import OperatorOrigin
+
+    defaults = _OPERATOR_ORIGIN_DEFAULTS.copy()
+    defaults.update(overrides)
+    return OperatorOrigin(**defaults)  # type: ignore[arg-type]

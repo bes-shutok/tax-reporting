@@ -79,8 +79,17 @@ This will create a `.venv` folder in your project root that editors can detect a
 cd tax-reporting
 uv sync --extra dev
 
-# Run the application
+# Run the application (default: processes resources/source/ib_export.csv)
 uv run tax-reporting
+
+# Run with example data (uses resources/source/example/ and outputs to resources/result/example/)
+uv run tax-reporting --example
+
+# Run with custom paths
+uv run tax-reporting --source-file /path/to/export.csv --output-dir /path/to/output
+
+# Set logging level
+uv run tax-reporting --log-level DEBUG
 ```
 
 ### Testing
@@ -148,22 +157,19 @@ main(Path('resources/source/example/ib_export.csv'), Path('resources/result/exam
 "
 ```
 
-This writes `resources/result/example/extract.xlsx` containing both the Reporting sheet (capital gains, dividends) and the Crypto sheet (capital gains, rewards). The `main()` function accepts a `source_file` parameter to override the default input path; see `src/shares_reporting/main.py` for the full API.
+This writes `resources/result/example/extract.xlsx` containing the Reporting sheet (capital gains, dividends) and, when Koinly data is available, three Crypto sheets (Crypto Gains, Crypto Rewards, Crypto Reconciliation). The `main()` function accepts a `source_file` parameter to override the default input path; see `src/shares_reporting/main.py` for the full API.
 
-**Token origin column:** The Crypto sheet includes a `Token origin` column that shows the acquisition origin of disposed tokens where the resolver could correlate them to a transaction history event. Origins are resolved by implicit `(date, asset, wallet)` correlation between the capital gains report and the Koinly transaction history CSV. Each resolved origin shows the source asset, acquisition method (e.g., `swap_conversion`, `bridge_transfer`, `direct_purchase`), and a confidence level (`high` = on-chain hash present, `medium` = correlated only, `low` = ambiguous or missing cost basis). Rows where no match is found remain blank. Origin values are best-effort correlation from Koinly export data and should be reviewed against source documents before filing.
+**Token origin column:** The Crypto Gains sheet includes a `Token origin` column that shows the acquisition origin of disposed tokens where the resolver could correlate them to a transaction history event. Origins are resolved by implicit `(date, asset, wallet)` correlation between the capital gains report and the Koinly transaction history CSV. Each resolved origin shows the source asset, acquisition method (e.g., `swap_conversion`, `bridge_transfer`, `direct_purchase`), and a confidence level (`high` = on-chain hash present, `medium` = correlated only, `low` = ambiguous or missing cost basis). Rows where no match is found remain blank. Origin values are best-effort correlation from Koinly export data and should be reviewed against source documents before filing.
 
 ### **Report Features**
 The tool generates comprehensive Excel reports with:
 - **Capital Gains Section**: Detailed buy/sell transaction matching with FIFO methodology
 - **Dividend Income Section**: Complete dividend reporting with tax information and original currency amounts
-- **Crypto Section** (if Koinly data provided):
-  - Capital gains aggregated by sale event per holding period with sub-1-EUR immaterial entries filtered
-  - Capital gains statistics summary with per-holding-period breakdown (short-term, long-term, mixed, unknown) showing count, cost, proceeds, and gain/loss totals
-  - Rewards income classified into taxable-now (fiat-denominated) vs deferred-by-law (crypto-denominated) per Portuguese tax law
-  - IRS-ready aggregated summary for immediate Category E filing (taxable-now rewards grouped by income code + source country)
-  - Chain derivation for blockchain context (e.g., Ethereum, Solana, Berachain) alongside wallet/platform
-  - Full support detail sections for auditability and reconciliation
-- **Professional Formatting**: Currency display with 2 decimal places and proper Excel formulas
+- **Crypto Sheets** (if Koinly data provided, three separate tabs):
+  - **Crypto Gains**: Capital gains aggregated by sale event per holding period with sub-1-EUR immaterial entries filtered, plus statistics summary with per-holding-period breakdown (short-term, long-term, mixed, unknown) showing count, cost, proceeds, and gain/loss totals
+  - **Crypto Rewards**: Rewards income classified into taxable-now (fiat-denominated) vs deferred-by-law (crypto-denominated) per Portuguese tax law, IRS-ready aggregated summary for immediate Category E filing (taxable-now rewards grouped by income code + source country), and full support detail sections for auditability
+  - **Crypto Reconciliation**: Key-value reconciliation of capital/reward totals, opening/closing holdings, and skipped zero-value tokens
+- **Professional Formatting**: Currency display with 2 decimal places, proper Excel formulas, and auto-sized columns with intelligent width handling (formula-only columns receive minimum width, long text is capped to prevent excessive width)
 - **Multi-Currency Support**: Automatic currency conversion with exchange rate tables
 - **ISIN Integration**: Automatic country of source detection from financial instrument data
 

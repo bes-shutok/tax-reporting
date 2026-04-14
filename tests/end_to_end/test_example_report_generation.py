@@ -110,7 +110,9 @@ def test_example_full_pipeline_generates_excel(tmp_path: Path):
     assert output_path.exists()
     wb = openpyxl.load_workbook(output_path)
     assert "Reporting" in wb.sheetnames
-    assert "Crypto" in wb.sheetnames
+    assert "Crypto Gains" in wb.sheetnames
+    assert "Crypto Rewards" in wb.sheetnames
+    assert "Crypto Reconciliation" in wb.sheetnames
     wb.close()
 
 
@@ -124,7 +126,7 @@ def test_example_crypto_sheet_has_resolved_token_origin(tmp_path: Path):
     output_path = tmp_path / "extract.xlsx"
     generate_tax_report(output_path, capital_gains, ib_data.dividend_income, crypto_tax_report=crypto)
     wb = openpyxl.load_workbook(output_path)
-    ws = wb["Crypto"]
+    ws = wb["Crypto Gains"]
     token_origin_col = None
     header_row_num = None
     for row in ws.iter_rows(min_row=1, max_row=20):
@@ -240,7 +242,7 @@ def test_example_high_volume_crypto_sheet_is_compact(tmp_path: Path):
     output_path = tmp_path / "extract.xlsx"
     generate_tax_report(output_path, capital_gains, ib_data.dividend_income, crypto_tax_report=crypto)
     wb = openpyxl.load_workbook(output_path)
-    ws = wb["Crypto"]
+    ws = wb["Crypto Gains"]
     asset_col = None
     for row in ws.iter_rows(min_row=1, max_row=20):
         for cell in row:
@@ -249,7 +251,7 @@ def test_example_high_volume_crypto_sheet_is_compact(tmp_path: Path):
                 break
         if asset_col:
             break
-    assert asset_col is not None, "Asset column header not found in Crypto sheet"
+    assert asset_col is not None, "Asset column header not found in Crypto Gains sheet"
     capital_data_rows = 0
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         first_val = row[0].value if row else None
@@ -259,6 +261,6 @@ def test_example_high_volume_crypto_sheet_is_compact(tmp_path: Path):
         if asset_val and isinstance(asset_val, str) and asset_val.strip():
             capital_data_rows += 1
     assert capital_data_rows <= 10, (
-        f"Capital gains data rows in Crypto sheet should be at most 10, got {capital_data_rows}"
+        f"Capital gains data rows in Crypto Gains sheet should be at most 10, got {capital_data_rows}"
     )
     wb.close()

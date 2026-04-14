@@ -80,6 +80,7 @@ Tax reporting tool processes Interactive Brokers and Koinly exports into Portugu
 ## Quick Start
 
 - Main entry point: `uv run tax-reporting`
+- CLI flags: `--example` (use example data), `--source-file PATH`, `--output-dir PATH`, `--log-level LEVEL`
 - Alternative entry point: `uv run python ./src/shares_reporting/main.py`
 - For broader setup and command reference, see `README.md`.
 
@@ -129,7 +130,7 @@ The application generates professional Excel reports with:
 - **Column Headers**: Clear, descriptive headers with line breaks for readability
 - **Currency Conversion**: Automatic conversion using configured exchange rates
 - **Formulas**: Excel formulas for dynamic calculations
-- **Auto-sizing**: Column widths automatically adjusted for content
+- **Auto-sizing**: Column widths automatically adjusted for content with `MAX_CELL_WIDTH=50` cap and `MIN_DATA_WIDTH=12` floor (see `excel_utils.py`)
 
 ## Data Flow
 
@@ -166,11 +167,11 @@ The project follows **professional testing best practices** with a **3-tier test
 ### Test Structure
 ```
 tests/
-├── unit/          # 457 unit tests - Fast component tests
+├── unit/          # 310 unit tests - Fast component tests
 │   ├── domain/    # Domain layer unit tests
 │   ├── infrastructure/  # Infrastructure layer unit tests
 │   └── application/ # Application layer unit tests
-├── integration/   # 29 integration tests - Component interaction tests
+├── integration/   # 6 integration tests - Component interaction tests
 └── end_to_end/    # 25 e2e tests - Full workflow tests
 ```
 
@@ -487,7 +488,15 @@ tax-reporting/
 │       │   │   └── processing.py
 │       │   ├── crypto_reporting.py # Crypto tax models, Koinly parsing, and TokenOriginResolver
 │       │   ├── transformation.py # Capital gains calculation
-│       │   └── persisting.py    # Excel/CSV generation
+│       │   └── persisting/     # Excel/CSV generation package
+│       │       ├── __init__.py
+│       │       ├── excel_utils.py        # auto_column_width (skips formulas), safe_remove_file
+│       │       ├── ib_sheet.py           # IB Reporting sheet (capital gains + dividends)
+│       │       ├── rollover.py           # Rollover CSV export
+│       │       ├── workbook_builder.py   # Orchestrator: creates workbook, delegates to sheet writers
+│       │       ├── crypto_gains_sheet.py       # Crypto Gains tab
+│       │       ├── crypto_rewards_sheet.py     # Crypto Rewards tab
+│       │       └── crypto_reconciliation_sheet.py  # Crypto Reconciliation tab
 │       └── infrastructure/    # Infrastructure layer
 │           ├── __init__.py
 │           ├── config.py        # Configuration management
@@ -495,17 +504,18 @@ tax-reporting/
 │           ├── logging_config.py # Logging configuration
 │           └── validation.py    # Input validation
 ├── tests/                  # Test suite
-│   ├── unit/               # Unit tests (457 tests)
+│   ├── unit/               # Unit tests (310 tests)
 │   │   ├── domain/         # Domain layer unit tests
 │   │   ├── infrastructure/ # Infrastructure layer unit tests
 │   │   └── application/    # Application layer unit tests
-│   ├── integration/        # Integration tests (29 tests)
+│   │       └── persisting/ # Persisting module unit tests
+│   ├── integration/        # Integration tests (6 tests)
 │   ├── end_to_end/         # End-to-end tests (25 tests)
 │   └── conftest.py         # Pytest configuration and fixtures
 ├── resources/              # Data directories
 │   ├── source/             # Input CSV files
 │   └── result/             # Generated reports
-├── pyproject.toml          # Poetry configuration and dependencies
+├── pyproject.toml          # Project configuration, dependencies, and CLI entry point
 ├── config.ini              # Application configuration
 ├── README.md               # Project documentation
 └── CLAUDE.md              # This file - Claude Code guidance

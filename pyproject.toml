@@ -31,7 +31,7 @@ dev = [
 ]
 
 [project.scripts]
-tax-reporting = "shares_reporting.main:main"
+tax-reporting = "shares_reporting.main:cli"
 
 [project.urls]
 homepage = "https://github.com/bes-shutok/tax-reporting"

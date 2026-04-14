@@ -371,23 +371,38 @@ class TestDividendExcelPersisting:
         import openpyxl
 
         workbook = openpyxl.load_workbook(report_path)
-        assert "Crypto" in workbook.sheetnames
-        crypto_sheet = workbook["Crypto"]
-        assert crypto_sheet["A1"].value == "CRYPTO TAX REPORT - PORTUGAL"
+        assert "Crypto Gains" in workbook.sheetnames
+        assert "Crypto Rewards" in workbook.sheetnames
+        assert "Crypto Reconciliation" in workbook.sheetnames
 
-        labels = set()
-        for row in crypto_sheet.iter_rows(values_only=True):
+        gains_sheet = workbook["Crypto Gains"]
+        assert gains_sheet["A1"].value == "CRYPTO TAX REPORT - PORTUGAL"
+
+        gains_labels = set()
+        for row in gains_sheet.iter_rows(values_only=True):
             first_cell = row[0] if row else None
             if isinstance(first_cell, str):
-                labels.add(first_cell)
+                gains_labels.add(first_cell)
 
-        assert "1. CAPITAL GAINS" in labels
-        assert "2. REWARDS INCOME - IRS-READY FILING SUMMARY" in labels
-        assert "2b. DEFERRED BY LAW - SUPPORT DETAIL" in labels
-        assert "2c. REWARDS CLASSIFICATION RECONCILIATION" in labels
-        assert "3. RECONCILIATION" in labels
-        assert "4. SKIPPED ZERO VALUE TOKENS" in labels
-        assert "PDF period" in labels
+        rewards_labels = set()
+        for row in workbook["Crypto Rewards"].iter_rows(values_only=True):
+            first_cell = row[0] if row else None
+            if isinstance(first_cell, str):
+                rewards_labels.add(first_cell)
+
+        recon_labels = set()
+        for row in workbook["Crypto Reconciliation"].iter_rows(values_only=True):
+            first_cell = row[0] if row else None
+            if isinstance(first_cell, str):
+                recon_labels.add(first_cell)
+
+        assert "1. CAPITAL GAINS" in gains_labels
+        assert "2. REWARDS INCOME - IRS-READY FILING SUMMARY" in rewards_labels
+        assert "2b. DEFERRED BY LAW - SUPPORT DETAIL" in rewards_labels
+        assert "2c. REWARDS CLASSIFICATION RECONCILIATION" in rewards_labels
+        assert "3. RECONCILIATION" in recon_labels
+        assert "4. SKIPPED ZERO VALUE TOKENS" in recon_labels
+        assert "PDF period" in gains_labels
         workbook.close()
 
     def test_crypto_sheet_contains_chain_column(self, tmp_path):
@@ -470,27 +485,27 @@ class TestDividendExcelPersisting:
         import openpyxl
 
         workbook = openpyxl.load_workbook(report_path)
-        crypto_sheet = workbook["Crypto"]
+        gains_sheet = workbook["Crypto Gains"]
+        rewards_sheet = workbook["Crypto Rewards"]
 
         # Find the capital gains header row and check for chain column
         capital_headers_found = False
         capital_chain_col_idx = None
-        reward_headers_found = False
-        reward_chain_col_idx = None
 
-        for row in crypto_sheet.iter_rows(values_only=True):
+        for row in gains_sheet.iter_rows(values_only=True):
             if row and "Disposal date" in str(row[0] if row[0] else ""):
-                # Found capital gains headers
                 capital_headers_found = True
-                # Find the "Disposal chain" column index
                 for col_idx, cell_value in enumerate(row):
                     if cell_value == "Disposal chain":
                         capital_chain_col_idx = col_idx + 1
                         break
-            elif row and "Date" in str(row[0] if row[0] else "") and "Asset" in str(row[1] if len(row) > 1 else ""):
-                # Found rewards headers
+
+        reward_headers_found = False
+        reward_chain_col_idx = None
+
+        for row in rewards_sheet.iter_rows(values_only=True):
+            if row and "Date" in str(row[0] if row[0] else "") and "Asset" in str(row[1] if len(row) > 1 else ""):
                 reward_headers_found = True
-                # Find the "Reward chain" column index
                 for col_idx, cell_value in enumerate(row):
                     if cell_value == "Reward chain":
                         reward_chain_col_idx = col_idx + 1
@@ -506,10 +521,12 @@ class TestDividendExcelPersisting:
         capital_data_row = None
         reward_data_row = None
 
-        for row in crypto_sheet.iter_rows(values_only=True):
+        for row in gains_sheet.iter_rows(values_only=True):
             if row and row[0] == "2025-01-13":
                 capital_data_row = row
-            elif row and row[0] == "2025-01-01":
+
+        for row in rewards_sheet.iter_rows(values_only=True):
+            if row and row[0] == "2025-01-01":
                 reward_data_row = row
 
         assert capital_data_row is not None, "Capital data row not found"
@@ -584,12 +601,12 @@ class TestDividendExcelPersisting:
         import openpyxl
 
         workbook = openpyxl.load_workbook(report_path)
-        crypto_sheet = workbook["Crypto"]
+        gains_sheet = workbook["Crypto Gains"]
 
         capital_headers_found = False
         token_origin_col_idx = None
 
-        for row in crypto_sheet.iter_rows(values_only=True):
+        for row in gains_sheet.iter_rows(values_only=True):
             if row and "Disposal date" in str(row[0] if row[0] else ""):
                 capital_headers_found = True
                 for col_idx, cell_value in enumerate(row):
@@ -603,7 +620,7 @@ class TestDividendExcelPersisting:
 
         capital_data_row = None
 
-        for row in crypto_sheet.iter_rows(values_only=True):
+        for row in gains_sheet.iter_rows(values_only=True):
             if row and row[0] == "2025-02-16":
                 capital_data_row = row
                 break
@@ -676,10 +693,10 @@ class TestDividendExcelPersisting:
         import openpyxl
 
         workbook = openpyxl.load_workbook(report_path)
-        crypto_sheet = workbook["Crypto"]
+        gains_sheet = workbook["Crypto Gains"]
 
         token_origin_col_idx = None
-        for row in crypto_sheet.iter_rows(values_only=True):
+        for row in gains_sheet.iter_rows(values_only=True):
             if row and "Disposal date" in str(row[0] if row[0] else ""):
                 for col_idx, cell_value in enumerate(row):
                     if cell_value == "Token origin":
@@ -690,7 +707,7 @@ class TestDividendExcelPersisting:
         assert token_origin_col_idx is not None, "Token origin column not found"
 
         capital_data_row = None
-        for row in crypto_sheet.iter_rows(values_only=True):
+        for row in gains_sheet.iter_rows(values_only=True):
             if row and row[0] == "2025-03-15":
                 capital_data_row = row
                 break
@@ -763,10 +780,10 @@ class TestDividendExcelPersisting:
         import openpyxl
 
         workbook = openpyxl.load_workbook(report_path)
-        crypto_sheet = workbook["Crypto"]
+        gains_sheet = workbook["Crypto Gains"]
 
         token_origin_col_idx = None
-        for row in crypto_sheet.iter_rows(values_only=True):
+        for row in gains_sheet.iter_rows(values_only=True):
             if row and "Disposal date" in str(row[0] if row[0] else ""):
                 for col_idx, cell_value in enumerate(row):
                     if cell_value == "Token origin":
@@ -775,7 +792,7 @@ class TestDividendExcelPersisting:
                 break
 
         capital_data_row = None
-        for row in crypto_sheet.iter_rows(values_only=True):
+        for row in gains_sheet.iter_rows(values_only=True):
             if row and row[0] == "2025-03-15":
                 capital_data_row = row
                 break
@@ -867,24 +884,28 @@ class TestDividendExcelPersisting:
         import openpyxl
 
         workbook = openpyxl.load_workbook(report_path)
-        crypto_sheet = workbook["Crypto"]
+        gains_sheet = workbook["Crypto Gains"]
+        rewards_sheet = workbook["Crypto Rewards"]
 
-        # Find capital gains data row and reward row in support detail section
+        # Find capital gains data row on Crypto Gains sheet
         capital_review_cell = None
-        reward_review_cell = None
         found_capital_review = False
+        for row in gains_sheet.iter_rows(values_only=True):
+            if row and row[0] == "2025-01-13":
+                capital_review_cell = row[14] if len(row) > 14 else None
+                found_capital_review = True
+
+        # Find reward row in deferred support detail section on Crypto Rewards sheet
+        reward_review_cell = None
         found_reward_review = False
         in_deferred = False
-        for row in crypto_sheet.iter_rows(values_only=True):
+        for row in rewards_sheet.iter_rows(values_only=True):
             if row and isinstance(row[0], str) and "DEFERRED BY LAW" in row[0]:
                 in_deferred = True
             if in_deferred and row and row[0] == "2025-01-01":
                 reward_review_cell = row[9] if len(row) > 9 else None
                 found_reward_review = True
                 break
-            if row and row[0] == "2025-01-13":
-                capital_review_cell = row[14] if len(row) > 14 else None
-                found_capital_review = True
 
         assert found_capital_review, "Capital data row not found"
         assert capital_review_cell is not None
@@ -1083,10 +1104,10 @@ class TestDividendExcelPersisting:
 
         report_path = tmp_path / "crypto_error_test.xlsx"
 
-        # Mock add_crypto_report_sheet to raise a FileProcessingError
+        # Mock write_crypto_gains_sheet to raise a FileProcessingError
         with (
             patch(
-                "shares_reporting.application.persisting.add_crypto_report_sheet",
+                "shares_reporting.application.persisting.workbook_builder.write_crypto_gains_sheet",
                 side_effect=FileProcessingError("Simulated validation failure for testing"),
             ),
             pytest.raises(FileProcessingError, match="Simulated validation failure for testing"),
@@ -1170,15 +1191,15 @@ class TestDividendExcelPersisting:
         import openpyxl
 
         workbook = openpyxl.load_workbook(report_path)
-        crypto_sheet = workbook["Crypto"]
+        gains_sheet = workbook["Crypto Gains"]
 
         header_row = None
-        for row in crypto_sheet.iter_rows(values_only=True):
+        for row in gains_sheet.iter_rows(values_only=True):
             if row and "Disposal date" in str(row[0] if row[0] else ""):
                 header_row = [str(c) if c is not None else "" for c in row]
                 break
 
-        assert header_row is not None, "Capital gains header row not found in Crypto sheet"
+        assert header_row is not None, "Capital gains header row not found in Crypto Gains sheet"
 
         assert header_row[0] == "Disposal date", (
             f"First capital gains header must be 'Disposal date', got {header_row[0]!r}"
@@ -1193,7 +1214,7 @@ class TestDividendExcelPersisting:
         )
 
         data_row = None
-        for row in crypto_sheet.iter_rows(values_only=True):
+        for row in gains_sheet.iter_rows(values_only=True):
             if row and row[0] == "2025-01-13":
                 data_row = row
                 break
@@ -1205,11 +1226,11 @@ class TestDividendExcelPersisting:
         workbook.close()
 
     def test_crypto_sheet_removed_on_partial_write_error(self, tmp_path):
-        """Test that partial Crypto sheet is removed when error occurs during writing.
+        """Test that error during crypto sheet generation fails cleanly.
 
-        Per plan requirement (Task 2), report generation must fail with a clear error
-        when a taxable-now row cannot be assigned all mandatory IRS fields. The error
-        propagates and fails the entire report generation.
+        When an exception occurs during crypto sheet writing, the workbook is closed
+        (with partial sheets removed), the output file is removed, and the error
+        propagates to the caller.
         """
         from unittest.mock import patch
 
@@ -1262,21 +1283,18 @@ class TestDividendExcelPersisting:
 
         report_path = tmp_path / "crypto_partial_error_test.xlsx"
 
-        # Mock add_crypto_report_sheet to create the sheet but fail during writing
-        def mock_add_crypto_that_fails_partial(workbook, crypto_tax_report, aggregated_rewards):
-            # First create the sheet (this adds it to workbook.sheetnames)
-            crypto_ws = workbook.create_sheet("Crypto")
-            # Write some initial content
+        # Mock write_crypto_gains_sheet to create the sheet but fail during writing
+        def mock_gains_that_fails_partial(workbook, crypto_tax_report):
+            crypto_ws = workbook.create_sheet("Crypto Gains")
             crypto_ws.cell(1, 1, "CRYPTO TAX REPORT - PORTUGAL")
             crypto_ws.cell(2, 1, "Tax year")
             crypto_ws.cell(2, 2, crypto_tax_report.tax_year)
-            # Now simulate an error during writing
             raise FileProcessingError("Simulated write error during crypto sheet generation")
 
         with (
             patch(
-                "shares_reporting.application.persisting.add_crypto_report_sheet",
-                side_effect=mock_add_crypto_that_fails_partial,
+                "shares_reporting.application.persisting.workbook_builder.write_crypto_gains_sheet",
+                side_effect=mock_gains_that_fails_partial,
             ),
             pytest.raises(FileProcessingError, match="Simulated write error during crypto sheet generation"),
         ):
@@ -1417,26 +1435,34 @@ class TestDividendExcelPersisting:
         import openpyxl
 
         workbook = openpyxl.load_workbook(report_path)
-        crypto_sheet = workbook["Crypto"]
+        gains_sheet = workbook["Crypto Gains"]
+        rewards_sheet = workbook["Crypto Rewards"]
 
-        labels = []
-        for row in crypto_sheet.iter_rows(values_only=True):
+        gains_labels = []
+        for row in gains_sheet.iter_rows(values_only=True):
             first_cell = row[0] if row else None
             if isinstance(first_cell, str):
-                labels.append(first_cell)
+                gains_labels.append(first_cell)
 
-        assert "1b. CAPITAL GAINS STATISTICS" in labels, (
-            f"Expected '1b. CAPITAL GAINS STATISTICS' header in crypto sheet, got labels: {labels}"
+        rewards_labels = []
+        for row in rewards_sheet.iter_rows(values_only=True):
+            first_cell = row[0] if row else None
+            if isinstance(first_cell, str):
+                rewards_labels.append(first_cell)
+
+        assert "1b. CAPITAL GAINS STATISTICS" in gains_labels, (
+            f"Expected '1b. CAPITAL GAINS STATISTICS' header in Crypto Gains sheet, got labels: {gains_labels}"
         )
 
-        assert "1. CAPITAL GAINS" in labels, "Section 1 header should still exist"
+        assert "1. CAPITAL GAINS" in gains_labels, "Section 1 header should still exist"
 
-        section_1_idx = labels.index("1. CAPITAL GAINS")
-        stats_idx = labels.index("1b. CAPITAL GAINS STATISTICS")
-        section_2_idx = labels.index("2. REWARDS INCOME - IRS-READY FILING SUMMARY")
+        section_1_idx = gains_labels.index("1. CAPITAL GAINS")
+        stats_idx = gains_labels.index("1b. CAPITAL GAINS STATISTICS")
 
         assert section_1_idx < stats_idx, "Statistics section must appear after capital gains detail"
-        assert stats_idx < section_2_idx, "Statistics section must appear before rewards section"
+        assert "2. REWARDS INCOME - IRS-READY FILING SUMMARY" in rewards_labels, (
+            "Rewards section should be in Crypto Rewards sheet"
+        )
 
         workbook.close()
 
@@ -1457,9 +1483,9 @@ class TestDividendExcelPersisting:
         import openpyxl
 
         workbook = openpyxl.load_workbook(report_path)
-        crypto_sheet = workbook["Crypto"]
+        gains_sheet = workbook["Crypto Gains"]
 
-        rows = list(crypto_sheet.iter_rows(values_only=True))
+        rows = list(gains_sheet.iter_rows(values_only=True))
 
         stats_start = None
         for i, row in enumerate(rows):
