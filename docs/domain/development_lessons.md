@@ -89,6 +89,51 @@ def test_file(tmp_path: Path) -> Path:
 - Verify that a feature works end-to-end, not just that it returns a certain value.
 - Use realistic test data; check that integrated components produce correct outputs.
 
+## 14. Test CSV Data Construction — Column Alignment
+
+See `~/Projects/docs/python_guidelines.md` #1 for full prevention rules.
+Repo context: Koinly `_TH_HEADER` has 20 columns; hand-counting commas is the biggest source of wasted debug iterations.
+
+## 15. Post-Extraction Cleanup
+
+See `~/Projects/docs/python_guidelines.md` #2 for full cleanup procedure.
+Repo context: past extractions (crypto_reporting.py → token_origin.py + koinly_parser.py) left unused imports and dead code.
+
+## 16. Aggregation Logic — Test Both Directions
+
+See `~/Projects/docs/agent_workflow_guidelines.md` #1.
+Repo context: LP liquidity operations — fixing "in" direction broke "out" because liquidity out produces multiple outputs from one input.
+
+## 17. Operator Mapping Field Semantics (`service_start_date` / `valid_from`)
+
+See `~/Projects/docs/agent_workflow_guidelines.md` #3 for the generic field-semantics lesson.
+Repo-specific constraint: `valid_from` is audit-only (when the mapping was verified from source docs). `service_start_date` is for transaction matching (when the platform started offering this service). Never use `valid_from` as a matching gate. When both are known, `service_start_date <= valid_from`.
+
+## 18. Review Agent False Positives
+
+See `~/Projects/docs/agent_workflow_guidelines.md` #2.
+
+## 19. Descriptive Output Labels
+
+See `~/Projects/docs/coding_guidelines.md` #9 for the canonical rule.
+Repo context: crypto gains sheet headers renamed from terse Koinly CSV names to self-explanatory terms (e.g. "Quantity" not "Amount", "Acquisition Cost (EUR)" not "Cost (EUR)").
+
+## 20. Frozen Dataclass `__post_init__` Field Normalization
+
+A frozen dataclass cannot assign to its own fields in `__post_init__`. Use `object.__setattr__(self, field, value)` to normalize fields (e.g. converting empty strings to `None`) during validation. Without this, the normalization is computed but silently discarded.
+
+## 21. Date Comparison Must Use Date Objects, Not Strings
+
+Comparing ISO date strings with `<` / `>=` works for same-length same-format strings but silently produces wrong results when formats differ (e.g. `"2025-3-5" < "2025-12-01"` is `True` but `"2025-3-5" < "2025-10-01"` is `False` because `"3"` > `"1"`). Always parse to `date` objects before comparison.
+
+## 22. ISO Date Validation Must Enforce Zero-Padding
+
+`map(int, "2025-3-5".split("-"))` succeeds, but `YYYY-MM-DD` requires two-digit month and day. Validate each component's string length: year 4 digits, month 2 digits, day 2 digits. Same applies to `HH:MM:SS` time components.
+
+## 23. Three-Way Doc Sync: Code, Registry, Decision Log
+
+When a feature uses both code-based mappings and canonical documentation (e.g. operator origin registry, mapping decision log), any field change must be applied to all three in the same commit. Code review consistently catches doc drift as a finding. Add a verification step to the plan: "grep for changed field names in registry and decision log."
+
 ---
 
 ## Pre-Commit Checklist

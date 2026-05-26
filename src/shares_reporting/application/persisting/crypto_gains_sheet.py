@@ -46,9 +46,9 @@ def write_crypto_gains_sheet(workbook: openpyxl.Workbook, crypto_tax_report: Cry
         "Disposal date",
         "Acquisition date",
         "Asset",
-        "Amount",
-        "Cost (EUR)",
-        "Proceeds (EUR)",
+        "Quantity",
+        "Acquisition Cost (EUR)",
+        "Disposal Proceeds (EUR)",
         "Gain/Loss (EUR)",
         "Holding period",
         "Wallet",
@@ -93,8 +93,8 @@ def write_crypto_gains_sheet(workbook: openpyxl.Workbook, crypto_tax_report: Cry
     stats_headers = [
         "Holding Period",
         "Count",
-        "Cost Total (EUR)",
-        "Proceeds Total (EUR)",
+        "Acquisition Cost Total (EUR)",
+        "Disposal Proceeds Total (EUR)",
         "Gain/Loss Total (EUR)",
     ]
     for idx, header in enumerate(stats_headers, start=1):

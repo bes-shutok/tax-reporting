@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import csv
 import logging
 import re
-import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
@@ -18,6 +16,16 @@ from typing import Final, TypedDict
 import pycountry
 
 from ..domain.exceptions import FileProcessingError
+from ..domain.token_origin import (
+    TokenOriginResolver,
+)
+from ..infrastructure.koinly_parser import (
+    _format_datetime,
+    _normalize_asset_ticker,
+    _normalize_platform_name,
+    _parse_koinly_datetime,
+    _read_koinly_rows,
+)
 
 # Constants for decimal calculations
 ZERO: Final = Decimal("0")
@@ -28,9 +36,6 @@ _MAX_VALIDATION_ERROR_DISPLAY: Final = 5
 # Ticker stripping constants
 _MAX_TICKER_LENGTH: Final = 10
 _SPLIT_PARTS_WITH_TICKER: Final = 2
-
-# File size limits for security (prevent DoS via large files)
-_MAX_CSV_BYTES: Final = 50 * 1024 * 1024  # 50 MB limit for CSV files
 
 # Constants for date validation
 _MIN_VALID_YEAR: Final = 2009  # Bitcoin genesis, crypto didn't exist before
@@ -92,18 +97,6 @@ class RewardTaxClassification(Enum):
 
     TAXABLE_NOW = "taxable_now"
     DEFERRED_BY_LAW = "deferred_by_law"
-
-
-class AcquisitionMethod(Enum):
-    """Method by which a token was acquired, derived from Koinly transaction history."""
-
-    DIRECT_PURCHASE = "direct_purchase"
-    SWAP_CONVERSION = "swap_conversion"
-    BRIDGE_TRANSFER = "bridge_transfer"
-    DEFI_YIELD = "defi_yield"
-    REWARD = "reward"
-    TRANSFER = "transfer"
-    UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True)
@@ -200,37 +193,6 @@ class OperatorOrigin:
         object.__setattr__(self, "service_start_date", normalized_service_start)
         object.__setattr__(self, "valid_from", normalized_from)
         object.__setattr__(self, "valid_until", normalized_until)
-
-
-@dataclass(frozen=True)
-class TokenOrigin:
-    """Deterministic origin of a token acquired via Koinly-tracked transactions.
-
-    Populated from implicit (date, asset, wallet) correlation between the capital
-    gains report and transaction history. This is NOT a direct foreign-key link;
-    confidence reflects the strength of the correlation.
-    """
-
-    acquired_from_asset: str
-    acquired_from_platform: str
-    acquisition_method: AcquisitionMethod
-    confidence: str
-
-    @classmethod
-    def unknown(cls) -> TokenOrigin:
-        """Return the canonical unknown-origin sentinel."""
-        return cls(
-            acquired_from_asset="Unknown",
-            acquired_from_platform="Unknown",
-            acquisition_method=AcquisitionMethod.UNKNOWN,
-            confidence="low",
-        )
-
-    def __str__(self) -> str:
-        """Format origin as 'FROM_ASSET (method, confidence confidence)' or blank for unknown."""
-        if self.acquisition_method == AcquisitionMethod.UNKNOWN:
-            return ""
-        return f"{self.acquired_from_asset} ({self.acquisition_method.value}, {self.confidence} confidence)"
 
 
 @dataclass(frozen=True)
@@ -931,192 +893,6 @@ _KOINLY_TYPE_TO_INCOME_CODE: Final[dict[str, str]] = {
 _MAX_PDF_BYTES: Final = (
     20 * 1024 * 1024
 )  # 20 MB limit for PDF parsing (increased from 10 MB due to growing Koinly report sizes)
-DATE_FORMATS: Final = (
-    "%d/%m/%Y %H:%M",
-    "%Y-%m-%d %H:%M:%S UTC",
-    "%Y-%m-%d %H:%M:%S",
-    "%d/%m/%Y",
-    "%Y-%m-%d",
-)
-
-# ---------------------------------------------------------------------------
-# Token Origin Resolution — Correlation Contract
-# ---------------------------------------------------------------------------
-# Origin derivation relies on implicit (date, asset, wallet) matching between
-# the Koinly capital gains report and the transaction history CSV. The capital
-# gains report contains NO transaction IDs, lot IDs, or hashes that directly
-# link to the transaction history.
-#
-# Correlation key: (acquisition_date, received_currency, receiving_wallet)
-# Confidence levels:
-#   high   — a TxHash or other explicit on-chain identifier is present
-#   medium — matched via implicit date/asset/wallet correlation only
-#   low    — match is ambiguous, capital gains row has special flags, or no match
-#
-# Fallback: When no matching transaction history row exists (CEX internal fills,
-# history gaps, pre-Koinly acquisition dates), the resolver returns unknown.
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class _AcquisitionRecord:
-    """Internal record for a transaction history acquisition event."""
-
-    from_asset: str
-    from_platform: str
-    method: AcquisitionMethod
-    confidence: str
-
-
-class TokenOriginResolver:
-    """Resolve token acquisition origins by correlating capital gains with transaction history.
-
-    Parses the Koinly transaction history CSV once at construction time and builds
-    an internal lookup indexed by (date, asset, wallet). The ``resolve()`` method
-    then matches capital gains rows to acquisition events and returns a ``TokenOrigin``.
-    """
-
-    def __init__(self, transaction_history_path: Path | None = None) -> None:
-        """Build the acquisition-event lookup from the transaction history CSV."""
-        self._lookup: dict[tuple[str, str, str], list[_AcquisitionRecord]] = {}
-        if transaction_history_path is not None and transaction_history_path.exists():
-            try:
-                self._build_lookup(transaction_history_path)
-            except Exception as e:
-                self._lookup.clear()
-                logging.getLogger(__name__).warning(
-                    "Failed to parse transaction history %s: %s; origin resolution will return unknown for all rows",
-                    transaction_history_path.name,
-                    e,
-                )
-
-    def _build_lookup(self, path: Path) -> None:
-        for row in _read_koinly_rows(path):
-            self._index_row(row)
-
-    def _index_row(self, row: dict[str, str]) -> None:  # noqa: PLR0912
-        logger = logging.getLogger(__name__)
-        tx_type = row.get("Type", "").strip().lower()
-        date_str = row.get("Date", "").strip()
-        if not date_str:
-            return
-
-        try:
-            dt = _parse_koinly_datetime(date_str)
-            date_key = _format_datetime(dt)
-        except ValueError:
-            logger.warning("Skipping transaction history row with unparseable date: %s", date_str)
-            return
-
-        received_currency = row.get("Received Currency", "").strip()
-        receiving_wallet = row.get("Receiving Wallet", "").strip()
-        if not received_currency:
-            return
-
-        asset = _normalize_asset_ticker(received_currency)
-        normalized_wallet = _normalize_platform_name(receiving_wallet)
-        key = (date_key, asset, normalized_wallet)
-
-        sent_currency = row.get("Sent Currency", "").strip()
-        sent_wallet = row.get("Sending Wallet", "").strip()
-        tag = row.get("Tag", "").strip().lower()
-        tx_hash = row.get("TxHash", "").strip()
-
-        if tx_type == "exchange":
-            if not sent_currency:
-                return
-            method = AcquisitionMethod.SWAP_CONVERSION
-            from_asset = _normalize_asset_ticker(sent_currency)
-            from_platform = _normalize_platform_name(sent_wallet) if sent_wallet else normalized_wallet
-        elif tx_type == "transfer":
-            method = AcquisitionMethod.BRIDGE_TRANSFER
-            from_asset = _normalize_asset_ticker(sent_currency) if sent_currency else asset
-            from_platform = _normalize_platform_name(sent_wallet) if sent_wallet else normalized_wallet
-        elif tx_type == "buy":
-            if not sent_currency:
-                return
-            method = AcquisitionMethod.DIRECT_PURCHASE
-            from_asset = _normalize_asset_ticker(sent_currency)
-            from_platform = _normalize_platform_name(sent_wallet) if sent_wallet else normalized_wallet
-        elif tx_type in ("crypto_deposit", "fiat_deposit"):
-            if tag in ("reward", "cashback"):
-                method = AcquisitionMethod.REWARD
-            elif tag in ("lending", "lending_interest", "lending interest", "interest"):
-                method = AcquisitionMethod.DEFI_YIELD
-            elif tx_type == "fiat_deposit":
-                method = AcquisitionMethod.DIRECT_PURCHASE
-            else:
-                method = AcquisitionMethod.TRANSFER
-            from_asset = _normalize_asset_ticker(sent_currency) if sent_currency else asset
-            from_platform = _normalize_platform_name(sent_wallet) if sent_wallet else normalized_wallet
-        else:
-            return
-
-        confidence = "high" if tx_hash else "medium"
-        record = _AcquisitionRecord(
-            from_asset=from_asset,
-            from_platform=from_platform,
-            method=method,
-            confidence=confidence,
-        )
-
-        self._lookup.setdefault(key, []).append(record)
-
-    _CONFIDENCE_RANK = {"high": 2, "medium": 1, "low": 0}
-
-    def resolve(self, acquisition_date: str, asset: str, wallet: str, notes: str = "") -> TokenOrigin:
-        """Resolve token origin from acquisition metadata.
-
-        Args:
-            acquisition_date: ISO date string (YYYY-MM-DD) from the capital gains row.
-            asset: Normalized asset ticker.
-            wallet: Raw or normalized wallet name.
-            notes: Notes from the capital gains row (for confidence adjustment).
-
-        Returns:
-            TokenOrigin with resolved acquisition details, or unknown if no match.
-        """
-        logger = logging.getLogger(__name__)
-        if acquisition_date.startswith("1970-"):
-            return TokenOrigin.unknown()
-
-        normalized_wallet = _normalize_platform_name(wallet)
-        key = (acquisition_date, asset, normalized_wallet)
-        records = self._lookup.get(key, [])
-
-        if not records:
-            return TokenOrigin.unknown()
-
-        best = max(records, key=lambda r: self._CONFIDENCE_RANK.get(r.confidence, 0))
-
-        confidence = best.confidence
-        if len(records) > 1:
-            same_confidence = [r for r in records if r.confidence == best.confidence]
-            if len(same_confidence) > 1:
-                agree = all(
-                    r.method == best.method
-                    and r.from_asset == best.from_asset
-                    and r.from_platform == best.from_platform
-                    for r in same_confidence
-                )
-                if not agree:
-                    logger.warning(
-                        "Origin records disagree for %s at %s on %s — returning unknown",
-                        asset,
-                        wallet,
-                        acquisition_date,
-                    )
-                    return TokenOrigin.unknown()
-
-        if "missing cost basis" in notes.lower():
-            confidence = "low"
-
-        return TokenOrigin(
-            acquired_from_asset=best.from_asset,
-            acquired_from_platform=best.from_platform,
-            acquisition_method=best.method,
-            confidence=confidence,
-        )
 
 
 def resolve_operator_origin(  # noqa: PLR0911, PLR0912
@@ -1807,46 +1583,6 @@ def _validate_capital_entries_have_valid_countries(entries: list[CryptoCapitalGa
     )
 
 
-def _normalize_asset_ticker(asset: str) -> str:
-    """Normalize common character encoding issues in asset tickers.
-
-    Fixes known encoding issues such as:
-    - Cyrillic 'Т' (U+0422) instead of Latin 'T' in WBТC
-    - Cyrillic 'Е' (U+0415) instead of Latin 'E'
-    - Other visually similar Cyrillic-Latin character pairs
-
-    Args:
-        asset: The raw asset ticker from Koinly.
-
-    Returns:
-        Normalized asset ticker with known character substitutions applied.
-    """
-    # Replace commonly confused Cyrillic characters with Latin equivalents
-    cyrillic_to_latin = {
-        "Т": "T",  # U+0422 Cyrillic Te -> Latin T
-        "Е": "E",  # U+0415 Cyrillic Ie -> Latin E
-        "О": "O",  # U+041E Cyrillic O -> Latin O (same visual, different codepoint)
-        "Р": "P",  # U+0420 Cyrillic Er -> Latin P
-        "А": "A",  # U+0410 Cyrillic A -> Latin A
-        "Н": "H",  # U+041D Cyrillic En -> Latin H
-        "К": "K",  # U+041A Cyrillic Ka -> Latin K
-        "М": "M",  # U+041C Cyrillic Em -> Latin M
-        "С": "C",  # U+0421 Cyrillic Es -> Latin C
-        "В": "B",  # U+0412 Cyrillic Ve -> Latin B
-        "Х": "X",  # U+0425 Cyrillic Ha -> Latin X
-        "у": "y",  # U+0443 Cyrillic U -> Latin y (lowercase)
-        "е": "e",  # U+0435 Cyrillic ie -> Latin e (lowercase)
-        "о": "o",  # U+043E Cyrillic o -> Latin o (lowercase)
-        "р": "p",  # U+0440 Cyrillic er -> Latin p (lowercase)
-        "а": "a",  # U+0430 Cyrillic a -> Latin a (lowercase)
-    }
-    for cyrillic, latin in cyrillic_to_latin.items():
-        asset = asset.replace(cyrillic, latin)
-    # Normalize unicode characters to canonical composed form
-    asset = unicodedata.normalize("NFKC", asset)
-    return asset.strip()
-
-
 def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
     path: Path,
     skipped_assets: Counter[tuple[str, str]],
@@ -2099,52 +1835,6 @@ def _register_skipped_zero_asset(skipped_assets: Counter[tuple[str, str]], secti
     skipped_assets[(section, cleaned_asset)] += 1
 
 
-def _read_koinly_rows(path: Path) -> list[dict[str, str]]:
-    file_size = path.stat().st_size
-    if file_size > _MAX_CSV_BYTES:
-        raise FileProcessingError(
-            f"CSV file {path.name} exceeds size limit ({file_size} bytes, max {_MAX_CSV_BYTES} bytes)"
-        )
-    lines = path.read_text(encoding="utf-8-sig").splitlines()
-    header_index = _detect_header_index(lines, path)
-    reader = csv.DictReader(lines[header_index:])
-
-    rows: list[dict[str, str]] = []
-    for row in reader:
-        if all((value is None or str(value).strip() == "") for value in row.values()):
-            continue
-        rows.append({key: (value or "") for key, value in row.items() if key is not None})
-    return rows
-
-
-def _detect_header_index(lines: list[str], path: Path) -> int:
-    header_markers = ("Date Sold", "Date Acquired", "Date,", "Asset,Quantity", "Currency,Wallet")
-    for index, line in enumerate(lines):
-        if "," not in line:
-            continue
-        if any(marker in line for marker in header_markers):
-            return index
-    raise ValueError(f"Unable to detect CSV header in Koinly export: {path}")
-
-
-def _parse_koinly_datetime(value: str) -> datetime:
-    text = value.strip()
-    if not text:
-        return datetime(1970, 1, 1, tzinfo=UTC)
-
-    for date_format in DATE_FORMATS:
-        try:
-            parsed = datetime.strptime(text, date_format)  # noqa: DTZ007
-            return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
-        except ValueError:
-            continue
-    raise ValueError(f"Unsupported Koinly date format: {value}")
-
-
-def _format_datetime(value: datetime) -> str:
-    return value.strftime("%Y-%m-%d")
-
-
 def _parse_koinly_decimal(value: str) -> Decimal:
     text = value.strip().replace("\u00a0", "").replace(" ", "")
     if not text:
@@ -2182,38 +1872,6 @@ def _normalize_koinly_decimal_text(text: str) -> str:
         raise ValueError(f"Ambiguous decimal format: {text!r} — dot could be thousands separator or decimal point")
 
     return text
-
-
-def _normalize_platform_name(wallet: str) -> str:
-    """Normalize platform aliases for consistent operator resolution and aggregation.
-
-    This function normalizes only the ByBit platform alias (e.g., "ByBit (2)" -> "ByBit")
-    where the suffix represents a duplicate account in Koinly, not a distinct wallet.
-    This is a repository-specific normalization per CRG-008.
-
-    For all other wallets, including distinct numbered wallets like "Kraken (2)",
-    the full wallet name is preserved to prevent incorrect aggregation of separate
-    disposal events. Koinly may use numbered suffixes for genuinely distinct wallets
-    on the same platform.
-
-    Args:
-        wallet: The raw wallet name from Koinly.
-
-    Returns:
-        Normalized platform name for ByBit aliases, or the original wallet name.
-        Returns "Unknown" for empty wallets.
-    """
-    cleaned = wallet.strip()
-    if not cleaned:
-        return "Unknown"
-
-    # Normalize only ByBit numbered aliases (repository-specific rule per CRG-008)
-    # "ByBit (2)", "ByBit (3)", etc. -> "ByBit"
-    # This must NOT match other ByBit-prefixed wallets like "ByBit Earn (2)"
-    if re.match(r"^ByBit \(\d+\)$", cleaned):
-        return "ByBit"
-
-    return cleaned
 
 
 # Chain names from docs/tax/crypto-origin/operator_chain_origin_registry.md

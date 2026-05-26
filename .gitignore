@@ -83,6 +83,9 @@ config.ini
 
 /.ralphex/
 
+# Review artifacts (temporary analysis documents)
+docs/review/
+
 # LLM agent config (bootstrap-only, never committed)
 .opencode/
 .codex/

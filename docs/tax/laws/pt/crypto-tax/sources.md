@@ -83,11 +83,11 @@ Retrieved on: 2026-04-01
 
 ## Related local origin archive
 
-- `../crypto-origin/sources.md`
+- `../../../crypto-origin/sources.md`
   - Purpose: local manifest of archived chain/operator origin extracts used for crypto country and chain resolution.
-- `../crypto-origin/operator_chain_origin_registry.md`
+- `../../../crypto-origin/operator_chain_origin_registry.md`
   - Purpose: repository-facing summary of current chain/operator mappings and Europe overrides.
-- `../crypto-origin/mapping_decision_log.md`
+- `../../../crypto-origin/mapping_decision_log.md`
   - Purpose: reasoning log that explains why each chain/operator mapping was chosen and whether it is official, inferred, public-record-supported, or a repository override.
 - Current archived chain/operator extracts include:
   - `Arbitrum`

@@ -51,7 +51,7 @@
 - [x] Implement the `chain` field in the workbook using `docs/tax/crypto-origin/` as the trusted source archive for the final mapping.
 - [x] Add a `chain` field to both `CryptoCapitalGainEntry` and `CryptoRewardIncomeEntry`.
 - [x] Use the wallet / platform name only to derive a candidate chain identifier for lookup, not as the final source of truth.
-- [X] Resolve the final `chain` value from trusted source material collected locally under `docs/tax/crypto-origin/` and referenced from `docs/tax/portugal-crypto-tax/sources.md`.
+- [X] Resolve the final `chain` value from trusted source material collected locally under `docs/tax/crypto-origin/` and referenced from `docs/tax/laws/pt/crypto-tax/sources.md`.
 - [x] Use deterministic normalization rules such as:
   - `Ledger Berachain (BERA)` -> `Berachain`
   - `Ledger SUI` -> `SUI`
@@ -98,10 +98,10 @@
 
 ### Task 8: Update documentation
 
-- [x] Extend `docs/tax/portugal-crypto-tax/README.md` with the final reward classification and aggregation rules once implemented.
+- [x] Extend `docs/tax/laws/pt/crypto-tax/README.md` with the final reward classification and aggregation rules once implemented.
 - [X] Keep `docs/domain/crypto_reporting_guidelines.md` as the canonical numbered implementation-guidance document for crypto reporting behavior.
 - [X] Keep `docs/domain/shares_reporting_guidelines.md` as the canonical numbered implementation-guidance document for cross-cutting report-generation behavior.
-- [X] Update `docs/tax/portugal-crypto-tax/sources.md` if new official materials are consulted during implementation.
-- [X] Create canonical chain/operator origin docs under `docs/tax/crypto-origin/` and make `docs/tax/portugal-crypto-tax/sources.md` reference those archived trusted sources.
+- [X] Update `docs/tax/laws/pt/crypto-tax/sources.md` if new official materials are consulted during implementation.
+- [X] Create canonical chain/operator origin docs under `docs/tax/crypto-origin/` and make `docs/tax/laws/pt/crypto-tax/sources.md` reference those archived trusted sources.
 - [x] Document that wallet / platform labels are only the discovery hint for chain lookup, while the final reported chain / country mapping comes from trusted archived sources.
 - [x] Add or update tests and docs together so future changes do not re-expand the filing workload by accident.

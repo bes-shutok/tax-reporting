@@ -63,20 +63,20 @@ The legal and reporting basis has two layers: explicit official rules, and a pra
 Official sources say:
 
 - CIRS (Codigo do IRS), consolidated through Lei n. 75/2024: defines the taxable event for cryptoassets (art. 5, nos. 10-12), the 365-day holding exemption (art. 10, no. 6), loss carry-forward rules, and the deferral mechanism for crypto-denominated remuneration (art. 5, no. 11).
-  - Official source: `docs/tax/portugal-crypto-tax/official/cirs_2025-07_code_consolidated.pdf`
+  - Official source: `docs/tax/laws/pt/crypto-tax/official/cirs_2025-07_code_consolidated.pdf`
 
 - AT (Autoridade Tributaria e Aduaneira) informational booklet on criptoativos, issued 2026-01-12: confirms FIFO methodology, per-wallet FIFO application, and the reporting obligations for crypto-asset service providers.
-  - Official source: `docs/tax/portugal-crypto-tax/official/at_folheto_criptoativos_2026-01-12.pdf`
+  - Official source: `docs/tax/laws/pt/crypto-tax/official/at_folheto_criptoativos_2026-01-12.pdf`
 
 - AT Oficio Circulado 20269/2024 and the official Anexo J instructions define the shape of each reporting line in Quadro 9.4: source country, disposal date and value, acquisition date and value, expenses, foreign tax, counterparty country, and englobamento option. The date fields are Ano, Mês, Dia (day precision only); the form has no time-of-day columns.
-  - Official source: `docs/tax/portugal-crypto-tax/official/at_oficio_circulado_20269_2024.pdf`
-  - Official source: `docs/tax/portugal-crypto-tax/official/modelo3_anexo_j_2025.pdf`
+  - Official source: `docs/tax/laws/pt/crypto-tax/official/at_oficio_circulado_20269_2024.pdf`
+  - Official source: `docs/tax/laws/pt/crypto-tax/official/modelo3_anexo_j_2025.pdf`
 
 - AT Oficio Circulado 20278/2025: provides the updated Modelo 3 filing guidance for the following filing cycle.
-  - Official source: `docs/tax/portugal-crypto-tax/official/at_oficio_circulado_20278_2025.pdf`
+  - Official source: `docs/tax/laws/pt/crypto-tax/official/at_oficio_circulado_20278_2025.pdf`
 
 - Portaria 104/2026: defines the Modelo 3 annex structure including Anexo G1, Anexo J, and Anexo G updates.
-  - Official source: `docs/tax/portugal-crypto-tax/official/dre_portaria_104_2026.pdf`
+  - Official source: `docs/tax/laws/pt/crypto-tax/official/dre_portaria_104_2026.pdf`
 
 Practical reading used by this repo:
 
@@ -130,7 +130,7 @@ Disposal: 10/11/2024 | SOL | Kraken | Long term | Amount: 75.00000 | Cost: 600.0
 
 Under CIRS art. 10, no. 6, gains on cryptoassets held for more than 365 days are exempt from IRS. This line goes to Anexo G1 rather than Anexo J. The repo preserves the holding period in the grouping key so short-term and long-term gains for the same asset on the same day are never merged.
 
-Legal basis: CIRS art. 10, no. 6. Official source: `docs/tax/portugal-crypto-tax/official/cirs_2025-07_code_consolidated.pdf`. The 365-day threshold is an explicit statutory rule.
+Legal basis: CIRS art. 10, no. 6. Official source: `docs/tax/laws/pt/crypto-tax/official/cirs_2025-07_code_consolidated.pdf`. The 365-day threshold is an explicit statutory rule.
 
 ---
 
@@ -148,7 +148,7 @@ All SOL staking rewards, ETH rewards, and ADA airdrops are denominated in crypto
 
 This classification is the default for crypto-denominated income. The code only classifies a reward as taxable now when it can positively identify a fiat-denominated payment (CRG-001, CRG-002 in `docs/domain/crypto_reporting_guidelines.md`).
 
-Legal basis: CIRS art. 5(11). Official source: `docs/tax/portugal-crypto-tax/official/cirs_2025-07_code_consolidated.pdf`. AT PIV 22065 (2023-11-06) confirms the deferral mechanism.
+Legal basis: CIRS art. 5(11). Official source: `docs/tax/laws/pt/crypto-tax/official/cirs_2025-07_code_consolidated.pdf`. AT PIV 22065 (2023-11-06) confirms the deferral mechanism.
 
 ---
 

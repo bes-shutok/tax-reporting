@@ -2,11 +2,6 @@
 
 This file provides guidance to coding agents when working with code in this repository.
 
-## Instruction Synchronization
-
-- `CLAUDE.md` and `AGENTS.md` must always stay synchronized.
-- After each update to the instructions in either file, immediately apply the same update to the other file.
-
 ## Instruction Rules
 
 ### 1. Reusable Engineering Rules
@@ -16,7 +11,12 @@ This file provides guidance to coding agents when working with code in this repo
 - Treat exactly one dot-grouped triplet (for example `1.234`) as ambiguous and raise a clear error. Only multi-group dot patterns (for example `1.234.567`) may be stripped as European thousands.
 - Use f-strings in exception constructors; never pass multiple positional args to an exception constructor.
 - Catch row-level parse errors per row (warn and skip). Do not let one bad row discard the whole dataset.
-- When an optional CSV column is absent, use a safe sentinel (for example `"0"` for fees) rather than `""`.
+- When an optional field from external input is absent, use a type-safe sentinel (e.g. `"0"` for numeric fields) rather than `""`. See `coding_guidelines.md` #4.
+- Data-loss conditions (unmatched items, dropped records) must be logged at warning level or higher, never debug. See `coding_guidelines.md` #5.
+- Validation that depends on complete state must run post-aggregation, not per-row. Mid-accumulation state can be temporarily invalid (e.g. reversal arrives before dividend).
+- Unmatched items from matching algorithms must never be silently discarded — apply an explicit fallback and log a warning.
+- Partial or uncertain results must carry an explicit indicator so the user cannot mistake them for complete resolution. Review flags must include specific actionable explanations, not bare booleans.
+- User-facing output labels should use self-explanatory terminology, not terse names inherited from source formats. See `coding_guidelines.md` #6.
 
 ### 2. Repository Style and Conventions
 
@@ -25,10 +25,11 @@ This file provides guidance to coding agents when working with code in this repo
 - Dividend aggregation must validate one currency per symbol; mismatches must raise `FileProcessingError`.
 - `TradeDate` is a `NamedTuple(year, month, day)`. Do not call `.date()` on it; use it directly or call `.to_datetime()`.
 - When classifying a dividend row as withholding tax, match only the literal string `"Withholding Tax"` — never match on bare `"Tax"`. Dividend descriptions routinely contain "Tax" as a word fragment (e.g. "Tax-Exempt Interest").
-- In `docs/tax/.../official/`, keep only source-origin files. Derived notes and numbered guidance belong outside `official/`, and `sources.md` must record issuing dates.
+- In `docs/tax/.../official/`, keep only source-origin files. Derived notes and numbered guidance belong outside `official/`, and `sources.md` must record issuing dates, effective dates, and superseded dates. See `docs/project-guidelines.md` #1.
 - For external source archive provenance and freshness checks, see `docs/project-guidelines.md` #1.
+- For fiscal-year versioned tax decision points, see `docs/project-guidelines.md` #2.
 - For tax/origin web sources, prefer authoritative PDFs or extracted Markdown/PDF over raw HTML, and reuse local mirrors.
-- Under `docs/tax/`, use `*-tax` for tax-law archives and `*-origin` for chain/operator domicile archives.
+- Under `docs/tax/`, use `laws/<jurisdiction>/crypto-tax/` for tax-law archives (e.g. `laws/pt/crypto-tax/`, `laws/eu/crypto-tax/`) and `crypto-origin/` for chain/operator domicile archives.
 - Share crypto `País da Fonte` resolution across rewards and capital gains. Never use taxpayer residence.
 - Keep the `docs/tax/crypto-origin/` source manifest, registry, and decision log synchronized when changing crypto chain/operator mappings.
 - Chain derivation must use deterministic normalization rules and validate against trusted sources in `docs/tax/crypto-origin/`.
@@ -39,8 +40,7 @@ This file provides guidance to coding agents when working with code in this repo
 ### 3. Repository Constraints
 
 - Optional crypto ingestion must be non-blocking: when Koinly input is missing, mismatched-year, or unparseable, emit an explicit warning and continue IB report generation without crypto data.
-- Partially-unmatched sells (FIFO exhausts all buys before all sells are consumed) must never be silently dropped. Apply the placeholder-buy mechanism to the remaining sell quantity, emit `logger.warning`, and include the resulting capital gain line in the report.
-- When the FIFO loop exits with remaining unmatched trades, use `logger.warning` (not `logger.debug`) so data-loss conditions are always visible in production logs.
+- Partially-unmatched sells (FIFO exhausts all buys before all sells are consumed) must never be silently dropped. Apply the placeholder-buy mechanism to the remaining sell quantity, log at `logger.warning`, and include the resulting capital gain line in the report.
 - When writing a partially-matched buy to the rollover CSV, the fee must be proportional: `proportional_fee = action.fee * (rolled_quantity / original_quantity)`.
 - Dividend per-symbol validation must run after all rows for all symbols are accumulated, not after each row. Mid-accumulation state can be temporarily invalid (e.g. reversal arrives before dividend). Symbols that fail post-accumulation validation are skipped with `logger.warning`; they must not abort processing of other symbols.
 - Aggregate crypto capital gains by `(disposal_date, asset, platform, holding_period)` before reporting. Do not remove or bypass `_aggregate_capital_entries()`.
@@ -52,6 +52,10 @@ This file provides guidance to coding agents when working with code in this repo
 - When `review_required=True` is set on `CryptoCapitalGainEntry` or `CryptoRewardIncomeEntry`, the `review_reason` field must contain a specific, actionable explanation. The Excel output shows "YES: \<reason\>" rather than a bare boolean. See PT-C-030.
 - Crypto capital gains statistics must be computed via `CryptoCapitalGainStats.from_entries()` and rendered as the "1b. CAPITAL GAINS STATISTICS" Excel section. Do not remove or bypass this section. The grand total EUR amounts must be computed from the full entries list, not by summing per-period subtotals, so that unrecognized holding periods do not produce inconsistent statistics.
 - Token origin resolution must use `TokenOriginResolver` and implicit `(date, asset, wallet)` correlation with the Koinly transaction history. The resolver never guesses; unmatched rows return `unknown` (blank in the workbook). Do not reintroduce same-day disposal-context matching.
+- Token origin resolution supports LP (liquidity pool) operations and airdrops:
+  - `AIRDROP` — tokens received via airdrop claims
+  - `LIQUIDITY_WITHDRAWAL` — tokens received from removing liquidity from DEX pools
+  - `LIQUIDITY_PROVISION` — LP tokens received from providing liquidity to DEX pools
 - When aggregating capital entries, the `token_swap_history` field is derived via `_aggregate_origin_field()`: if all lots in a group share the same origin, it is used; otherwise unique non-empty origins are joined with '; '; when some lots have unknown origin, an "N lot(s) unresolved" indicator is appended so the user cannot mistake a partial result for full resolution.
 - Koinly transaction history files use the naming pattern `*transaction_history*.csv` (matching the real Koinly export convention), not `*transactions_report*.csv`.
 
@@ -59,18 +63,18 @@ This file provides guidance to coding agents when working with code in this repo
 
 - Examine existing source data files in the repository (e.g., `resources/source/koinly*/`) directly before asking the user to provide samples or examples. Use Glob and Read tools to find and analyze the actual data.
 - Do not commit changes unless explicitly asked by the user.
-- Never add `Co-Authored-By:` to commit messages.
 - Always use `uv run pytest`, not `uvx pytest`.
-- Write implementation plans to `docs/plans/` in the project repository, not external paths.
+- `valid_from` = audit-only; `service_start_date` = matching. See `development_lessons.md` #17.
 
 ### 5. Domain Knowledge References
 
 - Before changing crypto reporting logic, read `docs/domain/crypto_rules.md`, `docs/domain/crypto_reporting_guidelines.md`, and `docs/domain/crypto_implementation_guidelines.md`. Cite PT-C / CRG rule IDs for law-driven changes.
 - Before implementing new crypto features, read `docs/domain/crypto_implementation_guidelines.md` for lessons learned and common pitfalls to avoid.
+- Before processing Koinly exports or changing Koinly-related code, read `docs/domain/koinly_guidelines.md` for known Koinly behaviors and defects that affect Portuguese reporting (loan repayment disposal treatment, wrapped-asset repair workflow, required settings).
 - Before changing cross-cutting report-generation behavior, read `docs/domain/shares_reporting_guidelines.md` and cite SRG rule IDs for repository-policy changes.
 - Before writing implementation plans, read `docs/domain/plan_quality_guidelines.md` for patterns that minimize review iterations.
 - Before writing or revising repository walkthroughs or presentation artifacts, read `docs/domain/plan_quality_guidelines.md` for presentation-artifact structure and placement.
-- When a crypto presentation or walkthrough makes legal or filing claims, verify the current source set in `docs/tax/portugal-crypto-tax/sources.md` and cite the mirrored official documents.
+- When a crypto presentation or walkthrough makes legal or filing claims, verify the current source set in `docs/tax/laws/pt/crypto-tax/sources.md` and cite the mirrored official documents.
 - Use the authority level and source date in `crypto_rules.md` to check whether a rule may be stale for the current tax year.
 
 ## Project Overview
@@ -94,8 +98,15 @@ Tax reporting tool processes Interactive Brokers and Koinly exports into Portugu
 
 - Layered architecture:
   - Domain: `src/shares_reporting/domain/`
+    - `token_origin.py` — Token acquisition origin resolution domain types
   - Application: `src/shares_reporting/application/`
+    - `crypto_reporting.py` — Crypto tax reporting and Koinly parsing
   - Infrastructure: `src/shares_reporting/infrastructure/`
+    - `koinly_parser.py` — Shared Koinly CSV parsing utilities
+    - `config.py` — Configuration management
+    - `isin_country.py` — ISIN to country resolution
+    - `logging_config.py` — Logging configuration
+    - `validation.py` — Input validation
   - Presentation: `src/shares_reporting/main.py`
 - Core pipeline: extract IB/Koinly data, transform into tax calculations, then persist workbook and rollover outputs.
 - For the fuller architectural walkthrough, see `README.md` and the source tree.
@@ -477,7 +488,8 @@ tax-reporting/
 │       │   ├── accumulators.py   # CapitalGainLineAccumulator, TradePartsWithinDay
 │       │   ├── collections.py    # Type aliases and utilities
 │       │   ├── constants.py      # Domain constants
-│       │   └── exceptions.py     # Domain exceptions
+│       │   ├── exceptions.py     # Domain exceptions
+│       │   └── token_origin.py   # Token acquisition origin resolution domain types
 │       ├── application/      # Application layer
 │       │   ├── __init__.py
 │       │   ├── extraction/      # CSV data parsing package
@@ -486,7 +498,7 @@ tax-reporting/
 │       │   │   ├── contexts.py
 │       │   │   ├── state_machine.py
 │       │   │   └── processing.py
-│       │   ├── crypto_reporting.py # Crypto tax models, Koinly parsing, and TokenOriginResolver
+│       │   ├── crypto_reporting.py # Crypto tax reporting and Koinly parsing
 │       │   ├── transformation.py # Capital gains calculation
 │       │   └── persisting/     # Excel/CSV generation package
 │       │       ├── __init__.py
@@ -501,6 +513,7 @@ tax-reporting/
 │           ├── __init__.py
 │           ├── config.py        # Configuration management
 │           ├── isin_country.py  # ISIN to country resolution
+│           ├── koinly_parser.py # Shared Koinly CSV parsing utilities
 │           ├── logging_config.py # Logging configuration
 │           └── validation.py    # Input validation
 ├── tests/                  # Test suite

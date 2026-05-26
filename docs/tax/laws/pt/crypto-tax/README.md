@@ -12,14 +12,14 @@ This folder stores official references and implementation notes used by the `Cry
 
 - `official/`: downloaded official legal and tax guidance documents only.
 - `sources.md`: source manifest with retrieval date and intended use.
-- `../crypto-origin/`: local archive of chain/operator origin source extracts used by the crypto workbook.
+- `../../../crypto-origin/`: local archive of chain/operator origin source extracts used by the crypto workbook.
 - `examples/`: Koinly export mapping notes and selected input formats.
-- `../../domain/crypto_reporting_guidelines.md`: canonical numbered findings and implementation guidance for crypto reporting.
+- `../../../../domain/crypto_reporting_guidelines.md`: canonical numbered findings and implementation guidance for crypto reporting.
 
 ## Scope Boundary
 
 - This folder is for Portugal-specific tax law, AT forms, circulars, and binding rulings.
-- Chain/operator domicile evidence belongs in `../crypto-origin/`.
+- Chain/operator domicile evidence belongs in `../../../crypto-origin/`.
 
 ## Report Mapping Used by the Code
 

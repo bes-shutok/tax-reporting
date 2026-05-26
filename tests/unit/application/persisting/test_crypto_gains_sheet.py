@@ -163,9 +163,9 @@ class TestCryptoGainsSheetCapitalEntries:
         "Disposal date",
         "Acquisition date",
         "Asset",
-        "Amount",
-        "Cost (EUR)",
-        "Proceeds (EUR)",
+        "Quantity",
+        "Acquisition Cost (EUR)",
+        "Disposal Proceeds (EUR)",
         "Gain/Loss (EUR)",
         "Holding period",
         "Wallet",
@@ -297,8 +297,8 @@ class TestCryptoGainsSheetStatistics:
     STATS_HEADERS = [
         "Holding Period",
         "Count",
-        "Cost Total (EUR)",
-        "Proceeds Total (EUR)",
+        "Acquisition Cost Total (EUR)",
+        "Disposal Proceeds Total (EUR)",
         "Gain/Loss Total (EUR)",
     ]
 

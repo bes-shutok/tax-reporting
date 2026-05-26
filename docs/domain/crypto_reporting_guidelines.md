@@ -10,14 +10,14 @@ Implementation guidelines for the `Crypto` worksheet and related Koinly ingestio
 
 ## Official Source Set
 
-- `docs/tax/portugal-crypto-tax/official/cirs_2025-07_code_consolidated.pdf`
-- `docs/tax/portugal-crypto-tax/official/at_folheto_criptoativos_2026-01-12.pdf`
-- `docs/tax/portugal-crypto-tax/official/at_piv_22065_2023-11-06.pdf`
-- `docs/tax/portugal-crypto-tax/official/at_piv_21506_undated.pdf`
-- `docs/tax/portugal-crypto-tax/official/modelo3_anexo_e_2025.pdf`
-- `docs/tax/portugal-crypto-tax/official/modelo3_anexo_j_2025.pdf`
-- `docs/tax/portugal-crypto-tax/official/at_oficio_circulado_20269_2024.pdf`
-- `docs/tax/portugal-crypto-tax/official/at_oficio_circulado_20278_2025.pdf`
+- `docs/tax/laws/pt/crypto-tax/official/cirs_2025-07_code_consolidated.pdf`
+- `docs/tax/laws/pt/crypto-tax/official/at_folheto_criptoativos_2026-01-12.pdf`
+- `docs/tax/laws/pt/crypto-tax/official/at_piv_22065_2023-11-06.pdf`
+- `docs/tax/laws/pt/crypto-tax/official/at_piv_21506_undated.pdf`
+- `docs/tax/laws/pt/crypto-tax/official/modelo3_anexo_e_2025.pdf`
+- `docs/tax/laws/pt/crypto-tax/official/modelo3_anexo_j_2025.pdf`
+- `docs/tax/laws/pt/crypto-tax/official/at_oficio_circulado_20269_2024.pdf`
+- `docs/tax/laws/pt/crypto-tax/official/at_oficio_circulado_20278_2025.pdf`
 
 ## Official Findings
 

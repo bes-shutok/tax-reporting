@@ -18,4 +18,4 @@ Local archive of chain/operator origin material used to resolve crypto `País da
 ## Scope Boundary
 
 - This folder is for chain/operator origin evidence only.
-- Portugal-specific tax-law sources, AT forms, and filing rules belong in `../portugal-crypto-tax/`.
+- Portugal-specific tax-law sources, AT forms, and filing rules belong in `../laws/pt/crypto-tax/`.

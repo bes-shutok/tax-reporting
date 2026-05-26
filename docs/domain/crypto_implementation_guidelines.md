@@ -620,6 +620,9 @@ class AcquisitionMethod(Enum):
     BRIDGE_TRANSFER = "bridge_transfer"
     DEFI_YIELD = "defi_yield"
     REWARD = "reward"
+    AIRDROP = "airdrop"
+    LIQUIDITY_WITHDRAWAL = "liquidity_withdrawal"
+    LIQUIDITY_PROVISION = "liquidity_provision"
     TRANSFER = "transfer"
     UNKNOWN = "unknown"
 
@@ -661,7 +664,12 @@ class TokenOrigin:
 |---------------------------|-------------------|
 | `exchange` | `swap_conversion` |
 | `transfer` | `bridge_transfer` |
-| `crypto_deposit` or `fiat_deposit` with `reward`/`cashback` tag | `reward` |
+| `crypto_deposit` or `fiat_deposit` with `reward`/`cashback`/`realized gain` tag | `reward` |
+| `crypto_deposit` or `fiat_deposit` with `airdrop` tag | `airdrop` |
+| `crypto_deposit` or `fiat_deposit` with `liquidity out` tag | `liquidity_withdrawal` |
+| `crypto_deposit` or `fiat_deposit` with `liquidity in` tag | `liquidity_provision` |
+| `exchange` with `liquidity out` tag | `liquidity_withdrawal` |
+| `exchange` with `liquidity in` tag | `liquidity_provision` |
 | `crypto_deposit` or `fiat_deposit` with `lending`/`interest` tag | `defi_yield` |
 | `fiat_deposit` (no special tag) | `direct_purchase` |
 | `crypto_deposit` (no special tag) | `transfer` |
@@ -681,6 +689,11 @@ The `Token origin` column in the workbook renders as:
 | Multiple matches for same key | Best-confidence record selected; if tied and conflicting, confidence downgraded to `low` |
 | `Missing cost basis` in notes | Confidence forced to `low` regardless of match quality |
 | Pre-Koinly acquisition dates | No match in lookup; returns `unknown` |
+| LP withdrawal without paired withdrawal (no matching TxHash) | `from_asset` = `"LP position"`, `method` = `LIQUIDITY_WITHDRAWAL`, `confidence` = `medium` |
+| LP withdrawal with paired withdrawal via TxHash | `from_asset` = LP token name (e.g., `"CETUS-LP"`), `method` = `LIQUIDITY_WITHDRAWAL`, `confidence` = `high` |
+| LP provision with paired withdrawals | `from_asset` = joined provided token names (e.g., `"SSUI+USDC"`), `method` = `LIQUIDITY_PROVISION`, `confidence` = `high` |
+| Same-TxHash LP provisions | Multiple LP provision records sharing the same TxHash are merged: `from_asset` = joined token names (e.g., `"SSUI+USDC"`), `confidence` = `high`. This is safe because TxHash is a deterministic on-chain identifier linking all legs of a single atomic transaction. Records are only merged when all have the same platform and method. Do NOT merge across different TxHash values. |
+| `crypto_withdrawal` rows | Indexed by TxHash for provenance lookup; not directly resolvable (no `Received Currency`) |
 
 ### Testing Requirements
 

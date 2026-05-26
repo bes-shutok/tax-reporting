@@ -8,17 +8,13 @@ from decimal import Decimal
 import pytest
 
 from shares_reporting.application.crypto_reporting import (
-    AcquisitionMethod,
     CryptoCapitalGainEntry,
     OperatorOrigin,
     RewardTaxClassification,
-    TokenOrigin,
-    TokenOriginResolver,
     _aggregate_capital_entries,
     _classify_reward_tax_status,
     _derive_chain,
     _filter_immaterial_entries,
-    _format_datetime,
     _is_temporally_valid,
     _is_valid_tabela_x_country,
     _parse_koinly_decimal,
@@ -29,6 +25,12 @@ from shares_reporting.application.crypto_reporting import (
     load_koinly_crypto_report,
     resolve_operator_origin,
 )
+from shares_reporting.domain.token_origin import (
+    AcquisitionMethod,
+    TokenOrigin,
+    TokenOriginResolver,
+)
+from shares_reporting.infrastructure.koinly_parser import _format_datetime
 
 _TEST_OPERATOR = OperatorOrigin(
     platform="TestPlatform",
