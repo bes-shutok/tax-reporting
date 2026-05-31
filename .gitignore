@@ -95,3 +95,4 @@ docs/personal/
 .continue/
 .cursor/rules
 tmp/
+.claude/settings.local.json
