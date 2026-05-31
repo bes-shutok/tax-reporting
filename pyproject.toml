@@ -31,7 +31,7 @@ dev = [
 ]
 
 [project.scripts]
-tax-reporting = "shares_reporting.main:cli"
+tax-reporting = "tax_reporting.main:cli"
 
 [project.urls]
 homepage = "https://github.com/bes-shutok/tax-reporting"
@@ -42,7 +42,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/shares_reporting"]
+packages = ["src/tax_reporting"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -199,7 +199,7 @@ line-ending = "auto"
 docstring-code-format = true
 
 [tool.ruff.lint.isort]
-known-first-party = ["shares_reporting"]
+known-first-party = ["tax_reporting"]
 known-third-party = ["pytest", "openpyxl", "pycountry"]
 
 [tool.ruff.lint.per-file-ignores]

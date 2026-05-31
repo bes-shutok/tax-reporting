@@ -4,15 +4,15 @@ from decimal import Decimal
 
 import pytest
 
-from shares_reporting.application.transformation import calculate_fifo_gains
-from shares_reporting.domain.constants import PLACEHOLDER_YEAR
-from shares_reporting.domain.entities import (
+from tax_reporting.application.transformation import calculate_fifo_gains
+from tax_reporting.domain.constants import PLACEHOLDER_YEAR
+from tax_reporting.domain.entities import (
     CurrencyCompany,
     QuantitatedTradeAction,
     TradeAction,
     TradeCycle,
 )
-from shares_reporting.domain.value_objects import Company, Currency, parse_company, parse_currency
+from tax_reporting.domain.value_objects import Company, Currency, parse_company, parse_currency
 
 
 @pytest.mark.unit

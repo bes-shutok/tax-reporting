@@ -14,14 +14,14 @@ from pathlib import Path
 import openpyxl
 import pytest
 
-from shares_reporting.application.crypto_reporting import (
+from tax_reporting.application.crypto_reporting import (
     RewardTaxClassification,
     load_koinly_crypto_report,
 )
-from shares_reporting.application.extraction import parse_ib_export_all
-from shares_reporting.application.persisting import generate_tax_report
-from shares_reporting.application.transformation import calculate_fifo_gains
-from shares_reporting.domain.collections import TradeCyclePerCompany
+from tax_reporting.application.extraction import parse_ib_export_all
+from tax_reporting.application.persisting import generate_tax_report
+from tax_reporting.application.transformation import calculate_fifo_gains
+from tax_reporting.domain.collections import TradeCyclePerCompany
 
 EXAMPLE_DIR = Path("resources", "source", "example")
 EXAMPLE_IB_EXPORT = EXAMPLE_DIR / "ib_export.csv"
@@ -113,6 +113,19 @@ def test_example_full_pipeline_generates_excel(tmp_path: Path):
     assert "Crypto Gains" in wb.sheetnames
     assert "Crypto Rewards" in wb.sheetnames
     assert "Crypto Reconciliation" in wb.sheetnames
+    assert "Loan Activity" in wb.sheetnames
+    assert "Platform Assumptions" in wb.sheetnames
+
+    # Verify Loan Activity sheet has expected structure
+    loan_ws = wb["Loan Activity"]
+    header_values = [cell.value for cell in list(loan_ws.iter_rows(min_row=3, max_row=3))[0]]
+    assert "Asset" in header_values
+    assert "Received Count" in header_values
+    assert "Received Amount" in header_values
+    assert "Repaid Count" in header_values
+    assert "Repaid Amount" in header_values
+    assert "Balance Status" in header_values
+
     wb.close()
 
 

@@ -4,8 +4,9 @@ from decimal import Decimal
 
 import openpyxl
 import pytest
+from openpyxl.styles import PatternFill
 
-from shares_reporting.application.crypto_reporting import (
+from tax_reporting.application.crypto_reporting import (
     CapitalGainPeriodStats,
     CryptoCapitalGainEntry,
     CryptoCapitalGainStats,
@@ -13,7 +14,7 @@ from shares_reporting.application.crypto_reporting import (
     CryptoRewardIncomeEntry,
     CryptoTaxReport,
 )
-from shares_reporting.application.persisting.crypto_gains_sheet import write_crypto_gains_sheet
+from tax_reporting.application.persisting.crypto_gains_sheet import write_crypto_gains_sheet
 from tests.conftest import make_operator_origin
 
 
@@ -63,11 +64,12 @@ def _make_stats() -> CryptoCapitalGainStats:
     )
 
 
-def _make_crypto_tax_report(
+def _make_crypto_tax_report(  # noqa: PLR0913
     capital_entries: list[CryptoCapitalGainEntry] | None = None,
     stats: CryptoCapitalGainStats | None = None,
     reward_entries: list[CryptoRewardIncomeEntry] | None = None,
     pdf_summary: object = None,
+    zero_basis_review_threshold: Decimal = Decimal("50"),
 ) -> CryptoTaxReport:
 
     entries = capital_entries if capital_entries is not None else [_make_capital_entry()]
@@ -92,6 +94,7 @@ def _make_crypto_tax_report(
         reconciliation=reconciliation,
         capital_gain_stats=stats or _make_stats(),
         pdf_summary=pdf_summary,  # type: ignore[arg-type]
+        zero_basis_review_threshold=zero_basis_review_threshold,
     )
 
 
@@ -133,7 +136,7 @@ class TestCryptoGainsSheetTitleAndMetadata:
         assert ws.cell(2, 2).value == 2025
 
     def test_pdf_summary_written_when_present(self):
-        from shares_reporting.application.crypto_reporting import CryptoCompletePdfSummary
+        from tax_reporting.application.crypto_reporting import CryptoCompletePdfSummary
 
         pdf = CryptoCompletePdfSummary(
             period="01 Jan 2025 to 31 Dec 2025", timezone="Europe/Lisbon", extracted_tokens=42
@@ -231,10 +234,10 @@ class TestCryptoGainsSheetCapitalEntries:
         assert ws.cell(data_row, 1).value == "2025-06-15"
         assert ws.cell(data_row, 2).value == "2025-01-10"
         assert ws.cell(data_row, 3).value == "BTC"
-        assert ws.cell(data_row, 4).value == float(Decimal("0.5"))
-        assert ws.cell(data_row, 5).value == float(Decimal("20000"))
-        assert ws.cell(data_row, 6).value == float(Decimal("25000"))
-        assert ws.cell(data_row, 7).value == float(Decimal("5000"))
+        assert ws.cell(data_row, 4).value == Decimal("0.5")
+        assert ws.cell(data_row, 5).value == Decimal("20000")
+        assert ws.cell(data_row, 6).value == Decimal("25000")
+        assert ws.cell(data_row, 7).value == Decimal("5000")
         assert ws.cell(data_row, 8).value == "Short-term"
         assert ws.cell(data_row, 9).value == "Kraken"
         assert ws.cell(data_row, 10).value == "Kraken"
@@ -383,9 +386,9 @@ class TestCryptoGainsSheetStatistics:
                 stats_title_row = r
                 break
         data_start = stats_title_row + 2
-        assert ws.cell(data_start, 3).value == float(Decimal("20000"))
-        assert ws.cell(data_start, 4).value == float(Decimal("25000"))
-        assert ws.cell(data_start, 5).value == float(Decimal("5000"))
+        assert ws.cell(data_start, 3).value == Decimal("20000")
+        assert ws.cell(data_start, 4).value == Decimal("25000")
+        assert ws.cell(data_start, 5).value == Decimal("5000")
 
 
 @pytest.mark.unit
@@ -401,7 +404,7 @@ class TestCryptoGainsSheetAutoWidth:
 
     def test_column_widths_respect_max_cell_width_cap(self):
         """Verify no column exceeds MAX_CELL_WIDTH + 2 even with long token origins."""
-        from shares_reporting.application.persisting.excel_utils import MAX_CELL_WIDTH
+        from tax_reporting.application.persisting.excel_utils import MAX_CELL_WIDTH
 
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
@@ -417,7 +420,7 @@ class TestCryptoGainsSheetAutoWidth:
                 ), f"Column {col_letter} width {col_dim.width} exceeds cap {max_allowed}"
 
     def test_all_columns_have_reasonable_widths(self):
-        """Verify no column is collapsed — all have width >= MIN_DATA_WIDTH floor."""
+        """Verify no column is collapsed: all have width >= MIN_DATA_WIDTH floor."""
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
         write_crypto_gains_sheet(wb, report)
@@ -447,3 +450,94 @@ class TestCryptoGainsSheetEmptyEntries:
         assert header_row is not None
         next_value = ws.cell(header_row + 1, 1).value
         assert next_value is None or "1b. CAPITAL GAINS STATISTICS" in str(next_value)
+
+
+_RED_FILL = PatternFill(start_color="FFFF0000", end_color="FFFF0000", fill_type="solid")
+_NUM_CAPITAL_COLUMNS = 17
+
+
+def _find_header_row(ws: openpyxl.worksheet.worksheet.Worksheet) -> int:
+    for r in range(1, ws.max_row + 1):
+        if ws.cell(r, 1).value == "Disposal date":
+            return r
+    raise AssertionError("Header row not found")
+
+
+def _is_red_fill(cell: openpyxl.cell.cell.Cell) -> bool:
+    fill = cell.fill
+    return (
+        fill.start_color.rgb == "FFFF0000"
+        and fill.end_color.rgb == "FFFF0000"
+        and fill.fill_type == "solid"
+    )
+
+
+@pytest.mark.unit
+class TestCryptoGainsSheetZeroCostRedBackground:
+    """Tests for red background rendering on zero-cost entries above threshold."""
+
+    def test_render_zero_cost_entry_has_red_background(self):
+        entry = _make_capital_entry(cost_eur=Decimal("0"), gain_loss_eur=Decimal("500"))
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        wb = openpyxl.Workbook()
+        write_crypto_gains_sheet(wb, report)
+        ws = wb["Crypto Gains"]
+        data_row = _find_header_row(ws) + 1
+        for col in range(1, _NUM_CAPITAL_COLUMNS + 1):
+            assert _is_red_fill(ws.cell(data_row, col)), f"Column {col} should have red fill"
+
+    def test_render_zero_cost_below_threshold_no_red_background(self):
+        entry = _make_capital_entry(cost_eur=Decimal("0"), gain_loss_eur=Decimal("0.5"))
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        wb = openpyxl.Workbook()
+        write_crypto_gains_sheet(wb, report)
+        ws = wb["Crypto Gains"]
+        data_row = _find_header_row(ws) + 1
+        for col in range(1, _NUM_CAPITAL_COLUMNS + 1):
+            assert not _is_red_fill(ws.cell(data_row, col)), f"Column {col} should NOT have red fill"
+
+    def test_render_nonzero_cost_no_red_background(self):
+        entry = _make_capital_entry(cost_eur=Decimal("100"), gain_loss_eur=Decimal("5000"))
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        wb = openpyxl.Workbook()
+        write_crypto_gains_sheet(wb, report)
+        ws = wb["Crypto Gains"]
+        data_row = _find_header_row(ws) + 1
+        for col in range(1, _NUM_CAPITAL_COLUMNS + 1):
+            assert not _is_red_fill(ws.cell(data_row, col)), f"Column {col} should NOT have red fill"
+
+    def test_render_normal_row_no_red_background(self):
+        entry = _make_capital_entry(cost_eur=Decimal("20000"), gain_loss_eur=Decimal("5000"))
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        wb = openpyxl.Workbook()
+        write_crypto_gains_sheet(wb, report)
+        ws = wb["Crypto Gains"]
+        data_row = _find_header_row(ws) + 1
+        for col in range(1, _NUM_CAPITAL_COLUMNS + 1):
+            assert not _is_red_fill(ws.cell(data_row, col)), f"Column {col} should NOT have red fill"
+
+    def test_render_zero_cost_at_exact_threshold_has_red_background(self):
+        """Gain/loss exactly equal to threshold must trigger red fill (>= boundary)."""
+        entry = _make_capital_entry(cost_eur=Decimal("0"), gain_loss_eur=Decimal("50"))
+        report = _make_crypto_tax_report(
+            capital_entries=[entry], zero_basis_review_threshold=Decimal("50")
+        )
+        wb = openpyxl.Workbook()
+        write_crypto_gains_sheet(wb, report)
+        ws = wb["Crypto Gains"]
+        data_row = _find_header_row(ws) + 1
+        for col in range(1, _NUM_CAPITAL_COLUMNS + 1):
+            assert _is_red_fill(ws.cell(data_row, col)), f"Column {col} should have red fill at threshold"
+
+    def test_render_zero_cost_just_below_threshold_no_red_background(self):
+        """Gain/loss just below threshold must NOT trigger red fill."""
+        entry = _make_capital_entry(cost_eur=Decimal("0"), gain_loss_eur=Decimal("49.99"))
+        report = _make_crypto_tax_report(
+            capital_entries=[entry], zero_basis_review_threshold=Decimal("50")
+        )
+        wb = openpyxl.Workbook()
+        write_crypto_gains_sheet(wb, report)
+        ws = wb["Crypto Gains"]
+        data_row = _find_header_row(ws) + 1
+        for col in range(1, _NUM_CAPITAL_COLUMNS + 1):
+            assert not _is_red_fill(ws.cell(data_row, col)), f"Column {col} should NOT have red fill below threshold"

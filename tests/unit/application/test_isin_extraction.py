@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from shares_reporting.application.extraction import parse_ib_export
-from shares_reporting.application.extraction.processing import _extract_csv_data
-from shares_reporting.domain.exceptions import FileProcessingError
+from tax_reporting.application.extraction import parse_ib_export
+from tax_reporting.application.extraction.processing import _extract_csv_data
+from tax_reporting.domain.exceptions import FileProcessingError
 
 
 @pytest.mark.unit

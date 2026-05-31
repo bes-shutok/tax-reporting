@@ -2,13 +2,13 @@ from decimal import Decimal
 
 import pytest
 
-from shares_reporting.application.extraction import parse_dividend_income
-from shares_reporting.application.extraction.models import IBCsvData
-from shares_reporting.application.extraction.processing import _process_dividends
-from shares_reporting.domain.constants import DECIMAL_ZERO
-from shares_reporting.domain.entities import DividendIncomePerSecurity
-from shares_reporting.domain.exceptions import DataValidationError
-from shares_reporting.domain.value_objects import parse_currency
+from tax_reporting.application.extraction import parse_dividend_income
+from tax_reporting.application.extraction.models import IBCsvData
+from tax_reporting.application.extraction.processing import _process_dividends
+from tax_reporting.domain.constants import DECIMAL_ZERO
+from tax_reporting.domain.entities import DividendIncomePerSecurity
+from tax_reporting.domain.exceptions import DataValidationError
+from tax_reporting.domain.value_objects import parse_currency
 
 
 @pytest.mark.unit

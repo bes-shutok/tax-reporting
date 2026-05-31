@@ -2,6 +2,49 @@
 
 **Purpose**: Guidelines for writing implementation plans that minimize review iterations and ambiguity.
 
+## Gist & Examples Section Format
+
+Every plan must include a `## Gist & Examples` section immediately after the header. This is the human-readable on-ramp for implementers and reviewers.
+
+### Required Content
+
+1. **What changes** — One paragraph explaining the feature in plain language
+2. **Why needed** — Problem statement or context
+3. **Concrete examples** — Input/output examples showing before/after behavior
+4. **Edge cases** — Non-obvious scenarios that influenced design decisions
+
+### Example Format
+
+```markdown
+## Gist & Examples
+
+**What changes:** [One plain-language paragraph explaining what changes]
+
+**Why needed:** [Problem statement or context — why this change is necessary]
+
+**Example input:** [Concrete input data structure, transaction, API call, etc.]
+
+**Example output:** [Concrete output showing the transformation or result]
+
+**Edge cases handled:** [List non-obvious scenarios that influenced design]
+```
+
+**Guidelines:**
+- Use domain-appropriate examples (database rows, API responses, config formats, etc.)
+- Avoid domain jargon in the "What changes" paragraph — explain for a general technical audience
+- Keep examples concise but complete enough to show the transformation
+- In "Edge cases", focus on non-obvious scenarios, not routine happy paths
+
+### Anti-Patterns to Avoid
+
+| Anti-Pattern | Correct Approach |
+|--------------|-----------------|
+| "Rebuild FIFO from TH" (too terse) | "Rebuild FIFO from TH because source system output is contaminated by X" |
+| "Handle edge cases" (vague) | "Handle: empty dates, missing keys, zero values, future timestamps" |
+| No examples | Add concrete input → output transformations showing the behavior |
+| Missing unit context | Always specify units (EUR vs USD, bytes vs KB, milliseconds vs seconds) |
+```
+
 ## Core Concepts
 
 - **Edge case**: A boundary condition or special scenario that requires explicit handling
@@ -47,13 +90,13 @@ When specifying patterns in plans:
 **Example**:
 
 ```markdown
-### Task: Normalize wallet aliases
+### Task: Normalize platform-specific aliases
 
-- [X] Normalize ONLY the exact pattern `ByBit (n)` where n is any digit
-- [X] Use exact pattern matching: `re.match(r"^ByBit \(\d+\)$", wallet)`
-- [X] DO NOT normalize other platforms' numbered wallets (e.g., `Kraken (2)`)
-- [X] DO NOT normalize ByBit sub-products (e.g., `ByBit Earn (2)`, `ByBit Savings (3)`)
-- [X] Test negative cases to verify over-normalization doesn't occur
+- [ ] Normalize ONLY the exact pattern `Platform (n)` where n is any digit
+- [ ] Use exact pattern matching: `re.match(r"^Platform \(\d+\)$", input)`
+- [ ] DO NOT normalize other platforms' numbered aliases
+- [ ] DO NOT normalize sub-products (e.g., `Platform Earn (2)`, `Platform Savings (3)`)
+- [ ] Test negative cases to verify over-normalization doesn't occur
 ```
 
 ### Data Classification Specifications
@@ -135,29 +178,57 @@ When specifying validation timing:
 
 | Anti-Pattern | Correct Specification |
 |--------------|---------------------|
-| "Normalize ByBit (2) to ByBit" | "Normalize ONLY exact pattern `ByBit (n)` using `re.match(r"^ByBit \(\d+\)$")`" |
-| "Strip numbered suffixes" | "Strip suffix ONLY for ByBit; preserve other platforms" |
-| "Match wallets like..." | "Exact pattern: `^PATTERN$` with examples of non-matches" |
+| "Normalize (2) suffix" (no target) | "Normalize ONLY exact pattern `Platform (n)` using `re.match(r"^Platform \(\d+\)$")`" |
+| "Strip numbered suffixes" (too broad) | "Strip suffix ONLY for specific platform; preserve others explicitly" |
+| "Match patterns like..." | "Exact pattern: `^PATTERN$` with examples of what NOT to match" |
 
 ### Undefined Terms
 
 | Anti-Pattern | Correct Specification |
 |--------------|---------------------|
-| "Fiat-denominated rewards" | "Rewards in ISO 4217 fiat currency codes (excluding XAG, XAU, ...)" |
-| "Before aggregating" | "Step 3: Validate → Step 4: Aggregate (validation before aggregation)" |
-| "Fail with clear error" | "Raise FileProcessingError, cleanup (remove sheet, close workbook, remove file), re-raise" |
+| "Denominated rewards" (what denom?) | "Rewards in ISO 4217 fiat currency codes (excluding XAG, XAU, ...)" |
+| "Before aggregating" (what order?) | "Step 3: Validate → Step 4: Aggregate (validation BEFORE aggregation)" |
+| "Fail with clear error" (what cleanup?) | "Raise ErrorType, cleanup (remove sheet, close file), re-raise" |
 
 ### Missing Negative Requirements
 
 | Anti-Pattern | Correct Specification |
 |--------------|---------------------|
-| (none listed) | "DO NOT normalize Kraken (2), Ethereum (ETH) - 0xabc (2), etc." |
-| (none listed) | "DO NOT validate DEFERRED_BY_LAW entries for country codes" |
-| (none listed) | "DO NOT guess chain from asset symbol; return Unknown instead" |
+| No negative requirements | "DO NOT normalize other platforms' numbered wallets; preserve explicitly" |
+| No negative requirements | "DO NOT validate DEFERRED entries for condition X; only validate TAXABLE_NOW" |
+| No negative requirements | "DO NOT guess missing values; return Unknown/Fallback instead" |
 
 ## Testing Requirements
 
 ### Required Test Categories
+
+1. **Positive tests**: What should happen
+2. **Negative tests**: What should NOT happen
+3. **Edge case tests**: Boundary conditions
+4. **Error path tests**: Exception handling and cleanup
+
+### Pre-Computation Bug Pattern Checks
+
+Before finalizing tasks that involve data processing, calculations, or external data parsing, verify these common bug patterns are addressed:
+
+| Pattern | What to Check | Example Domain |
+|---------|---------------|----------------|
+| **Unit verification** | Numeric fields use correct units (currency vs raw count, bytes vs KB, ms vs seconds) | Using crypto quantity instead of EUR value; treating bytes as KB |
+| **Temporal gating** | Earlier events cannot consume later state | Past sell consuming future buy; old state validating new input |
+| **Empty string handling** | Aggregation `min()`/`max()` filters out empty strings | `""` corrupts `min()` aggregation keys |
+| **Boundary values** | Tests include exact threshold values | Off-by-one: 365 vs 364/366; threshold vs threshold±1 |
+| **Zero-cost propagation** | Zero-cost entries flagged with `review_required` | Distinguishing exhaustion from legitimate zero-cost (airdrops, gifts) |
+| **Fee/completeness** | All cost components included in calculations | Disposal fee missing from gain; tax withheld from net proceeds |
+| **Error scope** | Row-level parse errors caught per-row | One bad row crashes entire pipeline |
+
+**How to apply:** When writing a task that processes external data or performs calculations, mentally walk through each item's lifecycle and verify:
+- What happens when a field is empty, zero, or max value?
+- What happens when a timestamp is out of order or missing?
+- What happens when a pool/set is exhausted?
+- Are all components (principal, fee, tax) accounted for?
+- Does one bad item crash the pipeline or get skipped with a warning?
+
+### Test Specification Format
 
 1. **Positive tests**: What should happen
 2. **Negative tests**: What should NOT happen
@@ -169,7 +240,45 @@ When specifying validation timing:
 ```markdown
 ### Testing Requirements
 
-**Positive tests**:
+**Positive tests** (what should happen):
+- Input X produces expected output Y
+
+**Negative tests** (what should NOT happen):
+- Input Z should NOT be normalized/processed/modified
+
+**Edge cases** (boundary conditions):
+- Empty input → specific expected behavior (preserved, error, or default)
+- Max value input → specific expected behavior
+- Boundary value at threshold → specific expected classification
+
+**Error path tests**:
+- ErrorType A triggers cleanup and re-raise
+- ErrorType B triggers fallback behavior with warning
+```
+
+### Integration Testing Requirements
+
+For multi-step pipelines (e.g., parse → transform → persist), include integration tests that exercise the full flow, not just unit tests for individual components.
+
+**When integration tests are required:**
+- Data flows through multiple modules before reaching output
+- Cross-module state needs verification (e.g., transformation + aggregation + rendering)
+- Complex interactions (e.g., deferred resolution, cross-component references) that only emerge end-to-end
+
+**Guidance:** Write integration tests that verify the full end-to-end behavior, not just individual component correctness.
+
+### Boundary Test Checklist
+
+When implementing threshold-based logic (`>=`, `<=`, `>`, `<`), always include tests at the exact boundary value:
+
+| Threshold Type | Example Boundary Test |
+|-----------------|------------------------|
+| Holding period | Exactly 365 days (not just 364 and 366) |
+| Zero-basis threshold | Exactly `threshold` EUR value |
+| Pagination limit | Exactly `page_size` items |
+| Rate limits | Exactly at limit (not just below/above) |
+
+Off-by-one errors at boundaries are a common source of incorrect tax classifications and business logic bugs.
 - ByBit (2) → ByBit (normalized)
 
 **Negative tests** (what should NOT happen):
@@ -216,6 +325,56 @@ For project-specific domains (e.g., crypto tax):
 - Post-mortem: `docs/post-mortem/aggregate-crypto-rewards-review-analysis.md`
 - Crypto implementation: `docs/domain/crypto_implementation_guidelines.md`
 - Plan example: `docs/plans/aggregate-crypto-rewards-income.md`
+
+## Return-Type Must Carry the Data Promised in Error Messages
+
+When a plan task promises an error message containing structured data (e.g. "include row 47 in
+the review reason"), verify that the return type of the function producing that data actually
+carries the structured information.
+
+**Common failure:** promising "TH parse error on row <N>: ..." in a review reason, but specifying
+the return type as `set[str]` (bare asset names). A `set[str]` cannot reconstruct which row
+failed. The correct type is `dict[str, list[int]]` (asset → failed row indices) or an equivalent
+structured record.
+
+**Check:** for every plan task that mentions row indices, line numbers, record IDs, or similar
+position data in error messages, verify the return type of the producing function carries those
+values all the way to the consuming function.
+
+---
+
+## Verify Pipeline Execution Order Before Reusing an Existing Mechanism
+
+Before writing a plan task that reuses an existing pipeline mechanism for a new case, verify the
+execution order allows it.
+
+**Example from this project:** same-asset cross-platform transfers were planned to reuse
+`resolve_cross_asset_exchanges` (which resolves deferred acquisitions from carry-over).
+The plan failed because `resolve_cross_asset_exchanges` runs **before** per-platform FIFO for
+the current asset, so the sender platform's carry-over does not yet exist at resolution time.
+The fix requires either a second pass or platform-ordered processing.
+
+**Check:** for each "reuse existing mechanism X for new case Y" plan task, trace the moment X
+runs in the pipeline and verify that all inputs X needs for Y exist at that moment.
+
+---
+
+## Key-Type Changes Require Tracing All Producers AND Consumers
+
+When a plan task changes the key type of a shared data structure (e.g. from `str` to
+`tuple[str, str]`), trace all **producers** (functions that write entries into the structure) and
+all **consumers** (functions that look up entries) and update every one of them.
+
+**Example from this project:** changing `merged_carryover` from `tx_key → Decimal` to
+`(tx_key, platform) → Decimal` required not just updating the merge loop (producer) but also
+adding a sender-platform correlation map so the lookup in `resolve_cross_asset_exchanges`
+(consumer) knew which platform to pair with each `tx_key`. The producer-only change would have
+left the consumer unable to form the new key.
+
+**Check:** grep for every write to the data structure AND every read from it. List them in the
+plan task. For each reader, verify it has access to all components of the new key.
+
+---
 
 ## Staged Replacement Planning
 

@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from shares_reporting.application.extraction.processing import _extract_csv_data, _process_dividends
-from shares_reporting.application.persisting import generate_tax_report
+from tax_reporting.application.extraction.processing import _extract_csv_data, _process_dividends
+from tax_reporting.application.persisting import generate_tax_report
 
 
 @pytest.mark.unit

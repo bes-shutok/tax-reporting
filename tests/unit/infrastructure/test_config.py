@@ -6,12 +6,18 @@ from decimal import Decimal
 
 import pytest
 
-from shares_reporting.infrastructure.config import (
+from tax_reporting.infrastructure.config import (
     Config,
     ConversionRate,
+    TaxJurisdictionConfig,
     _load_security_config,
+    _load_tax_jurisdiction_config,
 )
-from shares_reporting.infrastructure.validation import SecurityConfig
+from tax_reporting.infrastructure.validation import SecurityConfig
+
+_TEST_JURISDICTION = TaxJurisdictionConfig(
+    country="PT", fiscal_year=2025, exclude_loan_repayment_gains=False, zero_basis_review_threshold=Decimal("50")
+)
 
 
 @pytest.mark.unit
@@ -26,7 +32,7 @@ class TestConfig:
             ConversionRate(base="EUR", calculated="GBP", rate=Decimal("0.85")),
         ]
 
-        config = Config(base=base_currency, rates=rates)
+        config = Config(base=base_currency, rates=rates, tax_jurisdiction=_TEST_JURISDICTION)
         assert config.base == base_currency
         assert len(config.rates) == 2
         assert config.security is not None  # Should have default security config
@@ -37,7 +43,7 @@ class TestConfig:
         rates = []
         security = SecurityConfig(max_file_size_mb=50)
 
-        config = Config(base=base_currency, rates=rates, security=security)
+        config = Config(base=base_currency, rates=rates, tax_jurisdiction=_TEST_JURISDICTION, security=security)
         assert config.base == base_currency
         assert len(config.rates) == 0
         assert config.security.max_file_size_mb == 50
@@ -115,75 +121,373 @@ class TestLoadSecurityConfig:
 class TestConfigValidation:
     """Test configuration validation logic."""
 
-    def test_base_currency_validation(self):
-        """Test base currency validation logic."""
-        # Create a ConfigParser with valid config
-        config = configparser.ConfigParser()
-        # type: ignore[attr-defined] - ConfigParser.optionxform is assignable at runtime
-        config.optionxform = lambda optionstr: optionstr  # Parameter name matches ConfigParser's signature
+    def test_base_currency_validation_rejects_mismatched_rate(self, tmp_path, monkeypatch):
+        """load_configuration_from_file raises ValueError when a rate key has a different base currency."""
+        from tax_reporting.infrastructure.config import load_configuration_from_file
 
-        config["COMMON"] = {"TARGET CURRENCY": "EUR"}
-        config["EXCHANGE RATES"] = {
-            "EUR/USD": "1.2",
-            "EUR/GBP": "0.85",
-        }
-
-        # Extract values and test validation logic
-        base_currency = config["COMMON"]["TARGET CURRENCY"]
-        rates = []
-
-        for key in config["EXCHANGE RATES"]:
-            base, calculated = key.split("/")
-            if base != base_currency:
-                with pytest.raises(ValueError, match="Base currency mismatch"):
-                    raise ValueError(f"Base currency mismatch: {base} != {base_currency}")
-            rates.append(ConversionRate(base=base, calculated=calculated, rate=Decimal(config["EXCHANGE RATES"][key])))
-
-        # Verify valid config
-        assert base_currency == "EUR"
-        assert len(rates) == 2
-        assert all(rate.base == base_currency for rate in rates)
-
-    def test_complete_config_construction(self):
-        """Test complete configuration construction from individual parts."""
-        # Create a ConfigParser with valid config
-        config = configparser.ConfigParser()
-        # type: ignore[attr-defined] - ConfigParser.optionxform is assignable at runtime
-        config.optionxform = lambda optionstr: optionstr  # Parameter name matches ConfigParser's signature
-
-        config["COMMON"] = {"TARGET CURRENCY": "EUR"}
-        config["EXCHANGE RATES"] = {
-            "EUR/USD": "1.2",
-            "EUR/GBP": "0.85",
-        }
-        config["SECURITY"] = {
-            "MAX_FILE_SIZE_MB": "100",
-            "MAX_TICKER_LENGTH": "10",
-            "MAX_CURRENCY_LENGTH": "3",
-            "ALLOWED_EXTENSIONS": ".csv,.txt",
-        }
-
-        # Load security config separately
-        logger = logging.getLogger(__name__)
-        security_config = _load_security_config(config, logger)
-
-        # Create our expected Config object
-        expected_config = Config(
-            base="EUR",
-            rates=[
-                ConversionRate(base="EUR", calculated="USD", rate=Decimal("1.2")),
-                ConversionRate(base="EUR", calculated="GBP", rate=Decimal("0.85")),
-            ],
-            security=security_config,
+        (tmp_path / "config.ini").write_text(
+            "[COMMON]\nTARGET CURRENCY = EUR\n"
+            "[EXCHANGE RATES]\nUSD/EUR = 0.9\n"
         )
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(ValueError, match="Base currency mismatch"):
+            load_configuration_from_file()
 
-        # Verify the config is properly constructed
-        assert expected_config.base == "EUR"
-        assert len(expected_config.rates) == 2
-        assert expected_config.rates[0].base == "EUR"
-        assert expected_config.rates[0].calculated == "USD"
-        assert expected_config.rates[0].rate == Decimal("1.2")
-        assert expected_config.rates[1].calculated == "GBP"
-        assert expected_config.rates[1].rate == Decimal("0.85")
-        assert expected_config.security.max_file_size_mb == 100
-        assert ".csv" in expected_config.security.allowed_extensions
+    def test_complete_config_construction(self, tmp_path, monkeypatch):
+        """load_configuration_from_file produces a Config with correct base, rates and security defaults."""
+        from tax_reporting.infrastructure.config import load_configuration_from_file
+
+        (tmp_path / "config.ini").write_text(
+            "[COMMON]\nTARGET CURRENCY = EUR\n"
+            "[EXCHANGE RATES]\nEUR/USD = 1.2\nEUR/GBP = 0.85\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        cfg = load_configuration_from_file()
+        assert cfg.base == "EUR"
+        assert len(cfg.rates) == 2
+        assert cfg.rates[0].base == "EUR"
+        assert cfg.rates[0].calculated == "USD"
+        assert cfg.rates[0].rate == Decimal("1.2")
+        assert cfg.rates[1].calculated == "GBP"
+        assert cfg.rates[1].rate == Decimal("0.85")
+        assert cfg.security.max_file_size_mb > 0
+        assert ".csv" in cfg.security.allowed_extensions
+
+
+@pytest.mark.unit
+class TestLoadTaxJurisdictionConfig:
+    """Tests for TaxJurisdictionConfig parsing from config file."""
+
+    _PT_TOML = "[meta]\nfiscal_year = 2025\n[countries.PT]\nexclude_loan_repayment_gains = true\n"
+    _NO_COUNTRY_TOML = "[meta]\nfiscal_year = 2025\n"
+
+    def _make_config(self, section_entries: dict | None) -> configparser.ConfigParser:
+        cp = configparser.ConfigParser()
+        cp.optionxform = lambda optionstr: optionstr
+        if section_entries is not None:
+            cp["TAX JURISDICTION"] = section_entries
+        return cp
+
+    def test_load_tax_jurisdiction_config_parses_country_and_year(self, tmp_path, monkeypatch):
+        import tax_reporting.infrastructure.config as config_module
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(self._PT_TOML)
+        cp = self._make_config({"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025"})
+        logger = logging.getLogger(__name__)
+        result = _load_tax_jurisdiction_config(cp, logger)
+        assert result.country == "PT"
+        assert result.fiscal_year == 2025
+        assert result.exclude_loan_repayment_gains is True
+
+    def test_load_tax_jurisdiction_config_defaults_when_section_absent(self, tmp_path, monkeypatch):
+        import tax_reporting.infrastructure.config as config_module
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(self._PT_TOML)
+        cp = configparser.ConfigParser()
+        cp.optionxform = lambda optionstr: optionstr
+        logger = logging.getLogger(__name__)
+        result = _load_tax_jurisdiction_config(cp, logger)
+        assert result.country == "PT"
+        assert result.fiscal_year == 2025
+        assert result.exclude_loan_repayment_gains is True
+
+    def test_load_tax_jurisdiction_config_unknown_country_defaults_to_no_filter(self, tmp_path, monkeypatch):
+        import tax_reporting.infrastructure.config as config_module
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(self._NO_COUNTRY_TOML)
+        cp = self._make_config({"TAX_COUNTRY": "US", "FISCAL_YEAR": "2025"})
+        logger = logging.getLogger(__name__)
+        result = _load_tax_jurisdiction_config(cp, logger)
+        assert result.country == "US"
+        assert result.exclude_loan_repayment_gains is False
+
+    def test_tax_jurisdiction_config_country_code_normalized_to_upper(self, tmp_path, monkeypatch):
+        import tax_reporting.infrastructure.config as config_module
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(self._PT_TOML)
+        cp = self._make_config({"TAX_COUNTRY": "pt", "FISCAL_YEAR": "2025"})
+        logger = logging.getLogger(__name__)
+        result = _load_tax_jurisdiction_config(cp, logger)
+        assert result.country == "PT"
+
+    def test_tax_jurisdiction_config_invalid_fiscal_year_raises(self):
+        cp = self._make_config({"TAX_COUNTRY": "PT", "FISCAL_YEAR": "abc"})
+        logger = logging.getLogger(__name__)
+        with pytest.raises(ValueError, match="Invalid FISCAL_YEAR"):
+            _load_tax_jurisdiction_config(cp, logger)
+
+    def test_tax_jurisdiction_config_invalid_threshold_raises(self):
+        cp = self._make_config({"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025", "ZERO_BASIS_REVIEW_THRESHOLD": "abc"})
+        logger = logging.getLogger(__name__)
+        with pytest.raises(ValueError, match="Invalid ZERO_BASIS_REVIEW_THRESHOLD"):
+            _load_tax_jurisdiction_config(cp, logger)
+
+    def test_tax_jurisdiction_config_zero_basis_threshold_from_config(self, tmp_path, monkeypatch):
+        import tax_reporting.infrastructure.config as config_module
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(self._PT_TOML)
+        cp = self._make_config({"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025", "ZERO_BASIS_REVIEW_THRESHOLD": "100"})
+        logger = logging.getLogger(__name__)
+        result = _load_tax_jurisdiction_config(cp, logger)
+        assert result.zero_basis_review_threshold == Decimal("100")
+
+    def test_tax_jurisdiction_config_zero_basis_threshold_defaults_to_50(self, tmp_path, monkeypatch):
+        import tax_reporting.infrastructure.config as config_module
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(self._PT_TOML)
+        cp = self._make_config({"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025"})
+        logger = logging.getLogger(__name__)
+        result = _load_tax_jurisdiction_config(cp, logger)
+        assert result.zero_basis_review_threshold == Decimal("50")
+
+    def test_tax_jurisdiction_config_empty_country_raises(self):
+        cp = self._make_config({"TAX_COUNTRY": "", "FISCAL_YEAR": "2025"})
+        logger = logging.getLogger(__name__)
+        with pytest.raises(ValueError, match="TAX_COUNTRY.*must not be empty"):
+            _load_tax_jurisdiction_config(cp, logger)
+
+    def test_tax_jurisdiction_config_threshold_nan_raises(self):
+        """NaN is rejected as a threshold value."""
+        cp = self._make_config({
+            "TAX_COUNTRY": "PT",
+            "FISCAL_YEAR": "2025",
+            "ZERO_BASIS_REVIEW_THRESHOLD": "NaN",
+        })
+        logger = logging.getLogger(__name__)
+        with pytest.raises(ValueError, match="finite non-negative"):
+            _load_tax_jurisdiction_config(cp, logger)
+
+    def test_tax_jurisdiction_config_threshold_infinity_raises(self):
+        """Infinity is rejected as a threshold value."""
+        cp = self._make_config({
+            "TAX_COUNTRY": "PT",
+            "FISCAL_YEAR": "2025",
+            "ZERO_BASIS_REVIEW_THRESHOLD": "Infinity",
+        })
+        logger = logging.getLogger(__name__)
+        with pytest.raises(ValueError, match="finite non-negative"):
+            _load_tax_jurisdiction_config(cp, logger)
+
+    def test_tax_jurisdiction_config_threshold_negative_raises(self):
+        """Negative threshold is rejected."""
+        cp = self._make_config({
+            "TAX_COUNTRY": "PT",
+            "FISCAL_YEAR": "2025",
+            "ZERO_BASIS_REVIEW_THRESHOLD": "-10",
+        })
+        logger = logging.getLogger(__name__)
+        with pytest.raises(ValueError, match="finite non-negative"):
+            _load_tax_jurisdiction_config(cp, logger)
+
+    def test_load_configuration_from_file_includes_tax_jurisdiction(self, tmp_path, monkeypatch):
+        """Integration: load_configuration_from_file threads TAX JURISDICTION through to Config."""
+        import tax_reporting.infrastructure.config as config_module
+        from tax_reporting.infrastructure.config import load_configuration_from_file
+
+        dp_dir = tmp_path / "decision_points"
+        _write_toml(dp_dir, _MINIMAL_VALID_TOML + "[countries.PT]\nexclude_loan_repayment_gains = true\n")
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
+
+        (tmp_path / "config.ini").write_text(
+            "[COMMON]\nTARGET CURRENCY = EUR\n"
+            "[EXCHANGE RATES]\nEUR/USD = 1.0\n"
+            "[TAX JURISDICTION]\nTAX_COUNTRY = PT\nFISCAL_YEAR = 2025\n"
+            "ZERO_BASIS_REVIEW_THRESHOLD = 75\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        cfg = load_configuration_from_file()
+        assert cfg.tax_jurisdiction.country == "PT"
+        assert cfg.tax_jurisdiction.fiscal_year == 2025
+        assert cfg.tax_jurisdiction.zero_basis_review_threshold == Decimal("75")
+        assert cfg.tax_jurisdiction.exclude_loan_repayment_gains is True
+
+
+def _write_toml(path, content: str) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "2025.toml").write_text(content, encoding="utf-8")
+
+
+_MINIMAL_VALID_TOML = (
+    '[meta]\nfiscal_year = 2025\nsource_decision_file = "docs/tax/decision_points/2025.md"\n'
+    'last_verified = "2026-05-26"\n'
+)
+
+
+@pytest.mark.unit
+class TestLoadDecisionPointsFlags:
+    """Tests for _load_decision_points_flags() in isolation."""
+
+    def test_loads_pt_exclude_flag_from_toml(self, tmp_path, monkeypatch) -> None:
+        """PT section with exclude_loan_repayment_gains=true returns the correct flag dict."""
+        import tax_reporting.infrastructure.config as config_module
+        from tax_reporting.infrastructure.config import _load_decision_points_flags
+
+        dp_dir = tmp_path / "decision_points"
+        _write_toml(dp_dir, _MINIMAL_VALID_TOML + "[countries.PT]\nexclude_loan_repayment_gains = true\n")
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
+
+        logger = logging.getLogger(__name__)
+        flags = _load_decision_points_flags("PT", 2025, logger)
+
+        assert flags == {"exclude_loan_repayment_gains": True}
+
+    def test_missing_toml_raises_file_not_found(self, tmp_path, monkeypatch) -> None:
+        """FileNotFoundError is raised when no TOML exists for the requested fiscal year."""
+        import tax_reporting.infrastructure.config as config_module
+        from tax_reporting.infrastructure.config import _load_decision_points_flags
+
+        dp_dir = tmp_path / "decision_points"
+        dp_dir.mkdir()
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
+
+        logger = logging.getLogger(__name__)
+        with pytest.raises(FileNotFoundError, match="2025"):
+            _load_decision_points_flags("PT", 2025, logger)
+
+    def test_absent_country_section_returns_empty_dict(self, tmp_path, monkeypatch) -> None:
+        """When country section is absent in TOML, returns empty dict."""
+        import tax_reporting.infrastructure.config as config_module
+        from tax_reporting.infrastructure.config import _load_decision_points_flags
+
+        dp_dir = tmp_path / "decision_points"
+        _write_toml(dp_dir, _MINIMAL_VALID_TOML + "[countries.PT]\nexclude_loan_repayment_gains = true\n")
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
+
+        logger = logging.getLogger(__name__)
+        flags = _load_decision_points_flags("US", 2025, logger)
+
+        assert flags == {}
+
+    def test_fiscal_year_metadata_mismatch_raises(self, tmp_path, monkeypatch) -> None:
+        """ValueError if [meta].fiscal_year != requested fiscal_year."""
+        import tax_reporting.infrastructure.config as config_module
+        from tax_reporting.infrastructure.config import _load_decision_points_flags
+
+        dp_dir = tmp_path / "decision_points"
+        _write_toml(
+            dp_dir,
+            '[meta]\nfiscal_year = 2024\nsource_decision_file = "x"\nlast_verified = "2025-01-01"\n',
+        )
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
+
+        logger = logging.getLogger(__name__)
+        with pytest.raises(ValueError, match="fiscal year"):
+            _load_decision_points_flags("PT", 2025, logger)
+
+    def test_invalid_flag_type_raises(self, tmp_path, monkeypatch) -> None:
+        """ValueError if a flag value is not a TOML boolean."""
+        import tax_reporting.infrastructure.config as config_module
+        from tax_reporting.infrastructure.config import _load_decision_points_flags
+
+        dp_dir = tmp_path / "decision_points"
+        _write_toml(
+            dp_dir, _MINIMAL_VALID_TOML + "[countries.PT]\nexclude_loan_repayment_gains = 1\n"
+        )
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
+
+        logger = logging.getLogger(__name__)
+        with pytest.raises(ValueError, match="must be a TOML boolean"):
+            _load_decision_points_flags("PT", 2025, logger)
+
+    def test_malformed_toml_raises_clear_error(self, tmp_path, monkeypatch) -> None:
+        """ValueError with file path in message when TOML is malformed."""
+        import tax_reporting.infrastructure.config as config_module
+        from tax_reporting.infrastructure.config import _load_decision_points_flags
+
+        dp_dir = tmp_path / "decision_points"
+        dp_dir.mkdir()
+        (dp_dir / "2025.toml").write_bytes(b"[invalid toml\n\x00garbage")
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
+
+        logger = logging.getLogger(__name__)
+        with pytest.raises(ValueError, match="Malformed"):
+            _load_decision_points_flags("PT", 2025, logger)
+
+    def test_missing_fiscal_year_field_raises_clear_error(self, tmp_path, monkeypatch) -> None:
+        """ValueError with clear message when [meta] table exists but lacks fiscal_year field."""
+        import tax_reporting.infrastructure.config as config_module
+        from tax_reporting.infrastructure.config import _load_decision_points_flags
+
+        dp_dir = tmp_path / "decision_points"
+        _write_toml(
+            dp_dir,
+            '[meta]\nsource_decision_file = "x"\nlast_verified = "2025-01-01"\n',
+        )
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
+
+        logger = logging.getLogger(__name__)
+        with pytest.raises(ValueError, match="fiscal_year field"):
+            _load_decision_points_flags("PT", 2025, logger)
+
+    def test_fiscal_year_not_int_raises_clear_error(self, tmp_path, monkeypatch) -> None:
+        """ValueError when fiscal_year field exists but is not an integer."""
+        import tax_reporting.infrastructure.config as config_module
+        from tax_reporting.infrastructure.config import _load_decision_points_flags
+
+        dp_dir = tmp_path / "decision_points"
+        _write_toml(
+            dp_dir,
+            '[meta]\nfiscal_year = "2025"\nsource_decision_file = "x"\nlast_verified = "2025-01-01"\n',
+        )
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
+
+        logger = logging.getLogger(__name__)
+        with pytest.raises(ValueError, match="must be an integer"):
+            _load_decision_points_flags("PT", 2025, logger)
+
+
+@pytest.mark.unit
+class TestLoadTaxJurisdictionConfigWithToml:
+    """Tests for _load_tax_jurisdiction_config integrating TOML flag loading."""
+
+    def _make_config(self, section_entries: dict | None) -> configparser.ConfigParser:
+        cp = configparser.ConfigParser()
+        cp.optionxform = lambda optionstr: optionstr
+        if section_entries is not None:
+            cp["TAX JURISDICTION"] = section_entries
+        return cp
+
+    def test_exclude_flag_read_from_toml_not_ini(self, tmp_path, monkeypatch) -> None:
+        """TOML with PT exclude_loan_repayment_gains=false; INI has no flag; result is False."""
+        import tax_reporting.infrastructure.config as config_module
+
+        dp_dir = tmp_path / "decision_points"
+        _write_toml(dp_dir, _MINIMAL_VALID_TOML + "[countries.PT]\nexclude_loan_repayment_gains = false\n")
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
+
+        cp = self._make_config({"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025"})
+        logger = logging.getLogger(__name__)
+        result = _load_tax_jurisdiction_config(cp, logger)
+
+        assert result.country == "PT"
+        assert result.exclude_loan_repayment_gains is False
+
+    def test_pt_requires_exclude_loan_repayment_gains_flag(self, tmp_path, monkeypatch) -> None:
+        """ValueError when PT is configured but exclude_loan_repayment_gains flag is missing."""
+        import tax_reporting.infrastructure.config as config_module
+
+        dp_dir = tmp_path / "decision_points"
+        # TOML with [countries.PT] section but missing exclude_loan_repayment_gains flag
+        _write_toml(dp_dir, _MINIMAL_VALID_TOML + "[countries.PT]\n")
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
+
+        cp = self._make_config({"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025"})
+        logger = logging.getLogger(__name__)
+        with pytest.raises(ValueError, match="exclude_loan_repayment_gains flag"):
+            _load_tax_jurisdiction_config(cp, logger)
+
+    def test_other_country_allows_missing_exclude_flag(self, tmp_path, monkeypatch) -> None:
+        """Non-PT countries can omit exclude_loan_repayment_gains flag (defaults to False)."""
+        import tax_reporting.infrastructure.config as config_module
+
+        dp_dir = tmp_path / "decision_points"
+        # TOML with [countries.US] section but no exclude flag (valid for non-PT)
+        _write_toml(dp_dir, _MINIMAL_VALID_TOML + "[countries.US]\n")
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
+
+        cp = self._make_config({"TAX_COUNTRY": "US", "FISCAL_YEAR": "2025"})
+        logger = logging.getLogger(__name__)
+        result = _load_tax_jurisdiction_config(cp, logger)
+
+        assert result.country == "US"
+        assert result.exclude_loan_repayment_gains is False  # Default when not specified

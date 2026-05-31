@@ -22,7 +22,32 @@ Per Koinly's help center:
 
 For the Portuguese legal analysis, jurisdiction comparison, and manual workarounds, see `docs/tax/laws/pt/crypto-tax/platform-divergences.md` Section 1.
 
-Pipeline impact: loan repayment capital gains must be filtered from the Portuguese tax report after aggregation. See `docs/plans/2026-05-25-filter-loan-repayment-gains.md`.
+Country-specific decision point: PT excludes loan repayment gains per CIRS art. 10(20); see `docs/tax/decision_points/2025.md` DP-001 for the multi-jurisdiction comparison and verified source set.
+
+---
+
+## Section 4 -- FIFO Rebuild for Loan-Affected Assets
+
+### Problem
+
+Koinly mixes loan deposits/repayments into the same FIFO pool as regular purchases and sells. For Portuguese taxpayers, loan receipts and repayments are non-taxable (CIRS art. 10(20)), but Koinly's CG file includes them as taxable disposals with contaminated cost basis. The lot-level filter approach (see completed plan `2026-05-25-filter-loan-repayment-gains`) was insufficient because Koinly's pool contamination is structural: loan deposit lots remain in the pool for future real disposals at zero cost, and LBTC-to-WBTC carry-over propagates contaminated basis.
+
+### Solution
+
+When `TaxJurisdictionConfig.exclude_loan_repayment_gains=True` (PT default), the pipeline rebuilds FIFO from the Transaction History for loan-affected assets. The affected-asset set is **dynamically discovered** from loan-tagged TH rows via `discover_loan_affected_assets()` (e.g. WBTC, SUI, LBTC for current data — not a fixed constant). Non-loan assets continue to use Koinly CG output directly.
+
+The FIFO engine (`crypto_fifo.py`) parses the TH CSV, classifies rows into acquisitions and consumptions, and runs per-wallet FIFO matching per CIRS art. 43 n.9. Cross-asset exchanges (LBTC to WBTC/SUI) are resolved by transaction identifier, not by date. Loan-tagged rows are excluded entirely from the FIFO pool.
+
+### Known Limitation: WBTC↔SUI Cross-Asset Carry-Over
+
+When WBTC is exchanged for SUI (or SUI for WBTC), the FIFO engine runs separate per-asset passes ordered by `_build_cross_asset_order` (sender runs first). The carry-over cost basis from the sending side is stored keyed by transaction identifier and resolved in a second pass. When `resolve_cross_asset_exchanges` cannot find a matching sender, the acquisition is flagged with `review_required=True` and a review reason explaining the unresolvable deferred acquisition. These entries must be corrected manually in the workbook: look up the cost basis of the sending lot and enter it in the cost column for the corresponding receiving-asset disposal.
+
+### Key References
+
+- Findings document: `docs/domain/koinly-fifo-findings.md`
+- FIFO engine: `src/shares_reporting/application/crypto_fifo.py`
+- Plan: `../plans/completed/2026-05-27-rebuild-fifo-from-th.md`
+- Decision point: DP-004 (per-wallet FIFO scope, corrected from global per-asset)
 
 ---
 

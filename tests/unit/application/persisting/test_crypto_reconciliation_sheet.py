@@ -5,7 +5,7 @@ from decimal import Decimal
 import openpyxl
 import pytest
 
-from shares_reporting.application.crypto_reporting import (
+from tax_reporting.application.crypto_reporting import (
     CapitalGainPeriodStats,
     CryptoCapitalGainStats,
     CryptoReconciliationSummary,
@@ -13,7 +13,7 @@ from shares_reporting.application.crypto_reporting import (
     CryptoTaxReport,
     HoldingsSnapshot,
 )
-from shares_reporting.application.persisting.crypto_reconciliation_sheet import (
+from tax_reporting.application.persisting.crypto_reconciliation_sheet import (
     write_crypto_reconciliation_sheet,
 )
 

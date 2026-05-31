@@ -58,7 +58,7 @@ Edit the withdrawal, change type from "Withdrawal" to "Transfer", select a custo
 
 **Option C -- Filter in processing pipeline:**
 
-Exclude loan repayment capital gains at the code level. See `docs/plans/2026-05-25-filter-loan-repayment-gains.md`.
+Exclude loan repayment capital gains at the code level. See `../../../../plans/completed/2026-05-25-filter-loan-repayment-gains.md`.
 
 ### Scope of the issue in 2025 data
 
@@ -74,4 +74,4 @@ Exclude loan repayment capital gains at the code level. See `docs/plans/2026-05-
 | Realize gains on liquidity transactions? | **DISABLED** | LP operations are not taxable disposals |
 | Realize gains on transfer fees? | **ENABLED** | Gas fees dispose of crypto with no consideration |
 | Treat transfer fees as deductible costs? | **ENABLED** | Allows gas fee deduction |
-| Cost basis method | **FIFO** | CIRS art. 43(6)(g): FIFO is mandatory |
+| Cost basis method | **FIFO** | CIRS art. 43(8)(g): FIFO is mandatory |

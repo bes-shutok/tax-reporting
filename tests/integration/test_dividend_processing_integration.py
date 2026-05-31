@@ -4,9 +4,9 @@ from decimal import Decimal
 
 import pytest
 
-from shares_reporting.application.extraction import parse_ib_export_all
-from shares_reporting.application.persisting import generate_tax_report
-from shares_reporting.application.transformation import calculate_fifo_gains
+from tax_reporting.application.extraction import parse_ib_export_all
+from tax_reporting.application.persisting import generate_tax_report
+from tax_reporting.application.transformation import calculate_fifo_gains
 
 
 @pytest.mark.integration
@@ -55,7 +55,7 @@ class TestDividendIntegrationFlow:
         assert len(ib_export_data.trade_cycles) == 1  # AAPL has trades
 
         # Step 2: Process capital gains (minimal trades)
-        from shares_reporting.domain.collections import CapitalGainLinesPerCompany, TradeCyclePerCompany
+        from tax_reporting.domain.collections import CapitalGainLinesPerCompany, TradeCyclePerCompany
 
         leftover_trades: TradeCyclePerCompany = {}
         capital_gains: CapitalGainLinesPerCompany = {}
@@ -155,7 +155,7 @@ class TestDividendIntegrationFlow:
         csv_file_with_trades.write_text(csv_content_with_trades)
 
         ib_export_data = parse_ib_export_all(csv_file_with_trades)
-        from shares_reporting.domain.collections import CapitalGainLinesPerCompany, TradeCyclePerCompany
+        from tax_reporting.domain.collections import CapitalGainLinesPerCompany, TradeCyclePerCompany
 
         leftover_trades: TradeCyclePerCompany = {}
         capital_gains: CapitalGainLinesPerCompany = {}
@@ -232,7 +232,7 @@ class TestDividendIntegrationFlow:
         ib_export_data = parse_ib_export_all(csv_file)
 
         # Process capital gains (minimal trades)
-        from shares_reporting.domain.collections import CapitalGainLinesPerCompany, TradeCyclePerCompany
+        from tax_reporting.domain.collections import CapitalGainLinesPerCompany, TradeCyclePerCompany
 
         leftover_trades: TradeCyclePerCompany = {}
         capital_gains: CapitalGainLinesPerCompany = {}
@@ -292,7 +292,7 @@ class TestDividendIntegrationFlow:
         ib_export_data = parse_ib_export_all(csv_file)
 
         # Process capital gains (minimal trades)
-        from shares_reporting.domain.collections import CapitalGainLinesPerCompany, TradeCyclePerCompany
+        from tax_reporting.domain.collections import CapitalGainLinesPerCompany, TradeCyclePerCompany
 
         leftover_trades: TradeCyclePerCompany = {}
         capital_gains: CapitalGainLinesPerCompany = {}
@@ -336,7 +336,7 @@ class TestDividendIntegrationFlow:
         ib_export_data = parse_ib_export_all(csv_file)
 
         # Process capital gains (minimal trades)
-        from shares_reporting.domain.collections import CapitalGainLinesPerCompany, TradeCyclePerCompany
+        from tax_reporting.domain.collections import CapitalGainLinesPerCompany, TradeCyclePerCompany
 
         leftover_trades: TradeCyclePerCompany = {}
         capital_gains: CapitalGainLinesPerCompany = {}
@@ -395,7 +395,7 @@ class TestDividendIntegrationFlow:
         ib_export_data = parse_ib_export_all(csv_file)
 
         # Process capital gains (minimal trades)
-        from shares_reporting.domain.collections import CapitalGainLinesPerCompany, TradeCyclePerCompany
+        from tax_reporting.domain.collections import CapitalGainLinesPerCompany, TradeCyclePerCompany
 
         leftover_trades: TradeCyclePerCompany = {}
         capital_gains: CapitalGainLinesPerCompany = {}

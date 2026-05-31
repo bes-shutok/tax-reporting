@@ -5,9 +5,9 @@ from decimal import Decimal
 
 import pytest
 
-from shares_reporting.application.extraction import parse_dividend_income
-from shares_reporting.application.extraction.models import IBCsvData
-from shares_reporting.application.extraction.processing import _process_dividends
+from tax_reporting.application.extraction import parse_dividend_income
+from tax_reporting.application.extraction.models import IBCsvData
+from tax_reporting.application.extraction.processing import _process_dividends
 
 
 @pytest.mark.unit

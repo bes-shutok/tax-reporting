@@ -541,6 +541,43 @@ Before implementing new crypto features, verify the plan has:
 
 If any are missing, clarify the plan first.
 
+## Testing Patterns
+
+### Missing Path Coverage
+
+All branches of conditional logic must have dedicated test coverage. Common gaps:
+- Loan activity "Open loan" (received > repaid) and "Overpaid" (repaid > received) status branches
+- Non-existent file path handling (`path.exists()` vs `path is None`)
+- Asset/platform mismatch validation in FIFO matching
+
+### Boundary Condition Testing
+
+Always test exact threshold values, not just values on either side:
+- Holding period: test exactly 365 days (not just 364 and 366)
+- Zero-basis threshold: test exactly `threshold` value (not just below/above)
+- Off-by-one errors in these conditions produce incorrect tax classifications
+
+### Assertion Precision
+
+Use exact equality when the expected count is known:
+- `assert len(entries) == 1` when exactly one entry is expected
+- Avoid `assert len(entries) >= 1` — it hides duplications and partial failures
+
+### False-Positive Tests
+
+Tests can encode incorrect behavior. When implementing:
+- Non-taxable exchanges (crypto-to-crypto per Art. 10(20)): ensure tests assert `taxable=False`
+- If a test asserts `taxable=True`, verify it's testing the correct classification
+
+### Code Review Quality
+
+Multi-agent review found critical implementation bugs that single-reviewer passes missed:
+- Fee unit bugs (crypto quantity vs EUR value)
+- Temporal FIFO violations (future-dated lots consumed by past disposals)
+- Empty string handling in aggregation
+
+Multiple review iterations were necessary — fixes in one pass revealed new issues. Always verify findings against actual code, not assumptions from prior iterations.
+
 ## Aggregation Grouping Invariants
 
 ### Expected Repeated Dates vs Forbidden Duplicate Aggregation Keys
@@ -702,6 +739,41 @@ The `Token origin` column in the workbook renders as:
 - Test multiple-match disambiguation (same confidence, conflicting methods)
 - Test confidence downgrade for `Missing cost basis`
 - Test that the workbook `Token origin` column shows the expected string format
+- Test all transaction types listed in the mapping table above, including `buy`
+
+### Transaction Type Completeness
+
+When changing `_index_row`, verify coverage of ALL transaction types found in real Koinly exports:
+
+1. Check the real fixture for all `Type` field values: `grep -h "^[^,]*," resources/source/koinly*/transaction_history*.csv | sort -u`
+2. Each type must either have an explicit handler or an intentional early-return comment explaining why it is skipped.
+3. Known types requiring explicit handling: `exchange`, `transfer`, `crypto_deposit`, `fiat_deposit`, `buy`.
+4. Missing a common type (e.g. `buy`) causes blank origins for every matching transaction in production data.
+
+### Graceful Degradation Consistency
+
+Missing-data guards must be applied uniformly across all transaction type branches. If one branch returns early when a required field is empty, all branches that use that field must apply the same guard:
+
+```python
+# ❌ WRONG — exchange guards sent_currency but buy does not
+def _index_row(self, row):
+    if row_type == "exchange":
+        if not sent_currency:
+            return  # ← guard present
+        ...
+    elif row_type == "buy":
+        # ← NO guard; falls through to from_asset = asset,
+        # creating fabricated "EUROC acquired from EUROC"
+        self._add_record(asset, sent_currency, ...)  # from_asset = asset when sent_currency is ""
+
+# ✅ CORRECT — consistent early return for empty required field
+    elif row_type == "buy":
+        if not sent_currency:
+            return  # degrade to unknown, same as exchange branch
+        self._add_record(asset, sent_currency, ...)
+```
+
+Inconsistency produces fabricated provenance (e.g., "EUROC (direct_purchase)" when the resolver should return `unknown`).
 
 ### Manual Review Reduction Opportunities
 
@@ -712,6 +784,126 @@ Analysis of Koinly exports reveals these fixable false-positive triggers:
 | "Missing cost basis" with 0 EUR proceeds | Koinly marks as missing but disposal has 0 value | Only flag if `proceeds_eur > 0` |
 | Character encoding (WBТC) | Cyrillic 'Т' (U+0422) instead of 'T' | Unicode normalize before parsing |
 | Temporal validity warnings | Historical transactions before `service_start_date` | Use `service_start_date` separate from `valid_from` |
+
+## FIFO Engine Patterns
+
+### Overview
+
+The FIFO rebuild engine (`crypto_fifo.py`) reconstructs capital gains for loan-affected assets from the Koinly Transaction History when `TaxJurisdictionConfig.exclude_loan_repayment_gains=True`. The affected-asset set is **dynamically discovered** from loan-tagged TH rows via `discover_loan_affected_assets()` (not a fixed constant). This is required because Koinly's CG output mixes loan and non-loan transactions in the same FIFO pool, contaminating cost basis.
+
+### Data Model
+
+- `CryptoAcquisition` -- an incoming lot (buy, exchange receipt, etc.) with cost basis, fee, and source metadata
+- `CryptoConsumption` -- an outgoing event (sell, exchange send, withdrawal, gas fee) classified as taxable or non-taxable
+- `CryptoFifoRealization` -- a matched lot pair (acquisition consumed by a taxable consumption) producing a capital gain/loss
+- `AssetFifoResult` -- per-asset FIFO output: realizations list plus carry-over cost map keyed by `tx_key`
+
+### Per-Wallet Scope (CIRS art. 43 n.9)
+
+FIFO is applied per `(asset, platform)`, not globally per asset. The caller must pre-filter acquisitions and consumptions to a single `(asset, platform)` pair before calling `compute_fifo_for_asset()`. The function validates this invariant internally.
+
+### Non-Taxable Exchange Consumptions
+
+Crypto-to-crypto exchanges are not taxable under Art. 10(20) / DP-002. The engine models them as non-taxable consumptions that consume FIFO lots and record the carry-over cost in `carryover_cost_by_tx_key`, without emitting a capital gain row. The received side of the exchange becomes an acquisition with cost derived from the carry-over.
+
+### Carry-Over Resolution by tx_key
+
+Cross-asset exchanges (e.g. LBTC to WBTC/SUI) are resolved by matching the TH transaction identifier (`tx_key`), never by date. Same-day exchanges must not cross-wire costs. `_build_cross_asset_order()` determines per-asset processing order so that the sending asset always runs before the receiving asset, enabling carry-over lookup in a single pass. `resolve_cross_asset_exchanges()` then resolves deferred acquisitions from the carry-over map.
+
+Unresolved deferred acquisitions (no matching carry-over entry) are flagged with `review_required=True` and a specific `review_reason`, and logged at warning level.
+
+### Cross-Platform Carry-Over Keying
+
+When `_rebuild_fifo_for_loan_affected_assets` merges carry-over maps from multiple per-platform FIFO runs, the merged dict must use `(tx_key, platform)` composite keys — not plain `tx_key` strings. Two platforms can independently produce a carry-over entry with the same `tx_key` (especially when `_build_composite_tx_key` is used because `TxHash` is empty and both platforms happen to process a row with identical Date/Amount/Currency fields). Without the platform dimension, the second write silently overwrites the first, using the wrong cost basis for one of the two assets.
+
+The `AssetFifoResult.carryover_cost_by_tx_key` field therefore holds `dict[str | tuple[str, str], Decimal]`: per-platform results use plain `str` keys; the merged carry-over map used by `_rebuild_fifo_for_loan_affected_assets` uses `(tx_key, platform)` tuple keys.
+
+### Intra-Asset Transfer Carry-Over
+
+Cross-platform transfers of loan-affected assets (e.g. WBTC sent from Kraken to Ethereum wallet) are modelled as:
+- A non-taxable `transfer_out` consumption on the **sender** platform, recording cost in `carryover_cost_by_tx_key`.
+- A `transfer_in_deferred` acquisition on the **receiver** platform, resolved by `_resolve_intra_asset_transfers` after the sender's FIFO run completes.
+
+`_resolve_intra_asset_transfers` must scope the carry-over lookup to the **sender platform** using a `tx_key → sender_platform` map built alongside `_order_platforms_for_transfers`. Iterating all platforms and returning the first matching tx_key (without platform scoping) silently assigns the wrong cost basis when two platforms happen to produce the same composite key.
+
+### `_build_composite_tx_key` Blank-TxHash Limitation
+
+When the Koinly `TxHash` column is empty, `_build_composite_tx_key` builds a fallback key from `(date, sent_currency, received_currency, amount)` suffixed with `_<row_index>`. This prevents two fee-only rows on the same date from producing the same key.
+
+However, for cross-platform transfers where the **same** asset movement appears on two separate TH rows (one for the sending wallet, one for the receiving wallet), both rows will have **different** `row_index` values, producing different composite keys. The resulting `transfer_in_deferred` acquisition will not match the `transfer_out` consumption, causing an unresolvable deferred entry and a `review_required=True` flag.
+
+This is a known limitation. Whenever a `transfer_in_deferred` remains unresolved, the engine must log at warning level with a message clearly attributing the review flag to the blank-TxHash condition rather than a FIFO pool issue.
+
+### Transfer-Fee Handling
+
+Transfer rows (`Type=transfer`) do not reset holding period or create taxable principal disposals. However, if a transfer charges a fee in a loan-affected asset, the fee portion is emitted as a separate taxable consumption with the fee amount and EUR value.
+
+### Placeholder Buys
+
+When the FIFO pool is exhausted (more sells than available acquisitions), a zero-cost placeholder realization is created with `review_required=True`, a specific `review_reason`, and `logger.warning(...)`. These entries must never be silently dropped.
+
+### Holding Period Labels
+
+Labels must remain Koinly-compatible strings: `"Short term"` for holdings <= 365 days, `"Long term"` for holdings > 365 days.
+
+### Validation Sequence
+
+After FIFO-derived entries are converted to `CryptoCapitalGainEntry` and merged with raw CG rows from non-loan assets:
+1. `_validate_capital_entries_have_valid_countries()` -- validate all entries
+2. `_aggregate_capital_entries()` -- aggregate by `(disposal_date, asset, platform, holding_period)`
+3. `_filter_immaterial_entries()` -- exclude entries where `|gain/loss| < 1 EUR`
+
+### Testing Requirements
+
+- Test simple buy-then-sell with correct gain computation
+- Test partial lot consumption with proportional fee allocation
+- Test multiple lots consumed by a single disposal
+- Test holding period classification (short vs long term), including exact 365-day boundary
+- Test zero-cost placeholder on pool exhaustion with review_required flag
+- Test cross-asset carry-over by tx_key (not by date)
+- Test same-day exchanges do not cross-wire costs
+- Test unresolved deferred acquisitions are flagged for review
+- Test future-dated lots are NOT consumed by past disposals (temporal gating)
+- Test disposal fee is included in gain calculation
+- Test empty-string acquisition_date doesn't corrupt aggregation
+
+### Critical Bug Patterns
+
+#### Fee Unit Verification
+
+External data often represents the same value in multiple units (raw crypto quantity vs EUR value). When parsing Koinly Transaction History rows:
+- `Fee Amount` is the raw crypto quantity (e.g., 0.001 WBTC)
+- `Fee Value (EUR)` is the EUR-denominated value
+- Always use `fee_value` (EUR) for `fee_eur` fields that feed into cost basis calculations
+- Using `fee_amount` (crypto quantity) corrupts cost basis by the price factor
+
+#### Date Parsing Error Scope
+
+Date parsing for TH rows must be inside the same try/except that catches decimal parsing errors. One bad row must never discard the whole dataset. The epoch sentinel (`1970-01-01`) returned by `_parse_koinly_datetime` for empty dates must be detected before `_compute_holding_period` to prevent false "Long term" classification (tax exemption in PT).
+
+#### FIFO Pool Temporal Gating
+
+The FIFO consumption loop must enforce `acq.date <= con.date`. When a disposal exhausts all lots acquired on or before its own date, the remaining quantity is treated as pool-exhausted (zero-cost placeholder) — not consumed from future-dated lots. Consuming from the future corrupts both gain amounts and holding period labels.
+
+#### Pool-Exhaustion Review Signaling
+
+When the FIFO pool is exhausted during a non-taxable exchange, the carry-over cost is zero. This zero-cost entry must be distinguished from a legitimately zero-cost acquisition (e.g., airdrops with no FMV). The resolver must check whether the zero cost is from pool exhaustion or from the original lot having zero cost, and set `review_required=True` with a specific reason in the exhaustion case.
+
+#### Empty String in Aggregation
+
+When aggregating capital entries, `min(e.acquisition_date for e in group)` picks `""` (empty string) if any entry has an empty acquisition date. Empty strings sort before all dates, corrupting the aggregated entry's acquisition date. Filter out empty strings before taking `min`, or set a sentinel date for unknowns.
+
+#### Disposal Fee in Gain Calculation
+
+When a consumption includes a disposal fee (`con.fee_eur`), this fee must be subtracted in the gain calculation: `gain = proceeds - cost - acquisition_fee - disposal_fee`. Missing the disposal fee overstates gains. This applies to both taxable realizations and non-taxable carry-over accumulation.
+
+### Official Source Verification for Legal/Tax Decisions
+
+When decision points or rules conflict, always verify against the primary authoritative source documents:
+- For Portuguese tax: CIRS consolidated code (official PDF) and AT folheto
+- AT documents may use outdated paragraph references after CIRS renumbering amendments
+- Verify the current paragraph number against the consolidated CIRS PDF before relying on AT citations
+- See `docs/tax/laws/pt/crypto-tax/` for archived official sources
 
 ## References
 

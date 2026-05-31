@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from src.shares_reporting.application.extraction.processing import (
+from src.tax_reporting.application.extraction.processing import (
     parse_ib_export_all,
     parse_leftover_and_export_data,
 )
-from src.shares_reporting.domain.value_objects import TradeType
+from src.tax_reporting.domain.value_objects import TradeType
 
 
 @pytest.fixture

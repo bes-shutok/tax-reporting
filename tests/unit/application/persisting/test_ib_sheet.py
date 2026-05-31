@@ -5,19 +5,19 @@ from decimal import Decimal
 import openpyxl
 import pytest
 
-from shares_reporting.application.persisting.ib_sheet import (
+from tax_reporting.application.persisting.ib_sheet import (
     create_currency_table,
     write_ib_reporting_sheet,
 )
-from shares_reporting.domain.collections import CapitalGainLinesPerCompany, DividendIncomePerCompany
-from shares_reporting.domain.constants import EXCEL_HEADER_ROW_1, EXCEL_HEADER_ROW_2, EXCEL_START_ROW
-from shares_reporting.domain.entities import (
+from tax_reporting.domain.collections import CapitalGainLinesPerCompany, DividendIncomePerCompany
+from tax_reporting.domain.constants import EXCEL_HEADER_ROW_1, EXCEL_HEADER_ROW_2, EXCEL_START_ROW
+from tax_reporting.domain.entities import (
     CapitalGainLine,
     CurrencyCompany,
     DividendIncomePerSecurity,
 )
-from shares_reporting.domain.value_objects import Company, Currency, TradeDate
-from shares_reporting.infrastructure.config import Config, ConversionRate
+from tax_reporting.domain.value_objects import Company, Currency, TradeDate
+from tax_reporting.infrastructure.config import Config, ConversionRate, TaxJurisdictionConfig
 
 
 def _make_capital_gain_line(  # noqa: PLR0913
@@ -32,7 +32,7 @@ def _make_capital_gain_line(  # noqa: PLR0913
     buy_fees: list[Decimal] | None = None,
 ) -> CapitalGainLine:
     """Helper to create a CapitalGainLine with minimal setup."""
-    from shares_reporting.domain.entities import TradeAction
+    from tax_reporting.domain.entities import TradeAction
 
     _sell_date = sell_date or TradeDate(2025, 6, 15)
     _buy_date = buy_date or TradeDate(2024, 3, 10)
@@ -87,6 +87,10 @@ def _make_config() -> Config:
     return Config(
         base="EUR",
         rates=[ConversionRate(base="EUR", calculated="USD", rate=Decimal("1.10"))],
+        tax_jurisdiction=TaxJurisdictionConfig(
+            country="PT", fiscal_year=2025, exclude_loan_repayment_gains=False,
+            zero_basis_review_threshold=Decimal("50"),
+        ),
     )
 
 
@@ -474,7 +478,7 @@ class TestWriteIbReportingSheetAutoWidth:
 
     def test_formula_heavy_columns_get_reasonable_widths(self):
         """Verify formula-heavy columns preserve header width with MIN_DATA_WIDTH as floor."""
-        from shares_reporting.application.persisting.excel_utils import MIN_DATA_WIDTH
+        from tax_reporting.application.persisting.excel_utils import MIN_DATA_WIDTH
 
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -511,7 +515,7 @@ class TestWriteIbReportingSheetAutoWidth:
 
     def test_empty_column_gets_min_data_width(self):
         """Verify a column with only formulas/empty cells gets MIN_DATA_WIDTH."""
-        from shares_reporting.application.persisting.excel_utils import MIN_DATA_WIDTH, auto_column_width
+        from tax_reporting.application.persisting.excel_utils import MIN_DATA_WIDTH, auto_column_width
 
         # Create a worksheet with one column that has only formulas
         wb = openpyxl.Workbook()

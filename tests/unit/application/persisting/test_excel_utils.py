@@ -6,7 +6,7 @@ from pathlib import Path
 
 import openpyxl
 
-from shares_reporting.application.persisting.excel_utils import auto_column_width, safe_remove_file
+from tax_reporting.application.persisting.excel_utils import auto_column_width, safe_remove_file
 
 
 class TestAutoColumnWidth:
@@ -34,7 +34,7 @@ class TestAutoColumnWidth:
     def test_formula_cells_skipped(self) -> None:
         """When non-formula cells are short (like headers) and formulas are present,
         the column is treated as formula-heavy and gets MIN_DATA_WIDTH."""
-        from shares_reporting.application.persisting.excel_utils import MIN_DATA_WIDTH
+        from tax_reporting.application.persisting.excel_utils import MIN_DATA_WIDTH
 
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -130,7 +130,7 @@ class TestAutoColumnWidthWidthBounds:
         This covers the edge case of a single-row IB report where formula_count equals
         the number of non-formula cells. The column should still get MIN_DATA_WIDTH.
         """
-        from shares_reporting.application.persisting.excel_utils import MIN_DATA_WIDTH
+        from tax_reporting.application.persisting.excel_utils import MIN_DATA_WIDTH
 
         wb = openpyxl.Workbook()
         ws = wb.active

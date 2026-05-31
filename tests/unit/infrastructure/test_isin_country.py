@@ -2,7 +2,7 @@
 
 import pytest
 
-from shares_reporting.infrastructure.isin_country import (
+from tax_reporting.infrastructure.isin_country import (
     is_valid_isin_format,
     isin_to_country,
     isin_to_country_code,

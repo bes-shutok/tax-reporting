@@ -28,6 +28,7 @@ This file provides guidance to coding agents when working with code in this repo
 - In `docs/tax/.../official/`, keep only source-origin files. Derived notes and numbered guidance belong outside `official/`, and `sources.md` must record issuing dates, effective dates, and superseded dates. See `docs/project-guidelines.md` #1.
 - For external source archive provenance and freshness checks, see `docs/project-guidelines.md` #1.
 - For fiscal-year versioned tax decision points, see `docs/project-guidelines.md` #2.
+- When consulting AT guidance (folheto, PIVs, ofícios circulados) that cites a CIRS paragraph number, verify the current number against the consolidated CIRS PDF — AT documents may predate renumbering amendments and use outdated paragraph references. See `docs/project-guidelines.md` #3.
 - For tax/origin web sources, prefer authoritative PDFs or extracted Markdown/PDF over raw HTML, and reuse local mirrors.
 - Under `docs/tax/`, use `laws/<jurisdiction>/crypto-tax/` for tax-law archives (e.g. `laws/pt/crypto-tax/`, `laws/eu/crypto-tax/`) and `crypto-origin/` for chain/operator domicile archives.
 - Share crypto `País da Fonte` resolution across rewards and capital gains. Never use taxpayer residence.
@@ -50,14 +51,23 @@ This file provides guidance to coding agents when working with code in this repo
 - Crypto worksheet must present rewards in two sections: IRS-ready filing summary (taxable_now only) and support detail (both classifications).
 - The aggregation step must fail with `FileProcessingError` if any taxable-now row cannot be assigned all mandatory IRS fields (valid Tabela X country code).
 - When `review_required=True` is set on `CryptoCapitalGainEntry` or `CryptoRewardIncomeEntry`, the `review_reason` field must contain a specific, actionable explanation. The Excel output shows "YES: \<reason\>" rather than a bare boolean. See PT-C-030.
+- `OperatorOrigin` carries two separate review flags: `review_required` (row-level, triggers "YES: <reason>" and red fill on the transaction row) and `platform_review_required` (platform-level, controls the Platform Assumptions tab only — does NOT color transaction rows). Never conflate them. See CRG-016.
+- The Platform Assumptions tab is a complete manifest of ALL platforms in the report. Do not filter it to only platforms with assumption text. Use `platform_review_required=True` (plus red fill, sorted first) to highlight platforms that need resolution; keep all other platforms visible for auditability.
 - Crypto capital gains statistics must be computed via `CryptoCapitalGainStats.from_entries()` and rendered as the "1b. CAPITAL GAINS STATISTICS" Excel section. Do not remove or bypass this section. The grand total EUR amounts must be computed from the full entries list, not by summing per-period subtotals, so that unrecognized holding periods do not produce inconsistent statistics.
 - Token origin resolution must use `TokenOriginResolver` and implicit `(date, asset, wallet)` correlation with the Koinly transaction history. The resolver never guesses; unmatched rows return `unknown` (blank in the workbook). Do not reintroduce same-day disposal-context matching.
 - Token origin resolution supports LP (liquidity pool) operations and airdrops:
   - `AIRDROP` — tokens received via airdrop claims
   - `LIQUIDITY_WITHDRAWAL` — tokens received from removing liquidity from DEX pools
   - `LIQUIDITY_PROVISION` — LP tokens received from providing liquidity to DEX pools
+  - `DIRECT_PURCHASE` — tokens acquired via a fiat-to-crypto `buy` transaction
 - When aggregating capital entries, the `token_swap_history` field is derived via `_aggregate_origin_field()`: if all lots in a group share the same origin, it is used; otherwise unique non-empty origins are joined with '; '; when some lots have unknown origin, an "N lot(s) unresolved" indicator is appended so the user cannot mistake a partial result for full resolution.
 - Koinly transaction history files use the naming pattern `*transaction_history*.csv` (matching the real Koinly export convention), not `*transactions_report*.csv`.
+- When `TaxJurisdictionConfig.exclude_loan_repayment_gains` is True, loan-affected assets (dynamically discovered from loan-tagged TH rows via `discover_loan_affected_assets()`; WBTC, SUI, LBTC are historical examples for the current user's data, not a fixed constant) are excluded from CG parsing and rebuilt from Transaction History; non-loan assets continue to use Koinly CG. The FIFO engine lives in the `crypto_fifo/` package and is per-wallet per-institution per CIRS art. 43 n.9.
+- `discover_loan_affected_assets()` uses only `"loan"` and `"loan repayment"` tags (not `"loan fee"`) to identify loan principal assets; `"loan fee"` rows are intentionally excluded from discovery because their Sent Currency is the gas/service fee asset (not the loan principal).
+- When IB data has no current-year trades (`tax_year_hint` is None), the Koinly directory year hint falls back to `TaxJurisdictionConfig.fiscal_year` from config. This means the configured `FISCAL_YEAR` drives Koinly directory selection when no IB trades are present (e.g., crypto-only reporting runs).
+- Run `_validate_capital_entries_have_valid_countries()`, `_aggregate_capital_entries()`, and `_filter_immaterial_entries()` only after FIFO-derived entries are merged with raw CG rows.
+- Cross-asset FIFO carry-over must match by TH transaction identifier, never by day-level date alone.
+- Any excluded asset that yields zero FIFO output must log at warning level or higher.
 
 ### 4. Agent Workflow Rules
 
@@ -65,17 +75,23 @@ This file provides guidance to coding agents when working with code in this repo
 - Do not commit changes unless explicitly asked by the user.
 - Always use `uv run pytest`, not `uvx pytest`.
 - `valid_from` = audit-only; `service_start_date` = matching. See `development_lessons.md` #17.
+- Never write files to `docs/review/` (singular). The project convention is `docs/reviews/` (plural) for all code review and plan review output.
+- **Never introduce a hardcoded value (asset ticker, constant set, threshold, magic string, fixed ordering) without first flagging it to the user and asking whether they want it hardcoded or derived dynamically.** This applies to plans, implementation, and code review. If you notice an existing hardcoded value while working on related code, flag it immediately before proceeding.
 
 ### 5. Domain Knowledge References
 
 - Before changing crypto reporting logic, read `docs/domain/crypto_rules.md`, `docs/domain/crypto_reporting_guidelines.md`, and `docs/domain/crypto_implementation_guidelines.md`. Cite PT-C / CRG rule IDs for law-driven changes.
 - Before implementing new crypto features, read `docs/domain/crypto_implementation_guidelines.md` for lessons learned and common pitfalls to avoid.
 - Before processing Koinly exports or changing Koinly-related code, read `docs/domain/koinly_guidelines.md` for known Koinly behaviors and defects that affect Portuguese reporting (loan repayment disposal treatment, wrapped-asset repair workflow, required settings).
-- Before changing cross-cutting report-generation behavior, read `docs/domain/shares_reporting_guidelines.md` and cite SRG rule IDs for repository-policy changes.
+- Before discussing crypto tax treatment, proposing architecture changes, or advising on Koinly settings, check `docs/tax/decision_points/` first — answers to cost-basis methodology, taxability of swaps, and tool settings are pre-decided there.
+- Before changing cross-cutting report-generation behavior, read `docs/domain/tax_reporting_guidelines.md` and cite SRG rule IDs for repository-policy changes.
 - Before writing implementation plans, read `docs/domain/plan_quality_guidelines.md` for patterns that minimize review iterations.
 - Before writing or revising repository walkthroughs or presentation artifacts, read `docs/domain/plan_quality_guidelines.md` for presentation-artifact structure and placement.
 - When a crypto presentation or walkthrough makes legal or filing claims, verify the current source set in `docs/tax/laws/pt/crypto-tax/sources.md` and cite the mirrored official documents.
 - Use the authority level and source date in `crypto_rules.md` to check whether a rule may be stale for the current tax year.
+- For country-specific tax decision points (e.g., loan repayment exclusion, holding period thresholds), see `docs/tax/decision_points/`.
+- For tax/origin web sources, prefer authoritative PDFs or extracted Markdown/PDF over raw HTML, and reuse local mirrors.
+- For private personal tax context supplied by the user, read `docs/personal/facts.md`. The `docs/personal/` tree is gitignored from this repository and may keep its own independent git history; do not copy its personal facts into tracked docs unless explicitly requested.
 
 ## Project Overview
 
@@ -85,7 +101,7 @@ Tax reporting tool processes Interactive Brokers and Koinly exports into Portugu
 
 - Main entry point: `uv run tax-reporting`
 - CLI flags: `--example` (use example data), `--source-file PATH`, `--output-dir PATH`, `--log-level LEVEL`
-- Alternative entry point: `uv run python ./src/shares_reporting/main.py`
+- Alternative entry point: `uv run python ./src/tax_reporting/main.py`
 - For broader setup and command reference, see `README.md`.
 
 ## Environment and Dependency Management
@@ -97,17 +113,21 @@ Tax reporting tool processes Interactive Brokers and Koinly exports into Portugu
 ## Architecture
 
 - Layered architecture:
-  - Domain: `src/shares_reporting/domain/`
+  - Domain: `src/tax_reporting/domain/`
     - `token_origin.py` — Token acquisition origin resolution domain types
-  - Application: `src/shares_reporting/application/`
+    - `crypto_fifo.py` — Domain types for the FIFO engine (CryptoAcquisition, CryptoConsumption, CryptoFifoRealization, AssetFifoResult)
+    - `jurisdiction.py` — `TaxJurisdictionConfig` (fiscal year, country code, law-driven flags)
+  - Application: `src/tax_reporting/application/`
     - `crypto_reporting.py` — Crypto tax reporting and Koinly parsing
-  - Infrastructure: `src/shares_reporting/infrastructure/`
+    - `token_origin.py` — `TokenOriginResolver` application service (domain types in `domain/token_origin.py`)
+    - `crypto_fifo/` — FIFO engine package for loan-affected assets (contexts.py, parsing.py, matching.py, cross_asset.py, transfer.py, merge.py, _graph.py)
+  - Infrastructure: `src/tax_reporting/infrastructure/`
     - `koinly_parser.py` — Shared Koinly CSV parsing utilities
-    - `config.py` — Configuration management
+    - `config.py` — Configuration management (re-exports `TaxJurisdictionConfig` from domain)
     - `isin_country.py` — ISIN to country resolution
     - `logging_config.py` — Logging configuration
     - `validation.py` — Input validation
-  - Presentation: `src/shares_reporting/main.py`
+  - Presentation: `src/tax_reporting/main.py`
 - Core pipeline: extract IB/Koinly data, transform into tax calculations, then persist workbook and rollover outputs.
 - For the fuller architectural walkthrough, see `README.md` and the source tree.
 
@@ -115,12 +135,16 @@ Tax reporting tool processes Interactive Brokers and Koinly exports into Portugu
 
 - Uses Python's `configparser` for INI file handling
 - Configuration files: `config.ini` (production) and `tests/config.ini` (testing)
-- Both configs have identical structure with three sections:
+- Both configs have identical structure with four sections:
   - **[COMMON]**: Target currency specification
   - **[EXCHANGE RATES]**: Currency conversion rates (different values for prod/test)
   - **[SECURITY]**: Validation limits (file size, ticker length, allowed extensions, etc.)
+  - **[TAX JURISDICTION]**: Country-specific tax settings (`TAX_COUNTRY`, `FISCAL_YEAR`, `ZERO_BASIS_REVIEW_THRESHOLD`); defaults to PT/2025 when absent
 - Exchange rates should be updated annually (e.g., from your national central bank)
 - Security settings use defaults from code if missing from config file
+- Law-driven flags (e.g. `exclude_loan_repayment_gains`) are read from `docs/tax/decision_points/<fiscal_year>.toml`, not from `config.ini`. Both the `.md` and the `.toml` sidecar must be updated together when a decision point changes. `config.ini` contains only user-preference settings.
+- Decision points TOML schema: must contain `[meta]` with `fiscal_year` (integer), and `[countries.XX]` tables of boolean flags only. Example: `[countries.PT]\nexclude_loan_repayment_gains = true`. Copy `docs/tax/decision_points/2025.toml` when adding a new fiscal year. If `FISCAL_YEAR` is set to a year without a corresponding TOML file, the tool raises `ConfigurationError` at startup.
+- `ConfigurationError` is raised before pipeline execution in two cases: (a) `config.ini` has an invalid `[TAX JURISDICTION]` value, (b) the decision points TOML is missing or malformed for the configured fiscal year. It propagates from `main()` without wrapping so callers can distinguish configuration problems from data problems (`FileProcessingError`/`ReportGenerationError`).
 
 ## Excel Report Features
 
@@ -130,6 +154,16 @@ The application generates professional Excel reports with:
 - Detailed buy/sell transaction matching with FIFO methodology
 - Automatic currency conversion with exchange rate tables
 - Country of source detection from ISIN data
+
+### Crypto Gains Section
+- Crypto capital gains with FIFO lot matching, aggregated by (date, asset, platform, holding period)
+- Zero-cost entries highlighted with red fill when gain/loss exceeds the configured `ZERO_BASIS_REVIEW_THRESHOLD`
+- Loan repayment disposals excluded from capital gains when `TaxJurisdictionConfig.exclude_loan_repayment_gains` is `True` (PT default)
+
+### Loan Activity Section
+- Per-asset loan balance summary: received count/amount/value, repaid count/amount/value, and balance status
+- Overpaid balances (cross-year loan repayment) highlighted with light-red fill
+- Populated from Koinly loan transaction data
 
 ### Dividend Income Section ("CAPITAL INVESTMENT INCOME")
 - Complete dividend reporting with tax information
@@ -172,236 +206,65 @@ The system automatically integrates data from previous tax cycles:
 
 ## Testing Strategy
 
-### Comprehensive Test Suite Overview
-The project follows **professional testing best practices** with a **3-tier test architecture** and comprehensive coverage:
-
 ### Test Structure
-```
-tests/
-├── unit/          # 310 unit tests - Fast component tests
-│   ├── domain/    # Domain layer unit tests
-│   ├── infrastructure/  # Infrastructure layer unit tests
-│   └── application/ # Application layer unit tests
-├── integration/   # 6 integration tests - Component interaction tests
-└── end_to_end/    # 25 e2e tests - Full workflow tests
-```
+3-tier architecture: `tests/unit/` (767 tests), `tests/integration/` (29), `tests/end_to_end/` (25).
 
 ### Testing Commands
 ```bash
-# Run all tests
-uv run pytest
-
-# Run tests by tier using markers
-uv run pytest -m unit         # Unit tests only (fast)
-uv run pytest -m integration  # Integration tests only
-uv run pytest -m e2e          # End-to-end tests only
-
-# Run tests by directory
-uv run pytest tests/unit/             # All unit tests
-uv run pytest tests/unit/domain/      # Domain layer tests
-uv run pytest tests/unit/infrastructure/  # Infrastructure tests
-uv run pytest tests/unit/application/     # Application layer tests
-uv run pytest tests/integration/      # Integration tests
-uv run pytest tests/end_to_end/       # End-to-end tests
-
-# Run with coverage
-uv run pytest --cov=src --cov-report=html
-
-# Run specific test patterns
-uv run pytest -k "test_specific"     # Run tests matching pattern
-uv run pytest tests/unit/domain/test_value_objects.py  # Specific test file
-
-# Development workflow
-uv run pytest -m unit -x            # Run unit tests, stop on first failure
-uv run pytest -m unit --tb=short    # Short traceback for faster debugging
+uv run pytest                        # All tests
+uv run pytest -m unit                # Unit tests only (fast)
+uv run pytest -m integration         # Integration tests
+uv run pytest -m e2e                 # End-to-end tests
+uv run pytest -m unit -x --tb=short  # Dev workflow: stop on first failure
+uv run pytest --cov=src --cov-report=html  # Coverage
 ```
 
 ### Testing Guidelines
 
-#### Core Testing Principles
-- **Unit Tests**: Test individual components in isolation
-- **Integration Tests**: Test component interactions
-- **Edge Cases**: Comprehensive error handling and boundary conditions
-- **Test Coverage**: High coverage of business logic and validation
-- **Descriptive Naming**: Clear test names that document behavior
-- **Debugging**: Use `breakpoint()` or `import pdb; pdb.set_trace()`
+**Critical Rule**: Do not import pytest fixtures — they are injected automatically by name (`tmp_path`, `capsys`, `caplog`, `monkeypatch`, `request`).
 
-#### Pytest Best Practices
+**Import Cleanliness**: Remove unused imports (Ruff F401). Only import `Path` when instantiating or type-annotating, never for injected fixtures.
 
-**Critical Rule**: Do not import pytest fixtures - they are injected automatically by name.
+**Test Value Assessment** — every test must:
+1. Test meaningful business logic that could break in production
+2. Test real edge cases from actual data/usage
+3. Not duplicate coverage from other tests
+4. Provide actionable debugging information on failure
 
-**Available Fixtures Without Import**:
-- `tmp_path` - Filesystem operations (pathlib.Path)
-- `capsys` - Capture stdout/stderr
-- `caplog` - Capture logging output
-- `monkeypatch` - Patch environment/attributes
-- `request` - Test context and metadata
+**High-Value Patterns**: Complex IB CSV formats, missing data scenarios, tax calculation logic, integration flows, error handling, real edge cases from exports.
 
-**Example Usage**:
-```python
-# ✅ GOOD - Use directly without imports
-def test_something(tmp_path):
-    test_file = tmp_path / "test.txt"
-    test_file.write_text("content")
-
-# ❌ AVOID - Unnecessary Path import
-from pathlib import Path
-def test_with_file(tmp_path):
-    file_path = Path(tmp_path) / "test.txt"  # tmp_path is already Path
-```
-
-**Import Cleanliness Rules**:
-- **Remove unused imports**: If Ruff reports F401, delete the import unless justified
-- **Assume Ruff is correct**: Fix the code, not the linter, unless proven false positive
-- **Only import when used**:
-  - ✅ When instantiating: `Path("some/path")`
-  - ✅ When used in type annotations: `def func(file_path: Path) -> None`
-  - ❌ When using injected fixtures: `def test(tmp_path):` (no import needed)
-
-#### Test Value Assessment
-Ask these questions for every test:
-1. **Does it test meaningful business logic** that could break in production?
-2. **Does it test real edge cases** from actual data/usage?
-3. **Is it testing something not already covered** by other tests?
-4. **Would a failure provide actionable information** for debugging?
-
-**High-Value Test Patterns to Include**:
-- Complex IB CSV description formats
-- Missing data scenarios with error indicators  
-- Tax calculation and matching logic
-- Integration flows between components
-- Error handling and validation paths
-- Performance with realistic datasets
-- Real edge cases from actual exports
-
-**Low-Value Test Patterns to Avoid**:
-- Testing zero amounts (if positives work, zeros work too)
-- Testing basic string parsing that should work anyway
-- Testing simple symbol matching (AAPL/MSFT basics)
-- Testing very small decimal amounts without business meaning
-- Testing trivial cases that would be caught by other tests
+**Low-Value Patterns to Avoid**: Zero amounts, basic string parsing, simple symbol matching, trivial decimal amounts, cases caught by other tests.
 
 ## Development Best Practices
 
 ### Incremental Development with Testing
-**Test-driven approach for complex changes**:
-1. **Write failing tests first** to understand expected behavior
-2. **Implement changes** with comprehensive test coverage
-3. **Run the full test suite** to ensure no regressions
-4. **Review and clean up** low-value tests after functionality works
-
-### API Design Consistency
-**Maintain consistent patterns across similar functions**:
-```python
-# ✅ GOOD - Consistent parameter patterns across context methods
-def process_header(self, row: list[str], row_number: int) -> None:
-def process_data_row(self, row: list[str], row_number: int) -> None:
-
-# ✅ GOOD - Consistent error message patterns (f-string, not %d/%s tuple args)
-raise FileProcessingError(f"Row {row_number}: Invalid {section_name} format")
-```
+Test-driven approach: write failing tests → implement → run full suite → clean up low-value tests.
 
 ### Code Review Checklist
-**Before considering code complete, verify**:
-- [ ] All required parameters are truly required (no misleading defaults)
-- [ ] Error messages include sufficient context (row numbers, problematic data)
-- [ ] Exception chaining preserves original error information  
-- [ ] Logging uses parameterized format consistently
-- [ ] Fail fast logic is applied appropriately (missing vs invalid data)
-- [ ] Tests provide real value and test meaningful edge cases
-- [ ] API usage is correct (high-level vs low-level functions)
-- [ ] No pytest fixture imports (tmp_path, capsys, caplog, monkeypatch, request)
-- [ ] No unused imports (fix Ruff F401 errors unless proven false positive)
-- [ ] Path imports only when actually needed (not for injected fixtures)
-
-### Documentation Maintenance
-**Keep documentation current with code changes**:
-- Update CLAUDE.md when new patterns emerge
-- Include examples of both good and bad practices
-- Document decision rationale for architectural choices
-- Maintain clear separation between testing vs script guidelines
+Before considering code complete, verify: required params are truly required, error messages have context (row numbers), exception chaining preserves originals, logging uses parameterized format, fail-fast vs missing-data distinction is correct, no pytest fixture imports, no unused imports.
 
 ## Code Quality Standards
 
 ### Linting and Formatting
 - **Ruff** is the primary linter and formatter (configured in `pyproject.toml`)
-- **Target**: Python 3.13 (`target-version = "py313"`)
-- **Line length**: 120 characters maximum
+- **Target**: Python 3.14, line length 120, Google-style docstrings
 - **Enabled rulesets**: `E`, `F`, `UP`, `B`, `SIM`, `I`, `N`, `ARG`, `FA`, `DTZ`, `PTH`, `TD`, `FIX`, `RSE`, `S`, `C4`, `PT`, `D`, `PL`
-- **Docstring convention**: Google-style (`pydocstyle`)
 
 ### Documentation Best Practices
-
-#### When to Write Docstrings
-- **Always document**:
-  - Public modules (`__init__.py`, top-level modules)
-  - Public classes and their `__init__` methods
-  - Public functions and methods with complex logic or non-obvious behavior
-  - Functions with multiple parameters or return values
-
-- **Skip docstrings for**:
-  - Self-explanatory property getters/setters (e.g., `def get_currency(self): return self.currency`)
-  - Trivial magic methods like `__repr__` when the implementation is obvious
-  - Private methods (`_method_name`) when the name and implementation are clear
-  - Test functions (docstrings optional in tests per `pyproject.toml`)
-
-#### Docstring Style (Google Convention)
-```python
-def complex_function(param1: str, param2: int) -> dict:
-    """Brief one-line summary ending with a period.
-
-    Extended description if needed. Explain the purpose, algorithm,
-    or any non-obvious behavior.
-
-    Args:
-        param1: Description of param1.
-        param2: Description of param2.
-
-    Returns:
-        Description of return value.
-
-    Raises:
-        ValueError: When validation fails.
-    """
-```
-
-#### Package `__init__.py` Docstrings
-Use multi-line format with summary + description:
-```python
-"""Package name for specific purpose.
-
-Extended description explaining what the package contains,
-its responsibilities, and key modules or functionality.
-"""
-```
+- **Always document**: Public modules, classes, `__init__` methods, complex functions
+- **Skip docstrings for**: Trivial getters/setters, obvious `__repr__`, clear private methods, test functions
+- **Style**: Google convention — one-line summary + optional extended description + Args/Returns/Raises sections
 
 ### Code Style Guidelines
-- **Type hints**: Use modern syntax (`X | Y` instead of `Union[X, Y]`) with `from __future__ import annotations`
-- **Imports**: Sorted automatically by Ruff (isort)
-- **Magic numbers**: Replace with named constants (except in tests)
-- **Datetime**: Use `datetime.UTC` instead of `timezone.utc` (Python 3.11+)
-- **Path handling**: Use `pathlib.Path` instead of `os.path`
-- **Logging**: Use lazy formatting (`logger.info("Message: %s", value)` not f-strings)
-- **Error Messages**: Use f-strings for exception messages (`raise ValueError(f"Invalid value: {value}")`)
-
-#### Method Parameter Design Principles
-**Required vs Optional Parameters**: 
-- **Required**: Use when data is essential for correct operation (e.g., `row_number` for error context)
-- **Optional**: Use only when a sensible default exists and doesn't compromise functionality
-- **Avoid defaults of 0** for identifiers/indices that need real values
-
-```python
-# ✅ GOOD - Required parameter for essential data
-def process_data_row(self, row: list[str], row_number: int) -> None:
-
-# ❌ AVOID - Default value for essential context
-def process_data_row(self, row: list[str], row_number: int = 0) -> None:
-```
-
-### Complexity Management
-- Functions with high complexity (`PLR0912`, `PLR0915`) should be refactored when possible
-- If refactoring is too risky, use explicit `# noqa: PLR0912, PLR0915` with a comment explaining why
-- Avoid deeply nested logic; extract helper functions
+- **Type hints**: Modern syntax (`X | Y`) with `from __future__ import annotations`
+- **Imports**: Sorted by Ruff (isort); replace unused imports (F401)
+- **Magic numbers**: Named constants (except in tests)
+- **Datetime**: `datetime.UTC` (not `timezone.utc`)
+- **Path handling**: `pathlib.Path` (not `os.path`)
+- **Logging**: Lazy formatting (`logger.info("Message: %s", value)`)
+- **Error Messages**: f-strings in exceptions (`raise ValueError(f"Invalid: {value}")`)
+- **Required params**: Never default to 0 for essential identifiers/indices
+- **Complexity**: Refactor high-complexity functions; use `# noqa: PLR0912` with comment if too risky
 
 ## Data Handling Principles
 
@@ -478,7 +341,7 @@ if len(row) < MIN_REQUIRED_COLUMNS:
 ```
 tax-reporting/
 ├── src/                     # Source code (src layout)
-│   └── shares_reporting/
+│   └── tax_reporting/
 │       ├── __init__.py        # Package exports
 │       ├── main.py           # Application entry point
 │       ├── domain/           # Domain layer
@@ -489,7 +352,9 @@ tax-reporting/
 │       │   ├── collections.py    # Type aliases and utilities
 │       │   ├── constants.py      # Domain constants
 │       │   ├── exceptions.py     # Domain exceptions
-│       │   └── token_origin.py   # Token acquisition origin resolution domain types
+│       │   ├── token_origin.py   # Token acquisition origin resolution domain types
+│       │   ├── jurisdiction.py   # TaxJurisdictionConfig (fiscal year, country, law-driven flags)
+│       │   └── crypto_fifo.py    # Domain types for FIFO engine (CryptoAcquisition, CryptoConsumption, CryptoFifoRealization, AssetFifoResult)
 │       ├── application/      # Application layer
 │       │   ├── __init__.py
 │       │   ├── extraction/      # CSV data parsing package
@@ -499,6 +364,16 @@ tax-reporting/
 │       │   │   ├── state_machine.py
 │       │   │   └── processing.py
 │       │   ├── crypto_reporting.py # Crypto tax reporting and Koinly parsing
+│       │   ├── token_origin.py      # TokenOriginResolver application service
+│       │   ├── crypto_fifo/          # FIFO engine package (per CIRS art. 43 n.9)
+│       │   │   ├── __init__.py        # public re-exports
+│       │   │   ├── _graph.py          # shared topological_sort_with_fallback utility
+│       │   │   ├── contexts.py        # AcquisitionContext, ConsumptionContext, ParsedTxRow
+│       │   │   ├── cross_asset.py     # cross-asset exchange resolution
+│       │   │   ├── matching.py        # FIFO lot matching
+│       │   │   ├── merge.py           # MergedAssetFifoResult (multi-platform carry-over DTO)
+│       │   │   ├── parsing.py         # TH parsing and row classification
+│       │   │   └── transfer.py        # intra-asset transfer resolution (_order_platforms_for_transfers, _resolve_intra_asset_transfers)
 │       │   ├── transformation.py # Capital gains calculation
 │       │   └── persisting/     # Excel/CSV generation package
 │       │       ├── __init__.py
@@ -508,7 +383,9 @@ tax-reporting/
 │       │       ├── workbook_builder.py   # Orchestrator: creates workbook, delegates to sheet writers
 │       │       ├── crypto_gains_sheet.py       # Crypto Gains tab
 │       │       ├── crypto_rewards_sheet.py     # Crypto Rewards tab
-│       │       └── crypto_reconciliation_sheet.py  # Crypto Reconciliation tab
+│       │       ├── crypto_reconciliation_sheet.py  # Crypto Reconciliation tab
+│       │       ├── loan_activity_sheet.py      # Loan Activity tab (per-asset balances)
+│       │       └── assumptions_sheet.py        # Platform Assumptions tab (operator manifest)
 │       └── infrastructure/    # Infrastructure layer
 │           ├── __init__.py
 │           ├── config.py        # Configuration management
@@ -517,12 +394,12 @@ tax-reporting/
 │           ├── logging_config.py # Logging configuration
 │           └── validation.py    # Input validation
 ├── tests/                  # Test suite
-│   ├── unit/               # Unit tests (310 tests)
+│   ├── unit/               # Unit tests (767 tests)
 │   │   ├── domain/         # Domain layer unit tests
 │   │   ├── infrastructure/ # Infrastructure layer unit tests
 │   │   └── application/    # Application layer unit tests
 │   │       └── persisting/ # Persisting module unit tests
-│   ├── integration/        # Integration tests (6 tests)
+│   ├── integration/        # Integration tests (29 tests)
 │   ├── end_to_end/         # End-to-end tests (25 tests)
 │   └── conftest.py         # Pytest configuration and fixtures
 ├── resources/              # Data directories

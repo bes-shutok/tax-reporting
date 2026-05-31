@@ -2,7 +2,7 @@
 
 import pytest
 
-from shares_reporting.domain.exceptions import FileProcessingError
+from tax_reporting.domain.exceptions import FileProcessingError
 
 
 @pytest.mark.unit

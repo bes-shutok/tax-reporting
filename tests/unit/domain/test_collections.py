@@ -2,8 +2,8 @@ from decimal import Decimal
 
 import pytest
 
-from shares_reporting.domain.accumulators import TradePartsWithinDay
-from shares_reporting.domain.collections import (
+from tax_reporting.domain.accumulators import TradePartsWithinDay
+from tax_reporting.domain.collections import (
     CapitalGainLines,
     CapitalGainLinesPerCompany,
     CurrencyToCoordinate,
@@ -14,13 +14,13 @@ from shares_reporting.domain.collections import (
     SortedDateRanges,
     TradeCyclePerCompany,
 )
-from shares_reporting.domain.entities import (
+from tax_reporting.domain.entities import (
     CapitalGainLine,
     QuantitatedTradeAction,
     TradeAction,
     TradeCycle,
 )
-from shares_reporting.domain.value_objects import TradeDate, TradeType, parse_company, parse_currency
+from tax_reporting.domain.value_objects import TradeDate, TradeType, parse_company, parse_currency
 
 
 @pytest.mark.unit
@@ -83,7 +83,7 @@ class TestTypeAliases:
         company = parse_company("AAPL")
         currency = parse_currency("USD")
 
-        from shares_reporting.domain.entities import CurrencyCompany
+        from tax_reporting.domain.entities import CurrencyCompany
 
         currency_company = CurrencyCompany(currency, company)
         cycle = TradeCycle()
@@ -100,7 +100,7 @@ class TestTypeAliases:
         company = parse_company("AAPL")
         currency = parse_currency("USD")
 
-        from shares_reporting.domain.entities import CurrencyCompany
+        from tax_reporting.domain.entities import CurrencyCompany
 
         currency_company = CurrencyCompany(currency, company)
 
@@ -140,7 +140,7 @@ class TestTypeAliases:
     def test_partitioned_trades_by_type_type_alias(self):
         """Test PartitionedTradesByType type alias works as dictionary."""
         # PartitionedTradesByType is an alias for Dict[TradeType, DayPartitionedTrades]
-        from shares_reporting.domain.value_objects import TradeType
+        from tax_reporting.domain.value_objects import TradeType
 
         company = parse_company("AAPL")
         currency = parse_currency("USD")
@@ -162,7 +162,7 @@ class TestTypeAliases:
     def test_currency_to_coordinate_type_alias(self):
         """Test CurrencyToCoordinate type alias works as NamedTuple."""
         # CurrencyToCoordinate is a NamedTuple with currency and coordinate
-        from shares_reporting.domain.value_objects import parse_currency
+        from tax_reporting.domain.value_objects import parse_currency
 
         coord = CurrencyToCoordinate(parse_currency("USD"), "A1")
 
@@ -173,7 +173,7 @@ class TestTypeAliases:
     def test_currency_to_coordinates_type_alias(self):
         """Test CurrencyToCoordinates type alias works as list."""
         # CurrencyToCoordinates is an alias for List[CurrencyToCoordinate]
-        from shares_reporting.domain.value_objects import parse_currency
+        from tax_reporting.domain.value_objects import parse_currency
 
         coord1 = CurrencyToCoordinate(parse_currency("USD"), "A1")
         coord2 = CurrencyToCoordinate(parse_currency("EUR"), "B1")
@@ -195,7 +195,7 @@ class TestCollectionBehavior:
         """Test nested collection operations work correctly."""
         company = parse_company("AAPL")
         currency = parse_currency("USD")
-        from shares_reporting.domain.entities import CurrencyCompany
+        from tax_reporting.domain.entities import CurrencyCompany
 
         currency_company = CurrencyCompany(currency, company)
 
@@ -280,7 +280,7 @@ class TestCollectionBehavior:
         """Test that collections maintain correct types."""
         company = parse_company("AAPL")
         currency = parse_currency("USD")
-        from shares_reporting.domain.entities import CurrencyCompany
+        from tax_reporting.domain.entities import CurrencyCompany
 
         currency_company = CurrencyCompany(currency, company)
 
@@ -320,7 +320,7 @@ class TestCollectionBehavior:
         assert single_trade[0] == quantitated
 
         # Single key-value pair
-        from shares_reporting.domain.entities import CurrencyCompany
+        from tax_reporting.domain.entities import CurrencyCompany
 
         currency_company = CurrencyCompany(currency, company)
         single_cycle: TradeCyclePerCompany = {currency_company: TradeCycle()}

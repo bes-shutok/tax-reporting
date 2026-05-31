@@ -21,11 +21,11 @@
       "Bash(use one:*)",
       "Bash(same we should do the same cleanup why not extract the cleanup part?\":*)",
       "Bash(STATISTICS\" section in the crypto Excel sheet with grand totals computed:*)",
-      "Bash(ls -d ~/Projects/myrepos/tax-reporting/*)",
       "Bash(awk:*)",
       "Bash(Glob \"*)",
       "Bash(python3 -c ':*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(~/.agents/scripts/commit-skills.sh *)"
     ]
   }
 }

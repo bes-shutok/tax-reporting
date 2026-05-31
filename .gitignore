@@ -84,10 +84,14 @@ config.ini
 /.ralphex/
 
 # Review artifacts (temporary analysis documents)
-docs/review/
+docs/reviews/
+
+# Personal artifacts (temporary analysis documents)
+docs/personal/
 
 # LLM agent config (bootstrap-only, never committed)
 .opencode/
 .codex/
 .continue/
 .cursor/rules
+tmp/

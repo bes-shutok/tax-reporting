@@ -5,7 +5,7 @@ from decimal import Decimal
 import openpyxl
 import pytest
 
-from shares_reporting.application.crypto_reporting import (
+from tax_reporting.application.crypto_reporting import (
     AggregatedRewardIncomeEntry,
     CapitalGainPeriodStats,
     CryptoCapitalGainStats,
@@ -14,7 +14,7 @@ from shares_reporting.application.crypto_reporting import (
     CryptoTaxReport,
     RewardTaxClassification,
 )
-from shares_reporting.application.persisting.crypto_rewards_sheet import write_crypto_rewards_sheet
+from tax_reporting.application.persisting.crypto_rewards_sheet import write_crypto_rewards_sheet
 from tests.conftest import make_operator_origin
 
 
@@ -562,7 +562,7 @@ class TestCryptoRewardsSheetAutoWidth:
 
     def test_column_widths_respect_max_cell_width_cap(self):
         """Verify no column exceeds MAX_CELL_WIDTH + 2 even with long notes."""
-        from shares_reporting.application.persisting.excel_utils import MAX_CELL_WIDTH
+        from tax_reporting.application.persisting.excel_utils import MAX_CELL_WIDTH
 
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()

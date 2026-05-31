@@ -1,0 +1,816 @@
+
+
+<!DOCTYPE html>
+<html dir="ltr" class="ms-isBot" lang="pt-PT">
+    <head><meta charset="UTF-8" /><meta http-equiv="Content-type" content="text/html; charset=utf-8" /><meta http-equiv="X-UA-Compatible" content="IE=Edge" /><meta http-equiv="Expires" content="0" /><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" /><meta name="msapplication-TileImage" content="/_layouts/15/images/SharePointMetroAppTile.png" /><meta name="msapplication-TileColor" content="#0072C6" /><title>
+	
+	
+
+</title><link rel="shortcut icon" href="/_layouts/15/images/favicon.ico?rev=23" type="image/vnd.microsoft.icon" id="favicon" /><link rel="stylesheet" type="text/css" href="/Style%20Library/en-US/Themable/Core%20Styles/pagelayouts15.css"/>
+<link rel="stylesheet" type="text/css" href="/_layouts/15/1033/styles/Themable/corev15.css?rev=VY%2BwyEmZ4VeBNMq6%2BgwRaA%3D%3DTAG0"/>
+<link rel="stylesheet" type="text/css" href="/Style%20Library/en-US/Themable/Core%20Styles/controls15.css"/>
+<script type="text/javascript" src="/_layouts/15/1033/initstrings.js?rev=2WxjgxyM2qXGgY9r2nHW8A%3D%3DTAG0"></script>
+<script type="text/javascript" src="/_layouts/15/init.js?rev=GUhHhhURmaPV0Exz8ihB4w%3D%3DTAG0"></script>
+<script type="text/javascript" src="/ScriptResource.axd?d=bX3baye1QM6GywT62joSt8ytTodr8NdGuxqSxe_vd7D4lde3C-UmRmxuStw2VYkLM624BEK8VFZANvWILc_jDkN7jP6C6CehYBHAGGIQ51WqcDYmLGbnQ2epSBdCJ0p3q2k7A1vI-1XcbtTUHjgljLrlf6yv6L05QofoyVjTHza16mV8vJe9jYjsJ5f3ClGT0&amp;t=32e5dfca"></script>
+<script type="text/javascript" src="/_layouts/15/blank.js?rev=URiVGaEoD%2BFvo97F1D%2FR8g%3D%3DTAG0"></script>
+<script type="text/javascript">RegisterSod("require.js", "\u002f_layouts\u002f15\u002frequire.js?rev=4UhLIF\u00252FezOvmGnh\u00252Fs0LLpA\u00253D\u00253DTAG0");</script>
+<script type="text/javascript">RegisterSod("strings.js", "\u002f_layouts\u002f15\u002f1033\u002fstrings.js?rev=k\u00252FSaOdWtcHDDvsb\u00252FUFykOA\u00253D\u00253DTAG0");</script>
+<script type="text/javascript">RegisterSod("sp.res.resx", "\u002f_layouts\u002f15\u002f1033\u002fsp.res.js?rev=wAoMiKx7gNtLcYzRgm0ujg\u00253D\u00253DTAG0");</script>
+<script type="text/javascript">RegisterSod("sp.runtime.js", "\u002f_layouts\u002f15\u002fsp.runtime.js?rev=YZ861SJAkz\u00252B3m9b\u00252BtoWZKg\u00253D\u00253DTAG0");RegisterSodDep("sp.runtime.js", "sp.res.resx");</script>
+<script type="text/javascript">RegisterSod("sp.js", "\u002f_layouts\u002f15\u002fsp.js?rev=x36aOq8kR8NqSpZc3SLwwg\u00253D\u00253DTAG0");RegisterSodDep("sp.js", "sp.runtime.js");RegisterSodDep("sp.js", "sp.ui.dialog.js");RegisterSodDep("sp.js", "sp.res.resx");</script>
+<script type="text/javascript">RegisterSod("sp.init.js", "\u002f_layouts\u002f15\u002fsp.init.js?rev=cb9IqNNJDbEKcbvg3i7xhg\u00253D\u00253DTAG0");</script>
+<script type="text/javascript">RegisterSod("sp.ui.dialog.js", "\u002f_layouts\u002f15\u002fsp.ui.dialog.js?rev=fbiS8Id\u00252Bc4z0DvgpgV8CHA\u00253D\u00253DTAG0");RegisterSodDep("sp.ui.dialog.js", "sp.init.js");RegisterSodDep("sp.ui.dialog.js", "sp.res.resx");</script>
+<script type="text/javascript">RegisterSod("core.js", "\u002f_layouts\u002f15\u002fcore.js?rev=VD4CJyojLHYefNyEhGJxBw\u00253D\u00253DTAG0");RegisterSodDep("core.js", "strings.js");</script>
+<script type="text/javascript">RegisterSod("menu.js", "\u002f_layouts\u002f15\u002fmenu.js?rev=WlWt137KIK6UITRf3aC0TQ\u00253D\u00253DTAG0");</script>
+<script type="text/javascript">RegisterSod("mQuery.js", "\u002f_layouts\u002f15\u002fmquery.js?rev=FLn\u00252F7dUZMJwT2qO\u00252FXG\u00252FkFw\u00253D\u00253DTAG0");</script>
+<script type="text/javascript">RegisterSod("callout.js", "\u002f_layouts\u002f15\u002fcallout.js?rev=APDi6dtzkajDazQ7q3Uvew\u00253D\u00253DTAG0");RegisterSodDep("callout.js", "strings.js");RegisterSodDep("callout.js", "mQuery.js");RegisterSodDep("callout.js", "core.js");</script>
+<script type="text/javascript">RegisterSod("sp.core.js", "\u002f_layouts\u002f15\u002fsp.core.js?rev=7WI344DlyZtB\u00252B\u00252BC8L9Hx2g\u00253D\u00253DTAG0");RegisterSodDep("sp.core.js", "strings.js");RegisterSodDep("sp.core.js", "sp.init.js");RegisterSodDep("sp.core.js", "core.js");</script>
+<script type="text/javascript">RegisterSod("clienttemplates.js", "\u002f_layouts\u002f15\u002fclienttemplates.js?rev=Y0mII0fSisujnb1T2AH0rw\u00253D\u00253DTAG0");</script>
+<script type="text/javascript">RegisterSod("sharing.js", "\u002f_layouts\u002f15\u002fsharing.js?rev=94TT3umwuRvqGY5DKjf4LQ\u00253D\u00253DTAG0");RegisterSodDep("sharing.js", "strings.js");RegisterSodDep("sharing.js", "mQuery.js");RegisterSodDep("sharing.js", "clienttemplates.js");RegisterSodDep("sharing.js", "core.js");</script>
+<script type="text/javascript">RegisterSod("suitelinks.js", "\u002f_layouts\u002f15\u002fsuitelinks.js?rev=oBmXimN8eaD401HJgdBcug\u00253D\u00253DTAG0");RegisterSodDep("suitelinks.js", "strings.js");RegisterSodDep("suitelinks.js", "core.js");</script>
+<script type="text/javascript">RegisterSod("userprofile", "\u002f_layouts\u002f15\u002fsp.userprofiles.js?rev=cx6U8sP\u00252ByP0OFLjk6ekyIg\u00253D\u00253DTAG0");RegisterSodDep("userprofile", "sp.runtime.js");</script>
+<script type="text/javascript">RegisterSod("followingcommon.js", "\u002f_layouts\u002f15\u002ffollowingcommon.js?rev=WLeVq8SV6HCQFJvZEVlmTQ\u00253D\u00253DTAG0");RegisterSodDep("followingcommon.js", "strings.js");RegisterSodDep("followingcommon.js", "sp.js");RegisterSodDep("followingcommon.js", "userprofile");RegisterSodDep("followingcommon.js", "core.js");RegisterSodDep("followingcommon.js", "mQuery.js");</script>
+<script type="text/javascript">RegisterSod("profilebrowserscriptres.resx", "\u002f_layouts\u002f15\u002f1033\u002fprofilebrowserscriptres.js?rev=qwf69WaVc1mYlJLXqmZmVA\u00253D\u00253DTAG0");</script>
+<script type="text/javascript">RegisterSod("sp.ui.mysitecommon.js", "\u002f_layouts\u002f15\u002fsp.ui.mysitecommon.js?rev=OkxHgBU77mwBam7NQyVBgg\u00253D\u00253DTAG0");RegisterSodDep("sp.ui.mysitecommon.js", "sp.init.js");RegisterSodDep("sp.ui.mysitecommon.js", "sp.runtime.js");RegisterSodDep("sp.ui.mysitecommon.js", "userprofile");RegisterSodDep("sp.ui.mysitecommon.js", "profilebrowserscriptres.resx");</script>
+<script type="text/javascript">RegisterSod("browserScript", "\u002f_layouts\u002f15\u002fnon_ie.js?rev=YnGm41s\u00252FV8Cq5u228BmhsQ\u00253D\u00253DTAG0");RegisterSodDep("browserScript", "strings.js");</script>
+<script type="text/javascript">RegisterSod("inplview", "\u002f_layouts\u002f15\u002finplview.js?rev=9pkXu8ErG58pRUJ\u00252Fv7qD9A\u00253D\u00253DTAG0");RegisterSodDep("inplview", "strings.js");RegisterSodDep("inplview", "core.js");RegisterSodDep("inplview", "clienttemplates.js");RegisterSodDep("inplview", "sp.js");</script>
+<script type="text/javascript">RegisterSod("cui.js", "\u002f_layouts\u002f15\u002fcui.js?rev=fPCwz1mr2Ox\u00252FXSSaa\u00252F68rg\u00253D\u00253DTAG0");</script>
+<script type="text/javascript">RegisterSod("ribbon", "\u002f_layouts\u002f15\u002fsp.ribbon.js?rev=LxDDWOB9V9EkUzpZ\u00252FHbEXw\u00253D\u00253DTAG0");RegisterSodDep("ribbon", "strings.js");RegisterSodDep("ribbon", "core.js");RegisterSodDep("ribbon", "sp.core.js");RegisterSodDep("ribbon", "sp.js");RegisterSodDep("ribbon", "cui.js");RegisterSodDep("ribbon", "sp.res.resx");RegisterSodDep("ribbon", "sp.runtime.js");RegisterSodDep("ribbon", "inplview");</script>
+<script type="text/javascript">RegisterSod("offline.js", "\u002f_layouts\u002f15\u002foffline.js?rev=FSrLgiEmQthqQ4av4bs98A\u00253D\u00253DTAG0");</script>
+<script type="text/javascript">RegisterSod("WPAdderClass", "\u002f_layouts\u002f15\u002fwpadder.js?rev=QO9iUJPZSQfYn5N\u00252FpWgBiQ\u00253D\u00253DTAG0");</script>
+<script type="text/javascript">RegisterSod("datepicker.js", "\u002f_layouts\u002f15\u002fdatepicker.js?rev=tTjVTdZBnDGiDnJq0b8KoQ\u00253D\u00253DTAG0");RegisterSodDep("datepicker.js", "strings.js");</script>
+<link type="text/xml" rel="alternate" href="/pt/informacao_fiscal/codigos_tributarios/cirs_rep/_vti_bin/spsdisco.aspx" />
+            
+
+<link href="/_layouts/15/portalat/css/fontawesome.min.css?v1.0.0" rel="stylesheet" type="text/css" />
+
+<script type="text/javascript" src="/_layouts/15/portalat/js/jquery-3.7.1.min.js"></script>
+<script type="text/javascript" src="/_layouts/15/portalat/js/jquery.json-2.3.js"></script>
+
+
+<link href="/_layouts/15/portalat/js/bootstrap/bootstrap.min.css" rel="stylesheet" />
+<link href="/_layouts/15/portalat/css/style.css?v1.0.0" rel="stylesheet" />
+
+<!-- build:css css/pf-bundle.css -->
+
+
+<link rel="stylesheet" type="text/css" href="/_layouts/15/portalat/css/pf-main.css?v1.0.0" media="all" />
+<link rel="stylesheet" type="text/css" href="/_layouts/15/portalat/css/main.css?v1.0.0" />
+<!-- endbuild -->
+
+<link href="/_layouts/15/portalat/css/sharepoint.fix.css?v1.0.0" rel="stylesheet" />
+
+<!-- build:js js/pf-bundle.js -->
+<script type="text/javascript" src="/_layouts/15/portalat/js/modernizr.min.js?v1.0.0"></script>
+<script type="text/javascript" src="/_layouts/15/portalat/js/bootstrap/bootstrap.min.js"></script>
+
+
+<script type="text/javascript" src="/_layouts/15/portalat/js/opensoft.util.js?v1.0.0"></script>
+<script type="text/javascript" src="/_layouts/15/portalat/js/opensoft.messages.js?v1.0.0"></script>
+<script type="text/javascript" src="/_layouts/15/portalat/js/numericField.js?v1.0.0"></script>
+<!-- endbuild -->
+
+<style id="ctl00_ctl22__styles" type="text/css">
+	#suiteBar, #s4-ribbonrow { display: none; }
+</style>
+<link rel="canonical" href="http://info.portaldasfinancas.gov.pt:80/pt/informacao_fiscal/codigos_tributarios/cirs_rep/Pages/irs43.aspx" />
+            
+	<style type="text/css">
+		.v4master #s4-leftpanel { display: none; }
+		.v4master .s4-ca { margin-left: 0px; }
+	</style>
+	
+	
+
+            
+        
+
+        <script language="javascript" type="text/javascript">
+            if (typeof browseris !== 'undefined') {
+                browseris.ie = false;
+            }
+             document.addEventListener("DOMContentLoaded", function () {
+            const menu = document.getElementById("menu-links");
+            const isMobile = window.innerWidth < 576;
+
+            if (isMobile && menu.classList.contains("show")) {
+              // remove 'show' se estiver em mobile — começa colapsado
+              menu.classList.remove("show");
+            }
+          });
+        </script>
+
+    <style type="text/css">
+	.s4-skipribbonshortcut { display:none; }
+
+</style></head>
+    <body>
+        <div id="imgPrefetch" style="display:none">
+<img src="/_layouts/15/images/favicon.ico?rev=23" />
+<img src="/_layouts/15/images/spcommon.png?rev=40" />
+</div>
+
+        <noscript><div class='noindex'>You may be trying to access this site from a secured browser on the server. Please enable scripts and reload this page.</div></noscript>
+        
+        <form method="post" action="./irs43.aspx" id="aspnetForm">
+<input type="hidden" name="_wpcmWpid" id="_wpcmWpid" value="" />
+<input type="hidden" name="wpcmVal" id="wpcmVal" value="" />
+<input type="hidden" name="MSOWebPartPage_PostbackSource" id="MSOWebPartPage_PostbackSource" value="" />
+<input type="hidden" name="MSOTlPn_SelectedWpId" id="MSOTlPn_SelectedWpId" value="" />
+<input type="hidden" name="MSOTlPn_View" id="MSOTlPn_View" value="0" />
+<input type="hidden" name="MSOTlPn_ShowSettings" id="MSOTlPn_ShowSettings" value="False" />
+<input type="hidden" name="MSOGallery_SelectedLibrary" id="MSOGallery_SelectedLibrary" value="" />
+<input type="hidden" name="MSOGallery_FilterString" id="MSOGallery_FilterString" value="" />
+<input type="hidden" name="MSOTlPn_Button" id="MSOTlPn_Button" value="none" />
+<input type="hidden" name="__REQUESTDIGEST" id="__REQUESTDIGEST" value="noDigest" />
+<input type="hidden" name="MSOSPWebPartManager_DisplayModeName" id="MSOSPWebPartManager_DisplayModeName" value="Browse" />
+<input type="hidden" name="MSOSPWebPartManager_ExitingDesignMode" id="MSOSPWebPartManager_ExitingDesignMode" value="false" />
+<input type="hidden" name="MSOWebPartPage_Shared" id="MSOWebPartPage_Shared" value="" />
+<input type="hidden" name="MSOLayout_LayoutChanges" id="MSOLayout_LayoutChanges" value="" />
+<input type="hidden" name="MSOLayout_InDesignMode" id="MSOLayout_InDesignMode" value="" />
+<input type="hidden" name="_wpSelected" id="_wpSelected" value="" />
+<input type="hidden" name="_wzSelected" id="_wzSelected" value="" />
+<input type="hidden" name="MSOSPWebPartManager_OldDisplayModeName" id="MSOSPWebPartManager_OldDisplayModeName" value="Browse" />
+<input type="hidden" name="MSOSPWebPartManager_StartWebPartEditingName" id="MSOSPWebPartManager_StartWebPartEditingName" value="false" />
+<input type="hidden" name="MSOSPWebPartManager_EndWebPartEditing" id="MSOSPWebPartManager_EndWebPartEditing" value="false" />
+<input type="hidden" name="_maintainWorkspaceScrollPosition" id="_maintainWorkspaceScrollPosition" value="0" />
+<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="/wEPDwUKMTMwNTk1OTE5Mg9kFgJmD2QWAgIBD2QWBAIBD2QWBAIHD2QWAmYPZBYCAgEPFgIeE1ByZXZpb3VzQ29udHJvbE1vZGULKYgBTWljcm9zb2Z0LlNoYXJlUG9pbnQuV2ViQ29udHJvbHMuU1BDb250cm9sTW9kZSwgTWljcm9zb2Z0LlNoYXJlUG9pbnQsIFZlcnNpb249MTYuMC4wLjAsIEN1bHR1cmU9bmV1dHJhbCwgUHVibGljS2V5VG9rZW49NzFlOWJjZTExMWU5NDI5YwFkAhMPZBYCAgEPZBYEAgEPZBYCZg8WAh4HVmlzaWJsZWdkAgIPZBYCZg88KwAGAGQCCQ9kFhACAQ9kFgICAQ9kFgIFJmdfYjM2YmZjN2NfMWFiN180M2VkX2I2MDJfYTdjMGYyNjQ2MGY4D2QWAmYPFgQeBWNsYXNzBR9tcy1ydGUtZW1iZWRjb2RlIG1zLXJ0ZS1lbWJlZHdwHglpbm5lcmh0bWwFnQU8c2NyaXB0IHR5cGU9InRleHQvamF2YXNjcmlwdCI+DQoJJChkb2N1bWVudCkucmVhZHkoZnVuY3Rpb24oKXsNCgkJZnVuY3Rpb24gYXJpYUV4cGFuZChhKSB7DQoJCQlpZiAoJChhKS5hdHRyKCJhcmlhLWV4cGFuZGVkIikgPT09ICJmYWxzZSIpDQoJCQkJeyQoYSkuYXR0cigiYXJpYS1leHBhbmRlZCIsInRydWUiKTt9DQoJCQllbHNlIHskKGEpLmF0dHIoImFyaWEtZXhwYW5kZWQiLCJmYWxzZSIpO30NCgkJCSQoYSkubmV4dFVudGlsKGEpLnRvZ2dsZSgpOw0KCQl9Ow0KCQlmdW5jdGlvbiBkZXRhaWxzIChiKSB7DQoJCQkkKGIpLmF0dHIoImFyaWEtZXhwYW5kZWQiLCJmYWxzZSIpOw0KCQkJJChiKS5jbGljayhmdW5jdGlvbigpew0KCQkJCWFyaWFFeHBhbmQoYik7DQoJCQl9KTsNCgkJCSQoYikub24oJ2tleXByZXNzJyxmdW5jdGlvbihlKSB7DQoJCQkJaWYoZS53aGljaCA9PT0gMzIgfHwgZS53aGljaCA9PT0gMTMpIHsNCgkJCQkJYXJpYUV4cGFuZChiKTsNCgkJCQl9DQoJCQl9KTsNCgkJCSQoYikubmV4dFVudGlsKGIpLnRvZ2dsZSgpOw0KCQkJJChiKS5hdHRyKCJ0YWJpbmRleCIsIjAiKTsNCgkJCSQoYikuYXR0cigicm9sZSIsImJ1dHRvbiIpOw0KCQl9DQoJCWRldGFpbHMoIi5yZWRBbnQwIik7DQoJCWRldGFpbHMoIi5yZWRBbnQxIik7DQoJfSk7DQo8L3NjcmlwdD5kAhUPZBYCAgEPZBYCZg8PFgIfAWhkZAIXD2QWAgIDDxYCHwFoFgJmD2QWBAICD2QWBgIBDxYCHwFoZAIDDxYCHwFoZAIFDxYCHwFoZAIDDw8WAh4JQWNjZXNzS2V5BQEvZGQCGQ9kFgICAw9kFgICAQ9kFgQCAw9kFgJmDw8WBB4EXyFTQgICHghDc3NDbGFzcwUXbXMtcHJvbW90ZWRBY3Rpb25CdXR0b25kZAIFDw8WBh8GBRdtcy1wcm9tb3RlZEFjdGlvbkJ1dHRvbh8FAgIfAWhkZAIlD2QWAgIBD2QWAgIBDxYCHwALKwQBZAInD2QWAgIBDxYCHgtfIUl0ZW1Db3VudAIKFhRmD2QWAmYPFQQABi9wdC9hdEBJbmZvcm1hw6fDo28gaW5zdGl0dWNpb25hbCBkYSBBdXRvcmlkYWRlIFRyaWJ1dMOhcmlhIGUgQWR1YW5laXJhBEEgQVRkAgEPZBYCZg8VBAA+L3B0L2Fwb2lvX2NvbnRyaWJ1aW50ZS9jYWxlbmRhcmlvX2Zpc2NhbC9QYWdlcy9vYnJpZ2Fjb2VzLmFzcHg3Q2FsZW5kw6FyaW8gZGUgb2JyaWdhw6fDtWVzIGRlY2xhcmF0aXZhcyBlIGRlIHBhZ2FtZW50bw1BZ2VuZGEgRmlzY2FsZAICD2QWAmYPFQQAOGh0dHBzOi8vc2l0ZmlzY2FsLnBvcnRhbGRhc2ZpbmFuY2FzLmdvdi5wdC9nZXJhbC9zaXRlTWFwNk1hcGEgZGUgc2VydmnDp29zIGVsZXRyw7NuaWNvcyBubyBQb3J0YWwgZGFzIEZpbmFuw6dhcwlTZXJ2acOnb3NkAgMPZBYCZg8VBAAIL3B0L2hvbWU6SW5mb3JtYcOnw6NvIHJlbGV2YW50ZSBlbSBtYXTDqXJpYSB0cmlidXTDoXJpYSBlIGFkdWFuZWlyYR9JbmZvcm1hw6fDo28gRmlzY2FsIGUgQWR1YW5laXJhZAIED2QWAmYPFQQAUWh0dHBzOi8vaW5mby5wb3J0YWxkYXNmaW5hbmNhcy5nb3YucHQvcHQvYXBvaW9fYW9fY29udHJpYnVpbnRlL1BhZ2VzL2RlZmF1bHQuYXNweDBDb250ZcO6ZG9zIGluZm9ybWF0aXZvcyBkZSBhcG9pbyBhbyBjb250cmlidWludGUVQXBvaW8gYW8gQ29udHJpYnVpbnRlZAIFD2QWAmYPFQQAGS9wdC9HcmFuZGVzX0NvbnRyaWJ1aW50ZXM/SW5mb3JtYcOnw6NvIGRlIHN1cG9ydGUgYW9zIGNvbnRyaWJ1aW50ZXMgYWNvbXBhbmhhZG9zIHBlbGEgVUdDFUdyYW5kZXMgQ29udHJpYnVpbnRlc2QCBg9kFgJmDxUEAAkvcHQvVS1UYXgFVS1UQVgFVS1UQVhkAgcPZBYCZg8VBAAgL3B0L2RnY2kvZGl2dWxnYWNhby9lc3RhdGlzdGljYXNfRXN0YXTDrXN0aWNhcyBkZWNsYXJhdGl2YXMgZSByZWxhdGl2YXMgYSBJbXBvc3RvcyBzb2JyZSBvIFJlbmRpbWVudG8sIGEgRGVzcGVzYSBlIG8gUGF0cmltw7NuaW8NRXN0YXTDrXN0aWNhc2QCCA9kFgJmDxUEACYvZW4vdGF4LWluZm9ybWF0aW9uL1BhZ2VzL2RlZmF1bHQuYXNweBtUYXggSW5mb3JtYXRpb24gaW4gUG9ydHVnYWwPVGF4IEluZm9ybWF0aW9uZAIJD2QWAmYPFQQADS9wdC9DaWRhZGFuaWEwSW5mb3JtYcOnw6NvIGUgY29udGXDumRvcyBzb2JyZSBDaWRhZGFuaWEgRmlzY2FsEENpZGFkYW5pYSBGaXNjYWxkAi8PZBYCAgIPZBYKAgEPZBYCZg8WAh8ACysEAWQCAw8WAh8ACysEAWQCBQ8WAh8ACysEAWQCBw8WAh8ACysEAWQCDQ8WAh8ACysEARYCZg8PZGRkAmcPZBYCZg9kFggCAQ8WAh4Fc3R5bGUFCndpZHRoOjM4JTtkAgMPFgIfCAUKd2lkdGg6MzclO2QCBQ8WAh8IBQ1kaXNwbGF5Om5vbmU7ZAIHDxYCHwgFDWRpc3BsYXk6bm9uZTtkZF6f3M9RtxnH3IRKkI7VEIZ8FFrZIaAOlEciH+4UvwEP" />
+
+
+<script type="text/javascript">
+//<![CDATA[
+var MSOWebPartPageFormName = 'aspnetForm';
+var g_presenceEnabled = true;
+var g_wsaEnabled = false;
+
+var g_correlationId = '4ada17a2-a4ed-5011-b2f7-5d68ac5d590b';
+var g_wsaQoSEnabled = false;
+var g_wsaQoSDataPoints = [];
+var g_wsaRUMEnabled = false;
+var g_wsaLCID = 1033;
+var g_wsaListTemplateId = 850;
+var g_wsaSiteTemplateId = 'CMSPUBLISHING#0';
+var _fV4UI=true;var _spPageContextInfo = {webServerRelativeUrl: "\u002fpt\u002finformacao_fiscal\u002fcodigos_tributarios\u002fcirs_rep", webAbsoluteUrl: "http:\u002f\u002finfo.portaldasfinancas.gov.pt\u002fpt\u002finformacao_fiscal\u002fcodigos_tributarios\u002fcirs_rep", siteAbsoluteUrl: "http:\u002f\u002finfo.portaldasfinancas.gov.pt", serverRequestPath: "\u002fpt\u002finformacao_fiscal\u002fcodigos_tributarios\u002fcirs_rep\u002fPages\u002firs43.aspx", layoutsUrl: "_layouts\u002f15", webTitle: "CIRS", webTemplate: "39", tenantAppVersion: "0", isAppWeb: false, Has2019Era: true, webLogoUrl: "_layouts\u002f15\u002fimages\u002fsiteicon.png", webLanguage: 1033, currentLanguage: 1033, currentUICultureName: "en-US", currentCultureName: "pt-PT", clientServerTimeDelta: new Date("2026-05-27T22:04:36.4741054Z") - new Date(), updateFormDigestPageLoaded: new Date("2026-05-27T22:04:36.4741054Z"), siteClientTag: "546$$16.0.5552.1002", crossDomainPhotosEnabled:false, webUIVersion:15, webPermMasks:{High:16,Low:196705},pageListId:"{8e4750c5-a09b-43e8-b175-bfcecfa06aa2}",pageItemId:14, pagePersonalizationScope:1, alertsEnabled:true, customMarkupInCalculatedFieldDisabled: true, siteServerRelativeUrl: "\u002f", allowSilverlightPrompt:'True', isSiteAdmin: false};document.onreadystatechange=fnRemoveAllStatus; function fnRemoveAllStatus(){removeAllStatus(true)};
+                            function DoCallBack(filterText)
+                            {WebForm_DoCallback('ctl00$PlaceHolderMain$ctl03$ctl00',filterText,UpdateFilterCallback,0,CallBackError,true)
+                            }
+                            function CallBackError(result, clientsideString)
+                            {                
+                            }
+                        Flighting.ExpFeatures = [480215056,1880287568,1561350208,302071836,3212816,69472768,4194310,-2113396707,268502022,-872284160,1049232,-2147421952,65536,65536,2097472,917504,-2147474174,1372324107,67108882,0,0,-2147483648,2097152,0,0,32768,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,32768]; (function()
+{
+    if(typeof(window.SP) == "undefined") window.SP = {};
+    if(typeof(window.SP.YammerSwitch) == "undefined") window.SP.YammerSwitch = {};
+
+    var ysObj = window.SP.YammerSwitch;
+    ysObj.IsEnabled = false;
+    ysObj.TargetYammerHostName = "www.yammer.com";
+} )(); var _spWebPartComponents = new Object();
+                var g_syncButtonUsePopup = true;
+                //]]>
+</script>
+
+<script src="/_layouts/15/blank.js?rev=URiVGaEoD%2BFvo97F1D%2FR8g%3D%3DTAG0" type="text/javascript"></script>
+<script type="text/javascript">
+//<![CDATA[
+(function(){
+
+        if (typeof(_spBodyOnLoadFunctions) === 'undefined' || _spBodyOnLoadFunctions === null) {
+            return;
+        }
+        _spBodyOnLoadFunctions.push(function() {
+            SP.SOD.executeFunc('core.js', 'FollowingDocument', function() { FollowingDocument(); });
+        });
+    })();(function(){
+
+        if (typeof(_spBodyOnLoadFunctions) === 'undefined' || _spBodyOnLoadFunctions === null) {
+            return;
+        }
+        _spBodyOnLoadFunctions.push(function() {
+            SP.SOD.executeFunc('core.js', 'FollowingCallout', function() { FollowingCallout(); });
+        });
+    })();if (typeof(DeferWebFormInitCallback) == 'function') DeferWebFormInitCallback();//]]>
+</script>
+
+<input type="hidden" name="__VIEWSTATEGENERATOR" id="__VIEWSTATEGENERATOR" value="2F216C9B" />
+<input type="hidden" name="__EVENTVALIDATION" id="__EVENTVALIDATION" value="/wEdAAJ5T+N4LvySUX9hyLs2MYNmMTZk9qLGncDjImqxppn1M7N9ELcXcXIOIBni5xgKTBo6UAdn+SUwPu3MP4N5xA5R" />
+            <script type="text/javascript"> var submitHook = function () { return false; }; theForm._spOldSubmit = theForm.submit; theForm.submit = function () { if (!submitHook()) { this._spOldSubmit(); } }; </script>
+            <span id="DeltaSPWebPartManager">
+                
+            </span>
+            
+            <span id="DeltaDelegateControls">
+                
+                
+            </span>
+            <div id="TurnOnAccessibility" style="display: none" class="s4-notdlg noindex">
+                <a id="linkTurnOnAcc" href="#" class="ms-accessible ms-acc-button" onclick="SetIsAccessibilityFeatureEnabled(true);UpdateAccessibilityUI();document.getElementById('linkTurnOffAcc').focus();return false;">
+                    Turn on more accessible mode</a>
+            </div>
+            <div id="TurnOffAccessibility" style="display: none" class="s4-notdlg noindex">
+                <a id="linkTurnOffAcc" href="#" class="ms-accessible ms-acc-button" onclick="SetIsAccessibilityFeatureEnabled(false);UpdateAccessibilityUI();document.getElementById('linkTurnOnAcc').focus();return false;">
+                    Turn off more accessible mode</a>
+            </div>
+            <div class="s4-notdlg s4-skipribbonshortcut noindex">
+                <a href="javascript:;" onclick="document.getElementById(&#39;startNavigation&#39;).focus();" class="ms-accessible ms-acc-button" accesskey="Y">
+                    Skip Ribbon Commands</a>
+            </div>
+            <div class="s4-notdlg noindex">
+                <a href="javascript:;" onclick="document.getElementById(&#39;mainContent&#39;).focus();" class="ms-accessible ms-acc-button">
+                    Skip to main content</a>
+            </div>
+            <div id="TurnOffAnimation" style="display: none;" class="s4-notdlg noindex">
+                <a id="linkTurnOffAnimation" href="#" class="ms-accessible ms-acc-button" onclick="ToggleAnimationStatus();return false;">
+                    Turn off Animations</a>
+            </div>
+            <div id="TurnOnAnimation" style="display: none;" class="s4-notdlg noindex">
+                <a id="linkTurnOnAnimation" href="#" class="ms-accessible ms-acc-button" onclick="ToggleAnimationStatus();return false;">
+                    Turn on Animations</a>
+            </div>
+            <a id="HiddenAnchor" href="javascript:;" style="display: none;"></a>
+            <div id="suiteBar" class="ms-dialogHidden noindex">
+                <div id="suiteBarLeft">
+                    <div class="ms-table ms-fullWidth">
+                        <div class="ms-tableRow">
+                            <div class="ms-tableCell ms-verticalAlignMiddle">
+                                <div class="ms-core-brandingText">SharePoint</div>
+
+                            </div>
+                            <div id="DeltaSuiteLinks" class="ms-core-deltaSuiteLinks">
+	
+                                <div id="suiteLinksBox">
+                                    
+                                </div>
+                            
+</div>
+                        </div>
+                    </div>
+                </div>
+                <div id="suiteBarRight">
+                    <div id="DeltaSuiteBarRight" class="ms-core-deltaSuiteBarRight">
+	
+                        <div id="welcomeMenuBox">
+                            
+<a id="ctl00_IdWelcome_ExplicitLogin" class="ms-signInLink" href="http://info.portaldasfinancas.gov.pt/pt/informacao_fiscal/codigos_tributarios/cirs_rep/_layouts/15/Authenticate.aspx?Source=%2Fpt%2Finformacao%5Ffiscal%2Fcodigos%5Ftributarios%2Fcirs%5Frep%2FPages%2Firs43%2Easpx" style="display:inline-block;">Sign In</a>
+
+                        </div>
+                        <div id="suiteBarButtons">
+                            <span class="ms-siteactions-root" id="siteactiontd">
+                                
+                            </span>
+
+                            <span id="ms-help">
+                                <a onmouseover="this.firstChild.firstChild.firstChild.style.left=&#39;-1px&#39;; this.firstChild.firstChild.firstChild.style.top=&#39;-1px&#39;;" onmouseout="this.firstChild.firstChild.firstChild.style.left=&#39;-19px&#39;; this.firstChild.firstChild.firstChild.style.top=&#39;-1px&#39;;" id="ctl00_TopHelpLink" accesskey="6" title="Help" onclick="TopHelpButtonClick(&#39;HelpHome&#39;,event);return false" href="../../../../../_catalogs/masterpage/#" style="display:inline-block;"><span style="display:inline-block;overflow:hidden;height:16px;width:16px;padding-left:7px;padding-top:7px;padding-right:7px;padding-bottom:7px;"><span style="height:16px;width:16px;position:relative;display:inline-block;overflow:hidden;" class="s4-clust"><img src="/_layouts/15/1033/images/spintl.png?rev=40" alt="Help" style="border:0;position:absolute;left:-19px;top:-1px;" /></span></span></a>
+                            </span>
+                        </div>
+                    
+</div>
+                </div>
+            </div>
+            <div id="ms-hcTest"></div>
+            <div id="s4-ribbonrow">
+                <div id="globalNavBox" class="noindex">
+                    <div id="ribbonBox">
+                        <div id="s4-ribboncont">
+                            <div id="DeltaSPRibbon">
+	
+                                
+
+                                <div class='ms-cui-ribbonTopBars'><div class='ms-cui-topBar1'></div><div class='ms-cui-topBar2'><div id='RibbonContainer-TabRowLeft' class='ms-cui-TabRowLeft ms-core-defaultFont ms-dialogHidden'>
+                                    </div><div id='RibbonContainer-TabRowRight' class='ms-cui-TabRowRight s4-trc-container s4-notdlg ms-core-defaultFont'>
+                                        
+                                        <a onmouseover="this.firstChild.firstChild.style.left=&#39;-217px&#39;; this.firstChild.firstChild.style.top=&#39;-192px&#39;;" onmouseout="this.firstChild.firstChild.style.left=&#39;-218px&#39;; this.firstChild.firstChild.style.top=&#39;-48px&#39;;" onclick="SP.SOD.executeFunc(&#39;followingcommon.js&#39;, &#39;FollowSite&#39;, function() { FollowSite(); }); return false;" id="site_follow_button" title="Follow this site and get back to it easily from your sites page." class="ms-promotedActionButton" href="javascript:WebForm_DoPostBackWithOptions(new WebForm_PostBackOptions(&quot;ctl00$site_follow_button&quot;, &quot;&quot;, true, &quot;&quot;, &quot;&quot;, false, true))" style="display:inline-block;"><span style="height:16px;width:16px;position:relative;display:inline-block;overflow:hidden;" class="s4-clust ms-promotedActionButton-icon"><img src="/_layouts/15/images/spcommon.png?rev=40" alt="Follow" style="position:absolute;left:-218px;top:-48px;" /></span><span class="ms-promotedActionButton-text">Follow</span></a>
+                                        
+                                        
+                                        <span id="fullscreenmodebox" class="ms-qatbutton">
+                                            <span id="fullscreenmode">
+                                                <a onmouseover="this.firstChild.firstChild.firstChild.style.left=&#39;-125px&#39;; this.firstChild.firstChild.firstChild.style.top=&#39;-178px&#39;;" onmouseout="this.firstChild.firstChild.firstChild.style.left=&#39;-143px&#39;; this.firstChild.firstChild.firstChild.style.top=&#39;-178px&#39;;" id="ctl00_fullscreenmodeBtn" title="Focus on Content" onclick="SetFullScreenMode(true);PreventDefaultNavigation();return false;" href="../../../../../_catalogs/masterpage/#" style="display:inline-block;"><span style="display:inline-block;overflow:hidden;height:16px;width:16px;padding-left:7px;padding-top:7px;padding-right:7px;padding-bottom:7px;"><span style="height:16px;width:16px;position:relative;display:inline-block;overflow:hidden;" class="s4-clust"><img src="/_layouts/15/images/spcommon.png?rev=23" alt="Focus on Content" style="border:0;position:absolute;left:-143px;top:-178px;" /></span></span></a>
+                                            </span>
+                                            <span id="exitfullscreenmode" style="display: none;">
+                                                <a onmouseover="this.firstChild.firstChild.firstChild.style.left=&#39;-179px&#39;; this.firstChild.firstChild.firstChild.style.top=&#39;-96px&#39;;" onmouseout="this.firstChild.firstChild.firstChild.style.left=&#39;-107px&#39;; this.firstChild.firstChild.firstChild.style.top=&#39;-178px&#39;;" id="ctl00_exitfullscreenmodeBtn" title="Focus on Content" onclick="SetFullScreenMode(false);PreventDefaultNavigation();return false;" href="../../../../../_catalogs/masterpage/#" style="display:inline-block;"><span style="display:inline-block;overflow:hidden;height:16px;width:16px;padding-left:7px;padding-top:7px;padding-right:7px;padding-bottom:7px;"><span style="height:16px;width:16px;position:relative;display:inline-block;overflow:hidden;" class="s4-clust"><img src="/_layouts/15/images/spcommon.png?rev=23" alt="Focus on Content" style="border:0;position:absolute;left:-107px;top:-178px;" /></span></span></a>
+                                            </span>
+                                        </span>
+                                        
+                                        
+                                    </div></div></div>
+                            
+</div>
+                        </div>
+                        <span id="DeltaSPNavigation">
+                            
+                                <span id="ctl00_SPNavigation_ctl00_publishingRibbon"></span>
+
+                            
+                        </span>
+                    </div>
+                    <div id="DeltaWebPartAdderUpdatePanelContainer" class="ms-core-webpartadder">
+	
+                        <div id="WebPartAdderUpdatePanelContainer">
+                            <div id="ctl00_WebPartAdderUpdatePanel">
+		
+                                    <span id="ctl00_WebPartAdder"></span>
+                                
+	</div>
+                        </div>
+                    
+</div>
+                </div>
+            </div>
+            <div id="s4-workspace" class="ms-core-overlay">
+                <div id="s4-bodyContainer">
+                    <div id="s4-titlerow" class="ms-dialogHidden s4-titlerowhidetitle">
+                        <header role="banner" class="main-header">
+                            
+
+                            <!-- MAIN HEADER HEAD -->
+                            <!-- User related links -->
+                            <div class="main-header-head">
+                                <div class="container-wrapper">
+                                    <div class="container-fluid">
+                                        
+
+
+<div class="row user-bar">
+    <div class="d-none d-sm-block col-sm-5">
+        <div class="date user-welcome">
+            quarta-feira, 27 maio 2026 
+        </div>
+    </div>
+    <div class="col-sm-7 text-right">
+        
+    </div>
+</div>
+
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- MAIN HEADER BODY -->
+                            <div class="main-header-body">
+                                <div class="container-wrapper">
+                                    <div class="container-fluid">
+                                        <div class="row">
+                                            <div class="col-12 col-sm-3">
+                                                <a title="Link para homepage" href="http://www.portaldasfinancas.gov.pt"><img class="logo" src="/_layouts/15/images/portalat/logo-at.svg" alt="Autoridade Tributária e Aduaneira" /></a>
+                                            </div>
+                                            <div class="col-12 col-md-8">
+                                                <div class="col-12">
+                                                    
+
+
+<div class="main-search">
+    <input id="queryBox" name="query" type="text" class="main-search-input search-query" placeholder="Indique o que pretende (Ex: Entregar IRS)" title="Pesquisa">
+    <input type="hidden" name="e" value="˜">
+    <input type="button" id="searchImage" class="main-search-submit" aria-label="Pesquisar" value="Pesquisar">
+</div>
+
+<script>
+
+
+     function getVisibleQueryBox() {
+        return $(".search-query:visible").first(); // pega qualquer input com classe .search-query que esteja visível
+    }
+
+    $(".main-search-submit").on("click", function () {
+        const input = getVisibleQueryBox();
+
+        if (!input.length) {
+            console.log("❌ Nenhum input visível com classe .search-query!");
+            return;
+        }
+
+        const text2Search = input.val().trim();
+
+        if (text2Search.length > 0) {
+            console.log("🔍 pesquisando:", text2Search);
+            input.val("");
+            window.location.replace("https://sitfiscal.portaldasfinancas.gov.pt/geral/search?appName=info&query=" + encodeURIComponent(text2Search));
+        } else {
+            console.log("⚠️ Input visível mas sem valor");
+        }
+    });
+    $(document).on("keydown", ".search-query:visible", function (e) {
+    if (e.key === "Enter" || e.keyCode === 13) {
+        e.preventDefault();
+        $(".main-search-submit").click();
+    }
+});
+
+
+    
+</script>
+
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <!--/.row-->
+                                    </div>
+                                    <!--container-fluid-->
+                                </div>
+                                <!--container-wrapper-->
+                            </div>
+                            <!--main-header-body-->
+
+                        </header>
+
+                        <div id="titleAreaBox" class="ms-noList ms-table ms-core-tableNoSpace">
+                            <div id="titleAreaRow" class="ms-tableRow" style="display: none;">
+                                <!-- without this the addanapp.aspx page will not work property -->
+                                <!-- http://blog.drisgill.com/2012/12/design-manager-bug-sharepoint-2013-rtm.html -->
+                                <span id="DeltaPlaceHolderPageTitleInTitleArea">
+                                    
+	
+
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="contentRow">
+                        <main role="main">
+                            <div class="container-fluid">
+                                <div class="row secondary-nav">
+                                    <div class="container-wrapper">
+                                        <aside class="col-12 col-sm-3 main-menu">
+                                            
+
+
+
+<nav role="navigation">
+
+    <a class="btn-menu" data-bs-toggle="collapse" data-bs-target="#menu-links" title="menu lateral">
+        <i class="fa fa-navicon margin-right-sm"></i>Menu
+    </a>
+    <div id="accordion" role="tablist" aria-multiselectable="true" style="border-top: 1px solid #ddd;border-bottom: 1px solid #ddd; margin-top: -11px!important;">
+        <!-- Menu links com 'collapse' para esconder inicialmente em dispositivos móveis -->
+        <ul id="menu-links" class="accordion-collapse collapse show d-sm-block side-menu">
+            
+                    <li class="">
+                        <a href="/pt/at"
+                           title="Informação institucional da Autoridade Tributária e Aduaneira">
+                            A AT
+                        </a>
+                    </li>
+                
+                    <li class="">
+                        <a href="/pt/apoio_contribuinte/calendario_fiscal/Pages/obrigacoes.aspx"
+                           title="Calendário de obrigações declarativas e de pagamento">
+                            Agenda Fiscal
+                        </a>
+                    </li>
+                
+                    <li class="">
+                        <a href="https://sitfiscal.portaldasfinancas.gov.pt/geral/siteMap"
+                           title="Mapa de serviços eletrónicos no Portal das Finanças">
+                            Serviços
+                        </a>
+                    </li>
+                
+                    <li class="">
+                        <a href="/pt/home"
+                           title="Informação relevante em matéria tributária e aduaneira">
+                            Informação Fiscal e Aduaneira
+                        </a>
+                    </li>
+                
+                    <li class="">
+                        <a href="https://info.portaldasfinancas.gov.pt/pt/apoio_ao_contribuinte/Pages/default.aspx"
+                           title="Conteúdos informativos de apoio ao contribuinte">
+                            Apoio ao Contribuinte
+                        </a>
+                    </li>
+                
+                    <li class="">
+                        <a href="/pt/Grandes_Contribuintes"
+                           title="Informação de suporte aos contribuintes acompanhados pela UGC">
+                            Grandes Contribuintes
+                        </a>
+                    </li>
+                
+                    <li class="">
+                        <a href="/pt/U-Tax"
+                           title="U-TAX">
+                            U-TAX
+                        </a>
+                    </li>
+                
+                    <li class="">
+                        <a href="/pt/dgci/divulgacao/estatisticas"
+                           title="Estatísticas declarativas e relativas a Impostos sobre o Rendimento, a Despesa e o Património">
+                            Estatísticas
+                        </a>
+                    </li>
+                
+                    <li class="">
+                        <a href="/en/tax-information/Pages/default.aspx"
+                           title="Tax Information in Portugal">
+                            Tax Information
+                        </a>
+                    </li>
+                
+                    <li class="">
+                        <a href="/pt/Cidadania"
+                           title="Informação e conteúdos sobre Cidadania Fiscal">
+                            Cidadania Fiscal
+                        </a>
+                    </li>
+                
+        </ul>
+    </div>
+</nav>
+
+
+
+                                            
+
+
+                                        </aside>
+                                        <div class="col-12 col-sm-9 offset-sm-3">
+                                            <span id="ctl00_ctl70__map" class="at-breadcrumbtrail"><span>
+        <span class="at-breadcrumbtrail-separator"></span>
+    </span><span>
+        <span class="at-breadcrumbtrail-separator"></span>
+    </span><span><a class="ms-sitemapdirectional" href="/pt/informacao_fiscal/Pages/default.aspx">Informa&#231;&#227;o Fiscal</a></span><span>
+        <span class="at-breadcrumbtrail-separator"></span>
+    </span><span><a class="ms-sitemapdirectional" href="/pt/informacao_fiscal/codigos_tributarios/Pages/default-com-pdf.aspx">C&#243;digos Tribut&#225;rios</a></span><span>
+        <span class="at-breadcrumbtrail-separator"></span>
+    </span><span><a class="ms-sitemapdirectional" href="/pt/informacao_fiscal/codigos_tributarios/cirs_rep/Pages/codigo-do-irs-indice.aspx">CIRS</a></span><span>
+        <span class="at-breadcrumbtrail-separator"></span>
+    </span></span>
+
+                                        </div>
+                                    </div>
+                                </div>
+
+
+                                
+                                <div class="row">
+                                    <div id="main-wrapper" class="container-wrapper">
+                                        <section id="main-content" class="col-12 col-md-9 col-md-offset-3 col-sm-9 col-sm-offset-3 col-offset-0 main-content">
+                                            <div id="contentBox" aria-live="polite" aria-relevant="all">
+                                                <div id="notificationArea" class="ms-notif-box"></div>
+                                                <div id="DeltaPageStatusBar">
+	
+                                                    <div id="pageStatusBar"></div>
+                                                
+</div>
+                                                <div id="DeltaPlaceHolderMain">
+	
+                                                    <a id="mainContent" name="mainContent" tabindex="-1"></a>
+                                                    
+	<div class="welcome welcome-article">
+        
+<h1 class="tittle-tab-page" style="display: none;">
+	
+</h1>
+
+		<div class="welcome-lead">
+			
+		</div>
+
+		<div class="welcome-image">
+			<div id="ctl00_PlaceHolderMain_ctl01_label" style='display:none'>Page Image</div><div id="ctl00_PlaceHolderMain_ctl01__ControlWrapper_RichImageField" class="ms-rtestate-field" style="display:inline" aria-labelledby="ctl00_PlaceHolderMain_ctl01_label"><div class="ms-rtestate-field"></div></div>
+		</div>
+
+		<div class="welcome-content" id="welcome-content-div">
+			<div id="ctl00_PlaceHolderMain_ctl02_label" style='display:none'>Page Content</div><div id="ctl00_PlaceHolderMain_ctl02__ControlWrapper_RichHtmlField" class="ms-rtestate-field" style="display:inline" aria-labelledby="ctl00_PlaceHolderMain_ctl02_label"><div id="BODYCONTENT"><div id="Layer1"><div align="left">​​​​​​​ 
+         <a href="/pt/informacao_fiscal/codigos_tributarios/cirs_rep/Pages/irs44.aspx"><img alt="Seguinte" src="/DGCI/images/seta151.gif" border="0" /> </a></div></div><div id="Layer2"><div align="right">
+         <a href="/pt/informacao_fiscal/codigos_tributarios/cirs_rep/Pages/irs42.aspx"> 
+            <img alt="Anterior" src="/DGCI/images/seta150.gif" border="0" /> </a>&#160;</div>&#160;</div><div></div><table align="center" border="0" cellspacing="0" cellpadding="0"><tbody><tr><td valign="top"><div style="text-align&#58;center;">
+                  <span class="titulos">Artigo 43.º<br>Mais-valias</span></div><div align="center"><p class="ATCenteredText" style="text-align&#58;justify;">
+                     <span class="titulos"></span></p><p class="ATJustifiedText" style="text-align&#58;justify;">1 - O valor dos rendimentos qualificados como mais-valias é o correspondente ao saldo apurado entre as mais-valias e as menos-valias realizadas no mesmo ano, determinadas nos termos dos artigos seguintes.</p><p class="ATJustifiedText" style="text-align&#58;justify;">2 - O saldo referido no número anterior, respeitante às transmissões previstas nas alíneas a), c) e d) do n.º 1 do artigo 10.º, positivo ou negativo, é​&#58; 
+                     <em> </em><font color="#808080" class="ms-rteFontSize-1"> (Redação da Lei n.º 24-D/2022, de 30 de dezembro)</font></p><p class="ATJustifiedText" style="text-align&#58;justify;">a) Integralmente considerado nas situações previstas na alínea a) do n.º 1 do artigo 10.º, quando os imóveis tenham beneficiado de apoio não reembolsável concedido pelo Estado ou outras entidades públicas, quando o valor total do apoio concedido para aquisição ou para realização de obras seja de valor superior a 30 % do valor patrimonial tributário do imóvel para efeitos de IMI e estes sejam vendidos antes de decorridos 10 anos sobre a data da sua aquisição, da assinatura da declaração comprovativa da receção da obra ou do pagamento da última despesa relativa ao apoio não reembolsável que, nos termos legais ou regulamentares, não estejam sujeitos a ónus ou regimes especiais que limitem ou condicionem a respetiva alienação;&#160;<font color="#808080" class="ms-rteFontSize-1">(Redação da&#160;Lei n.º 71/2018, de 31 de dezembro)</font></p><p class="ATJustifiedText" style="text-align&#58;justify;">b) Apenas considerado em 50 % do seu valor, nos restantes casos. 
+                     <font color="#808080" class="ms-rteFontSize-1"> (Redação da&#160;Lei n.º 71/2018, de 31 de dezembro)</font></p><p class="ATJustifiedText" style="text-align&#58;justify;">3 - O saldo referido no n.º 1, respeitante às operações previstas na alínea b) do n.º 1 do artigo 10.º, relativo a micro e pequenas empresas não cotadas nos mercados regulamentado ou não regulamentado da bolsa de valores, quando positivo, é igualmente considerado em 50 % do seu valor.</p><p class="ATJustifiedText" style="text-align&#58;justify;">4 - Para efeitos do número anterior entende-se por micro e pequenas empresas as entidades definidas, nos termos do anexo ao Decreto-Lei n.º 372/2007, de 6 de novembro.<br></p><div style="text-align&#58;left;">5<span class="ms-rteThemeForeColor-2-3" style="">*</span> - Quando respeitem a valores mobiliários admitidos à negociação ou a partes de organismos de investimento coletivo abertos, sob a forma contratual ou societária, o saldo referido no n.º 1, respeitante às operações previstas na alínea b) do n.º 1 do artigo 10.º, excluindo os rendimentos referidos no n.º 3 deste artigo e nas alíneas b) e c) do n.º 18 do artigo 72.º, quando positivo ou negativo, é considerado nos seguintes termos&#58;<br></div><div style="text-align&#58;left;"></div><div style="text-align&#58;left;">a) São excluídos da tributação 10 % do rendimento quando resultem de ativos detidos por um período superior a 2 anos e inferior a 5 anos;<br></div><div style="text-align&#58;left;"><br></div><div style="text-align&#58;left;">b) São excluídos da tributação 20 % do rendimento quando resultem de ativos detidos por um período igual ou superior a 5 anos e inferior a 8 anos;</div><div style="text-align&#58;left;"><br></div><div style="text-align&#58;left;">c) São excluídos da tributação 30 % do rendimento quando resultem de ativos detidos por um período igual ou superior a 8 anos.<br></div><div style="text-align&#58;left;"><br></div><div style="text-align&#58;left;"><span style="color&#58;#8e8e8e;text-align&#58;justify;">*&#160;</span><span style="text-align&#58;justify;color&#58;#a5a5a5;font-size&#58;12px;">(Redação da Lei n.º 31/2024, de 28 de junho</span><span style="color&#58;#8e8e8e;text-align&#58;justify;">​)</span><br></div><div style="text-align&#58;left;"><br></div><div style="text-align&#58;left;">6 - O saldo a que se referem os n.os 1, 3 e 5, respeitantes às operações previstas na alínea b) do n.º 1 do artigo 10.º, quando positivo ou negativo, deve ser considerado para efeitos de determinação dos rendimentos líquidos de forma conjunta, sem prejuízo da opção pelo englobamento, quando aplicável.&#160;<span style="text-align&#58;justify;background-color&#58;transparent;color&#58;#a5a5a5;font-size&#58;12px;">​(Redação da Lei n.º 31/2024, de 28 de junho</span><span style="color&#58;#8e8e8e;text-align&#58;justify;background-color&#58;transparent;">)</span></div><p class="ATJustifiedText" style="text-align&#58;justify;">7 - Para apuramento do saldo positivo ou negativo referido no n.º 1, respeitante às operações efetuadas por residentes previstas nas alíneas b), e), f), g) e k) do n.º 1 do artigo 10.º, não relevam as perdas apuradas quando a contraparte da operação estiver sujeita a um regime fiscal a que se referem o n.º 1 ou o n.º 5 do artigo 63.º-D da Lei Geral Tributária.&#160;<font color="#808080" class="ms-rteFontSize-1 ms-rteThemeForeColor-1-4"><span>(<span style="font-size&#58;12px;text-align&#58;justify;">Redação da Lei n.º 31/2024, de 28 de junho; anterior n.º 5.</span>​)</span> </font></p><p class="ATJustifiedText" style="text-align&#58;justify;">8<span class="ms-rteThemeForeColor-2-3" style="">*</span> - Para efeitos do número anterior, considera-se que&#58;</p><p class="ATJustifiedText" style="text-align&#58;justify;">a) A data de aquisição dos valores mobiliários cuja propriedade tenha sido adquirida pelo sujeito passivo por incorporação de reservas ou por substituição daqueles, designadamente por alteração do valor nominal ou modificação do objeto social da sociedade emitente, é a data de aquisição dos valores mobiliários que lhes deram origem;</p><p class="ATJustifiedText" style="text-align&#58;justify;">b) A data de aquisição de ações resultantes da transformação de sociedade por quotas em sociedade anónima é a data de aquisição das quotas que lhes deram origem;</p><p class="ATJustifiedText" style="text-align&#58;justify;">c) A data de aquisição das ações da sociedade oferente em oferta pública de aquisição lançada nos termos do Código dos Valores Mobiliários cuja contrapartida consista naquelas ações, dadas à troca, é a data da aquisição das ações das sociedades visadas na referida oferta pública de aquisição;<br></p><p class="ATJustifiedText" style="text-align&#58;justify;">d) Tratando-se de valores mobiliários da mesma natureza e que confiram idênticos direitos, os alienados são os adquiridos há mais tempo, sem prejuízo do disposto no n.º 7;​&#160;<span class="ms-rteFontSize-1" style="text-align&#58;justify;color&#58;#a5a5a5;">(Redação da&#160;Lei n.º 12/2022, de 27 de junho)</span>​<br></p><p class="ATJustifiedText" style="text-align&#58;justify;">e) Nas permutas de partes de capital nas&#160;condições mencionadas no n.º 5 do artigo 73.º e no n.º 2 do artigo 77.º do Código do IRC, o período de detenção corresponde ao somatório dos períodos em que foram detidas as partes de capital entregues e as recebidas em troca;<br></p><p class="ATJustifiedText" style="text-align&#58;justify;">f) O regime da alínea anterior é aplicável, com as necessárias adaptações, à aquisição de partes sociais nos casos de fusão ou cisão a que seja aplicável o artigo 74.º do Código do IRC.<br></p><p class="ATJustifiedText" style="text-align&#58;justify;">g) Tratando-se de criptoativos, os alienados são os adquiridos há mais tempo.&#160;<span style="color&#58;#a5a5a5;font-size&#58;12px;text-align&#58;justify;"><span style="color&#58;#a5a5a5;font-size&#58;12px;text-align&#58;justify;">(Aditada pela Lei n.º 24-D/2022, de 30 de dezembro)</span></span></p><p class="ATJustifiedText" style="text-align&#58;justify;"><span style="color&#58;#a5a5a5;font-size&#58;12px;text-align&#58;justify;"><span style="color&#58;#a5a5a5;font-size&#58;12px;text-align&#58;justify;">*&#160;(Redação da Lei n.º 31/2024, de 28 de junho; anterior n.º 6.)<br></span></span></p><p class="ATJustifiedText" style="text-align&#58;justify;">
+                     <span style="color&#58;#a5a5a5;font-size&#58;12px;text-align&#58;justify;"><span style="color&#58;#a5a5a5;font-size&#58;12px;text-align&#58;justify;"></span></span><span style="background-color&#58;transparent;color&#58;#333333;">9 - Para efeitos do disposto nas alíneas d) e g) do número anterior, quando os valores mobiliários ou criptoativos estejam depositados em mais do que uma instituição de crédito, sociedade financeira ou prestador de serviço de criptoativos, as regras aí previstas são aplicáveis por referência a cada uma dessas entidades. </span>
+                     <span class="ms-rteFontSize-1" style="background-color&#58;transparent;color&#58;#a5a5a5;">(<span style="color&#58;#a5a5a5;font-size&#58;12px;text-align&#58;justify;">Redação da Lei n.º 31/2024, de 28 de junho; anterior n.º 7.</span>)</span></p><div style="text-align&#58;justify;"> 
+                     <br> 
+                  </div><div style="text-align&#58;justify;">10 - No caso de transferência de valores mobiliários, entre entidades referidas no número anterior, deve a entidade da qual os valores mobiliários são transferidos indicar, sempre que possível, à entidade que os receciona a data de aquisição e o valor histórico de aquisição dos valores mobiliários transferidos.&#160;<span class="ms-rteFontSize-1" style="text-align&#58;justify;color&#58;#a5a5a5;">(Redação da Lei n.º 31/2024, de 28 de junho; anterior n.º&#160;8.)</span><br></div><div style="text-align&#58;justify;"> 
+                     <br> 
+                  </div><p class="ATJustifiedText">11 - Para o apuramento das mais-valias ou menos-valias realizadas em operações entre um sujeito passivo e uma entidade com a qual esteja numa situação de relações especiais, nos termos do n.º 4 do artigo 63.º do Código do IRC, de​vem ser contratados, aceites e praticados termos ou condições substancialmente idênticos aos que normalmente seriam contratados, aceites e praticados entre entidades independentes em operações comparáveis, aplicando-se o regime previsto no artigo 63.º do Código do IRC, com as necessárias adaptações.<span class="ms-rteThemeForeColor-1-4 ms-rteFontSize-1">&#160;</span><span class="ms-rteThemeForeColor-1-4 ms-rteFontSize-1" style="text-align&#58;justify;">(</span><span class="ms-rteThemeForeColor-1-4 ms-rteFontSize-1">Redação da Lei n.º 31/2024, de 28 de junho; anterior n.º 9.)</span></p><p class="ATJustifiedText">
+                     <span class="ms-rteThemeForeColor-1-4 ms-rteFontSize-1"></span><font color="#a5a5a5"><span style="color&#58;#524f4f;text-align&#58;justify;">12 - Nas situações previstas no n.º 22 do artigo 10.º, o rendimento é determinado pela diferença positiva entre o valor de mercado à data da perda da qualidade de residente e o valor de aquisição, acrescido das importâncias necessárias e efetivamente suportadas inerentes à aquisição.&#160;<span class="ms-rteThemeForeColor-1-4 ms-rteFontSize-1" style="text-align&#58;justify;">(</span><span class="ms-rteThemeForeColor-1-4 ms-rteFontSize-1" style="text-align&#58;justify;">Redação da Lei n.º 31/2024, de 28 de junho; anterior n.º 10.)​</span></span><br class="ms-rteFontSize-1"></font><br> </p><div style="text-align&#58;left;"><div class="redAnt0"><h2>[+ info] Redações anteriores,&#160;em vigor até&#58;</h2></div><div class="old_v"> 
+                        <a href="/pt/informacao_fiscal/codigos_tributarios/cirs_rep/ra/Pages/irs43ra_202406.aspx">junho de 2024</a><br></div><div class="old_v"> 
+                        <a href="/pt/informacao_fiscal/codigos_tributarios/cirs_rep/ra/Pages/irs43ra_202212.aspx">dezembro de 2022</a><br></div><div class="old_v"> 
+                        <a href="/pt/informacao_fiscal/codigos_tributarios/cirs_rep/ra/Pages/irs43ra_202206.aspx">junho​ de 2022</a><br></div><div class="old_v"> 
+                        <a href="/pt/informacao_fiscal/codigos_tributarios/cirs_rep/ra/Pages/irs43ra_202012.aspx">dezembro de 2020</a><br></div><div class="old_v"> 
+                        <a href="/pt/informacao_fiscal/codigos_tributarios/cirs_rep/ra/Pages/irs43ra_201812.aspx">dezembro de 2018</a><br></div><div class="old_v"> 
+                        <a href="/pt/informacao_fiscal/codigos_tributarios/cirs_rep/ra/Pages/irs43x.aspx">dezembro de 2016</a><br></div></div><div style="text-align&#58;left;"><div class="redAnt1"><h2>[+ info] Artigo alterado por&#58;</h2></div><div class="old_v"> 
+                        <a href="/pt/informacao_fiscal/legislacao/diplomas_legislativos/Documents/Lei_31_2024.pdf">Lei n.º 31/2024 - 28/06</a><br></div><div class="old_v"> 
+                        <a href="/pt/informacao_fiscal/legislacao/diplomas_legislativos/Documents/Lei_24_D_2022.pdf">Lei n.º 24-D/2022 - 30/12</a><br></div><div class="old_v"> 
+                        <a href="/pt/informacao_fiscal/legislacao/diplomas_legislativos/Documents/Lei_12_2022.pdf">Lei n.º 12/2022 - 27/06</a><br></div><div class="old_v"> 
+                        <a href="/pt/informacao_fiscal/legislacao/diplomas_legislativos/Documents/Lei_75_B_2020.pdf">Lei n.º 75-B/2020 - 31/12</a><br></div><div class="old_v"> 
+                        <a href="/pt/informacao_fiscal/legislacao/diplomas_legislativos/Documents/Lei_71_2018.pdf">Lei n.º 71/2018 - 31/12</a><br></div><div class="old_v"> 
+                        <a href="/pt/informacao_fiscal/legislacao/diplomas_legislativos/Documents/Lei_42_2016.pdf">Lei n.º 42/2016 - 28/12​</a><br></div>​ </div></div> 
+               <font size="1">
+                  <font color="#808080">
+                     <em>
+                        <strong>​Nota</strong>&#58;&#160;<a href="/pt/informacao_fiscal/codigos_tributarios/irs/Pages/irs47.aspx"><font size="1"><em>consulte aqui</em></font></a><font size="1"><em><font color="#808080"> o mesmo artigo na redação anterior à republicação do CIRS pela Lei n.º 82-E/2014, de 31 de dezembro.</font></em></font></em></font></font><font size="1"><br></font><br><br></td></tr></tbody></table></div></div>
+		</div>
+				
+		<div class="clearer">
+			<div class="links-top-zone">
+				<div class="ms-webpart-zone ms-fullWidth">
+		<div id="MSOZoneCell_WebPartctl00_ctl43_g_b36bfc7c_1ab7_43ed_b602_a7c0f26460f8" class="s4-wpcell-plain ms-webpartzone-cell ms-webpart-cell-vertical ms-fullWidth ">
+			<div class="ms-webpart-chrome ms-webpart-chrome-vertical ms-webpart-chrome-fullWidth ">
+				<div WebPartID="b36bfc7c-1ab7-43ed-b602-a7c0f26460f8" HasPers="false" id="WebPartctl00_ctl43_g_b36bfc7c_1ab7_43ed_b602_a7c0f26460f8" width="100%" class="ms-WPBody " allowDelete="false" allowExport="false" style="" ><div id="ctl00_ctl43_g_b36bfc7c_1ab7_43ed_b602_a7c0f26460f8">
+					<DIV class="ms-rte-embedcode ms-rte-embedwp"><script type="text/javascript">
+	$(document).ready(function(){
+		function ariaExpand(a) {
+			if ($(a).attr("aria-expanded") === "false")
+				{$(a).attr("aria-expanded","true");}
+			else {$(a).attr("aria-expanded","false");}
+			$(a).nextUntil(a).toggle();
+		};
+		function details (b) {
+			$(b).attr("aria-expanded","false");
+			$(b).click(function(){
+				ariaExpand(b);
+			});
+			$(b).on('keypress',function(e) {
+				if(e.which === 32 || e.which === 13) {
+					ariaExpand(b);
+				}
+			});
+			$(b).nextUntil(b).toggle();
+			$(b).attr("tabindex","0");
+			$(b).attr("role","button");
+		}
+		details(".redAnt0");
+		details(".redAnt1");
+	});
+</script></DIV>
+				</div><div class="ms-clear"></div></div>
+			</div>
+		</div>
+	</div>
+			</div>
+		</div>
+	    
+        <div class="col-100 clearer">
+			<div class="left-column-links">
+				<div id="ctl00_PlaceHolderMain_ctl03__ControlWrapper_SummaryLinkFieldControl" style="display:inline"><div id="slwp_ctl00_PlaceHolderMain_ctl03_ctl00" class="slm-layout-main slwpmarker" xmlns:pcm="urn:PageContentManager"><!--empty--></div></div>
+			</div>
+		</div>		
+	</div>
+   <script>
+       try {
+           $('img[alt="versão de impressão"]').hide();
+       }
+       catch (err) {
+       }
+   </script>
+   
+<div id='print-button-div'>
+    <img alt='versão para impressão' src='/DGCI/Images/print.gif' id='print-button' onclick='javascript:window.open("http://info.portaldasfinancas.gov.pt/pt/informacao_fiscal/codigos_tributarios/cirs_rep/Pages/irs43.aspx?print=true","printWindow","width=700,height=600,scrollbars=1");'>
+</div>
+
+<div style='display:none' id='hidZone'><menu class="ms-hide">
+		<ie:menuitem id="MSOMenu_Help" iconsrc="/_layouts/15/images/HelpIcon.gif" onmenuclick="MSOWebPartPage_SetNewWindowLocation(MenuWebPart.getAttribute('helpLink'), MenuWebPart.getAttribute('helpMode'))" text="Help" type="option" style="display:none">
+
+		</ie:menuitem>
+	</menu></div>
+                                                
+</div>
+                                            </div>
+                                        </section>
+                                    </div>
+                                </div>
+                            </div>
+                        </main>
+
+                        <div id="DeltaFormDigest">
+	
+                            
+                                <script type="text/javascript">//<![CDATA[
+        var formDigestElement = document.getElementsByName('__REQUESTDIGEST')[0];
+        if (!((formDigestElement == null) || (formDigestElement.tagName.toLowerCase() != 'input') || (formDigestElement.type.toLowerCase() != 'hidden') ||
+            (formDigestElement.value == null) || (formDigestElement.value.length <= 0)))
+        {
+            formDigestElement.value = '0xB39E34FA2CA61AE377060BF7D63E9B3F354FAB8FAF07968C7850693E2E0712AA0672244A80945E4CD4C4F037CF4C4387E03F0FB8F6D715B0FBFDE75A2B7146A0,27 May 2026 22:04:36 -0000';_spPageContextInfo.updateFormDigestPageLoaded = new Date();
+        }
+        //]]>
+        </script>
+                            
+                        
+</div>
+
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                    </div>
+
+                    
+
+<footer role="contentinfo" class="main-footer">
+	<div class="container-wrapper">
+		<div class="container-fluid">
+			<div class="row">
+				<nav id="ctl00_ctl72_links02" class="col-sm-5 col-md-offset-3 footer-nav link-area-2" style="width:38%;"><h5>Links Úteis</h5><ul><li><a title='Respostas às questões mais frequentes (FAQ)' href='/pt/apoio_contribuinte/questoes_frequentes' target='' style=''>Questões Frequentes</a></li><li><a title='Folhetos informativos (apoio)' href='https://info.portaldasfinancas.gov.pt/pt/apoio_contribuinte/Folhetos_informativos/Pages/default.aspx' target='' style=''>Folhetos informativos</a></li><li><a title='Manuais / guias' href='https://info.portaldasfinancas.gov.pt/pt/apoio_ao_contribuinte/Informacao/Paginas/default.aspx' target='' style=''>Manuais e guias</a></li><li><a title='Estatísticas declarativas e relativas a Impostos sobre o Rendimento, a Despesa e o Património' href='/pt/dgci/divulgacao/estatisticas/Pages/default.aspx' target='' style=''>Estatísticas</a></li><li><a title='Site da AT - Política de privacidade' href='/pt/quem_somos/privacidade/Pages/privacidade.aspx' target='' style=''>Segurança e Privacidade</a></li><li><a title='Hiperligações para Sites Nacionais, da União Europeia e de outras Administrações Aduaneiras e Tributárias' href='/pt/divulgacao/Pages/outros-links.aspx' target='' style=''>Ligações</a></li><li><a title='Portal de Venda de Bens da Administração Tributária e Aduaneira' href='https://vendas.portaldasfinancas.gov.pt/vendasat' target='_blank' style=''>Venda de bens</a></li><li><a title='Listas de Devedores à AT e à Segurança Social' href='http://www.portaldasfinancas.gov.pt/pt/menu.action?pai=100' target='_blank' style=''>Lista de Devedores</a></li><li><a title='Sistema de Intercâmbio de Informações sobre o IVA (VIES) - Validação do n.º de  IVA' href='http://ec.europa.eu/taxation_customs/vies/' target='_blank' style=''>Transações Intracomunitárias</a></li><li><a title='Projeto Cross-Border Ruling (CBR)' href='/pt/informacao_fiscal/uniao_europeia/projetos/CBR/Pages/default.aspx' target='' style=''>Cross-Border Ruling (CBR)</a></li></ul></nav>
+				<nav id="ctl00_ctl72_links03" class="col-sm-4  link-area-3" style="width:37%;"><ul><li><a title='Contactos' href='https://sitfiscal.portaldasfinancas.gov.pt/ebalcao/home' target='' style='margin-top:30px;width:250px !important;height:52px !important;margin-bottom: 20px;'><img src='/pt/PublishingImages/AT56_contactos_iconografia-portal_ver02.png' alt='Página de contactos'></a></li><li><a title='Siga-nos no facebook' href='https://www.facebook.com/AT.financas' target='_blank' style=''><img src='/pt/PublishingImages/AT56_facebook_ver01-40x32.png' alt='Facebook'></a></li><li><a title='Siga-nos no Instagram' href='https://www.instagram.com/at.financas' target='_blank' style='position: absolute;     left: 60px;     top: 102px;'><img src='/pt/PublishingImages/AT56_instagram_ver01-40x32.png' alt='Instagram'></a></li><li><a title='Veja os nossos tutoriais no Youtube' href='https://www.youtube.com/%40AutoridadeTributariaAduaneira' target='_blank' style='position: absolute;     left: 109px;     top: 103px;'><img src='/pt/PublishingImages/AT56_youtube_ver01-40x32.png' alt='YouTube'></a></li><li><a title='Siga-nos no X' href='https://x.com/Aut_Trib_Adua' target='' style='position: absolute;     left: 152px;     top: 99px;'><img src='/pt/PublishingImages/AT56_twitter_ver01-40x40.png' alt=''></a></li><li><a title='Siga-nos no linkedln' href='https://www.linkedin.com/company/atfinancas/' target='_blank' style='position: absolute;     left: 200px;     top: 102px;'><img src='/pt/PublishingImages/AT56_linkedin_ver01-40x32.png' alt='Linkedin'></a></li><li><a title='Aplicações móveis di​sponibilizadas pela Autoridade Tributária e Aduaneira​​' href='https://info.portaldasfinancas.gov.pt/pt/apoio_contribuinte/Apps/Pages/Apps_AT_.aspx' target='' style='margin-top: 20px;'><img src='/pt/PublishingImages/AT56_apps-at_iconografia-portal_ver02.png' alt='Aplicações móveis di​sponibilizadas pela Autoridade Tributária e Aduaneira​​'></a></li><li><a title='Direitos dos Contribuintes' href='https://info.portaldasfinancas.gov.pt/pt/direitos_dos_contribuintes/Paginas/default.aspx' target='' style='margin-top: 20px;'><img src='/pt/PublishingImages/AT56_direitos-do-contribuinte_ver02-180x60.png' alt='Direitos do Contribuinte'></a></li><li><a title='Acessibilidade' href='http://www.w3.org/WAI/WCAG1AA-Conformance' target='_blank' style='margin-top: 20px;'><img src='/pt/PublishingImages/wcag1AA-blue.png' alt='Acessibilidade (W3C)'></a></li></ul></nav>
+				<nav id="ctl00_ctl72_links04" class="col-sm-3  link-area-4" style="display:none;"></nav>
+                <nav id="ctl00_ctl72_links05" class="col-sm-3  link-area-5" style="display:none;"></nav>
+            </div>
+        </div>
+    </div>
+</footer>
+
+
+                </div>
+            </div>
+        
+
+<script type="text/javascript">
+//<![CDATA[
+var _spFormDigestRefreshInterval = 1440000; IsSPSocialSwitchEnabled = function() { return true; };var _fV4UI = true;
+function _RegisterWebPartPageCUI()
+{
+    var initInfo = {editable: false,isEditMode: false,allowWebPartAdder: false,listId: "{8e4750c5-a09b-43e8-b175-bfcecfa06aa2}",itemId: 14,recycleBinEnabled: true,enableMinorVersioning: true,enableModeration: true,forceCheckout: true,rootFolderUrl: "\u002fpt\u002finformacao_fiscal\u002fcodigos_tributarios\u002fcirs_rep\u002fPages",itemPermissions:{High:16,Low:196705}};
+    SP.Ribbon.WebPartComponent.registerWithPageManager(initInfo);
+    var wpcomp = SP.Ribbon.WebPartComponent.get_instance();
+    var hid;
+    hid = document.getElementById("_wpSelected");
+    if (hid != null)
+    {
+        var wpid = hid.value;
+        if (wpid.length > 0)
+        {
+            var zc = document.getElementById(wpid);
+            if (zc != null)
+                wpcomp.selectWebPart(zc, false);
+        }
+    }
+    hid = document.getElementById("_wzSelected");
+    if (hid != null)
+    {
+        var wzid = hid.value;
+        if (wzid.length > 0)
+        {
+            wpcomp.selectWebPartZone(null, wzid);
+        }
+    }
+};
+function __RegisterWebPartPageCUI() {
+ExecuteOrDelayUntilScriptLoaded(_RegisterWebPartPageCUI, "sp.ribbon.js");}
+_spBodyOnLoadFunctionNames.push("__RegisterWebPartPageCUI");var __wpmExportWarning='This Web Part Page has been personalized. As a result, one or more Web Part properties may contain confidential information. Make sure the properties contain information that is safe for others to read. After exporting this Web Part, view properties in the Web Part description file (.WebPart) by using a text editor such as Microsoft Notepad.';var __wpmCloseProviderWarning='You are about to close this Web Part.  It is currently providing data to other Web Parts, and these connections will be deleted if this Web Part is closed.  To close this Web Part, click OK.  To keep this Web Part, click Cancel.';var __wpmDeleteWarning='You are about to permanently delete this Web Part.  Are you sure you want to do this?  To delete this Web Part, click OK.  To keep this Web Part, click Cancel.';
+ExecuteOrDelayUntilScriptLoaded(
+function()
+{
+var initInfo = 
+{
+itemPermMasks: {High:16,Low:196705},
+listPermMasks: {High:16,Low:196705},
+listId: "8e4750c5-a09b-43e8-b175-bfcecfa06aa2",
+itemId: 14,
+workflowsAssociated: false,
+editable: false,
+doNotShowProperties: false,
+enableVersioning: true
+};
+SP.Ribbon.DocLibAspxPageComponent.registerWithPageManager(initInfo);
+},
+"sp.ribbon.js");
+var g_disableCheckoutInEditMode = false;
+var _spWebPermMasks = {High:16,Low:196705};var g_clientIdDeltaPlaceHolderMain = "DeltaPlaceHolderMain";
+var g_clientIdDeltaPlaceHolderPageTitleInTitleArea = "DeltaPlaceHolderPageTitleInTitleArea";
+var g_clientIdDeltaPlaceHolderUtilityContent = "DeltaPlaceHolderUtilityContent";
+
+var g_commandUIHandlers = {"name":"CommandHandlers","attrs":{},"children":[]};
+//]]>
+</script>
+</form>
+
+        <span id="DeltaPlaceHolderUtilityContent">
+            
+        </span>
+        <script type="text/javascript">// <![CDATA[ 
+
+
+            var g_Workspace = "s4-workspace";
+        // ]]>
+</script>
+        
+    </body>
+</html>
+<!-- Rendered using cache profile:Public Internet (Purely Anonymous) at: 2026-05-27T23:04:36 -->

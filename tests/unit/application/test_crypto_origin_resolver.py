@@ -7,11 +7,11 @@ downgrade on ambiguous or flagged rows.
 
 from __future__ import annotations
 
-from shares_reporting.domain.token_origin import (
+from tax_reporting.domain.token_origin import (
     AcquisitionMethod,
     TokenOrigin,
-    TokenOriginResolver,
 )
+from tax_reporting.application.token_origin import TokenOriginResolver
 
 _TH_HEADER = (
     "Transaction report 2025\n"

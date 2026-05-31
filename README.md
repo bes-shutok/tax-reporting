@@ -47,13 +47,18 @@ This will create a `.venv` folder in your project root that editors can detect a
 
 ### **Source Files Configuration**
 - **Input Data**: Add your Interactive Brokers CSV export to the `/resources/source` folder. See `resources/source/example/ib_export.csv` for a fully synthetic example of the file format.
-- **Crypto Tax Data (Optional)**: For Portuguese crypto tax reporting, place Koinly export files in a `koinly*` subdirectory within `/resources/source`:
-  - `koinly_<year>_capital_gains_report_*.csv` - Capital gains from crypto disposals
-  - `koinly_<year>_income_report_*.csv` - Staking rewards, airdrops, and other income
-  - `koinly_<year>_beginning_of_year_holdings_report_*.csv` - Opening balance (optional)
-  - `koinly_<year>_end_of_year_holdings_report_*.csv` - Closing balance (optional)
-  - `koinly_<year>_complete_tax_report_*.pdf` - Period metadata (optional)
-  - `koinly_<year>_transaction_history_*.csv` - Transaction history for token origin resolution (optional)
+- **Crypto Tax Data (Optional)**: For Portuguese crypto tax reporting, place Koinly export files in a `koinly*` subdirectory within `/resources/source`. Of the ~13 exports Koinly can produce, only the following are read by this tool:
+
+  | File pattern | Koinly report name | Used for | Required? |
+  |---|---|---|---|
+  | `koinly_<year>_capital_gains_report_*.csv` | Capital gains report | Crypto capital gains (disposals) | **Yes** — missing = no CG data; tool warns |
+  | `koinly_<year>_income_report_*.csv` | Income report | Reward income: staking, lending interest, airdrops | **Yes** — missing = no rewards; tool warns |
+  | `koinly_<year>_transaction_history_*.csv` | Transaction history | Token origin resolution + FIFO rebuild for loan-affected assets (PT default) | **Yes** — missing skips FIFO rebuild with an error |
+  | `koinly_<year>_beginning_of_year_holdings_report_*.csv` | Beginning of year holdings | Reconciliation tab opening balance | Optional |
+  | `koinly_<year>_end_of_year_holdings_report_*.csv` | End of year holdings | Reconciliation tab closing balance | Optional |
+  | `koinly_<year>_complete_tax_report_*.pdf` | Complete tax report (PDF) | PDF cross-check summary | Optional |
+
+  All other Koinly exports (`buy/sell report`, `expenses report`, `other gains report`, `gifts/donations/lost assets`, `highest balance report`, `ledger balance report`, `balances per wallet PDF`) are **not read** and can be ignored.
 
   The tool automatically aggregates FIFO lot rows by (disposal date, asset, platform, holding period) to reduce manual filing burden while preserving the taxable vs exempt breakdown required for Portuguese IRS (short-term gains are taxable, long-term gains are exempt). After aggregation, entries where |gain/loss| < 1 EUR are filtered as immaterial. See `docs/domain/crypto_rules.md` for Portuguese tax law details.
 
@@ -68,6 +73,7 @@ This will create a `.venv` folder in your project root that editors can detect a
 - **Currency Rates**: Update `config.ini` with all required currency exchange pairs.
   - E.g. you can use the exchange rates from the last day of the year from your national central bank or financial institution.
   - The config file also includes security validation settings (file size limits, allowed extensions, etc.)
+  - The `[TAX JURISDICTION]` section controls country-specific tax behavior: `TAX_COUNTRY` (ISO 3166-1 alpha-2, defaults to `PT`), `FISCAL_YEAR` (defaults to 2025), and `ZERO_BASIS_REVIEW_THRESHOLD` (entries with zero cost basis and gain/loss at or above this EUR value are flagged for review, defaults to 50). Law-driven flags such as whether loan repayment disposals are excluded from capital gains are read from `docs/tax/decision_points/<fiscal_year>.toml` (not from `config.ini`) — see that file for per-country decisions. If you change `FISCAL_YEAR` to a year that has no corresponding `docs/tax/decision_points/<year>.toml`, the tool will fail at startup with a `ConfigurationError`. Copy `docs/tax/decision_points/2025.toml` as a template and update `[meta].fiscal_year` and the `[countries.XX]` flag values. `FISCAL_YEAR` is also used as the fallback Koinly directory year hint when the IB export contains no current-year trades (e.g., crypto-only reporting runs where no IB activity occurred that year).
 - **Missing Buy History**: If securities are sold without corresponding buy transactions in the IB export, the tool automatically creates placeholder buy transactions (date: 1000-01-01, price: 0) to allow capital gains calculation. These entries are highlighted in red in the Excel report for manual review.
 
 ## Installation & Usage
@@ -152,12 +158,12 @@ The tests parse the example inputs, run FIFO matching and crypto aggregation, th
 ```bash
 uv run python -c "
 from pathlib import Path
-from shares_reporting.main import main
+from tax_reporting.main import main
 main(Path('resources/source/example/ib_export.csv'), Path('resources/result/example'))
 "
 ```
 
-This writes `resources/result/example/extract.xlsx` containing the Reporting sheet (capital gains, dividends) and, when Koinly data is available, three Crypto sheets (Crypto Gains, Crypto Rewards, Crypto Reconciliation). The `main()` function accepts a `source_file` parameter to override the default input path; see `src/shares_reporting/main.py` for the full API.
+This writes `resources/result/example/extract.xlsx` containing the Reporting sheet (capital gains, dividends) and, when Koinly data is available, five Crypto sheets (Crypto Gains, Crypto Rewards, Crypto Reconciliation, Loan Activity, Platform Assumptions). The `main()` function accepts a `source_file` parameter to override the default input path; see `src/tax_reporting/main.py` for the full API.
 
 **Token origin column:** The Crypto Gains sheet includes a `Token origin` column that shows the acquisition origin of disposed tokens where the resolver could correlate them to a transaction history event. Origins are resolved by implicit `(date, asset, wallet)` correlation between the capital gains report and the Koinly transaction history CSV. Each resolved origin shows the source asset, acquisition method (e.g., `swap_conversion`, `bridge_transfer`, `direct_purchase`, `airdrop`, `liquidity_withdrawal`, `liquidity_provision`), and a confidence level (`high` = on-chain hash present, `medium` = correlated only, `low` = ambiguous or missing cost basis). Rows where no match is found remain blank. LP operations without paired withdrawal records show `LP position` as the source asset. Origin values are best-effort correlation from Koinly export data and should be reviewed against source documents before filing.
 
@@ -165,10 +171,12 @@ This writes `resources/result/example/extract.xlsx` containing the Reporting she
 The tool generates comprehensive Excel reports with:
 - **Capital Gains Section**: Detailed buy/sell transaction matching with FIFO methodology
 - **Dividend Income Section**: Complete dividend reporting with tax information and original currency amounts
-- **Crypto Sheets** (if Koinly data provided, three separate tabs):
-  - **Crypto Gains**: Capital gains aggregated by sale event per holding period with sub-1-EUR immaterial entries filtered, plus statistics summary with per-holding-period breakdown (short-term, long-term, mixed, unknown) showing count, cost, proceeds, and gain/loss totals
+- **Crypto Sheets** (if Koinly data provided, five separate tabs):
+  - **Crypto Gains**: Capital gains aggregated by sale event per holding period with sub-1-EUR immaterial entries filtered, plus statistics summary with per-holding-period breakdown (short-term, long-term, mixed, unknown) showing count, cost, proceeds, and gain/loss totals. When `exclude_loan_repayment_gains=True` (PT default), loan-affected assets are dynamically discovered from Koinly transaction history and their capital gains are rebuilt using a per-wallet FIFO engine per CIRS art. 43 n.9 rather than taken from Koinly's pre-computed capital gains report.
   - **Crypto Rewards**: Rewards income classified into taxable-now (fiat-denominated) vs deferred-by-law (crypto-denominated) per Portuguese tax law, IRS-ready aggregated summary for immediate Category E filing (taxable-now rewards grouped by income code + source country), and full support detail sections for auditability
   - **Crypto Reconciliation**: Key-value reconciliation of capital/reward totals, opening/closing holdings, and skipped zero-value tokens
+  - **Loan Activity**: Per-asset loan receipt and repayment summary with balance and status; overpaid balances (cross-year loan repayments) are highlighted with red fill for manual review
+  - **Platform Assumptions**: Complete manifest of all platforms appearing in the report with their operator entity, country, confidence level, and verification source URL; platforms requiring review are highlighted in red and sorted to the top for easy identification
 - **Professional Formatting**: Currency display with 2 decimal places, proper Excel formulas, and auto-sized columns with intelligent width handling (formula-only columns receive minimum width, long text is capped to prevent excessive width)
 - **Multi-Currency Support**: Automatic currency conversion with exchange rate tables
 - **ISIN Integration**: Automatic country of source detection from financial instrument data

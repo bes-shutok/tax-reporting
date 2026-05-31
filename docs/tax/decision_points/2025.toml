@@ -1,0 +1,12 @@
+[meta]
+fiscal_year = 2025
+source_decision_file = "docs/tax/decision_points/2025.md"
+last_verified = "2026-05-26"
+
+[countries.PT]
+# DP-001: Loan repayment disposals are not taxable events under PT law.
+# Legal basis: CIRS art. 10(20) — returning borrowed crypto is not "alienação onerosa".
+exclude_loan_repayment_gains = true
+
+[countries.US]
+exclude_loan_repayment_gains = false

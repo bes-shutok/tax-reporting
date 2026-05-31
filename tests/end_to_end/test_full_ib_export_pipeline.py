@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from shares_reporting.application import extraction, transformation
-from shares_reporting.domain.collections import TradeCyclePerCompany
-from shares_reporting.domain.entities import CurrencyCompany
-from shares_reporting.domain.value_objects import (
+from tax_reporting.application import extraction, transformation
+from tax_reporting.domain.collections import TradeCyclePerCompany
+from tax_reporting.domain.entities import CurrencyCompany
+from tax_reporting.domain.value_objects import (
     TradeType,
     parse_company,
     parse_currency,

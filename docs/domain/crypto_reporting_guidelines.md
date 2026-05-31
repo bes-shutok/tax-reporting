@@ -94,6 +94,24 @@ Chain-origin mappings collected so far include:
 - `Ethereum -> Switzerland`
 - `Aptos -> Cayman Islands`
 
+## Platform Assumptions vs Row-Level Review Flags
+
+**CRG-016**
+Distinguish between platform-level review concerns and row-level review flags:
+
+- **Platform-level concerns** (e.g., "Bybit uses account-region specific entities; verify your account region"): These apply to ALL transactions from a platform. Display them in the "Platform Assumptions" worksheet — a complete manifest of every platform in the report. Platform concerns must NOT set `review_required=True` on individual transaction rows.
+
+- **Row-level review flags** (e.g., missing cost basis, date parsing errors, phantom transfers, FIFO pool exhaustion): These are specific to individual transactions and must be shown on the row with "YES: <reason>", with the row highlighted red.
+
+**`OperatorOrigin` fields:**
+- `platform_assumption` — free-text note shown in the Platform Assumptions tab (informational; does not trigger red rows)
+- `platform_review_required: bool` — whether this platform must be manually verified before filing; controls red highlighting and "YES"/"NO" in the Platform Assumptions tab; does NOT affect individual transaction rows
+- `review_required: bool` / `review_reason: str` — row-level flag; triggers "YES: <reason>" on the transaction row and red row fill; set only for per-transaction issues (temporal validity failures, unknown platforms, FIFO anomalies)
+
+**Platform Assumptions tab** shows ALL platforms seen in the data (not just those with assumption text), columns: Platform | Operator Entity | Country | Confidence | Review Required | Assumption Note | Transaction Count. Rows with `platform_review_required=True` are sorted first and highlighted red.
+
+**Test fixture rule:** Tests that verify row-level "YES:"/"NO" rendering must use explicit hardcoded `review_required` / `review_reason` values on the entry, not delegate to `origin.review_required`. The latter changes when the platform mapping changes and will silently break the rendering test.
+
 ## Token Origin Resolution
 
 **CRG-015**

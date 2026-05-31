@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from shares_reporting.application.crypto_reporting import (
+from tax_reporting.application.crypto_reporting import (
     CryptoCapitalGainEntry,
     CryptoCapitalGainStats,
     CryptoCompletePdfSummary,
@@ -15,10 +15,10 @@ from shares_reporting.application.crypto_reporting import (
     HoldingsSnapshot,
     resolve_operator_origin,
 )
-from shares_reporting.application.persisting import generate_tax_report
-from shares_reporting.domain.collections import DividendIncomePerCompany
-from shares_reporting.domain.entities import DividendIncomePerSecurity
-from shares_reporting.domain.value_objects import parse_currency
+from tax_reporting.application.persisting import generate_tax_report
+from tax_reporting.domain.collections import DividendIncomePerCompany
+from tax_reporting.domain.entities import DividendIncomePerSecurity
+from tax_reporting.domain.value_objects import parse_currency
 
 
 class TestDividendExcelPersisting:
@@ -810,6 +810,9 @@ class TestDividendExcelPersisting:
         bybit_origin = resolve_operator_origin("ByBit")
         wirex_origin = resolve_operator_origin("Wirex", transaction_type="crypto_deposit")
 
+        # Set review_required/review_reason explicitly on the entry — the Excel rendering test
+        # is independent of whether the ByBit platform mapping itself raises a per-row flag
+        # (platform-level caveats like account-region live on the Platform Assumptions tab).
         capital_entries = [
             CryptoCapitalGainEntry(
                 disposal_date="2025-01-13",
@@ -825,8 +828,8 @@ class TestDividendExcelPersisting:
                 chain="ByBit",
                 operator_origin=bybit_origin,
                 annex_hint="J",
-                review_required=bybit_origin.review_required,
-                review_reason=bybit_origin.review_reason,
+                review_required=True,
+                review_reason="Verify account-region matches the operator entity before filing",
                 notes="",
                 token_swap_history="",
             )
@@ -1055,7 +1058,7 @@ class TestDividendExcelPersisting:
         """
         from unittest.mock import patch
 
-        from shares_reporting.domain.exceptions import FileProcessingError
+        from tax_reporting.domain.exceptions import FileProcessingError
 
         # Create a simple crypto report
         capital_entries = [
@@ -1107,7 +1110,7 @@ class TestDividendExcelPersisting:
         # Mock write_crypto_gains_sheet to raise a FileProcessingError
         with (
             patch(
-                "shares_reporting.application.persisting.workbook_builder.write_crypto_gains_sheet",
+                "tax_reporting.application.persisting.workbook_builder.write_crypto_gains_sheet",
                 side_effect=FileProcessingError("Simulated validation failure for testing"),
             ),
             pytest.raises(FileProcessingError, match="Simulated validation failure for testing"),
@@ -1234,8 +1237,8 @@ class TestDividendExcelPersisting:
         """
         from unittest.mock import patch
 
-        from shares_reporting.application.persisting import generate_tax_report
-        from shares_reporting.domain.exceptions import FileProcessingError
+        from tax_reporting.application.persisting import generate_tax_report
+        from tax_reporting.domain.exceptions import FileProcessingError
 
         capital_entries = [
             CryptoCapitalGainEntry(
@@ -1293,7 +1296,7 @@ class TestDividendExcelPersisting:
 
         with (
             patch(
-                "shares_reporting.application.persisting.workbook_builder.write_crypto_gains_sheet",
+                "tax_reporting.application.persisting.workbook_builder.write_crypto_gains_sheet",
                 side_effect=mock_gains_that_fails_partial,
             ),
             pytest.raises(FileProcessingError, match="Simulated write error during crypto sheet generation"),

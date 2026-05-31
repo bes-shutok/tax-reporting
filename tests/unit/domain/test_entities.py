@@ -3,16 +3,16 @@ from decimal import Decimal
 
 import pytest
 
-from shares_reporting.domain.constants import DECIMAL_ZERO
-from shares_reporting.domain.entities import (
+from tax_reporting.domain.constants import DECIMAL_ZERO
+from tax_reporting.domain.entities import (
     CapitalGainLine,
     CurrencyCompany,
     QuantitatedTradeAction,
     TradeAction,
     TradeCycle,
 )
-from shares_reporting.domain.exceptions import DataValidationError
-from shares_reporting.domain.value_objects import (
+from tax_reporting.domain.exceptions import DataValidationError
+from tax_reporting.domain.value_objects import (
     TradeDate,
     TradeType,
     parse_company,

@@ -2,8 +2,8 @@ from datetime import datetime
 
 import pytest
 
-from shares_reporting.domain.exceptions import DataValidationError
-from shares_reporting.domain.value_objects import (
+from tax_reporting.domain.exceptions import DataValidationError
+from tax_reporting.domain.value_objects import (
     Company,
     Currency,
     TradeDate,

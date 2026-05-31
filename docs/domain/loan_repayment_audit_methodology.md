@@ -155,6 +155,6 @@ Grand totals:
 
 ## Post-Audit Actions
 
-1. **Pipeline filter**: Ensure the code pipeline filters loan repayment CG entries (see `docs/plans/2026-05-25-filter-loan-repayment-gains.md`)
+1. **Pipeline filter**: Ensure the code pipeline filters loan repayment CG entries (see `../plans/completed/2026-05-25-filter-loan-repayment-gains.md`)
 2. **Koinly fix**: Apply the "change worth" workaround (see `docs/tax/laws/pt/crypto-tax/platform-divergences.md` Option A) to neutralize phantom gains in Koinly itself
 3. **Documentation**: Record the audit findings and total phantom impact for the tax year

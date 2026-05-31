@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from shares_reporting.main import (
+from tax_reporting.main import (
     _is_koinly_year_mismatch,
     _load_crypto_tax_report,
     _resolve_koinly_directory,
@@ -47,7 +47,7 @@ def test_load_crypto_tax_report_skips_year_mismatch(tmp_path, monkeypatch):
         nonlocal called
         called = True
 
-    monkeypatch.setattr("shares_reporting.main.load_koinly_crypto_report", _fake_loader)
+    monkeypatch.setattr("tax_reporting.main.load_koinly_crypto_report", _fake_loader)
 
     result = _load_crypto_tax_report(
         koinly_dir=koinly_dir,
@@ -63,10 +63,10 @@ def test_load_crypto_tax_report_handles_koinly_parse_error(tmp_path, monkeypatch
     koinly_dir = tmp_path / "koinly2025"
     koinly_dir.mkdir()
 
-    def _failing_loader(_path):
+    def _failing_loader(_path, **_kwargs):
         raise ValueError("broken koinly file")
 
-    monkeypatch.setattr("shares_reporting.main.load_koinly_crypto_report", _failing_loader)
+    monkeypatch.setattr("tax_reporting.main.load_koinly_crypto_report", _failing_loader)
 
     result = _load_crypto_tax_report(
         koinly_dir=koinly_dir,
@@ -75,3 +75,58 @@ def test_load_crypto_tax_report_handles_koinly_parse_error(tmp_path, monkeypatch
     )
 
     assert result is None
+
+
+def test_load_crypto_tax_report_passes_jurisdiction_to_loader(tmp_path, monkeypatch):
+    """Verify jurisdiction config is threaded through to load_koinly_crypto_report."""
+    from decimal import Decimal
+
+    from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+    captured_kwargs = {}
+
+    def _capturing_loader(_path, **kwargs):
+        captured_kwargs.update(kwargs)
+
+    monkeypatch.setattr("tax_reporting.main.load_koinly_crypto_report", _capturing_loader)
+
+    jurisdiction = TaxJurisdictionConfig(
+        country="PT",
+        fiscal_year=2025,
+        exclude_loan_repayment_gains=True,
+        zero_basis_review_threshold=Decimal("50"),
+    )
+    _load_crypto_tax_report(
+        koinly_dir=koinly_dir,
+        tax_year_hint=2025,
+        tax_jurisdiction=jurisdiction,
+        logger=logging.getLogger("test_passes_jurisdiction"),
+    )
+
+    assert "jurisdiction" in captured_kwargs
+    assert captured_kwargs["jurisdiction"] is jurisdiction
+
+
+def test_resolve_koinly_directory_fiscal_year_fallback_via_main(tmp_path, monkeypatch):
+    """When IB data has no year hint, fiscal_year from config is used as fallback."""
+    (tmp_path / "koinly2024").mkdir()
+    (tmp_path / "koinly2025").mkdir()
+
+    # Directly test _resolve_koinly_directory with the fiscal_year as hint
+    resolved = _resolve_koinly_directory(tmp_path, tax_year_hint=2025)
+    assert resolved is not None
+    assert resolved.name == "koinly2025"
+
+    # Without a hint, would fall back to latest (also 2025 in this case).
+    # Real value is when there's a newer directory than the fiscal year:
+    (tmp_path / "koinly2026").mkdir()
+    resolved_no_hint = _resolve_koinly_directory(tmp_path, tax_year_hint=None)
+    assert resolved_no_hint is not None
+    assert resolved_no_hint.name == "koinly2026"
+
+    # With fiscal_year=2025, correctly picks 2025 even when 2026 exists
+    resolved_with_hint = _resolve_koinly_directory(tmp_path, tax_year_hint=2025)
+    assert resolved_with_hint is not None
+    assert resolved_with_hint.name == "koinly2025"

@@ -4,10 +4,11 @@ import dataclasses
 import logging
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
-from shares_reporting.application.crypto_reporting import (
+from tax_reporting.application.crypto_reporting import (
     CryptoCapitalGainEntry,
     OperatorOrigin,
     RewardTaxClassification,
@@ -17,7 +18,6 @@ from shares_reporting.application.crypto_reporting import (
     _filter_immaterial_entries,
     _is_temporally_valid,
     _is_valid_tabela_x_country,
-    _parse_koinly_decimal,
     _parse_transaction_date,
     _resolve_income_code,
     _validate_capital_entries_have_valid_countries,
@@ -25,12 +25,12 @@ from shares_reporting.application.crypto_reporting import (
     load_koinly_crypto_report,
     resolve_operator_origin,
 )
-from shares_reporting.domain.token_origin import (
+from tax_reporting.application.token_origin import TokenOriginResolver
+from tax_reporting.domain.token_origin import (
     AcquisitionMethod,
     TokenOrigin,
-    TokenOriginResolver,
 )
-from shares_reporting.infrastructure.koinly_parser import _format_datetime
+from tax_reporting.infrastructure.koinly_parser import format_datetime, parse_koinly_decimal
 
 _TEST_OPERATOR = OperatorOrigin(
     platform="TestPlatform",
@@ -175,6 +175,8 @@ def test_load_koinly_crypto_report_parses_core_sections(tmp_path):
         ),
         encoding="utf-8",
     )
+
+    _write_minimal_transaction_history(koinly_dir)
 
     report = load_koinly_crypto_report(koinly_dir)
 
@@ -338,6 +340,33 @@ def test_load_koinly_crypto_report_returns_none_when_no_matching_files(tmp_path)
     assert report is None
 
 
+def test_load_koinly_crypto_report_raises_on_incomplete_koinly_export(tmp_path):
+    """Incomplete Koinly export directories must fail clearly; only zero files still returns None."""
+    from tax_reporting.domain.exceptions import FileProcessingError
+
+    one_of_three_dir = tmp_path / "one_of_three"
+    one_of_three_dir.mkdir()
+    _write_minimal_capital_gains_report(one_of_three_dir)
+
+    with pytest.raises(FileProcessingError, match="Incomplete Koinly export") as exc_info:
+        load_koinly_crypto_report(one_of_three_dir)
+
+    message = str(exc_info.value)
+    assert "income_report (Income report)" in message
+    assert "transaction_history (Transaction history)" in message
+
+    two_of_three_dir = tmp_path / "two_of_three"
+    two_of_three_dir.mkdir()
+    _write_minimal_capital_gains_report(two_of_three_dir)
+    _write_minimal_income_report(two_of_three_dir)
+
+    with pytest.raises(FileProcessingError, match="Incomplete Koinly export") as exc_info:
+        load_koinly_crypto_report(two_of_three_dir)
+
+    assert "transaction_history (Transaction history)" in str(exc_info.value)
+
+
+@pytest.mark.unit
 def test_load_koinly_crypto_report_skips_zero_value_rows_and_tracks_assets(tmp_path):
     koinly_dir = tmp_path / "koinly2025"
     koinly_dir.mkdir()
@@ -420,6 +449,8 @@ def test_load_koinly_crypto_report_skips_zero_value_rows_and_tracks_assets(tmp_p
         encoding="utf-8",
     )
 
+    _write_minimal_transaction_history(koinly_dir)
+
     report = load_koinly_crypto_report(koinly_dir)
 
     assert report is not None
@@ -486,6 +517,9 @@ def test_load_koinly_crypto_report_parses_complete_pdf_summary(tmp_path):
 """
     (koinly_dir / "koinly_2025_complete_tax_report_fake.pdf").write_bytes(fake_pdf)
 
+    _write_minimal_income_report(koinly_dir)
+    _write_minimal_transaction_history(koinly_dir)
+
     report = load_koinly_crypto_report(koinly_dir)
 
     assert report is not None
@@ -495,54 +529,54 @@ def test_load_koinly_crypto_report_parses_complete_pdf_summary(tmp_path):
 
 
 def test_parse_koinly_decimal_handles_single_group_comma_thousands_separator():
-    assert _parse_koinly_decimal("1,000") == Decimal("1000")
-    assert _parse_koinly_decimal("8,400") == Decimal("8400")
-    assert _parse_koinly_decimal("1,001") == Decimal("1001")
+    assert parse_koinly_decimal("1,000") == Decimal("1000")
+    assert parse_koinly_decimal("8,400") == Decimal("8400")
+    assert parse_koinly_decimal("1,001") == Decimal("1001")
 
 
 def test_parse_koinly_decimal_handles_unambiguous_multi_group_thousands_separator():
-    assert _parse_koinly_decimal("1,000,000") == Decimal("1000000")
-    assert _parse_koinly_decimal("12,000,000") == Decimal("12000000")
+    assert parse_koinly_decimal("1,000,000") == Decimal("1000000")
+    assert parse_koinly_decimal("12,000,000") == Decimal("12000000")
 
 
 def test_parse_koinly_decimal_keeps_decimal_comma_when_fractional_precision_is_not_thousands_grouped():
-    assert _parse_koinly_decimal("1,50000000") == Decimal("1.50000000")
-    assert _parse_koinly_decimal("3000,00") == Decimal("3000.00")
+    assert parse_koinly_decimal("1,50000000") == Decimal("1.50000000")
+    assert parse_koinly_decimal("3000,00") == Decimal("3000.00")
 
 
 def test_parse_koinly_decimal_handles_both_common_mixed_separator_formats():
-    assert _parse_koinly_decimal("1,234.56") == Decimal("1234.56")
-    assert _parse_koinly_decimal("1.234,56") == Decimal("1234.56")
+    assert parse_koinly_decimal("1,234.56") == Decimal("1234.56")
+    assert parse_koinly_decimal("1.234,56") == Decimal("1234.56")
 
 
 def test_parse_koinly_decimal_raises_on_ambiguous_single_group_dot():
-    """Single-group dot values like '1.234' are ambiguous (decimal vs thousands) — must fail."""
+    """Single-group dot values like '1.234' are ambiguous (decimal vs thousands): must fail."""
     with pytest.raises(ValueError, match="Ambiguous"):
-        _parse_koinly_decimal("1.234")
+        parse_koinly_decimal("1.234")
     with pytest.raises(ValueError, match="Ambiguous"):
-        _parse_koinly_decimal("10.000")
+        parse_koinly_decimal("10.000")
     with pytest.raises(ValueError, match="Ambiguous"):
-        _parse_koinly_decimal("100.000")
+        parse_koinly_decimal("100.000")
     # Negative values are equally ambiguous: -1.234 could be -1.234 or -1234
     with pytest.raises(ValueError, match="Ambiguous"):
-        _parse_koinly_decimal("-1.234")
+        parse_koinly_decimal("-1.234")
     with pytest.raises(ValueError, match="Ambiguous"):
-        _parse_koinly_decimal("-10.000")
+        parse_koinly_decimal("-10.000")
 
 
 def test_parse_koinly_decimal_handles_multi_group_dot_as_european_thousands():
     """Multi-group dot values like '1.234.567' are unambiguously European thousands."""
-    assert _parse_koinly_decimal("1.234.567") == Decimal("1234567")
-    assert _parse_koinly_decimal("12.345.678") == Decimal("12345678")
+    assert parse_koinly_decimal("1.234.567") == Decimal("1234567")
+    assert parse_koinly_decimal("12.345.678") == Decimal("12345678")
 
 
 def test_parse_koinly_decimal_does_not_treat_subunit_values_as_thousands_grouping():
-    assert _parse_koinly_decimal("0,001") == Decimal("0.001")
-    assert _parse_koinly_decimal("0,010") == Decimal("0.010")
-    assert _parse_koinly_decimal("0,100") == Decimal("0.100")
-    assert _parse_koinly_decimal("0.001") == Decimal("0.001")
-    assert _parse_koinly_decimal("0.010") == Decimal("0.010")
-    assert _parse_koinly_decimal("0.100") == Decimal("0.100")
+    assert parse_koinly_decimal("0,001") == Decimal("0.001")
+    assert parse_koinly_decimal("0,010") == Decimal("0.010")
+    assert parse_koinly_decimal("0,100") == Decimal("0.100")
+    assert parse_koinly_decimal("0.001") == Decimal("0.001")
+    assert parse_koinly_decimal("0.010") == Decimal("0.010")
+    assert parse_koinly_decimal("0.100") == Decimal("0.100")
 
 
 def test_capital_gains_file_skips_ambiguous_row_and_continues_parsing(tmp_path, caplog):
@@ -576,7 +610,7 @@ def test_capital_gains_file_skips_ambiguous_row_and_continues_parsing(tmp_path, 
                         "18/11/2024 00:15",
                         "ETH",
                         "1",
-                        "1.234",  # ambiguous — should skip this row
+                        "1.234",  # ambiguous: should skip this row
                         "1.500",  # also ambiguous, but row already bad
                         "0.266",
                         "",
@@ -604,7 +638,10 @@ def test_capital_gains_file_skips_ambiguous_row_and_continues_parsing(tmp_path, 
         encoding="utf-8",
     )
 
-    with caplog.at_level(logging.WARNING, logger="shares_reporting.application.crypto_reporting"):
+    _write_minimal_income_report(koinly_dir)
+    _write_minimal_transaction_history(koinly_dir)
+
+    with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"):
         report = load_koinly_crypto_report(koinly_dir)
 
     # Verify exactly 1 entry (BTC), ETH row was skipped
@@ -991,6 +1028,9 @@ def test_parse_capital_gains_file_aggregates_dust_rows(tmp_path):
     csv_content = "\n".join(["Capital gains report 2025", "", header, *data_rows])
     (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(csv_content, encoding="utf-8")
 
+    _write_minimal_income_report(koinly_dir)
+    _write_minimal_transaction_history(koinly_dir)
+
     report = load_koinly_crypto_report(koinly_dir)
 
     assert report is not None
@@ -1067,6 +1107,9 @@ def test_parse_capital_gains_file_filters_sub_1_eur_after_aggregation(tmp_path, 
     csv_content = "\n".join(["Capital gains report 2025", "", header, *sub_threshold_rows, above_threshold_row])
     (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(csv_content, encoding="utf-8")
 
+    _write_minimal_income_report(koinly_dir)
+    _write_minimal_transaction_history(koinly_dir)
+
     report = load_koinly_crypto_report(koinly_dir)
 
     assert report is not None
@@ -1088,12 +1131,12 @@ def test_aggregate_empty_list_returns_empty():
 
 def test_parse_koinly_decimal_handles_negative_numbers():
     """Negative numbers (losses) must parse correctly for tax reporting."""
-    assert _parse_koinly_decimal("-1,234.56") == Decimal("-1234.56")
-    assert _parse_koinly_decimal("-1.234,56") == Decimal("-1234.56")
-    assert _parse_koinly_decimal("-1,000") == Decimal("-1000")
-    assert _parse_koinly_decimal("-0,50") == Decimal("-0.50")
-    assert _parse_koinly_decimal("-500.00") == Decimal("-500.00")
-    assert _parse_koinly_decimal("-0.99") == Decimal("-0.99")
+    assert parse_koinly_decimal("-1,234.56") == Decimal("-1234.56")
+    assert parse_koinly_decimal("-1.234,56") == Decimal("-1234.56")
+    assert parse_koinly_decimal("-1,000") == Decimal("-1000")
+    assert parse_koinly_decimal("-0,50") == Decimal("-0.50")
+    assert parse_koinly_decimal("-500.00") == Decimal("-500.00")
+    assert parse_koinly_decimal("-0.99") == Decimal("-0.99")
 
 
 def test_resolve_operator_origin_case_insensitive():
@@ -1117,8 +1160,11 @@ def test_resolve_operator_origin_case_insensitive():
     # Test other platforms
     bybit_upper = resolve_operator_origin("BYBIT")
     bybit_lower = resolve_operator_origin("bybit")
-    assert bybit_upper.review_required is True
-    assert bybit_lower.review_required is True
+    # Bybit has platform_assumption instead of review_required
+    assert bybit_upper.review_required is False
+    assert bybit_lower.review_required is False
+    assert bybit_upper.platform_assumption is not None
+    assert bybit_lower.platform_assumption is not None
     assert bybit_upper.operator_entity == bybit_lower.operator_entity
 
 
@@ -1228,6 +1274,9 @@ def test_missing_cost_basis_with_zero_proceeds_no_review(tmp_path):
         ["Capital gains report 2025", "", header, all_zero_row, non_zero_proceeds_row, loss_with_missing_basis_row]
     )
     (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(csv_content, encoding="utf-8")
+
+    _write_minimal_income_report(koinly_dir)
+    _write_minimal_transaction_history(koinly_dir)
 
     report = load_koinly_crypto_report(koinly_dir)
 
@@ -1394,6 +1443,8 @@ def test_load_koinly_crypto_report_applies_reward_classification(tmp_path):
         encoding="utf-8",
     )
 
+    _write_minimal_transaction_history(koinly_dir)
+
     report = load_koinly_crypto_report(koinly_dir)
 
     assert report is not None
@@ -1420,7 +1471,7 @@ def test_load_koinly_crypto_report_applies_reward_classification(tmp_path):
 
 def test_aggregate_taxable_rewards_by_income_code_and_country():
     """Aggregate taxable_now rewards by income_code + source_country."""
-    from shares_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
+    from tax_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
 
     entries = [
         # Two EUR rewards from Kraken (Ireland) - same income code "401", same country "IE"
@@ -1546,7 +1597,7 @@ def test_aggregate_taxable_rewards_by_income_code_and_country():
 
 def test_aggregate_taxable_rewards_filters_out_deferred_rewards():
     """Deferred_by_law rewards must be excluded from aggregation."""
-    from shares_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
+    from tax_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
 
     entries = [
         # Taxable now
@@ -1615,7 +1666,7 @@ def test_aggregate_taxable_rewards_filters_out_deferred_rewards():
 
 def test_aggregate_taxable_rewards_with_foreign_tax():
     """Foreign tax amounts must be summed within each aggregation group."""
-    from shares_reporting.application.crypto_reporting import CryptoRewardIncomeEntry
+    from tax_reporting.application.crypto_reporting import CryptoRewardIncomeEntry
 
     entries = [
         CryptoRewardIncomeEntry(
@@ -1670,7 +1721,7 @@ def test_aggregate_taxable_rewards_empty_list():
 
 def test_aggregate_taxable_rewards_no_taxable_entries():
     """If all rewards are deferred, aggregation returns empty list."""
-    from shares_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
+    from tax_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
 
     entries = [
         CryptoRewardIncomeEntry(
@@ -1698,8 +1749,8 @@ def test_aggregate_taxable_rewards_no_taxable_entries():
 
 def test_aggregate_taxable_rewards_fails_on_invalid_country():
     """Aggregation must fail with clear error for taxable rewards without valid Tabela X country."""
-    from shares_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
-    from shares_reporting.domain.exceptions import FileProcessingError
+    from tax_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
+    from tax_reporting.domain.exceptions import FileProcessingError
 
     entries = [
         CryptoRewardIncomeEntry(
@@ -1734,7 +1785,7 @@ def test_aggregate_taxable_rewards_wallet_aliases_collapse():
     and ByBit (2) normalize to the same platform, they get the same country and
     aggregate together.
     """
-    from shares_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
+    from tax_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
 
     entries = [
         CryptoRewardIncomeEntry(
@@ -1788,7 +1839,7 @@ def test_aggregate_taxable_rewards_different_platforms_stay_separate():
     Since rewards aggregate by (income_code, source_country), different platforms
     in different countries produce separate aggregation groups.
     """
-    from shares_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
+    from tax_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
 
     entries = [
         CryptoRewardIncomeEntry(
@@ -1888,7 +1939,7 @@ def test_resolve_income_code_from_koinly_type():
 
 def test_aggregate_preserves_reconciliation_trail():
     """Aggregation must preserve raw row count for reconciliation."""
-    from shares_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
+    from tax_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
 
     entries = [
         CryptoRewardIncomeEntry(
@@ -1939,13 +1990,15 @@ def test_validate_capital_entries_with_all_valid_countries_passes():
         ),
     ]
 
-    # Should not raise any exception
-    _validate_capital_entries_have_valid_countries(entries)
+    # Should return all entries unchanged (all valid countries)
+    result = _validate_capital_entries_have_valid_countries(entries)
+    assert len(result) == 3
+    assert all(not e.review_required for e in result)
 
 
-def test_validate_capital_entries_fails_on_unknown_country():
-    """Validation must fail with clear error when capital entries have invalid Tabela X country."""
-    from shares_reporting.domain.exceptions import FileProcessingError
+def test_validate_capital_entries_flags_unknown_country_for_review(caplog):
+    """Invalid country entries are flagged with review_required=True, report is not aborted."""
+    import logging
 
     entries = [
         _make_entry(
@@ -1955,13 +2008,19 @@ def test_validate_capital_entries_fails_on_unknown_country():
         ),
     ]
 
-    with pytest.raises(FileProcessingError, match="invalid Tabela X country codes"):
-        _validate_capital_entries_have_valid_countries(entries)
+    with caplog.at_level(logging.ERROR):
+        result = _validate_capital_entries_have_valid_countries(entries)
+
+    assert len(result) == 1
+    assert result[0].review_required is True
+    assert "UnknownExchange" in result[0].review_reason
+    assert "UNKNOWN" in result[0].review_reason
+    assert any("unresolvable country" in r.message.lower() for r in caplog.records if r.levelno == logging.ERROR)
 
 
-def test_validate_capital_entries_fails_on_multiple_unknown_countries():
-    """Validation error should list all entries with invalid country codes."""
-    from shares_reporting.domain.exceptions import FileProcessingError
+def test_validate_capital_entries_flags_multiple_unknown_countries(caplog):
+    """Multiple invalid country entries are all flagged; report continues with all entries."""
+    import logging
 
     entries = [
         _make_entry(
@@ -1976,13 +2035,18 @@ def test_validate_capital_entries_fails_on_multiple_unknown_countries():
         ),
     ]
 
-    with pytest.raises(FileProcessingError, match="2 entries have invalid Tabela X country codes"):
-        _validate_capital_entries_have_valid_countries(entries)
+    with caplog.at_level(logging.ERROR):
+        result = _validate_capital_entries_have_valid_countries(entries)
+
+    assert len(result) == 2
+    assert all(e.review_required for e in result)
+    error_messages = " ".join(r.message for r in caplog.records if r.levelno == logging.ERROR)
+    assert "2" in error_messages
 
 
-def test_validate_capital_entries_includes_detailed_error_info():
-    """Validation error should include wallet, asset, date, and resolved country for debugging."""
-    from shares_reporting.domain.exceptions import FileProcessingError
+def test_validate_capital_entries_logs_actionable_details(caplog):
+    """Error log must include wallet, asset, date, and resolved country for debugging."""
+    import logging
 
     entries = [
         _make_entry(
@@ -1994,14 +2058,15 @@ def test_validate_capital_entries_includes_detailed_error_info():
         ),
     ]
 
-    with pytest.raises(FileProcessingError) as exc_info:
-        _validate_capital_entries_have_valid_countries(entries)
+    with caplog.at_level(logging.ERROR):
+        result = _validate_capital_entries_have_valid_countries(entries)
 
-    error_message = str(exc_info.value)
-    assert "SomeUnknownWallet" in error_message
-    assert "BTC" in error_message
-    assert "2025-01-15" in error_message
-    assert "UNKNOWN" in error_message
+    assert len(result) == 1
+    assert result[0].review_required is True
+    assert any(
+        "SomeUnknownWallet" in r.message and "BTC" in r.message and "UNKNOWN" in r.message
+        for r in caplog.records
+    ), "Expected a single log record containing wallet, asset, and country info together"
 
 
 def test_resolve_operator_origin_never_returns_taxpayer_residence():
@@ -2101,42 +2166,42 @@ def test_derive_chain_case_insensitive():
 
 def test_normalize_platform_name_bybit_aliases():
     """ByBit wallet aliases should be normalized to ByBit."""
-    from shares_reporting.application.crypto_reporting import _normalize_platform_name
+    from tax_reporting.infrastructure.koinly_parser import normalize_platform_name
 
-    assert _normalize_platform_name("ByBit (2)") == "ByBit"
-    assert _normalize_platform_name("ByBit (3)") == "ByBit"
-    assert _normalize_platform_name("ByBit (4)") == "ByBit"
-    assert _normalize_platform_name("ByBit (5)") == "ByBit"
-    assert _normalize_platform_name("ByBit (10)") == "ByBit"
-    assert _normalize_platform_name("ByBit") == "ByBit"
+    assert normalize_platform_name("ByBit (2)") == "ByBit"
+    assert normalize_platform_name("ByBit (3)") == "ByBit"
+    assert normalize_platform_name("ByBit (4)") == "ByBit"
+    assert normalize_platform_name("ByBit (5)") == "ByBit"
+    assert normalize_platform_name("ByBit (10)") == "ByBit"
+    assert normalize_platform_name("ByBit") == "ByBit"
 
 
 def test_normalize_platform_name_preserves_distinct_wallets():
     """Distinct wallets like Ethereum addresses should NOT be normalized."""
-    from shares_reporting.application.crypto_reporting import _normalize_platform_name
+    from tax_reporting.infrastructure.koinly_parser import normalize_platform_name
 
     # These are distinct wallets and should be preserved
-    assert _normalize_platform_name("Ethereum (ETH) - 0xabc") == "Ethereum (ETH) - 0xabc"
-    assert _normalize_platform_name("Ethereum (ETH) - 0xdef") == "Ethereum (ETH) - 0xdef"
-    assert _normalize_platform_name("Solana (SOL) - 5R39") == "Solana (SOL) - 5R39"
+    assert normalize_platform_name("Ethereum (ETH) - 0xabc") == "Ethereum (ETH) - 0xabc"
+    assert normalize_platform_name("Ethereum (ETH) - 0xdef") == "Ethereum (ETH) - 0xdef"
+    assert normalize_platform_name("Solana (SOL) - 5R39") == "Solana (SOL) - 5R39"
 
 
 def test_normalize_platform_name_empty_and_whitespace():
     """Empty and whitespace-only wallets should return Unknown."""
-    from shares_reporting.application.crypto_reporting import _normalize_platform_name
+    from tax_reporting.infrastructure.koinly_parser import normalize_platform_name
 
-    assert _normalize_platform_name("") == "Unknown"
-    assert _normalize_platform_name("   ") == "Unknown"
-    assert _normalize_platform_name("\t") == "Unknown"
+    assert normalize_platform_name("") == "Unknown"
+    assert normalize_platform_name("   ") == "Unknown"
+    assert normalize_platform_name("\t") == "Unknown"
 
 
 def test_normalize_platform_name_no_alias():
     """Wallets without numeric aliases should be unchanged."""
-    from shares_reporting.application.crypto_reporting import _normalize_platform_name
+    from tax_reporting.infrastructure.koinly_parser import normalize_platform_name
 
-    assert _normalize_platform_name("Kraken") == "Kraken"
-    assert _normalize_platform_name("Binance") == "Binance"
-    assert _normalize_platform_name("Ledger Berachain (BERA)") == "Ledger Berachain (BERA)"
+    assert normalize_platform_name("Kraken") == "Kraken"
+    assert normalize_platform_name("Binance") == "Binance"
+    assert normalize_platform_name("Ledger Berachain (BERA)") == "Ledger Berachain (BERA)"
 
 
 def test_normalize_platform_name_preserves_non_bybit_numbered_wallets():
@@ -2146,12 +2211,12 @@ def test_normalize_platform_name_preserves_non_bybit_numbered_wallets():
     Other platforms like Kraken may have genuinely distinct numbered wallets that
     should not be merged during aggregation.
     """
-    from shares_reporting.application.crypto_reporting import _normalize_platform_name
+    from tax_reporting.infrastructure.koinly_parser import normalize_platform_name
 
     # Non-ByBit numbered wallets are preserved as distinct wallets
-    assert _normalize_platform_name("Kraken (2)") == "Kraken (2)"
-    assert _normalize_platform_name("Kraken (3)") == "Kraken (3)"
-    assert _normalize_platform_name("Binance (2)") == "Binance (2)"
+    assert normalize_platform_name("Kraken (2)") == "Kraken (2)"
+    assert normalize_platform_name("Kraken (3)") == "Kraken (3)"
+    assert normalize_platform_name("Binance (2)") == "Binance (2)"
 
 
 def test_normalize_platform_name_preserves_bybit_prefixed_wallets():
@@ -2161,13 +2226,13 @@ def test_normalize_platform_name_preserves_bybit_prefixed_wallets():
     Other ByBit-prefixed wallets like 'ByBit Earn (2)' or 'ByBit Savings (3)' represent
     distinct products and should not be collapsed into the main ByBit account.
     """
-    from shares_reporting.application.crypto_reporting import _normalize_platform_name
+    from tax_reporting.infrastructure.koinly_parser import normalize_platform_name
 
     # ByBit-prefixed wallets with additional words are preserved
-    assert _normalize_platform_name("ByBit Earn (2)") == "ByBit Earn (2)"
-    assert _normalize_platform_name("ByBit Savings (3)") == "ByBit Savings (3)"
-    assert _normalize_platform_name("ByBit Earn") == "ByBit Earn"
-    assert _normalize_platform_name("ByBit Savings") == "ByBit Savings"
+    assert normalize_platform_name("ByBit Earn (2)") == "ByBit Earn (2)"
+    assert normalize_platform_name("ByBit Savings (3)") == "ByBit Savings (3)"
+    assert normalize_platform_name("ByBit Earn") == "ByBit Earn"
+    assert normalize_platform_name("ByBit Savings") == "ByBit Savings"
 
 
 def test_normalize_asset_ticker_cyrillic_to_latin():
@@ -2176,35 +2241,35 @@ def test_normalize_asset_ticker_cyrillic_to_latin():
     This test verifies the fix for the WBТC issue where the 'T' was a Cyrillic
     character (U+0422) instead of Latin 'T'.
     """
-    from shares_reporting.application.crypto_reporting import _normalize_asset_ticker
+    from tax_reporting.infrastructure.koinly_parser import normalize_asset_ticker
 
     # Cyrillic Т (U+0422) -> Latin T
-    assert _normalize_asset_ticker("WBТC") == "WBTC"
-    assert _normalize_asset_ticker("BТC") == "BTC"
+    assert normalize_asset_ticker("WBТC") == "WBTC"
+    assert normalize_asset_ticker("BТC") == "BTC"
     # Multiple Cyrillic characters
-    assert _normalize_asset_ticker("ТЕSТ") == "TEST"
+    assert normalize_asset_ticker("ТЕSТ") == "TEST"
 
 
 def test_normalize_asset_ticker_unicode_normalization():
     """Asset tickers should be normalized to canonical composed unicode form."""
-    from shares_reporting.application.crypto_reporting import _normalize_asset_ticker
+    from tax_reporting.infrastructure.koinly_parser import normalize_asset_ticker
 
     # Unicode normalization handles various unicode equivalence issues
-    assert _normalize_asset_ticker("BTC") == "BTC"
-    assert _normalize_asset_ticker("  BTC  ") == "BTC"  # Whitespace trimming
-    assert _normalize_asset_ticker("BTC\t") == "BTC"
+    assert normalize_asset_ticker("BTC") == "BTC"
+    assert normalize_asset_ticker("  BTC  ") == "BTC"  # Whitespace trimming
+    assert normalize_asset_ticker("BTC\t") == "BTC"
 
 
 def test_normalize_asset_ticker_preserves_valid_tickers():
     """Valid asset tickers should be preserved unchanged."""
-    from shares_reporting.application.crypto_reporting import _normalize_asset_ticker
+    from tax_reporting.infrastructure.koinly_parser import normalize_asset_ticker
 
-    assert _normalize_asset_ticker("BTC") == "BTC"
-    assert _normalize_asset_ticker("ETH") == "ETH"
-    assert _normalize_asset_ticker("SUI") == "SUI"
-    assert _normalize_asset_ticker("HASUI") == "HASUI"
-    assert _normalize_asset_ticker("USDC") == "USDC"
-    assert _normalize_asset_ticker("USDT") == "USDT"
+    assert normalize_asset_ticker("BTC") == "BTC"
+    assert normalize_asset_ticker("ETH") == "ETH"
+    assert normalize_asset_ticker("SUI") == "SUI"
+    assert normalize_asset_ticker("HASUI") == "HASUI"
+    assert normalize_asset_ticker("USDC") == "USDC"
+    assert normalize_asset_ticker("USDT") == "USDT"
 
 
 def test_wirex_fiat_reward_gets_gb_country_code():
@@ -2214,7 +2279,7 @@ def test_wirex_fiat_reward_gets_gb_country_code():
     operator origin (HR) regardless of whether they were fiat or crypto denominated.
     Fiat rewards should use the fiat operator (GB) per the split-by-service-scope design.
     """
-    from shares_reporting.application.crypto_reporting import resolve_operator_origin
+    from tax_reporting.application.crypto_reporting import resolve_operator_origin
 
     # EUR reward should use "fiat_deposit" transaction type and get GB country
     fiat_origin = resolve_operator_origin("Wirex", transaction_type="fiat_deposit")
@@ -2401,7 +2466,7 @@ def test_resolve_operator_origin_with_transaction_date_before_validity(caplog):
     but warn the user to verify the historical origin and flag for manual review.
     """
     # Berachain valid_from is 2025-02-05, so a transaction in 2024 should trigger a warning
-    with caplog.at_level(logging.WARNING, logger="shares_reporting.application.crypto_reporting"):
+    with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"):
         origin = resolve_operator_origin(
             "Berachain", transaction_type="crypto_disposal", transaction_date="2024-06-01 10:00:00"
         )
@@ -2437,7 +2502,7 @@ def test_resolve_operator_origin_with_partial_date_format():
 
 def test_resolve_operator_origin_with_invalid_date_format(caplog):
     """resolve_operator_origin should log warning and skip check when date format is invalid."""
-    with caplog.at_level(logging.WARNING, logger="shares_reporting.application.crypto_reporting"):
+    with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"):
         origin = resolve_operator_origin(
             "Solana", transaction_type="crypto_disposal", transaction_date="invalid-date-format"
         )
@@ -2497,7 +2562,7 @@ def test_resolve_operator_origin_wirex_transaction_before_service_start_date(cap
     Transactions before this date should be flagged as outside the service period and
     require manual review.
     """
-    with caplog.at_level(logging.WARNING, logger="shares_reporting.application.crypto_reporting"):
+    with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"):
         crypto_origin = resolve_operator_origin(
             "Wirex", transaction_type="crypto_disposal", transaction_date="2014-06-15 12:00:00"
         )
@@ -2516,7 +2581,7 @@ def test_resolve_operator_origin_wirex_transaction_after_service_start_date(capl
     Transactions on or after this date should NOT trigger review_required because
     they fall within the service period.
     """
-    with caplog.at_level(logging.WARNING, logger="shares_reporting.application.crypto_reporting"):
+    with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"):
         # Transaction after service_start_date (2025 transaction)
         crypto_origin = resolve_operator_origin(
             "Wirex", transaction_type="crypto_disposal", transaction_date="2025-03-10 12:00:00"
@@ -2591,9 +2656,9 @@ def test_parse_transaction_date_rejects_malformed_format():
 
 def test_parse_transaction_date_rejects_year_out_of_range():
     """Years outside reasonable range should raise ValueError."""
-    with pytest.raises(ValueError, match="Year.*out of reasonable range"):
+    with pytest.raises(ValueError, match="year.*out of reasonable range"):
         _parse_transaction_date("1899-01-01")
-    with pytest.raises(ValueError, match="Year.*out of reasonable range"):
+    with pytest.raises(ValueError, match="year.*out of reasonable range"):
         _parse_transaction_date("2101-01-01")
 
 
@@ -2879,7 +2944,7 @@ def test_operator_origin_rejects_invalid_calendar_date():
 
 def test_operator_origin_rejects_year_before_crypto_genesis():
     """OperatorOrigin should reject years before 2009 (Bitcoin genesis)."""
-    with pytest.raises(ValueError, match="Year.*out of reasonable range"):
+    with pytest.raises(ValueError, match="year.*out of reasonable range"):
         OperatorOrigin(
             platform="TestPlatform",
             service_scope="crypto",
@@ -2901,7 +2966,7 @@ def test_operator_origin_rejects_year_before_crypto_genesis():
 def test_load_koinly_crypto_report_passes_dates_to_resolve_operator_origin(tmp_path, caplog):
     """Integration test: dates from CSV parsing should work with temporal validity checks.
 
-    Verifies that the actual date format produced by _format_datetime() matches
+    Verifies that the actual date format produced by format_datetime() matches
     what _parse_transaction_date() expects, and that temporal validity warnings
     are logged for transactions outside known validity periods.
     """
@@ -2948,8 +3013,9 @@ def test_load_koinly_crypto_report_passes_dates_to_resolve_operator_origin(tmp_p
         "Income report 2025\n\nDate,Asset,Amount,Value (EUR),Type,Description,Wallet Name\n",
         encoding="utf-8",
     )
+    _write_minimal_transaction_history(koinly_dir)
 
-    with caplog.at_level(logging.WARNING, logger="shares_reporting.application.crypto_reporting"):
+    with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"):
         report = load_koinly_crypto_report(koinly_dir)
 
     assert report is not None
@@ -2969,7 +3035,7 @@ def test_resolve_operator_origin_ethereum_exact_history_no_review(caplog):
     valid_from is for audit trail only and not used for transaction matching per
     the repository contract.
     """
-    with caplog.at_level(logging.WARNING, logger="shares_reporting.application.crypto_reporting"):
+    with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"):
         origin = resolve_operator_origin("Ethereum", None, "2024-01-20")
 
     # Should NOT be marked for review - transaction is after service_start_date
@@ -3201,11 +3267,11 @@ def test_parse_capital_gains_file_with_populated_resolver(tmp_path):
 
     from collections import Counter
 
-    from shares_reporting.application.crypto_reporting import TokenOriginResolver, _parse_capital_gains_file
+    from tax_reporting.application.crypto_reporting import TokenOriginResolver, _parse_capital_gains_file
 
     resolver = TokenOriginResolver(th_csv)
     skipped: Counter[tuple[str, str]] = Counter()
-    entries = _parse_capital_gains_file(capital_csv, skipped, resolver)
+    entries, _ = _parse_capital_gains_file(capital_csv, skipped, resolver)
 
     assert len(entries) == 1
     assert entries[0].token_swap_history != "", (
@@ -3224,12 +3290,12 @@ def test_parse_capital_gains_file_with_populated_resolver(tmp_path):
 
 
 def test_bybit_operator_origin_has_review_reason():
-    """ByBit platform must have a specific review_reason explaining account-region concern."""
+    """ByBit platform must have a specific platform_assumption explaining account-region concern."""
     origin = resolve_operator_origin("ByBit")
-    assert origin.review_required is True
-    assert origin.review_reason is not None
-    assert "account-region" in origin.review_reason.lower()
-    assert "Bybit" in origin.review_reason
+    assert origin.review_required is False  # Platform assumption, not row-level review
+    assert origin.platform_assumption is not None
+    assert "account-region" in origin.platform_assumption.lower()
+    assert "Bybit" in origin.platform_assumption
 
 
 def test_starknet_operator_origin_no_review_required():
@@ -3240,11 +3306,11 @@ def test_starknet_operator_origin_no_review_required():
 
 
 def test_mantle_operator_origin_has_review_reason():
-    """Mantle platform must have a specific review_reason."""
+    """Mantle platform must have a specific platform_assumption."""
     origin = resolve_operator_origin("Mantle")
-    assert origin.review_required is True
-    assert origin.review_reason is not None
-    assert "Mantle" in origin.review_reason
+    assert origin.review_required is False  # Platform assumption, not row-level review
+    assert origin.platform_assumption is not None
+    assert "Mantle" in origin.platform_assumption
 
 
 def test_unknown_operator_origin_has_review_reason():
@@ -3257,7 +3323,7 @@ def test_unknown_operator_origin_has_review_reason():
 
 def test_temporal_invalidity_sets_review_reason(caplog):
     """Out-of-validity transactions must have a review_reason with the service period."""
-    with caplog.at_level(logging.WARNING, logger="shares_reporting.application.crypto_reporting"):
+    with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"):
         origin = resolve_operator_origin(
             "Berachain", transaction_type="crypto_disposal", transaction_date="2024-06-01 10:00:00"
         )
@@ -3326,10 +3392,10 @@ def test_capital_entry_review_reason_missing_cost_basis(tmp_path):
 
     from collections import Counter
 
-    from shares_reporting.application.crypto_reporting import TokenOriginResolver, _parse_capital_gains_file
+    from tax_reporting.application.crypto_reporting import TokenOriginResolver, _parse_capital_gains_file
 
     skipped = Counter()
-    entries = _parse_capital_gains_file(csv_file, skipped, TokenOriginResolver())
+    entries, _ = _parse_capital_gains_file(csv_file, skipped, TokenOriginResolver())
     assert len(entries) == 1
     entry = entries[0]
     assert entry.review_required is True
@@ -3375,12 +3441,12 @@ def test_date_parse_failure_sets_review_reason():
 
 
 def test_bybit_review_flag_is_intentional_with_reason():
-    """ByBit review flag must stay because region-specific entities cannot be auto-detected from Koinly exports."""
+    """ByBit platform_assumption exists because region-specific entities cannot be auto-detected from Koinly exports."""
     origin = resolve_operator_origin("ByBit")
-    assert origin.review_required is True
+    assert origin.review_required is False  # Platform assumption, not row-level review
     assert origin.operator_country == "AE"
-    assert origin.review_reason is not None
-    assert "account-region" in origin.review_reason
+    assert origin.platform_assumption is not None
+    assert "account-region" in origin.platform_assumption
 
 
 def test_bybit_review_reason_propagates_through_capital_gains_csv(tmp_path):
@@ -3424,15 +3490,16 @@ def test_bybit_review_reason_propagates_through_capital_gains_csv(tmp_path):
 
     from collections import Counter
 
-    from shares_reporting.application.crypto_reporting import TokenOriginResolver, _parse_capital_gains_file
+    from tax_reporting.application.crypto_reporting import TokenOriginResolver, _parse_capital_gains_file
 
     skipped = Counter()
-    entries = _parse_capital_gains_file(csv_file, skipped, TokenOriginResolver())
+    entries, _ = _parse_capital_gains_file(csv_file, skipped, TokenOriginResolver())
     assert len(entries) == 1
     entry = entries[0]
-    assert entry.review_required is True
-    assert entry.review_reason is not None
-    assert "account-region" in entry.review_reason
+    # Bybit has platform_assumption, not row-level review
+    assert entry.review_required is False
+    assert entry.operator_origin.platform_assumption is not None
+    assert "account-region" in entry.operator_origin.platform_assumption
 
 
 def test_platforms_without_service_start_date_allow_old_transactions():
@@ -3517,10 +3584,10 @@ def test_zero_value_entries_never_reach_report(tmp_path):
 
     from collections import Counter
 
-    from shares_reporting.application.crypto_reporting import TokenOriginResolver, _parse_capital_gains_file
+    from tax_reporting.application.crypto_reporting import TokenOriginResolver, _parse_capital_gains_file
 
     skipped = Counter()
-    entries = _parse_capital_gains_file(csv_file, skipped, TokenOriginResolver())
+    entries, _ = _parse_capital_gains_file(csv_file, skipped, TokenOriginResolver())
     assert len(entries) == 0
     assert skipped[("capital_gains", "FEE1")] == 1
     assert skipped[("capital_gains", "FEE2")] == 1
@@ -3718,7 +3785,7 @@ def test_loan_repayment_origin_resolved_from_acquisition_side_exchange(tmp_path)
 
 
 def test_origin_not_resolved_from_disposal_date_only(tmp_path):
-    """Origin must NOT match on disposal date — only acquisition date is used.
+    """Origin must NOT match on disposal date; only acquisition date is used.
 
     Regression guard: if the resolver or pipeline ever switches to matching on
     disposal date (the removed heuristic), this test would silently pass without
@@ -4052,7 +4119,7 @@ def test_mnt_token_collision():
     The crypto token must be classified as DEFERRED_BY_LAW per CRG-001, not TAXABLE_NOW.
 
     The real Koinly dataset confirms 20 MNT reward rows from ByBit and Mantle wallets
-    in the income report, and 17 disposal rows in the capital gains report — all
+    in the income report, and 17 disposal rows in the capital gains report; all
     referencing the Mantle blockchain token, not fiat currency.
     """
     assert _classify_reward_tax_status("MNT") == RewardTaxClassification.DEFERRED_BY_LAW
@@ -4136,6 +4203,8 @@ def test_capital_gains_fee_notes_do_not_create_reward_entries(tmp_path):
         encoding="utf-8",
     )
 
+    _write_minimal_transaction_history(koinly_dir)
+
     report = load_koinly_crypto_report(koinly_dir)
 
     assert report is not None
@@ -4151,8 +4220,9 @@ def test_reward_parsing_independent_of_capital_gains_notes(tmp_path):
     Notes values from the capital-gains export.
 
     This test loads the same income report twice: once with a capital-gains
-    file containing various Notes values, and once with no capital-gains file
-    at all. The reward entries must be identical in both cases.
+    file containing various Notes values, and once with an empty capital-gains
+    file plus the required empty transaction history. The reward entries must
+    be identical in both cases.
     """
     koinly_dir_with_cg = tmp_path / "with_capital_gains"
     koinly_dir_with_cg.mkdir()
@@ -4219,10 +4289,13 @@ def test_reward_parsing_independent_of_capital_gains_notes(tmp_path):
         ),
         encoding="utf-8",
     )
+    _write_minimal_transaction_history(koinly_dir_with_cg)
 
     koinly_dir_no_cg = tmp_path / "no_capital_gains"
     koinly_dir_no_cg.mkdir()
     (koinly_dir_no_cg / "koinly_2025_income_report_test.csv").write_text(income_csv, encoding="utf-8")
+    _write_minimal_capital_gains_report(koinly_dir_no_cg)
+    _write_minimal_transaction_history(koinly_dir_no_cg)
 
     report_with_cg = load_koinly_crypto_report(koinly_dir_with_cg)
     report_no_cg = load_koinly_crypto_report(koinly_dir_no_cg)
@@ -4268,6 +4341,8 @@ def test_mnt_reward_stays_deferred_through_full_parse(tmp_path):
         ),
         encoding="utf-8",
     )
+    _write_minimal_capital_gains_report(koinly_dir)
+    _write_minimal_transaction_history(koinly_dir)
 
     report = load_koinly_crypto_report(koinly_dir)
 
@@ -4288,7 +4363,7 @@ def test_mnt_reward_stays_deferred_through_full_parse(tmp_path):
 
 def test_capital_gain_period_stats_zero():
     """CapitalGainPeriodStats construction with zero values and correct property access."""
-    from shares_reporting.application.crypto_reporting import CapitalGainPeriodStats
+    from tax_reporting.application.crypto_reporting import CapitalGainPeriodStats
 
     _zero = Decimal("0")
     stats = CapitalGainPeriodStats(count=0, cost_total_eur=_zero, proceeds_total_eur=_zero, gain_loss_total_eur=_zero)
@@ -4300,7 +4375,7 @@ def test_capital_gain_period_stats_zero():
 
 def test_capital_gain_period_stats_from_entries():
     """from_entries() correctly sums cost, proceeds, gain/loss and counts entries."""
-    from shares_reporting.application.crypto_reporting import CapitalGainPeriodStats
+    from tax_reporting.application.crypto_reporting import CapitalGainPeriodStats
 
     entries = [
         _make_entry(cost_eur=Decimal("100"), proceeds_eur=Decimal("120"), gain_loss_eur=Decimal("20")),
@@ -4318,7 +4393,7 @@ def test_capital_gain_period_stats_from_entries():
 
 def test_capital_gain_period_stats_from_empty_entries():
     """from_entries() with empty list returns zero-stats."""
-    from shares_reporting.application.crypto_reporting import CapitalGainPeriodStats
+    from tax_reporting.application.crypto_reporting import CapitalGainPeriodStats
 
     stats = CapitalGainPeriodStats.from_entries([])
 
@@ -4333,7 +4408,7 @@ def test_capital_gain_period_stats_from_empty_entries():
 
 def test_compute_capital_gain_stats_all_periods():
     """Stats computed across all four holding periods with correct per-period and grand-total values."""
-    from shares_reporting.application.crypto_reporting import CryptoCapitalGainStats
+    from tax_reporting.application.crypto_reporting import CryptoCapitalGainStats
 
     entries = [
         _make_entry(
@@ -4388,7 +4463,7 @@ def test_compute_capital_gain_stats_all_periods():
 
 def test_compute_capital_gain_stats_single_period():
     """Only one period has non-zero stats, others are zero."""
-    from shares_reporting.application.crypto_reporting import CryptoCapitalGainStats
+    from tax_reporting.application.crypto_reporting import CryptoCapitalGainStats
 
     entries = [
         _make_entry(
@@ -4419,7 +4494,7 @@ def test_compute_capital_gain_stats_single_period():
 
 def test_compute_capital_gain_stats_empty():
     """All periods and grand total are zero-stats from empty list."""
-    from shares_reporting.application.crypto_reporting import CryptoCapitalGainStats
+    from tax_reporting.application.crypto_reporting import CryptoCapitalGainStats
 
     stats = CryptoCapitalGainStats.from_entries([])
 
@@ -4435,7 +4510,7 @@ def test_compute_capital_gain_stats_empty():
 
 def test_compute_capital_gain_stats_mixed_gains():
     """Correct aggregation of positive and negative gains within a period."""
-    from shares_reporting.application.crypto_reporting import CryptoCapitalGainStats
+    from tax_reporting.application.crypto_reporting import CryptoCapitalGainStats
 
     entries = [
         _make_entry(
@@ -4465,7 +4540,7 @@ def test_compute_capital_gain_stats_mixed_gains():
 
 def test_compute_capital_gain_stats_unrecognized_period(caplog):
     """Grand total EUR amounts include all entries even when holding period is unrecognized."""
-    from shares_reporting.application.crypto_reporting import CryptoCapitalGainStats
+    from tax_reporting.application.crypto_reporting import CryptoCapitalGainStats
 
     entries = [
         _make_entry(
@@ -4496,7 +4571,7 @@ def test_compute_capital_gain_stats_unrecognized_period(caplog):
 
 def test_crypto_tax_report_includes_capital_gain_stats():
     """CryptoTaxReport has a capital_gain_stats field of type CryptoCapitalGainStats."""
-    from shares_reporting.application.crypto_reporting import (
+    from tax_reporting.application.crypto_reporting import (
         CryptoCapitalGainStats,
         CryptoReconciliationSummary,
         CryptoTaxReport,
@@ -4585,6 +4660,9 @@ def test_crypto_tax_report_capital_gain_stats_computed_from_entries(tmp_path):
         encoding="utf-8",
     )
 
+    _write_minimal_income_report(koinly_dir)
+    _write_minimal_transaction_history(koinly_dir)
+
     report = load_koinly_crypto_report(koinly_dir)
     assert report is not None
 
@@ -4600,11 +4678,11 @@ def test_crypto_tax_report_capital_gain_stats_computed_from_entries(tmp_path):
 
 
 def test_format_datetime_returns_date_only():
-    assert _format_datetime(datetime(2025, 1, 13, 13, 1, 0, tzinfo=UTC)) == "2025-01-13"
+    assert format_datetime(datetime(2025, 1, 13, 13, 1, 0, tzinfo=UTC)) == "2025-01-13"
 
 
 def test_format_datetime_epoch_sentinel_returns_1970_01_01():
-    assert _format_datetime(datetime(1970, 1, 1, 0, 0, 0, tzinfo=UTC)) == "1970-01-01"
+    assert format_datetime(datetime(1970, 1, 1, 0, 0, 0, tzinfo=UTC)) == "1970-01-01"
 
 
 class TestTokenOriginResolver:
@@ -4773,3 +4851,1060 @@ class TestTokenOriginResolver:
         origin = resolver.resolve("2025-01-15", "ETH", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.SWAP_CONVERSION
         assert origin.confidence == "high"
+
+
+_CG_HEADER = ",".join(
+    [
+        "Date Sold",
+        "Date Acquired",
+        "Asset",
+        "Amount",
+        "Cost (EUR)",
+        "Proceeds (EUR)",
+        "Gain / loss",
+        "Notes",
+        "Wallet Name",
+        "Holding period",
+    ]
+)
+
+_INCOME_HEADER = "Date,Asset,Amount,Value (EUR),Type,Description,Wallet Name"
+
+_TH_HEADER = (
+    "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
+    "Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,"
+    "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
+    "TxSrc,TxDest,TxHash,Description"
+)
+
+
+def _write_minimal_capital_gains_report(koinly_dir: Path) -> Path:
+    path = koinly_dir / "koinly_2025_capital_gains_report.csv"
+    path.write_text("\n".join(["Capital gains report 2025", "", _CG_HEADER]), encoding="utf-8")
+    return path
+
+
+def _write_minimal_income_report(koinly_dir: Path) -> Path:
+    path = koinly_dir / "koinly_2025_income_report.csv"
+    path.write_text("\n".join(["Income report 2025", "", _INCOME_HEADER]), encoding="utf-8")
+    return path
+
+
+def _write_minimal_transaction_history(koinly_dir: Path) -> Path:
+    path = koinly_dir / "koinly_2025_transaction_history.csv"
+    path.write_text("\n".join(["Transaction report 2025", "", _TH_HEADER]), encoding="utf-8")
+    return path
+
+
+def _write_transaction_history(tmp_path, rows: list[str]) -> Path:
+    path = tmp_path / "koinly_2025_transaction_history.csv"
+    content = "\n".join(["Transaction report 2025", "", _TH_HEADER] + rows)
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def test_extract_loan_activity_with_settled_loan(tmp_path):
+    """Loan receipt followed by matching repayment produces a settled balance."""
+    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+
+    path = _write_transaction_history(
+        tmp_path,
+        [
+            '2025-01-10 10:00:00 UTC,crypto_deposit,Loan,,,,,ByBit,100.00,SUI,50.00,,,,500.00,,"","","",""',
+            '2025-06-15 10:00:00 UTC,crypto_withdrawal,Loan repayment,ByBit,100.00,SUI,50.00,,,,,,,,0,,"","","",""',
+        ],
+    )
+
+    entries = _extract_loan_activity(path)
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.asset == "SUI"
+    assert entry.received_count == 1
+    assert entry.received_amount == Decimal("100.00")
+    assert entry.received_value_eur == Decimal("500.00")
+    assert entry.repaid_count == 1
+    assert entry.repaid_amount == Decimal("100.00")
+    assert entry.balance_status == "Settled"
+    assert entry.balance_amount == Decimal("0")
+
+
+def test_extract_loan_activity_multiple_assets(tmp_path):
+    """Multiple assets produce separate entries sorted alphabetically."""
+    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+
+    path = _write_transaction_history(
+        tmp_path,
+        [
+            '2025-01-10 10:00:00 UTC,crypto_deposit,Loan,,,,,ByBit,200.00,USDC,100.00,,,,800.00,,"","","",""',
+            '2025-01-11 10:00:00 UTC,crypto_deposit,Loan,,,,,ByBit,300.00,BTC,150.00,,,,1200.00,,"","","",""',
+        ],
+    )
+
+    entries = _extract_loan_activity(path)
+    assert len(entries) == 2
+    assert entries[0].asset == "BTC"
+    assert entries[1].asset == "USDC"
+
+
+def test_extract_loan_activity_empty_when_no_loan_rows(tmp_path):
+    """Non-loan transaction history rows produce no loan activity entries."""
+    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+
+    path = _write_transaction_history(
+        tmp_path,
+        [
+            (
+                '2025-01-10 10:00:00 UTC,crypto_withdrawal,Cost,'
+                'ByBit,"1,00",SUI,"10,00",,,,,,,,,0,0,"","",""'
+            ),
+        ],
+    )
+
+    entries = _extract_loan_activity(path)
+    assert entries == []
+
+
+def test_extract_loan_activity_returns_empty_when_path_none(tmp_path):
+    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+
+    assert _extract_loan_activity(None) == []
+
+
+def test_extract_loan_activity_returns_empty_when_path_not_found(tmp_path):
+    """A non-existent path (not None) must return an empty list without error."""
+    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+
+    missing = tmp_path / "no_such_file.csv"
+    assert _extract_loan_activity(missing) == []
+
+
+def test_extract_loan_activity_open_loan_status(tmp_path):
+    """More received than repaid produces 'Open loan' balance status."""
+    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+
+    path = _write_transaction_history(
+        tmp_path,
+        [
+            '2025-01-10 10:00:00 UTC,crypto_deposit,Loan,,,,,ByBit,100.00,SUI,50.00,,,,500.00,,"","","",""',
+        ],
+    )
+    entries = _extract_loan_activity(path)
+    assert len(entries) == 1
+    assert entries[0].balance_status == "Open loan"
+    assert entries[0].balance_amount == Decimal("100.00")
+
+
+def test_extract_loan_activity_overpaid_status(tmp_path):
+    """More repaid than received produces 'Overpaid' balance status."""
+    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+
+    path = _write_transaction_history(
+        tmp_path,
+        [
+            '2025-01-10 10:00:00 UTC,crypto_deposit,Loan,,,,,ByBit,50.00,SUI,25.00,,,,250.00,,"","","",""',
+            '2025-06-15 10:00:00 UTC,crypto_withdrawal,Loan repayment,ByBit,100.00,SUI,50.00,,,,,,,,0,,"","","",""',
+        ],
+    )
+    entries = _extract_loan_activity(path)
+    assert len(entries) == 1
+    assert entries[0].balance_status == "Overpaid (cross-year loan?)"
+    assert entries[0].balance_amount == Decimal("-50.00")
+
+
+
+    """An exchange row tagged 'Loan' must not be counted as a loan receipt."""
+    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+
+    path = _write_transaction_history(
+        tmp_path,
+        [
+            (
+                '2025-01-10 10:00:00 UTC,exchange,Loan,'
+                'ByBit,50.00,BTC,25.00,Kraken,100.00,SUI,50.00,,,300.00,,"","","",""'
+            ),
+        ],
+    )
+
+    entries = _extract_loan_activity(path)
+    assert entries == []
+
+
+# ---------------------------------------------------------------------------
+# _extract_loan_activity: skip-on-error paths
+# ---------------------------------------------------------------------------
+
+def test_extract_loan_activity_skips_blank_received_currency_with_warning(tmp_path, caplog):
+    """A loan receipt row with blank Received Currency is skipped with a warning."""
+    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+
+    path = _write_transaction_history(
+        tmp_path,
+        [
+            "2025-01-10 10:00:00 UTC,crypto_deposit,Loan,,,,,ByBit,100.00,,50.00,,,,500.00,,,,",
+        ],
+    )
+
+    with caplog.at_level("WARNING"):
+        entries = _extract_loan_activity(path)
+
+    assert entries == []
+    assert any(
+        "blank Received Currency" in r.message or "blank received currency" in r.message.lower()
+        for r in caplog.records
+    )
+
+
+def test_extract_loan_activity_skips_blank_sent_currency_with_warning(tmp_path, caplog):
+    """A loan repayment row with blank Sent Currency is skipped with a warning."""
+    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+
+    path = _write_transaction_history(
+        tmp_path,
+        [
+            "2025-06-15 10:00:00 UTC,crypto_withdrawal,Loan repayment,ByBit,100.00,,,,,,,,,,,,,,,",
+        ],
+    )
+
+    with caplog.at_level("WARNING"):
+        entries = _extract_loan_activity(path)
+
+    assert entries == []
+    assert any("blank Sent Currency" in r.message or "blank sent currency" in r.message.lower() for r in caplog.records)
+
+
+def test_extract_loan_activity_skips_unparseable_amount_with_warning(tmp_path, caplog):
+    """A loan receipt row with non-numeric amount is skipped and valid rows are still processed."""
+    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+
+    path = _write_transaction_history(
+        tmp_path,
+        [
+            "2025-01-10 10:00:00 UTC,crypto_deposit,Loan,,,,,ByBit,not-a-number,SUI,50.00,,,,500.00,,,,",
+            '2025-01-11 10:00:00 UTC,crypto_deposit,Loan,,,,,ByBit,50.00,BTC,25.00,,,,250.00,,"","","",""',
+        ],
+    )
+
+    with caplog.at_level("WARNING"):
+        entries = _extract_loan_activity(path)
+
+    assert len(entries) == 1
+    assert entries[0].asset == "BTC"
+    assert any("unparseable amount" in r.message.lower() for r in caplog.records)
+
+
+# --- Loan-affected asset exclusion from CG file (Task 2) ---
+
+
+def _write_koinly_dir_with_wbtc_and_eth(tmp_path):
+    """Create a minimal koinly dir with WBTC + ETH CG rows."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+    _write_minimal_income_report(koinly_dir)
+    _write_minimal_transaction_history(koinly_dir)
+
+    header = ",".join(
+        [
+            "Date Sold",
+            "Date Acquired",
+            "Asset",
+            "Amount",
+            "Cost (EUR)",
+            "Proceeds (EUR)",
+            "Gain / loss",
+            "Notes",
+            "Wallet Name",
+            "Holding period",
+        ]
+    )
+
+    wbtc_row = ",".join(
+        [
+            "13/01/2025 13:01",
+            "18/11/2024 00:15",
+            "WBTC",
+            '"1,00000000"',
+            '"30000,00"',
+            '"35000,00"',
+            '"5000,00"',
+            "",
+            "ByBit",
+            "Short term",
+        ]
+    )
+
+    eth_row = ",".join(
+        [
+            "20/01/2025 10:10",
+            "01/01/2024 00:00",
+            "ETH",
+            '"1,00000000"',
+            '"2000,00"',
+            '"2500,00"',
+            '"500,00"',
+            "",
+            "Kraken",
+            "Long term",
+        ]
+    )
+
+    csv_content = "\n".join(["Capital gains report 2025", "", header, wbtc_row, eth_row])
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(csv_content, encoding="utf-8")
+    return koinly_dir
+
+
+def test_parse_capital_gains_file_excludes_loan_affected_assets_when_pt(tmp_path, caplog):
+    """CG file with WBTC + ETH rows: PT jurisdiction skips WBTC (dynamic discovery), returns ETH only."""
+    from tax_reporting.infrastructure.config import DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD, TaxJurisdictionConfig
+
+    koinly_dir = _write_koinly_dir_with_wbtc_and_eth(tmp_path)
+
+    # Add TH with a loan-tagged WBTC row so dynamic discovery returns {"WBTC"}
+    th_content = "\n".join(["Transaction report 2025", "", _FIFO_TH_HEADER, _WBTC_LOAN_TH_ROW])
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(th_content, encoding="utf-8")
+
+    pt_jurisdiction = TaxJurisdictionConfig(
+        country="PT",
+        fiscal_year=2025,
+        exclude_loan_repayment_gains=True,
+        zero_basis_review_threshold=DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"):
+        report = load_koinly_crypto_report(koinly_dir, jurisdiction=pt_jurisdiction)
+
+    assert report is not None
+    assets = {e.asset for e in report.capital_entries}
+    assert "WBTC" not in assets
+    assert "ETH" in assets
+
+
+def test_parse_capital_gains_file_includes_loan_affected_assets_when_non_pt(tmp_path):
+    """CG file with WBTC + ETH rows: non-PT jurisdiction includes both."""
+    from tax_reporting.infrastructure.config import DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD, TaxJurisdictionConfig
+
+    koinly_dir = _write_koinly_dir_with_wbtc_and_eth(tmp_path)
+    non_pt_jurisdiction = TaxJurisdictionConfig(
+        country="US",
+        fiscal_year=2025,
+        exclude_loan_repayment_gains=False,
+        zero_basis_review_threshold=DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD,
+    )
+
+    report = load_koinly_crypto_report(koinly_dir, jurisdiction=non_pt_jurisdiction)
+
+    assert report is not None
+    assert len(report.capital_entries) == 2
+    assets = {e.asset for e in report.capital_entries}
+    assert assets == {"WBTC", "ETH"}
+
+
+def test_parse_capital_gains_file_includes_loan_affected_assets_when_no_jurisdiction(tmp_path):
+    """CG file with WBTC + ETH rows: no jurisdiction includes both."""
+    koinly_dir = _write_koinly_dir_with_wbtc_and_eth(tmp_path)
+
+    report = load_koinly_crypto_report(koinly_dir)
+
+    assert report is not None
+    assert len(report.capital_entries) == 2
+    assets = {e.asset for e in report.capital_entries}
+    assert assets == {"WBTC", "ETH"}
+
+
+# --- FIFO pipeline integration tests (Task 5) ---
+
+_FIFO_CG_HEADER = ",".join(
+    [
+        "Date Sold",
+        "Date Acquired",
+        "Asset",
+        "Amount",
+        "Cost (EUR)",
+        "Proceeds (EUR)",
+        "Gain / loss",
+        "Notes",
+        "Wallet Name",
+        "Holding period",
+    ]
+)
+
+_FIFO_TH_HEADER = (
+    "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
+    "Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,"
+    "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
+    "TxSrc,TxDest,TxHash,Description"
+)
+
+_WBTC_CG_ROW = ",".join(
+    [
+        "13/01/2025 13:01",
+        "18/11/2024 00:15",
+        "WBTC",
+        '"1,00000000"',
+        '"30000,00"',
+        '"35000,00"',
+        '"5000,00"',
+        "",
+        "ByBit",
+        "Short term",
+    ]
+)
+
+_ETH_CG_ROW = ",".join(
+    [
+        "20/01/2025 10:10",
+        "01/01/2024 00:00",
+        "ETH",
+        '"1,00000000"',
+        '"2000,00"',
+        '"2500,00"',
+        '"500,00"',
+        "",
+        "Kraken",
+        "Long term",
+    ]
+)
+
+_WBTC_BUY_TH_ROW = ",".join(
+    [
+        "2025-01-10 10:00:00 UTC",
+        "exchange",
+        "",
+        "ByBit",
+        "1000",
+        "EUR",
+        "1000",
+        "ByBit",
+        "0.1",
+        "WBTC",
+        "1000",
+        "",
+        "",
+        "",
+        "1000",
+        "",
+        "src1",
+        "dst1",
+        "tx_buy_1",
+        "",
+    ]
+)
+
+_WBTC_SELL_TH_ROW = ",".join(
+    [
+        "2025-06-15 10:00:00 UTC",
+        "sell",
+        "",
+        "ByBit",
+        "0.1",
+        "WBTC",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "1500",
+        "",
+        "",
+        "",
+        "tx_sell_1",
+        "",
+    ]
+)
+
+# Loan-tagged row for WBTC — used to trigger dynamic discovery (discover_loan_affected_assets
+# returns {"WBTC"} when this row is in the TH). The loan row itself is excluded from FIFO.
+# Only Received Currency=WBTC (no fiat Sent Currency) to avoid EUR being added to the discovered set.
+_WBTC_LOAN_TH_ROW = ",".join(
+    [
+        "2025-01-01 09:00:00 UTC",
+        "exchange",
+        "loan",
+        "",
+        "",
+        "",
+        "",
+        "ByBit",
+        "0.01",
+        "WBTC",
+        "1000",
+        "",
+        "",
+        "",
+        "1000",
+        "",
+        "",
+        "",
+        "tx_loan_wbtc",
+        "",
+    ]
+)
+
+
+def _pt_jurisdiction():
+    from tax_reporting.infrastructure.config import DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD, TaxJurisdictionConfig
+
+    return TaxJurisdictionConfig(
+        country="PT",
+        fiscal_year=2025,
+        exclude_loan_repayment_gains=True,
+        zero_basis_review_threshold=DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD,
+    )
+
+
+def _non_pt_jurisdiction():
+    from tax_reporting.infrastructure.config import DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD, TaxJurisdictionConfig
+
+    return TaxJurisdictionConfig(
+        country="US",
+        fiscal_year=2025,
+        exclude_loan_repayment_gains=False,
+        zero_basis_review_threshold=DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD,
+    )
+
+
+def test_load_koinly_crypto_report_uses_fifo_for_loan_affected_assets(tmp_path, caplog):
+    """PT gate active: WBTC excluded from CG, rebuilt from TH via FIFO."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    cg_content = "\n".join(
+        ["Capital gains report 2025", "", _FIFO_CG_HEADER, _WBTC_CG_ROW, _ETH_CG_ROW]
+    )
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(cg_content, encoding="utf-8")
+
+    # Include loan-tagged WBTC row so dynamic discovery returns {"WBTC"} → excluded from CG
+    th_content = "\n".join(
+        ["Transaction report 2025", "", _FIFO_TH_HEADER, _WBTC_LOAN_TH_ROW, _WBTC_BUY_TH_ROW, _WBTC_SELL_TH_ROW]
+    )
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(th_content, encoding="utf-8")
+    _write_minimal_income_report(koinly_dir)
+
+    with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"):
+        report = load_koinly_crypto_report(koinly_dir, jurisdiction=_pt_jurisdiction())
+
+    assert report is not None
+    assets = {e.asset for e in report.capital_entries}
+    assert "ETH" in assets
+    assert "WBTC" in assets
+
+    wbtc_entry = next(e for e in report.capital_entries if e.asset == "WBTC")
+    assert wbtc_entry.gain_loss_eur == Decimal("500")
+    assert wbtc_entry.proceeds_eur == Decimal("1500")
+    assert wbtc_entry.cost_eur == Decimal("1000")
+    assert wbtc_entry.holding_period == "Short term"
+    assert wbtc_entry.disposal_date == "2025-06-15"
+    assert wbtc_entry.acquisition_date == "2025-01-10"
+    assert wbtc_entry.platform == "ByBit"
+
+
+def test_load_koinly_crypto_report_skips_fifo_when_non_pt(tmp_path):
+    """Non-PT gate: WBTC comes from CG parsing, FIFO engine is not invoked."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    cg_content = "\n".join(
+        ["Capital gains report 2025", "", _FIFO_CG_HEADER, _WBTC_CG_ROW, _ETH_CG_ROW]
+    )
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(cg_content, encoding="utf-8")
+
+    th_content = "\n".join(
+        ["Transaction report 2025", "", _FIFO_TH_HEADER, _WBTC_BUY_TH_ROW, _WBTC_SELL_TH_ROW]
+    )
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(th_content, encoding="utf-8")
+    _write_minimal_income_report(koinly_dir)
+
+    report = load_koinly_crypto_report(koinly_dir, jurisdiction=_non_pt_jurisdiction())
+
+    assert report is not None
+    assert len(report.capital_entries) == 2
+    assets = {e.asset for e in report.capital_entries}
+    assert assets == {"WBTC", "ETH"}
+
+    wbtc_from_cg = next(e for e in report.capital_entries if e.asset == "WBTC")
+    assert wbtc_from_cg.gain_loss_eur == Decimal("5000")
+    assert wbtc_from_cg.proceeds_eur == Decimal("35000")
+    assert wbtc_from_cg.disposal_date == "2025-01-13"
+
+
+def test_load_koinly_crypto_report_falls_back_to_raw_cg_when_th_missing_for_fifo(tmp_path):
+    """PT FIFO rebuild now fails fast when the required transaction history export is missing."""
+    from tax_reporting.domain.exceptions import FileProcessingError
+
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    cg_content = "\n".join(
+        ["Capital gains report 2025", "", _FIFO_CG_HEADER, _WBTC_CG_ROW, _ETH_CG_ROW]
+    )
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(cg_content, encoding="utf-8")
+    _write_minimal_income_report(koinly_dir)
+
+    with pytest.raises(FileProcessingError, match="Incomplete Koinly export") as exc_info:
+        load_koinly_crypto_report(koinly_dir, jurisdiction=_pt_jurisdiction())
+
+    assert "transaction_history (Transaction history)" in str(exc_info.value)
+
+
+def test_load_koinly_crypto_report_no_false_warning_when_excluded_asset_absent_from_th(tmp_path, caplog):
+    """PT gate active, TH has no loan rows for WBTC: WBTC not excluded from CG.
+
+    With dynamic discovery, WBTC appears in CG (not excluded) because no loan-tagged
+    TH rows reference WBTC. No 'zero FIFO' warning fires either.
+    """
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    cg_content = "\n".join(
+        ["Capital gains report 2025", "", _FIFO_CG_HEADER, _WBTC_CG_ROW, _ETH_CG_ROW]
+    )
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(cg_content, encoding="utf-8")
+
+    th_row = ",".join(
+        [
+            "2025-03-15 12:00:00 UTC",
+            "exchange",
+            "",
+            "Kraken",
+            "500",
+            "EUR",
+            "500",
+            "Kraken",
+            "0.5",
+            "ETH",
+            "500",
+            "",
+            "",
+            "",
+            "500",
+            "",
+            "src_eth",
+            "dst_eth",
+            "tx_eth_1",
+            "",
+        ]
+    )
+    th_content = "\n".join(["Transaction report 2025", "", _FIFO_TH_HEADER, th_row])
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(th_content, encoding="utf-8")
+    _write_minimal_income_report(koinly_dir)
+
+    with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"):
+        report = load_koinly_crypto_report(koinly_dir, jurisdiction=_pt_jurisdiction())
+
+    assert report is not None
+    eth_entries = [e for e in report.capital_entries if e.asset == "ETH"]
+    assert len(eth_entries) == 1
+    # No loan-tagged rows for WBTC in TH → discover returns frozenset() → WBTC NOT excluded from CG
+    wbtc_entries = [e for e in report.capital_entries if e.asset == "WBTC"]
+    assert len(wbtc_entries) == 1
+    # No false-alarm "zero FIFO" warning: WBTC was never in the discovered loan_affected_assets
+    assert "zero FIFO" not in caplog.text
+
+
+def test_load_koinly_crypto_report_populates_fifo_entry_metadata(tmp_path, caplog):
+    """FIFO-derived row gets operator_origin, annex_hint, chain, and token_swap_history."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    eth_cg = ",".join(
+        [
+            "20/01/2025 10:10",
+            "01/01/2024 00:00",
+            "ETH",
+            '"1,00000000"',
+            '"2000,00"',
+            '"2500,00"',
+            '"500,00"',
+            "",
+            "Kraken",
+            "Long term",
+        ]
+    )
+    cg_content = "\n".join(["Capital gains report 2025", "", _FIFO_CG_HEADER, eth_cg])
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(cg_content, encoding="utf-8")
+
+    # Include loan-tagged WBTC row so dynamic discovery returns {"WBTC"} → excluded from CG
+    th_content = "\n".join(
+        ["Transaction report 2025", "", _FIFO_TH_HEADER, _WBTC_LOAN_TH_ROW, _WBTC_BUY_TH_ROW, _WBTC_SELL_TH_ROW]
+    )
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(th_content, encoding="utf-8")
+    _write_minimal_income_report(koinly_dir)
+
+    report = load_koinly_crypto_report(koinly_dir, jurisdiction=_pt_jurisdiction())
+
+    assert report is not None
+    wbtc_entry = next((e for e in report.capital_entries if e.asset == "WBTC"), None)
+    assert wbtc_entry is not None, "Expected a WBTC capital gains entry from FIFO rebuild"
+    # FIFO-derived WBTC entry must carry metadata assigned by _rebuild_fifo_for_loan_affected_assets
+    assert wbtc_entry.operator_origin is not None
+    assert wbtc_entry.annex_hint in ("J", "G1")
+    assert wbtc_entry.chain is not None
+    # Short-term disposal (acquired Jan 2025, sold Jun 2025) → annex J
+    assert wbtc_entry.annex_hint == "J"
+    assert wbtc_entry.token_swap_history is not None
+
+
+def test_load_koinly_crypto_report_warns_when_excluded_asset_has_no_fifo_output(tmp_path, caplog):
+    """PT gate active: WBTC in th_assets but _rebuild_fifo returns zero entries → WARNING logged."""
+    from unittest.mock import patch
+
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    cg_content = "\n".join(
+        ["Capital gains report 2025", "", _FIFO_CG_HEADER, _ETH_CG_ROW]
+    )
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(cg_content, encoding="utf-8")
+
+    # TH file must exist so fifo_rebuild_active branch is entered
+    th_content = "\n".join(
+        ["Transaction report 2025", "", _FIFO_TH_HEADER, _WBTC_BUY_TH_ROW, _WBTC_SELL_TH_ROW]
+    )
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(th_content, encoding="utf-8")
+    _write_minimal_income_report(koinly_dir)
+
+    mock_return = ([], frozenset({"WBTC"}))
+    with (
+        caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"),
+        patch(
+            "tax_reporting.application.crypto_reporting.discover_loan_affected_assets",
+            return_value=frozenset({"WBTC"}),
+        ),
+        patch(
+            "tax_reporting.application.crypto_reporting._rebuild_fifo_for_loan_affected_assets",
+            return_value=mock_return,
+        ),
+    ):
+        report = load_koinly_crypto_report(koinly_dir, jurisdiction=_pt_jurisdiction())
+
+    assert report is not None
+    assert any("zero FIFO entries" in r.message for r in caplog.records if r.levelno == logging.WARNING)
+    assert any("WBTC" in r.message for r in caplog.records if r.levelno == logging.WARNING)
+
+
+def test_load_koinly_crypto_report_warns_when_loan_discovery_returns_empty(tmp_path, caplog):
+    """PT gate active with TH file but no loan tags: warns about empty discovery."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    eth_cg = ",".join(
+        [
+            "20/01/2025 10:10",
+            "01/01/2024 00:00",
+            "ETH",
+            '"1,00000000"',
+            '"2000,00"',
+            '"2500,00"',
+            '"500,00"',
+            "",
+            "Kraken",
+            "Long term",
+        ]
+    )
+    cg_content = "\n".join(["Capital gains report 2025", "", _FIFO_CG_HEADER, eth_cg])
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(cg_content, encoding="utf-8")
+
+    # TH file exists but has NO loan or loan repayment tags → discovery returns empty
+    th_content = "\n".join(
+        ["Transaction report 2025", "", _FIFO_TH_HEADER, _WBTC_BUY_TH_ROW, _WBTC_SELL_TH_ROW]
+    )
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(th_content, encoding="utf-8")
+    _write_minimal_income_report(koinly_dir)
+
+    with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"):
+        report = load_koinly_crypto_report(koinly_dir, jurisdiction=_pt_jurisdiction())
+
+    assert report is not None
+    # Should warn about empty loan-affected assets discovery
+    assert any(
+        "no loan-affected assets discovered" in r.message for r in caplog.records if r.levelno == logging.WARNING
+    )
+
+
+def test_parse_capital_gains_file_skips_dynamically_discovered_assets(tmp_path):
+    """_parse_capital_gains_file with loan_affected_assets=frozenset({'NEWASSET'}) skips NEWASSET rows."""
+    from collections import Counter
+
+    from tax_reporting.application.crypto_reporting import _parse_capital_gains_file
+    from tax_reporting.application.token_origin import TokenOriginResolver
+
+    newasset_row = ",".join([
+        "13/01/2025 13:01",
+        "18/11/2024 00:15",
+        "NEWASSET",
+        '"1,00000000"',
+        '"500,00"',
+        '"600,00"',
+        '"100,00"',
+        "",
+        "Kraken",
+        "Short term",
+    ])
+    eth_row = ",".join([
+        "20/01/2025 10:10",
+        "01/01/2024 00:00",
+        "ETH",
+        '"0,50000000"',
+        '"1000,00"',
+        '"1200,00"',
+        '"200,00"',
+        "",
+        "Kraken",
+        "Long term",
+    ])
+    cg_path = tmp_path / "cg.csv"
+    cg_path.write_text(
+        "\n".join(["Capital gains report 2025", "", _FIFO_CG_HEADER, newasset_row, eth_row]),
+        encoding="utf-8",
+    )
+
+    skipped: Counter[tuple[str, str]] = Counter()
+    resolver = TokenOriginResolver(None)
+    entries, _ = _parse_capital_gains_file(
+        cg_path, skipped, resolver,
+        loan_affected_assets=frozenset({"NEWASSET"}),
+    )
+
+    assets = {e.asset for e in entries}
+    assert "NEWASSET" not in assets
+    assert "ETH" in assets
+
+
+def test_load_koinly_crypto_report_uses_dynamic_discovery_not_hardcoded_constant(tmp_path, caplog):
+    """TH has a loan row for TESTTOK; CG has a TESTTOK entry. TESTTOK CG entry excluded by dynamic set."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    testtok_cg_row = ",".join([
+        "13/01/2025 13:01",
+        "18/11/2024 00:15",
+        "TESTTOK",
+        '"1,00000000"',
+        '"500,00"',
+        '"600,00"',
+        '"100,00"',
+        "",
+        "Kraken",
+        "Short term",
+    ])
+    cg_content = "\n".join(
+        ["Capital gains report 2025", "", _FIFO_CG_HEADER, testtok_cg_row, _ETH_CG_ROW]
+    )
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(cg_content, encoding="utf-8")
+
+    # TH has a loan-tagged TESTTOK row → dynamic discovery returns {"TESTTOK"}
+    testtok_loan_row = ",".join([
+        "2025-01-01 10:00:00 UTC", "exchange", "loan", "Kraken", "500", "EUR", "500",
+        "Kraken", "1", "TESTTOK", "500", "", "", "", "500", "", "", "", "tx_loan_testtok", "",
+    ])
+    th_content = "\n".join(
+        ["Transaction report 2025", "", _FIFO_TH_HEADER, testtok_loan_row]
+    )
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(th_content, encoding="utf-8")
+    _write_minimal_income_report(koinly_dir)
+
+    with caplog.at_level(logging.WARNING):
+        report = load_koinly_crypto_report(koinly_dir, jurisdiction=_pt_jurisdiction())
+
+    assert report is not None
+    assets = {e.asset for e in report.capital_entries}
+    assert "TESTTOK" not in assets, "TESTTOK should be excluded by dynamic discovery"
+    assert "ETH" in assets
+
+
+def test_rebuild_fifo_marks_review_required_when_asset_has_parse_errors(tmp_path, caplog):
+    """TH with a malformed WBTC row: all WBTC realizations must have review_required=True.
+
+    When a TH row for a loan-affected asset fails to parse, the FIFO pool is potentially
+    incomplete. Every realization for that asset must be flagged for manual review.
+    """
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    eth_cg = ",".join(
+        [
+            "20/01/2025 10:10",
+            "01/01/2024 00:00",
+            "ETH",
+            '"1,00000000"',
+            '"2000,00"',
+            '"2500,00"',
+            '"500,00"',
+            "",
+            "Kraken",
+            "Long term",
+        ]
+    )
+    cg_content = "\n".join(["Capital gains report 2025", "", _FIFO_CG_HEADER, eth_cg])
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(cg_content, encoding="utf-8")
+
+    bad_wbtc_row = ",".join(
+        [
+            "2025-01-10 10:00:00 UTC",
+            "buy",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "ByBit",
+            "BAD_DECIMAL",
+            "WBTC",
+            "1000",
+            "",
+            "",
+            "",
+            "1000",
+            "",
+            "src1",
+            "dst1",
+            "tx_bad_buy",
+            "",
+        ]
+    )
+
+    th_content = "\n".join(
+        [
+            "Transaction report 2025",
+            "",
+            _FIFO_TH_HEADER,
+            _WBTC_LOAN_TH_ROW,
+            bad_wbtc_row,
+            _WBTC_SELL_TH_ROW,
+        ]
+    )
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(th_content, encoding="utf-8")
+    _write_minimal_income_report(koinly_dir)
+
+    with caplog.at_level(logging.ERROR):
+        report = load_koinly_crypto_report(koinly_dir, jurisdiction=_pt_jurisdiction())
+
+    assert report is not None
+    wbtc_entries = [e for e in report.capital_entries if e.asset == "WBTC"]
+    assert len(wbtc_entries) >= 1, "Expected WBTC entries from FIFO rebuild"
+    for entry in wbtc_entries:
+        assert entry.review_required is True, (
+            f"WBTC entry (disposal {entry.disposal_date}) must have review_required=True due to parse error"
+        )
+        assert entry.review_reason is not None
+        assert "parse error" in entry.review_reason.lower()
+
+
+
+def test_rebuild_fifo_resolves_same_asset_cross_platform_transfer_after_sender_platform_fifo(
+    tmp_path,
+):
+    """Integration: WBTC transferred Kraken→ByBit; ByBit sale should use Kraken's cost basis."""
+    from tax_reporting.application.crypto_reporting import _rebuild_fifo_for_loan_affected_assets
+    from tax_reporting.application.token_origin import TokenOriginResolver
+
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Loan row triggers WBTC discovery
+    loan_row = ",".join([
+        "2025-01-01 09:00:00 UTC", "exchange", "loan", "", "", "", "",
+        "ByBit", "0.01", "WBTC", "400", "", "", "", "400", "", "", "", "tx_loan", "",
+    ])
+    # Buy 1 WBTC on Kraken for 1000 EUR
+    buy_row = ",".join([
+        "2025-01-10 10:00:00 UTC", "exchange", "", "Kraken", "1000", "EUR", "1000",
+        "Kraken", "1.0", "WBTC", "1000", "", "", "", "1000", "", "src", "dst", "tx_buy", "",
+    ])
+    # Transfer 1 WBTC from Kraken to ByBit
+    transfer_row = ",".join([
+        "2025-01-15 10:00:00 UTC", "transfer", "", "Kraken", "1.0", "WBTC", "1000",
+        "ByBit", "1.0", "WBTC", "", "", "", "", "0", "", "", "", "tx_transfer", "",
+    ])
+    # Sell 1 WBTC on ByBit for 1500 EUR
+    sell_row = ",".join([
+        "2025-06-15 10:00:00 UTC", "sell", "", "ByBit", "1.0", "WBTC", "",
+        "", "", "", "", "", "", "", "1500", "", "", "", "tx_sell", "",
+    ])
+
+    th_content = "\n".join([
+        "Transaction report 2025", "", _FIFO_TH_HEADER,
+        loan_row, buy_row, transfer_row, sell_row,
+    ])
+    th_path = koinly_dir / "koinly_2025_transaction_history.csv"
+    th_path.write_text(th_content, encoding="utf-8")
+
+    resolver = TokenOriginResolver(th_path)
+    loan_affected = frozenset({"WBTC"})
+
+    entries, _ = _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+    # ByBit sell should have cost basis = 1000 EUR (from Kraken buy via transfer)
+    bybit_entries = [e for e in entries if e.platform == "ByBit"]
+    assert len(bybit_entries) == 1, f"Expected 1 ByBit entry, got {bybit_entries}"
+    bybit_entry = bybit_entries[0]
+    assert bybit_entry.cost_eur == Decimal("1000"), (
+        f"Expected cost_eur=1000 (transferred from Kraken), got {bybit_entry.cost_eur}"
+    )
+    assert bybit_entry.gain_loss_eur == Decimal("500")
+    # review_required may be set by the operator origin resolver (e.g. ByBit region flags),
+    # but must NOT be due to a failed transfer resolution.
+    if bybit_entry.review_required and bybit_entry.review_reason:
+        assert "transfer_in_deferred" not in bybit_entry.review_reason, (
+            f"Transfer should be resolved, not deferred. Got review reason: {bybit_entry.review_reason}"
+        )
+        assert "carry-over not available" not in bybit_entry.review_reason, (
+            f"Transfer carry-over should be available. Got: {bybit_entry.review_reason}"
+        )
+
+
+def test_apply_phantom_flags_only_for_unresolved_transfers(tmp_path):
+    """Phantom flags appear only for unknown-receiver transfers, not resolved ones."""
+    from tax_reporting.application.crypto_reporting import _rebuild_fifo_for_loan_affected_assets
+    from tax_reporting.application.token_origin import TokenOriginResolver
+
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    loan_row = ",".join([
+        "2025-01-01 09:00:00 UTC", "exchange", "loan", "", "", "", "",
+        "ByBit", "0.01", "WBTC", "400", "", "", "", "400", "", "", "", "tx_loan", "",
+    ])
+    buy_kraken = ",".join([
+        "2025-01-10 10:00:00 UTC", "exchange", "", "Kraken", "1000", "EUR", "1000",
+        "Kraken", "1.0", "WBTC", "1000", "", "", "", "1000", "", "src", "dst", "tx_buy_k", "",
+    ])
+    buy_bybit = ",".join([
+        "2025-01-10 10:00:00 UTC", "exchange", "", "ByBit", "2000", "EUR", "2000",
+        "ByBit", "0.5", "WBTC", "2000", "", "", "", "2000", "", "src", "dst", "tx_buy_b", "",
+    ])
+    # Resolved transfer: Kraken → ByBit (known receiver)
+    transfer_resolved = ",".join([
+        "2025-01-15 10:00:00 UTC", "transfer", "", "Kraken", "1.0", "WBTC", "1000",
+        "ByBit", "1.0", "WBTC", "", "", "", "", "0", "", "", "", "tx_transfer_ok", "",
+    ])
+    # Sell on Kraken (from phantom transfer pool → would have phantom flag)
+    # ... but since transfer was resolved (known receiver), Kraken pool is empty → placeholder
+    # Sell on ByBit (from resolved transfer)
+    sell_bybit = ",".join([
+        "2025-06-15 10:00:00 UTC", "sell", "", "ByBit", "1.5", "WBTC", "",
+        "", "", "", "", "", "", "", "2200", "", "", "", "tx_sell_b", "",
+    ])
+
+    th_content = "\n".join([
+        "Transaction report 2025", "", _FIFO_TH_HEADER,
+        loan_row, buy_kraken, buy_bybit, transfer_resolved, sell_bybit,
+    ])
+    th_path = koinly_dir / "koinly_2025_transaction_history.csv"
+    th_path.write_text(th_content, encoding="utf-8")
+
+    resolver = TokenOriginResolver(th_path)
+    loan_affected = frozenset({"WBTC"})
+
+    entries, _ = _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+    # ByBit sell: 1.5 WBTC sold, sourced from 0.5 (own buy) + 1.0 (transferred from Kraken)
+    # None of the ByBit entries should be flagged as phantom
+    bybit_entries = [e for e in entries if e.platform == "ByBit"]
+    for entry in bybit_entries:
+        if entry.review_reason:
+            assert "phantom" not in entry.review_reason.lower(), (
+                f"Resolved transfer should not produce phantom flag, got: {entry.review_reason}"
+            )

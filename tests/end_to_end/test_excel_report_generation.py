@@ -9,14 +9,14 @@ from decimal import Decimal
 
 import pytest
 
-from shares_reporting.application.extraction import parse_ib_export
-from shares_reporting.application.transformation import calculate_fifo_gains, split_by_days
-from shares_reporting.domain.collections import (
+from tax_reporting.application.extraction import parse_ib_export
+from tax_reporting.application.transformation import calculate_fifo_gains, split_by_days
+from tax_reporting.domain.collections import (
     CapitalGainLinesPerCompany,
     TradeCyclePerCompany,
 )
-from shares_reporting.domain.entities import CurrencyCompany, QuantitatedTradeAction
-from shares_reporting.domain.value_objects import (
+from tax_reporting.domain.entities import CurrencyCompany, QuantitatedTradeAction
+from tax_reporting.domain.value_objects import (
     TradeDate,
     TradeType,
     parse_company,

@@ -160,7 +160,7 @@ def make_operator_origin(**overrides: object):
 
     Note: Import is deferred to avoid circular dependency at conftest load time.
     """
-    from shares_reporting.application.crypto_reporting import OperatorOrigin
+    from tax_reporting.application.crypto_reporting import OperatorOrigin
 
     defaults = _OPERATOR_ORIGIN_DEFAULTS.copy()
     defaults.update(overrides)

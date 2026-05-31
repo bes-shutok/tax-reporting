@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from shares_reporting.application.extraction import parse_ib_export
-from shares_reporting.domain.entities import CurrencyCompany
-from shares_reporting.domain.value_objects import TradeType, parse_company, parse_currency
+from tax_reporting.application.extraction import parse_ib_export
+from tax_reporting.domain.entities import CurrencyCompany
+from tax_reporting.domain.value_objects import TradeType, parse_company, parse_currency
 
 
 @pytest.mark.unit

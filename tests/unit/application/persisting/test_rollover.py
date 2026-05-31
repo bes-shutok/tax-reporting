@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from shares_reporting.application.persisting import export_rollover_file
-from shares_reporting.domain.entities import (
+from tax_reporting.application.persisting import export_rollover_file
+from tax_reporting.domain.entities import (
     CurrencyCompany,
     QuantitatedTradeAction,
     TradeAction,
     TradeCycle,
 )
-from shares_reporting.domain.value_objects import Company, Currency
+from tax_reporting.domain.value_objects import Company, Currency
 
 
 @pytest.mark.unit
