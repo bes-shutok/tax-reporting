@@ -13,6 +13,7 @@ This file provides guidance to coding agents when working with code in this repo
 - Catch row-level parse errors per row (warn and skip). Do not let one bad row discard the whole dataset.
 - When an optional field from external input is absent, use a type-safe sentinel (e.g. `"0"` for numeric fields) rather than `""`. See `coding_guidelines.md` #4.
 - Data-loss conditions (unmatched items, dropped records) must be logged at warning level or higher, never debug. See `coding_guidelines.md` #5.
+- When a subsystem requires a complete set of N files from an external export, use all-or-nothing validation: none present → skip gracefully; partial set present → raise `FileProcessingError` listing missing files and export instructions; all present → proceed. See `development_lessons.md` #51.
 - Validation that depends on complete state must run post-aggregation, not per-row. Mid-accumulation state can be temporarily invalid (e.g. reversal arrives before dividend).
 - Unmatched items from matching algorithms must never be silently discarded — apply an explicit fallback and log a warning.
 - Partial or uncertain results must carry an explicit indicator so the user cannot mistake them for complete resolution. Review flags must include specific actionable explanations, not bare booleans.
@@ -53,6 +54,7 @@ This file provides guidance to coding agents when working with code in this repo
 - When `review_required=True` is set on `CryptoCapitalGainEntry` or `CryptoRewardIncomeEntry`, the `review_reason` field must contain a specific, actionable explanation. The Excel output shows "YES: \<reason\>" rather than a bare boolean. See PT-C-030.
 - `OperatorOrigin` carries two separate review flags: `review_required` (row-level, triggers "YES: <reason>" and red fill on the transaction row) and `platform_review_required` (platform-level, controls the Platform Assumptions tab only — does NOT color transaction rows). Never conflate them. See CRG-016.
 - The Platform Assumptions tab is a complete manifest of ALL platforms in the report. Do not filter it to only platforms with assumption text. Use `platform_review_required=True` (plus red fill, sorted first) to highlight platforms that need resolution; keep all other platforms visible for auditability.
+- Tests that verify "YES:"/"NO" rendering in Excel output must set `review_required` / `review_reason` explicitly on the fixture entry — do not delegate to `origin.review_required`. Platform mappings change independently; delegating makes the rendering test silently track the wrong behavior. See lesson #42 in development_lessons.md.
 - Crypto capital gains statistics must be computed via `CryptoCapitalGainStats.from_entries()` and rendered as the "1b. CAPITAL GAINS STATISTICS" Excel section. Do not remove or bypass this section. The grand total EUR amounts must be computed from the full entries list, not by summing per-period subtotals, so that unrecognized holding periods do not produce inconsistent statistics.
 - Token origin resolution must use `TokenOriginResolver` and implicit `(date, asset, wallet)` correlation with the Koinly transaction history. The resolver never guesses; unmatched rows return `unknown` (blank in the workbook). Do not reintroduce same-day disposal-context matching.
 - Token origin resolution supports LP (liquidity pool) operations and airdrops:
@@ -120,7 +122,7 @@ Tax reporting tool processes Interactive Brokers and Koinly exports into Portugu
   - Application: `src/tax_reporting/application/`
     - `crypto_reporting.py` — Crypto tax reporting and Koinly parsing
     - `token_origin.py` — `TokenOriginResolver` application service (domain types in `domain/token_origin.py`)
-    - `crypto_fifo/` — FIFO engine package for loan-affected assets (contexts.py, parsing.py, matching.py, cross_asset.py, transfer.py, merge.py, _graph.py)
+    - `crypto_fifo/` — FIFO engine package for loan-affected assets (contexts.py, parsing.py, _emitters.py, matching.py, cross_asset.py, transfer.py, merge.py, _graph.py)
   - Infrastructure: `src/tax_reporting/infrastructure/`
     - `koinly_parser.py` — Shared Koinly CSV parsing utilities
     - `config.py` — Configuration management (re-exports `TaxJurisdictionConfig` from domain)
@@ -144,7 +146,7 @@ Tax reporting tool processes Interactive Brokers and Koinly exports into Portugu
 - Security settings use defaults from code if missing from config file
 - Law-driven flags (e.g. `exclude_loan_repayment_gains`) are read from `docs/tax/decision_points/<fiscal_year>.toml`, not from `config.ini`. Both the `.md` and the `.toml` sidecar must be updated together when a decision point changes. `config.ini` contains only user-preference settings.
 - Decision points TOML schema: must contain `[meta]` with `fiscal_year` (integer), and `[countries.XX]` tables of boolean flags only. Example: `[countries.PT]\nexclude_loan_repayment_gains = true`. Copy `docs/tax/decision_points/2025.toml` when adding a new fiscal year. If `FISCAL_YEAR` is set to a year without a corresponding TOML file, the tool raises `ConfigurationError` at startup.
-- `ConfigurationError` is raised before pipeline execution in two cases: (a) `config.ini` has an invalid `[TAX JURISDICTION]` value, (b) the decision points TOML is missing or malformed for the configured fiscal year. It propagates from `main()` without wrapping so callers can distinguish configuration problems from data problems (`FileProcessingError`/`ReportGenerationError`).
+- `ConfigurationError` is raised before pipeline execution in two cases: (a) `config.ini` has an invalid `[TAX JURISDICTION]` value (message: "correct config.ini"), (b) the decision points TOML is missing or malformed (raises `MissingDecisionPointsError`, a `ConfigurationError` subclass, with message: "create `docs/tax/decision_points/<year>.toml`"). It propagates from `main()` without wrapping so callers can distinguish configuration problems from data problems (`FileProcessingError`/`ReportGenerationError`).
 
 ## Excel Report Features
 
@@ -164,6 +166,7 @@ The application generates professional Excel reports with:
 - Per-asset loan balance summary: received count/amount/value, repaid count/amount/value, and balance status
 - Overpaid balances (cross-year loan repayment) highlighted with light-red fill
 - Populated from Koinly loan transaction data
+- "FIFO Rebuild Scope" section below the loan data lists which assets were rebuilt from Transaction History (loan-affected assets per CIRS art. 10(20)); shows "None" when FIFO rebuild was not active. `CryptoTaxReport.fifo_rebuild_assets` carries this frozenset.
 
 ### Dividend Income Section ("CAPITAL INVESTMENT INCOME")
 - Complete dividend reporting with tax information
@@ -207,14 +210,12 @@ The system automatically integrates data from previous tax cycles:
 ## Testing Strategy
 
 ### Test Structure
-3-tier architecture: `tests/unit/` (767 tests), `tests/integration/` (29), `tests/end_to_end/` (25).
+3-tier architecture: `tests/unit/` (770 tests), `tests/integration/` (29), `tests/e2e/` (25).
 
 ### Testing Commands
 ```bash
 uv run pytest                        # All tests
 uv run pytest -m unit                # Unit tests only (fast)
-uv run pytest -m integration         # Integration tests
-uv run pytest -m e2e                 # End-to-end tests
 uv run pytest -m unit -x --tb=short  # Dev workflow: stop on first failure
 uv run pytest --cov=src --cov-report=html  # Coverage
 ```
@@ -225,15 +226,7 @@ uv run pytest --cov=src --cov-report=html  # Coverage
 
 **Import Cleanliness**: Remove unused imports (Ruff F401). Only import `Path` when instantiating or type-annotating, never for injected fixtures.
 
-**Test Value Assessment** — every test must:
-1. Test meaningful business logic that could break in production
-2. Test real edge cases from actual data/usage
-3. Not duplicate coverage from other tests
-4. Provide actionable debugging information on failure
-
-**High-Value Patterns**: Complex IB CSV formats, missing data scenarios, tax calculation logic, integration flows, error handling, real edge cases from exports.
-
-**Low-Value Patterns to Avoid**: Zero amounts, basic string parsing, simple symbol matching, trivial decimal amounts, cases caught by other tests.
+**Test Value Assessment**: test meaningful business logic, real edge cases, avoid duplicating coverage. High-value: complex IB CSV formats, tax calculations, error handling. Low-value: zero amounts, trivial parsing, cases already covered.
 
 ## Development Best Practices
 
@@ -268,66 +261,7 @@ Before considering code complete, verify: required params are truly required, er
 
 ## Data Handling Principles
 
-### Missing Data: Process with Error Indicators
-**Rule**: When data is missing but can be added manually later, process with clear error indicators.
-
-**Examples of Missing Data**:
-- Missing ISIN for a known symbol
-- Missing country information
-- Missing security details that can be manually researched
-
-**Required Actions**:
-1. **Always log an ERROR** (not just warning) with actionable guidance
-2. **Include the data in output** with clear error indicators 
-3. **Make problems visible** to users (Excel highlighting, warning messages)
-4. **Preserve financial amounts** - never lose monetary data due to missing supplementary info
-5. **Use clear identifiers** like "MISSING_ISIN_REQUIRES_ATTENTION" in output
-
-**Code Pattern**:
-```python
-# ✅ GOOD - Process missing ISIN with error indicators
-if not isin:
-    logger.error("Missing security information for symbol %s - including dividend data but requires manual review. Please add this security to your IB account or verify the symbol.", symbol)
-    isin = "MISSING_ISIN_REQUIRES_ATTENTION"
-    country = "UNKNOWN_COUNTRY"
-    # Continue processing with marked data
-```
-
-### Invalid Data: Fail Fast
-**Rule**: When data is invalid, corrupted, or incorrectly formatted, stop processing immediately with detailed error information.
-
-**Examples of Invalid Data**:
-- Invalid CSV file format or structure
-- Invalid monetary amounts (non-numeric values)
-- Invalid date formats
-- Missing required columns in CSV sections
-- Corrupted data that cannot be reasonably processed
-- Invalid row formats that break processing logic
-
-**Required Actions**:
-1. **Stop processing immediately** - do not continue with invalid data
-2. **Provide detailed error information** including row numbers and specific issues
-3. **Use proper exception chaining** to preserve stack traces
-4. **Include contextual information** (symbol, row number, expected format)
-
-**Code Pattern**:
-```python
-# ✅ GOOD - Fail fast on invalid data
-try:
-    amount = Decimal(amount_str)
-except ValueError as e:
-    raise FileProcessingError("Row %d: Invalid monetary amount '%s' for symbol %s - expected decimal number", row_number, amount_str, symbol) from e
-
-# ✅ GOOD - Fail fast on structural issues
-if len(row) < MIN_REQUIRED_COLUMNS:
-    raise FileProcessingError("Row %d: Invalid row format - expected at least %d columns, got %d: %s", row_number, MIN_REQUIRED_COLUMNS, len(row), row)
-```
-
-### Key Principles
-- **Never silently skip expected data** - either mark it clearly or fail fast
-- **Preserve financial integrity** - monetary amounts should never be lost due to processing issues
-- **Clear user communication** - errors must be visible and actionable
-- **Distinguish missing vs invalid** - missing data can be processed with warnings, invalid data requires immediate failure
+See `docs/project-guidelines.md` #5 for the full missing-vs-invalid data handling rules and code patterns.
 
 ## Error Handling Patterns
 
@@ -367,12 +301,13 @@ tax-reporting/
 │       │   ├── token_origin.py      # TokenOriginResolver application service
 │       │   ├── crypto_fifo/          # FIFO engine package (per CIRS art. 43 n.9)
 │       │   │   ├── __init__.py        # public re-exports
-│       │   │   ├── _graph.py          # shared topological_sort_with_fallback utility
+│       │   │   ├── _emitters.py       # action emitters: exchange/transfer/fee AcquisitionContext and ConsumptionContext builders
+│       │   │   ├── _graph.py          # topological_sort_with_fallback → returns (ordered, cyclic) tuple; callers log their own cycle warnings
 │       │   │   ├── contexts.py        # AcquisitionContext, ConsumptionContext, ParsedTxRow
 │       │   │   ├── cross_asset.py     # cross-asset exchange resolution
 │       │   │   ├── matching.py        # FIFO lot matching
 │       │   │   ├── merge.py           # MergedAssetFifoResult (multi-platform carry-over DTO)
-│       │   │   ├── parsing.py         # TH parsing and row classification
+│       │   │   ├── parsing.py         # TH loading, discovery, row classification dispatch (imports emitters from _emitters.py)
 │       │   │   └── transfer.py        # intra-asset transfer resolution (_order_platforms_for_transfers, _resolve_intra_asset_transfers)
 │       │   ├── transformation.py # Capital gains calculation
 │       │   └── persisting/     # Excel/CSV generation package
