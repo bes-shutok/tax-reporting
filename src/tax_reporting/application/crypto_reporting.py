@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections import Counter
@@ -20,6 +21,7 @@ from ..domain.crypto_fifo import AssetFifoResult, CryptoFifoRealization
 from ..domain.exceptions import FileProcessingError
 from ..infrastructure.config import DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD, TaxJurisdictionConfig
 from ..infrastructure.koinly_parser import (
+    contains_non_latin_characters,
     format_datetime,
     normalize_asset_ticker,
     normalize_platform_name,
@@ -448,6 +450,7 @@ class CryptoSkippedZeroValueToken:
     source_section: str
     asset: str
     count: int
+    suspicious: bool = False  # True if asset contains non-Latin characters (potential homoglyph scam token)
 
 
 @dataclass(frozen=True)
@@ -459,7 +462,19 @@ class CryptoCompletePdfSummary:
     extracted_tokens: int
 
 
-@dataclass(frozen=True)
+@dataclass
+class CryptoReviewEntry:
+    """Entry requiring manual review."""
+
+    source_section: str  # "capital_gains" or "income"
+    date: str
+    asset: str
+    platform: str
+    review_reason: str
+    is_suspicious: bool = False
+
+
+@dataclass
 class CryptoTaxReport:
     """Normalized crypto dataset ready for Excel rendering."""
 
@@ -473,6 +488,7 @@ class CryptoTaxReport:
     fifo_rebuild_assets: frozenset[str] = field(default_factory=frozenset)
     zero_basis_review_threshold: Decimal = field(default_factory=lambda: DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD)
     pdf_summary: CryptoCompletePdfSummary | None = None
+    review_entries: list[CryptoReviewEntry] = field(default_factory=list)
 
 
 # Crypto tokens that share tickers with ISO 4217 fiat currency codes.
@@ -484,6 +500,132 @@ _CRYPTO_TOKEN_FIAT_COLLISIONS: Final[frozenset[str]] = frozenset(
         "MNT",  # Mantle token (fiat MNT = Mongolian tögrög)
     )
 )
+
+# Popular/known crypto tokens that should not have zero value in rewards.
+# If a reward for one of these tokens has zero value, it's likely a Koinly data error
+# (missing price data, export issue) and should be flagged for review instead of skipped.
+# Loaded from docs/tax/popular_crypto_tokens.json to allow maintenance without code changes.
+_POPULAR_CRYPTO_TOKENS_FILE = Path(__file__).parent.parent.parent / "docs" / "tax" / "popular_crypto_tokens.json"
+
+
+@lru_cache(maxsize=1)
+def _load_popular_crypto_tokens() -> frozenset[str]:
+    """Load popular crypto tokens from the external JSON file.
+
+    Returns:
+        Frozenset of popular crypto asset tickers. Returns empty frozenset if file
+        is not found (logs warning and degrades gracefully).
+
+    The file is cached after first load.
+
+    Raises:
+        FileProcessingError: If file is a symlink, exceeds size limit, or has invalid structure.
+    """
+    tokens: set[str] = set()
+    logger = logging.getLogger(__name__)
+
+    # Security check: reject symlinks
+    if _POPULAR_CRYPTO_TOKENS_FILE.is_symlink():
+        raise FileProcessingError(
+            f"Popular crypto tokens file at {_POPULAR_CRYPTO_TOKENS_FILE} is a symlink — "
+            "only regular files are accepted for security"
+        )
+
+    if not _POPULAR_CRYPTO_TOKENS_FILE.exists():
+        logger.warning(
+            "Popular crypto tokens file not found at %s. Zero-value rewards for known assets "
+            "may not be flagged for review. Using empty token set.",
+            _POPULAR_CRYPTO_TOKENS_FILE,
+        )
+        return frozenset()
+
+    # Security check: file size validation (max 1MB for token list JSON)
+    max_token_file_size = 1 * 1024 * 1024  # 1MB
+    try:
+        file_size = _POPULAR_CRYPTO_TOKENS_FILE.stat().st_size
+        if file_size > max_token_file_size:
+            raise FileProcessingError(
+                f"Popular crypto tokens file exceeds size limit ({file_size} bytes, "
+                f"max {max_token_file_size} bytes): {_POPULAR_CRYPTO_TOKENS_FILE}"
+            )
+    except OSError as e:
+        logger.warning(
+            "Could not stat popular crypto tokens file %s: %s. Using empty token set.",
+            _POPULAR_CRYPTO_TOKENS_FILE,
+            e,
+        )
+        return frozenset()
+
+    try:
+        with open(_POPULAR_CRYPTO_TOKENS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+
+        # Validate JSON structure
+        if not isinstance(data, dict):
+            raise FileProcessingError(
+                f"Popular crypto tokens file must contain a JSON object, got {type(data).__name__}: "
+                f"{_POPULAR_CRYPTO_TOKENS_FILE}"
+            )
+
+        if "tokens" not in data:
+            raise FileProcessingError(
+                f"Popular crypto tokens file must contain a 'tokens' key: {_POPULAR_CRYPTO_TOKENS_FILE}"
+            )
+
+        tokens_obj = data["tokens"]
+        if not isinstance(tokens_obj, dict):
+            raise FileProcessingError(
+                f"Popular crypto tokens 'tokens' value must be an object, got {type(tokens_obj).__name__}: "
+                f"{_POPULAR_CRYPTO_TOKENS_FILE}"
+            )
+
+        for category_tokens in tokens_obj.values():
+            if isinstance(category_tokens, list):
+                tokens.update(category_tokens)
+
+        logger.debug("Loaded %d popular crypto tokens from %s", len(tokens), _POPULAR_CRYPTO_TOKENS_FILE)
+        return frozenset(tokens)
+    except (json.JSONDecodeError, OSError, AttributeError) as e:
+        logger.warning(
+            "Failed to load popular crypto tokens from %s: %s. Using empty token set. "
+            "Zero-value rewards for known assets may not be flagged for review.",
+            _POPULAR_CRYPTO_TOKENS_FILE,
+            e,
+        )
+        return frozenset()
+
+
+# Cached accessor for popular tokens
+def _get_popular_crypto_tokens() -> frozenset[str]:
+    """Get the cached popular crypto tokens frozenset."""
+    return _load_popular_crypto_tokens()
+
+
+def _contains_popular_token(asset: str) -> bool:
+    """Check if an asset ticker contains a popular crypto token as a substring.
+
+    This catches Koinly-specific naming variants like:
+    - TSTON (contains "TON")
+    - TSUSDE (contains "USDE")
+    - STAKED_* (if wrapped around a popular token)
+
+    Tradeoff: Substring matching may cause false positives for tickers that
+    coincidentally contain popular token names as substrings (e.g., "MATICAL"
+    matches "MATIC", "SOLANA" matches "SOL"). This is acceptable because the
+    consequence is merely flagging for review rather than incorrectly skipping
+    a legitimate zero-value reward.
+
+    Args:
+        asset: The asset ticker to check.
+
+    Returns:
+        True if the asset contains any popular token as a substring (case-insensitive).
+    """
+    asset_upper = asset.upper()
+    for token in _get_popular_crypto_tokens():
+        if token in asset_upper:
+            return True
+    return False
 
 
 def _parse_transaction_date(transaction_date: str | None) -> str | None:
@@ -551,41 +693,23 @@ def _is_temporally_valid(service_start_date: str | None, valid_until: str | None
         date, not service availability).
     """
     # Parse transaction date once for comparison
-    tx_date = _parse_iso_date(transaction_date)
+    # Date is already validated by _parse_transaction_date, so fromisoformat is safe
+    tx_date = datetime.fromisoformat(transaction_date).date()
 
     # If service_start_date is specified (and not empty), check if transaction is on or after it
     if service_start_date:
-        from_date = _parse_iso_date(service_start_date)
+        from_date = datetime.fromisoformat(service_start_date).date()
         if tx_date < from_date:
             return False
 
     # If valid_until is specified (and not empty), check if transaction is on or before it
     if valid_until:
-        until_date = _parse_iso_date(valid_until)
+        until_date = datetime.fromisoformat(valid_until).date()
         if tx_date > until_date:
             return False
 
     # No constraints violated, or no constraints at all
     return True
-
-
-def _parse_iso_date(date_str: str) -> date:
-    """Parse ISO date string (YYYY-MM-DD) to date object.
-
-    Args:
-        date_str: ISO date string (must be pre-validated).
-
-    Returns:
-        Date object.
-
-    Raises:
-        ValueError: If date_str is not in valid ISO format.
-    """
-    parts = date_str.split("-")
-    if len(parts) != _ISO_DATE_PARTS:  # noqa: PLR2004
-        raise ValueError(f"Invalid ISO date format: '{date_str}'. Expected YYYY-MM-DD.")
-    year, month, day = map(int, parts)
-    return date(year, month, day)
 
 
 @lru_cache(maxsize=1)
@@ -738,6 +862,14 @@ def aggregate_taxable_rewards(
     # This ensures the IRS-ready filing table never contains entries with missing mandatory fields.
     for entry in taxable_entries:
         source_country = entry.operator_origin.operator_country
+        # Check for UNKNOWN country first (platform not mapped)
+        if source_country == "UNKNOWN":
+            raise FileProcessingError(
+                f"Immediately taxable reward from wallet '{entry.wallet}' (asset: {entry.asset}, "
+                f"value: {entry.value_eur} EUR) has an unresolved platform/operator. "
+                f"The platform '{entry.platform}' is not mapped in resolve_operator_origin(). "
+                f"Please add a platform mapping with operator_country to resolve this entry."
+            )
         if not _is_valid_tabela_x_country(source_country):
             raise FileProcessingError(
                 f"Immediately taxable reward from wallet '{entry.wallet}' (asset: {entry.asset}, "
@@ -1682,6 +1814,10 @@ def _rebuild_fifo_for_loan_affected_assets(
         if combined_review_required and not combined_review_reason:
             combined_review_reason = "Review required (reason not propagated from FIFO or origin resolver)"
 
+        combined_review_required, combined_review_reason = _build_zero_basis_review_reason(
+            r.cost_eur, r.proceeds_eur, combined_review_required, combined_review_reason or ""
+        )
+
         fifo_entries.append(
             CryptoCapitalGainEntry(
                 disposal_date=r.disposal_date,
@@ -1705,6 +1841,37 @@ def _rebuild_fifo_for_loan_affected_assets(
         )
 
     return fifo_entries, th_assets
+
+
+def _build_zero_basis_review_reason(
+    cost_eur: Decimal,
+    proceeds_eur: Decimal,
+    review_required: bool,
+    review_reason: str,
+) -> tuple[bool, str]:
+    """Build review reason for zero-cost or zero-proceeds entries.
+
+    Args:
+        cost_eur: Acquisition cost in EUR.
+        proceeds_eur: Disposal proceeds in EUR.
+        review_required: Current review_required flag value.
+        review_reason: Current review_reason text.
+
+    Returns:
+        Tuple of (updated_review_required, updated_review_reason) with zero-basis
+        flags added if applicable.
+    """
+    if cost_eur == ZERO:
+        review_required = True
+        zero_cost_reason = "Zero acquisition cost - verify basis (airdrop, data error, or misclassification)"
+        review_reason = f"{review_reason}; {zero_cost_reason}" if review_reason else zero_cost_reason
+
+    if proceeds_eur == ZERO:
+        review_required = True
+        zero_proceeds_reason = "Zero disposal proceeds - verify sale data (transfer error, data quality issue)"
+        review_reason = f"{review_reason}; {zero_proceeds_reason}" if review_reason else zero_proceeds_reason
+
+    return review_required, review_reason
 
 
 def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
@@ -1753,9 +1920,14 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
         )
 
     year = _extract_tax_year(koinly_dir, capital_file, income_file, jurisdiction=jurisdiction)
-    skipped_assets: Counter[tuple[str, str]] = Counter()
+    skipped_assets: dict[tuple[str, str], dict] = {}
+    review_entries: list[CryptoReviewEntry] = []
 
     origin_resolver = TokenOriginResolver(transaction_history_file)
+
+    # Collect known asset tickers from both files BEFORE parsing
+    # This allows zero-value entries for known tokens to be flagged for review
+    known_assets = _collect_known_asset_tickers(capital_file, income_file)
 
     # FIFO rebuild for loan-affected assets when PT gate is active
     _fifo_logger = logging.getLogger(__name__)
@@ -1776,8 +1948,14 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
 
     if capital_file:
         capital_entries, raw_loan_fallback = _parse_capital_gains_file(
-            capital_file, skipped_assets, origin_resolver,
-            loan_affected_assets=loan_affected_assets,
+            capital_file,
+            CapitalGainsParsingContext(
+                skipped_assets=skipped_assets,
+                origin_resolver=origin_resolver,
+                review_entries=review_entries,
+                known_assets=known_assets,
+                loan_affected_assets=loan_affected_assets,
+            ),
         )
     else:
         capital_entries = []
@@ -1809,7 +1987,7 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
             )
             capital_entries.extend(raw_loan_fallback)
 
-    reward_entries = _parse_income_file(income_file, skipped_assets) if income_file else []
+    reward_entries = _parse_income_file(income_file, skipped_assets, known_assets) if income_file else []
 
     capital_entries = _validate_capital_entries_have_valid_countries(capital_entries)
     capital_entries = _aggregate_capital_entries(capital_entries)
@@ -1872,8 +2050,13 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
     )
 
     skipped_zero_value_tokens = [
-        CryptoSkippedZeroValueToken(source_section=section, asset=asset, count=count)
-        for (section, asset), count in sorted(skipped_assets.items())
+        CryptoSkippedZeroValueToken(
+            source_section=section,
+            asset=asset,
+            count=data["count"],
+            suspicious=data["suspicious"],
+        )
+        for (section, asset), data in sorted(skipped_assets.items())
     ]
 
     complete_tax_report_file = _find_report_path(koinly_dir, "complete_tax_report", ".pdf")
@@ -1900,6 +2083,7 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
         skipped_zero_value_tokens=skipped_zero_value_tokens,
         loan_activity=loan_activity,
         fifo_rebuild_assets=loan_affected_assets,
+        review_entries=review_entries,
         zero_basis_review_threshold=(
             jurisdiction.zero_basis_review_threshold
             if jurisdiction
@@ -2208,11 +2392,31 @@ def _extract_loan_activity(transaction_history_path: Path | None) -> list[LoanAc
     return entries
 
 
+@dataclass(frozen=True)
+class CapitalGainsParsingContext:
+    """Shared context for capital gains file parsing.
+
+    Groups together the parsing state and dependencies needed by
+    _parse_capital_gains_file to improve readability and testability.
+
+    Attributes:
+        skipped_assets: Counter for tracking skipped assets by section and ticker.
+        origin_resolver: Token origin resolver for acquisition origin annotation.
+        review_entries: List to collect review-required entries for the Excel sheet.
+        known_assets: Set of asset tickers seen in non-zero rows across all files.
+        loan_affected_assets: Set of asset tickers affected by loans (for FIFO rebuild).
+    """
+
+    skipped_assets: dict[tuple[str, str], dict]
+    origin_resolver: TokenOriginResolver
+    review_entries: list[CryptoReviewEntry]
+    known_assets: frozenset[str] | None = None
+    loan_affected_assets: frozenset[str] = frozenset()
+
+
 def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
     path: Path,
-    skipped_assets: Counter[tuple[str, str]],
-    origin_resolver: TokenOriginResolver,
-    loan_affected_assets: frozenset[str] = frozenset(),
+    context: CapitalGainsParsingContext,
 ) -> tuple[list[CryptoCapitalGainEntry], list[CryptoCapitalGainEntry]]:
     """Parse the Koinly capital gains report CSV.
 
@@ -2220,6 +2424,13 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
     rows for loan-affected assets; raw_loan_fallback contains those rows fully parsed
     with review_required=True. The caller should use raw_loan_fallback only when the
     FIFO rebuild fails, as a degraded-mode substitute for the FIFO-derived entries.
+
+    Args:
+        path: Path to the Koinly capital gains report CSV file.
+        context: Parsing context with shared state and dependencies.
+
+    Returns:
+        Tuple of (normal_entries, raw_loan_fallback).
     """
     rows = read_koinly_rows(path)
     capital_entries: list[CryptoCapitalGainEntry] = []
@@ -2231,7 +2442,7 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
 
     for row_number, row in enumerate(rows, start=1):
         asset = normalize_asset_ticker(row.get("Asset", ""))
-        is_loan_affected = asset in loan_affected_assets
+        is_loan_affected = asset in context.loan_affected_assets
         if is_loan_affected:
             skipped_loan_affected[asset] += 1
         try:
@@ -2246,12 +2457,45 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
             skipped_parse_errors += 1
             continue
 
-        if cost_eur == ZERO and proceeds_eur == ZERO and gain_loss_eur == ZERO:
-            _register_skipped_zero_asset(skipped_assets, "capital_gains", asset)
-            continue
+        # Check for all-zero values (no taxable event)
+        # For popular tokens, flag for review instead of skipping - likely Koinly data issue
+        is_all_zero = cost_eur == ZERO and proceeds_eur == ZERO and gain_loss_eur == ZERO
+        is_suspicious = contains_non_latin_characters(asset)
+        is_known_token = asset in _get_popular_crypto_tokens() or _contains_popular_token(asset)
 
+        review_required: bool = False
+        review_reason: str = ""
         wallet = row.get("Wallet Name", "").strip()
         platform = normalize_platform_name(wallet)
+
+        if is_all_zero:
+            if is_known_token or (context.known_assets and asset in context.known_assets):
+                review_reason = "Zero EUR value for known crypto asset - likely Koinly tracking entry or data error"
+                if is_suspicious:
+                    review_reason = f"{review_reason}; Asset ticker contains non-Latin characters - potential homoglyph scam token"
+
+                context.review_entries.append(
+                    CryptoReviewEntry(
+                        source_section="capital_gains",
+                        date=disposal_date,
+                        asset=asset,
+                        platform=platform,
+                        review_reason=review_reason,
+                        is_suspicious=is_suspicious,
+                    )
+                )
+                logger.warning(
+                    "Capital gains row %d for %r has all-zero values. Added to review list - "
+                    "this may be a Koinly tracking entry or data error.",
+                    row_number,
+                    asset,
+                )
+                # Continue to create entry with review_required=True below for traceability
+                review_required = True
+            else:
+                # Unknown token with all-zero values - skip entirely
+                _register_skipped_zero_asset(context.skipped_assets, "capital_gains", asset, is_suspicious)
+                continue
         operator_origin = resolve_operator_origin(
             platform,
             transaction_type="crypto_disposal",
@@ -2259,16 +2503,27 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
         )
         notes = row.get("Notes", "").strip()
         missing_cost_with_impact = "missing cost basis" in notes.lower()
-        review_required = operator_origin.review_required or missing_cost_with_impact
+        review_required = review_required or operator_origin.review_required or missing_cost_with_impact
 
-        review_reason = operator_origin.review_reason
+        review_reason = review_reason or operator_origin.review_reason
         if missing_cost_with_impact:
             cost_basis_reason = "Missing cost basis with tax impact - verify cost calculation"
             review_reason = f"{review_reason}; {cost_basis_reason}" if review_reason else cost_basis_reason
+
+        review_required, review_reason = _build_zero_basis_review_reason(
+            cost_eur, proceeds_eur, review_required, review_reason
+        )
+
+        # Flag assets with non-Latin characters as potential scam tokens (homoglyph detection)
+        if contains_non_latin_characters(asset):
+            review_required = True
+            scam_reason = f"Asset ticker '{asset}' contains non-Latin characters - potential homoglyph scam token"
+            review_reason = f"{review_reason}; {scam_reason}" if review_reason else scam_reason
+
         holding_period = row.get("Holding period", "").strip() or "Unknown"
         annex_hint = "G1" if holding_period.lower().startswith("long") else "J"
 
-        origin = origin_resolver.resolve(acquisition_date, asset, wallet, notes)
+        origin = context.origin_resolver.resolve(acquisition_date, asset, wallet, notes)
         token_origin_str = str(origin)
 
         entry = CryptoCapitalGainEntry(
@@ -2322,7 +2577,88 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
     return capital_entries, raw_loan_fallback
 
 
-def _parse_income_file(path: Path, skipped_assets: Counter[tuple[str, str]]) -> list[CryptoRewardIncomeEntry]:
+def _collect_known_asset_tickers(
+    capital_file: Path | None, income_file: Path | None
+) -> frozenset[str]:
+    """Scan Koinly files to collect all asset tickers from non-zero rows.
+
+    Used to identify legitimate crypto assets that have zero-value rewards (likely Koinly data errors).
+    Zero-value rewards for known assets are flagged for review instead of being skipped.
+
+    Args:
+        capital_file: Koinly capital gains CSV file path.
+        income_file: Koinly income CSV file path.
+
+    Returns:
+        Frozenset of asset tickers that appear in non-zero rows across both files.
+
+    Raises:
+        FileProcessingError: If all provided files fail to parse, preventing silent degradation
+            where zero-value rewards for legitimate assets would be incorrectly skipped.
+    """
+    known_assets: set[str] = set()
+    files_to_scan = [f for f in [capital_file, income_file] if f is not None and f.exists()]
+    scan_failures: list[tuple[Path, Exception]] = []
+
+    for file_path in files_to_scan:
+        try:
+            rows = read_koinly_rows(file_path)
+            for row in rows:
+                asset = normalize_asset_ticker(row.get("Asset", ""))
+                if not asset:
+                    continue
+
+                # Check if this row has non-zero value (proceeds for gains, value for income)
+                if "Proceeds (EUR)" in row:
+                    try:
+                        proceeds = parse_koinly_decimal(row.get("Proceeds (EUR)", ""))
+                        if proceeds > ZERO:
+                            known_assets.add(asset)
+                    except ValueError:
+                        pass  # Skip unparseable rows
+                elif "Value (EUR)" in row:
+                    try:
+                        value = parse_koinly_decimal(row.get("Value (EUR)", ""))
+                        if value > ZERO:
+                            known_assets.add(asset)
+                    except ValueError:
+                        pass  # Skip unparseable rows
+        except Exception as e:
+            scan_failures.append((file_path, e))
+
+    # Fail fast if all provided files failed - silent degradation would skip legitimate zero-value rewards
+    if files_to_scan and scan_failures and len(scan_failures) == len(files_to_scan):
+        _scan_logger = logging.getLogger(__name__)
+        file_list = ", ".join(str(f) for f, _ in scan_failures)
+        errors = "; ".join(str(e) for _, e in scan_failures)
+        _scan_logger.error(
+            "All Koinly files failed to scan for known assets: %s. Errors: %s",
+            file_list,
+            errors,
+        )
+        raise FileProcessingError(
+            f"Failed to scan all Koinly files for known assets: {file_list}. "
+            f"Errors: {errors}. Zero-value rewards for legitimate assets may be incorrectly skipped. "
+            "Check file format and content."
+        )
+
+    if scan_failures:
+        _scan_logger = logging.getLogger(__name__)
+        for file_path, error in scan_failures:
+            _scan_logger.warning(
+                "Failed to scan known assets from %s: %s. Continuing with partial results.",
+                file_path,
+                error,
+            )
+
+    return frozenset(known_assets)
+
+
+def _parse_income_file(
+    path: Path,
+    skipped_assets: Counter[tuple[str, str]],
+    known_assets: frozenset[str] | None = None,
+) -> list[CryptoRewardIncomeEntry]:
     rows = read_koinly_rows(path)
     reward_entries: list[CryptoRewardIncomeEntry] = []
     logger = logging.getLogger(__name__)
@@ -2337,13 +2673,25 @@ def _parse_income_file(path: Path, skipped_assets: Counter[tuple[str, str]]) -> 
             logger.warning("Skipping income row %d for %r: ambiguous decimal value: %s", row_number, asset, exc)
             continue
 
-        if value_eur == ZERO:
-            _register_skipped_zero_asset(skipped_assets, "income", asset)
-            continue
-
         wallet = row.get("Wallet Name", "").strip()
         platform = normalize_platform_name(wallet)
         description = row.get("Description", "").strip()
+
+        # Check for zero-value rewards
+        if value_eur == ZERO:
+            # Check if this is a known legitimate crypto asset with zero value (likely Koinly data error)
+            # Uses both exact match and substring matching to catch variants like TSTON, TSUSDE
+            is_known = (
+                asset in _get_popular_crypto_tokens()
+                or _contains_popular_token(asset)
+                or (known_assets and asset in known_assets)
+            )
+            if is_known:
+                # Flag for review instead of skipping — known assets shouldn't have zero value
+                pass  # Continue to processing below with review flag set
+            else:
+                _register_skipped_zero_asset(skipped_assets, "income", asset, contains_non_latin_characters(asset))
+                continue
 
         # Classify reward tax status based on asset type (CRG-001, CRG-002)
         # Must be done BEFORE operator origin resolution for platforms that split by fiat/crypto (e.g., Wirex)
@@ -2381,6 +2729,24 @@ def _parse_income_file(path: Path, skipped_assets: Counter[tuple[str, str]]) -> 
                 review_required = True  # Flag for manual review since tax data was lost
                 tax_parse_reason = "Foreign tax field could not be parsed - verify tax credit manually"
                 review_reason = f"{review_reason}; {tax_parse_reason}" if review_reason else tax_parse_reason
+
+        # Flag assets with non-Latin characters as potential scam tokens (homoglyph detection)
+        if contains_non_latin_characters(asset):
+            review_required = True
+            scam_reason = f"Asset ticker '{asset}' contains non-Latin characters - potential homoglyph scam token"
+            review_reason = f"{review_reason}; {scam_reason}" if review_reason else scam_reason
+
+        # Flag zero-value rewards for known legitimate assets (likely Koinly data error)
+        if value_eur == ZERO:
+            is_known = (
+                asset in _get_popular_crypto_tokens()
+                or _contains_popular_token(asset)
+                or (known_assets and asset in known_assets)
+            )
+            if is_known:
+                review_required = True
+                zero_value_reason = "Zero EUR value for known crypto asset - likely Koinly data error or missing price data"
+                review_reason = f"{review_reason}; {zero_value_reason}" if review_reason else zero_value_reason
 
         reward_entries.append(
             CryptoRewardIncomeEntry(
@@ -2427,7 +2793,7 @@ def _parse_holdings_file(
             logger.warning("Skipping holdings row for %r: ambiguous decimal value: %s", asset, exc)
             continue
         if value_eur == ZERO:
-            _register_skipped_zero_asset(skipped_assets, source_section, asset)
+            _register_skipped_zero_asset(skipped_assets, source_section, asset, contains_non_latin_characters(asset))
             continue
         asset_rows += 1
         total_cost_eur += cost_eur
@@ -2506,9 +2872,25 @@ def _decode_pdf_hex_token(token: bytes) -> str:
     return text if text else ""
 
 
-def _register_skipped_zero_asset(skipped_assets: Counter[tuple[str, str]], section: str, asset: str) -> None:
+def _register_skipped_zero_asset(
+    skipped_assets: dict[tuple[str, str], dict], section: str, asset: str, suspicious: bool = False
+) -> None:
+    """Register a skipped zero-value asset.
+
+    Args:
+        skipped_assets: Dict tracking (section, asset) -> {"count": int, "suspicious": bool}
+        section: Source section (capital_gains, income, holdings_opening, etc.)
+        asset: Asset ticker
+        suspicious: True if asset contains non-Latin characters (potential scam token)
+    """
     cleaned_asset = asset or "UNKNOWN_ASSET"
-    skipped_assets[(section, cleaned_asset)] += 1
+    key = (section, cleaned_asset)
+    if key not in skipped_assets:
+        skipped_assets[key] = {"count": 0, "suspicious": suspicious}
+    skipped_assets[key]["count"] += 1
+    # If any instance of this asset is suspicious, mark the whole entry as suspicious
+    if suspicious:
+        skipped_assets[key]["suspicious"] = True
 
 
 # Chain names from docs/tax/crypto-origin/operator_chain_origin_registry.md

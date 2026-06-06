@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -10,22 +11,86 @@ import openpyxl
 if TYPE_CHECKING:
     from os import PathLike
 
-    from ..crypto_reporting import CryptoTaxReport
+    from ..crypto_reporting import AggregatedRewardIncomeEntry, CryptoTaxReport
 
 from ...domain.collections import (
     CapitalGainLinesPerCompany,
     DividendIncomePerCompany,
 )
-from ...domain.exceptions import ConfigurationError, ReportGenerationError
+from ...domain.exceptions import ConfigurationError, FileProcessingError, ReportGenerationError
 from ...infrastructure.config import Config, load_configuration_from_file
 from ...infrastructure.logging_config import create_module_logger
 from ..crypto_reporting import aggregate_taxable_rewards
 from .assumptions_sheet import write_platform_assumptions_sheet
 from .crypto_gains_sheet import write_crypto_gains_sheet
 from .crypto_reconciliation_sheet import write_crypto_reconciliation_sheet
-from .crypto_rewards_sheet import write_crypto_rewards_sheet
+from .crypto_supplementary_sheet import write_crypto_supplementary_sheet
 from .ib_sheet import write_ib_reporting_sheet
 from .loan_activity_sheet import write_loan_activity_sheet
+
+
+@contextmanager
+def _workbook_lifecycle():
+    """Context manager for workbook lifecycle with guaranteed cleanup.
+
+    Yields a (workbook, worksheet, close_callback) tuple where:
+    - workbook: The openpyxl Workbook object
+    - worksheet: The active worksheet (titled "Reporting")
+    - close_callback: Function to call when workbook should be closed (handles errors)
+
+    The workbook is automatically closed on exit via the close_callback if not already closed.
+    This ensures cleanup even if an exception propagates through context manager boundaries.
+
+    Example:
+        with _workbook_lifecycle() as (workbook, worksheet, close):
+            # ... use workbook ...
+            close()  # Explicit close before success path
+        # Workbook already closed if close() was called, or closed automatically on exit
+    """
+    logger = create_module_logger(__name__)
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    if worksheet is None:
+        raise ReportGenerationError("Failed to create worksheet in workbook")
+    worksheet.title = "Reporting"
+
+    closed = False
+
+    def close_on_success() -> None:
+        """Close the workbook on the success path.
+
+        This should be called explicitly after workbook.save() succeeds.
+        Idempotent - safe to call multiple times.
+        """
+        nonlocal closed
+        if not closed:
+            workbook.close()
+            closed = True
+
+    def close_on_failure() -> None:
+        """Close the workbook on the failure path.
+
+        Logs errors during close but does not raise - the original exception
+        should propagate.
+
+        Idempotent - safe to call multiple times.
+        """
+        nonlocal closed
+        if not closed:
+            try:
+                workbook.close()
+            except Exception as close_error:
+                logger.error("Error closing workbook after failure: %s", close_error)
+            closed = True
+
+    try:
+        yield workbook, worksheet, close_on_success
+    except Exception:
+        close_on_failure()
+        raise
+    finally:
+        close_on_success()
+
 
 
 def generate_tax_report(  # noqa: PLR0912, PLR0915
@@ -61,12 +126,7 @@ def generate_tax_report(  # noqa: PLR0912, PLR0915
         len(capital_gain_lines_per_company),
     )
 
-    workbook = openpyxl.Workbook()
-    worksheet = workbook.active
-    if worksheet is None:
-        raise ReportGenerationError("Failed to create worksheet in workbook")
-    worksheet.title = "Reporting"
-
+    # Load configuration before workbook lifecycle - config errors should fail fast
     try:
         config: Config = load_configuration_from_file()
     except ConfigurationError:
@@ -74,69 +134,73 @@ def generate_tax_report(  # noqa: PLR0912, PLR0915
     except Exception as e:
         raise ReportGenerationError(f"Failed to read configuration for currency exchange: {e}") from e
 
-    write_ib_reporting_sheet(worksheet, config, capital_gain_lines_per_company, dividend_income_per_company)
-
+    aggregated_rewards: list[AggregatedRewardIncomeEntry] | None = None
     crypto_sheet_created = False
-    workbook_closed = False
-    if crypto_tax_report:
-        logger.info(
-            "Adding Crypto worksheets with %s capital and %s reward rows",
-            len(crypto_tax_report.capital_entries),
-            len(crypto_tax_report.reward_entries),
-        )
-        try:
-            aggregated_rewards = aggregate_taxable_rewards(crypto_tax_report.reward_entries)
-            write_crypto_gains_sheet(workbook, crypto_tax_report)
-            write_crypto_rewards_sheet(workbook, crypto_tax_report, aggregated_rewards)
-            write_crypto_reconciliation_sheet(workbook, crypto_tax_report)
-            write_loan_activity_sheet(workbook, crypto_tax_report)
-            write_platform_assumptions_sheet(
-                workbook,
-                capital_entries=crypto_tax_report.capital_entries,
-                reward_entries=crypto_tax_report.reward_entries,
+
+    with _workbook_lifecycle() as (workbook, worksheet, close_workbook):
+        if crypto_tax_report:
+            logger.info(
+                "Adding Crypto worksheets with %s capital and %s reward rows",
+                len(crypto_tax_report.capital_entries),
+                len(crypto_tax_report.reward_entries),
             )
-            crypto_sheet_created = True
+            aggregated_rewards = aggregate_taxable_rewards(crypto_tax_report.reward_entries)
+
+        write_ib_reporting_sheet(
+            worksheet,
+            config,
+            capital_gain_lines_per_company,
+            dividend_income_per_company,
+            other_capital_income_entries=aggregated_rewards,
+        )
+
+        if crypto_tax_report:
+            try:
+                write_crypto_gains_sheet(workbook, crypto_tax_report)
+                write_crypto_supplementary_sheet(workbook, crypto_tax_report)
+                write_crypto_reconciliation_sheet(workbook, crypto_tax_report)
+                write_loan_activity_sheet(workbook, crypto_tax_report)
+                write_platform_assumptions_sheet(
+                    workbook,
+                    capital_entries=crypto_tax_report.capital_entries,
+                    reward_entries=crypto_tax_report.reward_entries,
+                )
+                crypto_sheet_created = True
+            except Exception as e:
+                logger.error("Failed to generate crypto sheets: %s", e)
+                for name in (
+                    "Crypto Gains",
+                    "Crypto Supplementary",
+                    "Crypto Reconciliation",
+                    "Loan Activity",
+                    "Platform Assumptions",
+                ):
+                    if name in workbook.sheetnames:
+                        workbook.remove(workbook[name])
+                raise
+
+        temp_path: Path | None = None
+        try:
+            # Write to temporary file first, then atomic replace overwrites target
+            extract_path = Path(extract)
+            temp_path = extract_path.with_suffix(extract_path.suffix + ".tmp")
+            workbook.save(temp_path)
+
+            # Atomic replace: on POSIX this overwrites atomically without explicit removal
+            temp_path.replace(extract)
+
+            report_type = "capital gains and dividend income" if dividend_income_per_company else "capital gains"
+            logger.info("Successfully generated %s report with %s capital gain lines", report_type, total_gain_lines)
         except Exception as e:
-            logger.error("Failed to generate crypto sheets: %s", e)
-            for name in (
-                "Crypto Gains",
-                "Crypto Rewards",
-                "Crypto Reconciliation",
-                "Loan Activity",
-                "Platform Assumptions",
-            ):
-                if name in workbook.sheetnames:
-                    workbook.remove(workbook[name])
-            try:
-                workbook.close()
-            except Exception as close_error:
-                logger.error("Error closing workbook after crypto sheet failure: %s", close_error)
-            finally:
-                workbook_closed = True
-            raise
+            # Clean up temp file on failure
+            if temp_path is not None and temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except Exception:
+                    logger.warning("Failed to clean up temporary file: %s", temp_path)
+            raise ReportGenerationError(f"Failed to save Excel report: {e}") from e
 
-    temp_path: Path | None = None
-    try:
-        # Write to temporary file first, then atomic replace overwrites target
-        extract_path = Path(extract)
-        temp_path = extract_path.with_suffix(extract_path.suffix + ".tmp")
-        workbook.save(temp_path)
-
-        # Atomic replace: on POSIX this overwrites atomically without explicit removal
-        temp_path.replace(extract)
-
-        report_type = "capital gains and dividend income" if dividend_income_per_company else "capital gains"
-        logger.info("Successfully generated %s report with %s capital gain lines", report_type, total_gain_lines)
-    except Exception as e:
-        # Clean up temp file on failure
-        if temp_path is not None and temp_path.exists():
-            try:
-                temp_path.unlink()
-            except Exception:
-                logger.warning("Failed to clean up temporary file: %s", temp_path)
-        raise ReportGenerationError(f"Failed to save Excel report: {e}") from e
-    finally:
-        if not workbook_closed:
-            workbook.close()
+        # Explicitly close workbook on success path after save completes
+        close_workbook()
 
     return crypto_sheet_created

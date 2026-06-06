@@ -6,7 +6,72 @@ from pathlib import Path
 
 import openpyxl
 
-from tax_reporting.application.persisting.excel_utils import auto_column_width, safe_remove_file
+from tax_reporting.application.persisting.excel_utils import auto_column_width, safe_cell_value, safe_remove_file
+
+
+class TestSafeCellValue:
+    """Test safe_cell_value neutralizes formula prefixes and strips control characters."""
+
+    def test_formula_prefixes_neutralized(self) -> None:
+        """All formula prefixes (=, +, -, @) are neutralized by prepending a space."""
+        assert safe_cell_value("=test") == " =test"
+        assert safe_cell_value("+test") == " +test"
+        assert safe_cell_value("-test") == " -test"
+        assert safe_cell_value("@test") == " @test"
+
+    def test_multi_char_prefix_neutralized(self) -> None:
+        """Multi-character prefixes like '==' are neutralized (first char checked)."""
+        assert safe_cell_value("==test") == " ==test"
+        assert safe_cell_value("++test") == " ++test"
+        assert safe_cell_value("--test") == " --test"
+
+    def test_control_chars_stripped(self) -> None:
+        """Control characters (except space and tab) are stripped."""
+        assert safe_cell_value("=test\nvalue") == " =testvalue"
+        assert safe_cell_value("=test\rvalue") == " =testvalue"
+        assert safe_cell_value("=test\r\nvalue") == " =testvalue"
+        assert safe_cell_value("test\0value") == "testvalue"
+
+    def test_only_tab_preserved(self) -> None:
+        """Tab character is preserved when it's the only character."""
+        assert safe_cell_value("\t") == "\t"
+
+    def test_tabs_preserved_with_other_content(self) -> None:
+        """Tab characters are preserved when mixed with other content."""
+        assert safe_cell_value("test\tvalue") == "test\tvalue"
+        assert safe_cell_value("=\ttest") == " =\ttest"
+
+    def test_empty_string_no_crash(self) -> None:
+        """Empty string returns empty string without crashing."""
+        assert safe_cell_value("") == ""
+
+    def test_whitespace_only_preserved(self) -> None:
+        """Whitespace-only string is preserved (spaces are ASCII >= ' ')."""
+        assert safe_cell_value("   ") == "   "
+        assert safe_cell_value("\n\r") == ""
+
+    def test_formula_prefix_only_neutralized(self) -> None:
+        """Formula prefix with no other content is neutralized."""
+        assert safe_cell_value("=") == " ="
+
+    def test_multi_byte_utf8_preserved(self) -> None:
+        """Multi-byte UTF-8 characters pass through unchanged."""
+        assert safe_cell_value("测试") == "测试"
+        assert safe_cell_value("€uro") == "€uro"
+        assert safe_cell_value("日本語テスト") == "日本語テスト"
+
+    def test_padded_values_preserved_then_neutralized(self) -> None:
+        """Values with leading whitespace are preserved, then prefix is neutralized."""
+        # Leading spaces are preserved; only formula prefix at position 0 triggers neutralization
+        assert safe_cell_value("  =test  ") == "  =test  "
+        assert safe_cell_value("=test  ") == " =test  "
+        assert safe_cell_value("  401  ") == "  401  "
+
+    def test_normal_values_unchanged(self) -> None:
+        """Normal values without control chars or prefixes are unchanged."""
+        assert safe_cell_value("normal text") == "normal text"
+        assert safe_cell_value("12345") == "12345"
+        assert safe_cell_value("US") == "US"
 
 
 class TestAutoColumnWidth:

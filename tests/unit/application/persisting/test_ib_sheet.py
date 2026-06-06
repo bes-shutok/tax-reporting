@@ -5,10 +5,12 @@ from decimal import Decimal
 import openpyxl
 import pytest
 
+from tax_reporting.application.crypto_reporting import AggregatedRewardIncomeEntry
 from tax_reporting.application.persisting.ib_sheet import (
     create_currency_table,
     write_ib_reporting_sheet,
 )
+from tax_reporting.application.persisting.tax_constants import get_income_code_description
 from tax_reporting.domain.collections import CapitalGainLinesPerCompany, DividendIncomePerCompany
 from tax_reporting.domain.constants import EXCEL_HEADER_ROW_1, EXCEL_HEADER_ROW_2, EXCEL_START_ROW
 from tax_reporting.domain.entities import (
@@ -94,6 +96,27 @@ def _make_config() -> Config:
     )
 
 
+def _make_aggregated_reward_entry(  # noqa: PLR0913
+    income_code: str = "402",
+    source_country: str = "GB",
+    gross_income_eur: Decimal | None = None,
+    foreign_tax_eur: Decimal | None = None,
+    raw_row_count: int = 50,
+    chains: tuple[str, ...] | None = None,
+    description: str = "Wirex",
+) -> AggregatedRewardIncomeEntry:
+    """Helper to create an AggregatedRewardIncomeEntry for testing."""
+    return AggregatedRewardIncomeEntry(
+        income_code=income_code,
+        source_country=source_country,
+        gross_income_eur=gross_income_eur if gross_income_eur is not None else Decimal("1195.79"),
+        foreign_tax_eur=foreign_tax_eur if foreign_tax_eur is not None else Decimal("0"),
+        raw_row_count=raw_row_count,
+        chains=chains if chains is not None else ("Wirex",),
+        description=description,
+    )
+
+
 @pytest.mark.unit
 class TestCreateCurrencyTable:
     """Tests for create_currency_table."""
@@ -167,8 +190,9 @@ class TestWriteIbReportingSheetHeaders:
         config = _make_config()
         lines: CapitalGainLinesPerCompany = {}
         write_ib_reporting_sheet(ws, config, lines)
-        assert ws.cell(EXCEL_HEADER_ROW_1, 1).value == "Beneficiary"
-        assert ws.cell(EXCEL_HEADER_ROW_1, 3).value == "SALE"
+        # When there are no capital gains, no section title is written, headers at rows 1-2
+        assert ws.cell(1, 1).value == "Beneficiary"
+        assert ws.cell(1, 2).value == "Country of Source"
 
     def test_writes_second_header_row(self):
         wb = openpyxl.Workbook()
@@ -177,7 +201,8 @@ class TestWriteIbReportingSheetHeaders:
         config = _make_config()
         lines: CapitalGainLinesPerCompany = {}
         write_ib_reporting_sheet(ws, config, lines)
-        assert ws.cell(EXCEL_HEADER_ROW_2, 3).value == "Day "
+        # When there are no capital gains, no section title is written, headers at rows 1-2
+        assert ws.cell(2, 3).value == "Day "
 
 
 @pytest.mark.unit
@@ -193,7 +218,7 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        assert ws.cell(EXCEL_START_ROW, 3).value == 15
+        assert ws.cell(6, 2).value == 15
 
     def test_writes_sell_month_name(self):
         wb = openpyxl.Workbook()
@@ -204,7 +229,7 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        assert ws.cell(EXCEL_START_ROW, 4).value == "June"
+        assert ws.cell(6, 3).value == "June"
 
     def test_writes_sell_year(self):
         wb = openpyxl.Workbook()
@@ -215,7 +240,7 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        assert ws.cell(EXCEL_START_ROW, 5).value == 2025
+        assert ws.cell(6, 4).value == 2025
 
     def test_sell_amount_is_formula(self):
         wb = openpyxl.Workbook()
@@ -226,7 +251,7 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        sell_amount_cell = ws.cell(EXCEL_START_ROW, 6)
+        sell_amount_cell = ws.cell(6, 5)
         assert sell_amount_cell.data_type == "f"
         assert sell_amount_cell.value.startswith("=")
 
@@ -239,7 +264,7 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        assert ws.cell(EXCEL_START_ROW, 7).value == 10
+        assert ws.cell(6, 6).value == 10
 
     def test_buy_amount_is_formula(self):
         wb = openpyxl.Workbook()
@@ -250,7 +275,7 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        buy_amount_cell = ws.cell(EXCEL_START_ROW, 10)
+        buy_amount_cell = ws.cell(6, 9)
         assert buy_amount_cell.data_type == "f"
 
     def test_expense_cell_is_formula(self):
@@ -262,7 +287,7 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        expense_cell = ws.cell(EXCEL_START_ROW, 13)
+        expense_cell = ws.cell(6, 12)
         assert expense_cell.data_type == "f"
         assert expense_cell.number_format == "0.00"
 
@@ -275,8 +300,8 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        assert ws.cell(EXCEL_START_ROW, 2).value == "US"
-        assert ws.cell(EXCEL_START_ROW, 11).value == "US"
+        assert ws.cell(6, 1).value == "US"
+        assert ws.cell(6, 10).value == "US"
 
     def test_symbol_and_currency_written(self):
         wb = openpyxl.Workbook()
@@ -287,8 +312,8 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        assert ws.cell(EXCEL_START_ROW, 15).value == "AAPL"
-        assert ws.cell(EXCEL_START_ROW, 16).value == "USD"
+        assert ws.cell(6, 14).value == "AAPL"
+        assert ws.cell(6, 15).value == "USD"
 
     def test_multiple_lines_write_on_separate_rows(self):
         wb = openpyxl.Workbook()
@@ -300,8 +325,8 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line1, line2]}
         write_ib_reporting_sheet(ws, config, lines)
-        assert ws.cell(EXCEL_START_ROW, 3).value == 5
-        assert ws.cell(EXCEL_START_ROW + 1, 3).value == 10
+        assert ws.cell(6, 2).value == 5
+        assert ws.cell(7, 2).value == 10
 
     def test_placeholder_buy_row_has_red_fill(self):
         wb = openpyxl.Workbook()
@@ -312,7 +337,7 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        cell = ws.cell(EXCEL_START_ROW, 3)
+        cell = ws.cell(6, 2)
         assert cell.fill.start_color.rgb == "FFFF0000"
 
 
@@ -362,15 +387,15 @@ class TestWriteIbReportingSheetDividends:
         }
         write_ib_reporting_sheet(ws, config, lines, dividends)
         div_type_cell = None
-        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=13):
-            if row[1].value == "Dividends":
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=12):
+            if row[0].value == "Share dividends":
                 div_type_cell = row
                 break
         assert div_type_cell is not None
-        assert div_type_cell[2].value == "US"
-        assert div_type_cell[3].value == "US0378331005"
-        assert div_type_cell[8].value == "AAPL"
-        assert div_type_cell[9].value == "USD"
+        assert div_type_cell[1].value == "US"
+        assert div_type_cell[2].value == "US0378331005"
+        assert div_type_cell[7].value == "AAPL"
+        assert div_type_cell[8].value == "USD"
 
     def test_dividend_gross_amount_is_formula(self):
         wb = openpyxl.Workbook()
@@ -390,9 +415,9 @@ class TestWriteIbReportingSheetDividends:
         }
         write_ib_reporting_sheet(ws, config, lines, dividends)
         gross_cell = None
-        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=13):
-            if row[1].value == "Dividends":
-                gross_cell = row[4]
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=12):
+            if row[0].value == "Share dividends":
+                gross_cell = row[3]
                 break
         assert gross_cell is not None
         assert gross_cell.data_type == "f"
@@ -415,9 +440,9 @@ class TestWriteIbReportingSheetDividends:
         }
         write_ib_reporting_sheet(ws, config, lines, dividends)
         warning_cell = None
-        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=13):
-            if row[1].value == "Dividends":
-                warning_cell = row[2]
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=12):
+            if row[0].value == "Share dividends":
+                warning_cell = row[1]
                 break
         assert warning_cell is not None
         assert "MISSING DATA" in str(warning_cell.value)
@@ -492,11 +517,11 @@ class TestWriteIbReportingSheetAutoWidth:
         lines: CapitalGainLinesPerCompany = {cc: [line1, line2, line3]}
         write_ib_reporting_sheet(ws, config, lines)
 
-        # Expected widths for headers: M=45 (longest), Q=11, R=10, S=15, F=6, J=6
+        # Expected widths for headers: M=45 (longest), Q=11, R=10, S=15, E=6, I=6
         # All formula-heavy columns should use measured header length with MIN_DATA_WIDTH as floor
         expected_widths = {
-            "F": 6,    # "Amount"
-            "J": 6,    # "Amount"
+            "E": 6,    # "Amount" (sell)
+            "I": 6,    # "Amount" (buy)
             "M": 45,   # "Expenses incurred with obtaining the capital gains"
             "Q": 11,   # "Sale amount"
             "R": 10,   # "Buy amount"
@@ -531,3 +556,292 @@ class TestWriteIbReportingSheetAutoWidth:
         width = ws.column_dimensions["A"].width
         msg = f"Column with only formulas should get MIN_DATA_WIDTH ({MIN_DATA_WIDTH}), got {width}"
         assert width == MIN_DATA_WIDTH, msg
+
+
+@pytest.mark.unit
+class TestWriteIbReportingSheetCapitalInvestmentIncome:
+    """Tests for mixed capital investment income rendering (dividends + fiat rewards)."""
+
+    @staticmethod
+    def _find_row_with_text(ws, text_fragment, column=1):
+        for row in range(1, ws.max_row + 1):
+            val = ws.cell(row, column).value
+            if val is not None and text_fragment in str(val):
+                return row
+        return None
+
+    def test_share_dividends_use_explicit_share_dividend_label(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        lines: CapitalGainLinesPerCompany = {}
+        dividends: DividendIncomePerCompany = {
+            "AAPL": DividendIncomePerSecurity(
+                symbol="AAPL",
+                isin="US0378331005",
+                country="US",
+                gross_amount=Decimal("100"),
+                total_taxes=Decimal("15"),
+                currency=Currency("USD"),
+            )
+        }
+        write_ib_reporting_sheet(ws, config, lines, dividends)
+
+        section_row = self._find_row_with_text(ws, "CAPITAL INVESTMENT INCOME")
+        assert section_row is not None, "CAPITAL INVESTMENT INCOME section title should exist"
+
+        subsection_row = self._find_row_with_text(ws, "SHARE DIVIDENDS")
+        assert subsection_row is not None, "SHARE DIVIDENDS subsection label should exist"
+
+        div_row = self._find_row_with_text(ws, "Share dividends", column=1)
+        assert div_row is not None, "Dividend row should use 'Share dividends' as income type"
+
+    def test_taxable_fiat_reward_aggregate_is_written_under_capital_investment_income(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        lines: CapitalGainLinesPerCompany = {}
+        entry = _make_aggregated_reward_entry()
+        write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
+
+        section_row = self._find_row_with_text(ws, "CAPITAL INVESTMENT INCOME")
+        assert section_row is not None
+
+        other_row = self._find_row_with_text(ws, "OTHER CAPITAL INVESTMENT INCOME")
+        assert other_row is not None
+
+        data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
+        assert data_row is not None
+
+        assert ws.cell(data_row, 2).value == "GB"
+        assert ws.cell(data_row, 3).value in (None, "")
+        assert float(ws.cell(data_row, 4).value) == pytest.approx(1195.79)
+        assert float(ws.cell(data_row, 5).value) == pytest.approx(0)
+        assert ws.cell(data_row, 6).value in (None, "")
+        assert ws.cell(data_row, 7).value in (None, "")
+        assert ws.cell(data_row, 8).value == "Wirex"
+        assert ws.cell(data_row, 9).value == "EUR"
+        assert float(ws.cell(data_row, 10).value) == pytest.approx(1195.79)
+        assert float(ws.cell(data_row, 11).value) == pytest.approx(0)
+        assert float(ws.cell(data_row, 12).value) == pytest.approx(1195.79)
+        assert ws.cell(data_row, 13).value == "Koinly"
+        assert ws.cell(data_row, 14).value == 50
+
+    def test_non_wirex_taxable_fiat_reward_uses_derived_source_fields(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        lines: CapitalGainLinesPerCompany = {}
+        entry = _make_aggregated_reward_entry(
+            source_country="IE",
+            chains=("Kraken",),
+            description="Kraken",
+        )
+        write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
+
+        data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
+        assert data_row is not None
+        assert ws.cell(data_row, 2).value == "IE"
+        assert ws.cell(data_row, 8).value == "Kraken"
+
+    def test_foreign_tax_is_summed_and_net_is_gross_minus_tax(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        lines: CapitalGainLinesPerCompany = {}
+        entry = _make_aggregated_reward_entry(
+            gross_income_eur=Decimal("100"),
+            foreign_tax_eur=Decimal("15"),
+            raw_row_count=2,
+        )
+        write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
+
+        data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
+        assert data_row is not None
+        assert float(ws.cell(data_row, 4).value) == pytest.approx(100)
+        assert float(ws.cell(data_row, 5).value) == pytest.approx(15)
+        assert float(ws.cell(data_row, 12).value) == pytest.approx(85)
+        assert ws.cell(data_row, 14).value == 2
+
+    def test_empty_other_capital_income_list_does_not_write_other_income_subsection(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        lines: CapitalGainLinesPerCompany = {}
+        write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[])
+
+        other_row = self._find_row_with_text(ws, "OTHER CAPITAL INVESTMENT INCOME")
+        assert other_row is None, "OTHER CAPITAL INVESTMENT INCOME should not appear with empty list"
+
+    def test_no_capital_investment_section_when_no_dividends_and_no_taxable_rewards(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        lines: CapitalGainLinesPerCompany = {}
+        write_ib_reporting_sheet(ws, config, lines)
+
+        section_row = self._find_row_with_text(ws, "CAPITAL INVESTMENT INCOME")
+        assert section_row is None, "CAPITAL INVESTMENT INCOME section should not appear with no income"
+
+    def test_koinly_source_strings_are_safe_for_excel_cells(self):
+        # Single-character prefixes
+        for prefix in ("=", "+", "-", "@"):
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Reporting"
+            config = _make_config()
+            lines: CapitalGainLinesPerCompany = {}
+            entry = _make_aggregated_reward_entry(
+                chains=(f"{prefix}Chain",),
+                description=f"{prefix}Chain test",
+            )
+            write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
+
+            data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
+            assert data_row is not None, f"Data row for prefix '{prefix}'"
+
+            cell = ws.cell(data_row, 8)
+            assert not str(cell.value).startswith(prefix), (
+                f"Source detail should not start with '{prefix}', got: {cell.value}"
+            )
+
+        # Multi-character prefixes
+        for prefix in ("==", "++", "--", "@@"):
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Reporting"
+            config = _make_config()
+            lines: CapitalGainLinesPerCompany = {}
+            entry = _make_aggregated_reward_entry(
+                chains=(f"{prefix}Chain",),
+                description=f"{prefix}Chain test",
+            )
+            write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
+
+            data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
+            assert data_row is not None, f"Data row for prefix '{prefix}'"
+
+            cell = ws.cell(data_row, 8)
+            assert not str(cell.value).startswith(prefix), (
+                f"Source detail should not start with '{prefix}', got: {cell.value}"
+            )
+
+        # Control characters with prefix
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        lines: CapitalGainLinesPerCompany = {}
+        entry = _make_aggregated_reward_entry(
+            chains=("=Chain\nValue",),
+            description="=\nChain test",
+        )
+        write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
+
+        data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
+        assert data_row is not None, "Data row for control char test"
+
+        cell = ws.cell(data_row, 8)
+        # Control chars should be stripped and prefix neutralized
+        assert "\n" not in str(cell.value), f"Newline should be stripped, got: {cell.value}"
+        assert not str(cell.value).startswith("="), f"Prefix should be neutralized, got: {cell.value}"
+
+    def test_zero_gross_income_renders_as_zero(self):
+        """Zero gross_income_eur should render as zero value in Excel."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        lines: CapitalGainLinesPerCompany = {}
+        entry = _make_aggregated_reward_entry(gross_income_eur=Decimal("0"))
+        write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
+
+        data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
+        assert data_row is not None
+        # Zero value should render as 0, not None or empty
+        assert float(ws.cell(data_row, 4).value) == pytest.approx(0)
+        assert float(ws.cell(data_row, 12).value) == pytest.approx(0)
+
+    def test_foreign_tax_exceeding_gross_income_renders_negative_net(self):
+        """Foreign tax exceeding gross income should render negative net value."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        lines: CapitalGainLinesPerCompany = {}
+        entry = _make_aggregated_reward_entry(
+            gross_income_eur=Decimal("100"),
+            foreign_tax_eur=Decimal("150"),  # Tax exceeds gross
+        )
+        write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
+
+        data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
+        assert data_row is not None
+        # Net value should be negative (gross - tax = 100 - 150 = -50)
+        assert float(ws.cell(data_row, 4).value) == pytest.approx(100)
+        assert float(ws.cell(data_row, 5).value) == pytest.approx(150)
+        assert float(ws.cell(data_row, 12).value) == pytest.approx(-50)
+
+    def test_empty_chains_tuple_renders_gracefully(self):
+        """Empty chains tuple should render without error."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        lines: CapitalGainLinesPerCompany = {}
+        entry = _make_aggregated_reward_entry(chains=())
+        write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
+
+        data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
+        assert data_row is not None
+        # Empty chains should render as empty string in source detail column (column 8)
+        source_detail_value = ws.cell(data_row, 8).value
+        assert source_detail_value in ("", None)
+
+    def test_empty_chains_tuple_renders_gracefully(self):
+        """Empty chains tuple should render without error."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        lines: CapitalGainLinesPerCompany = {}
+        entry = _make_aggregated_reward_entry(chains=())
+        write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
+
+        data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
+        assert data_row is not None
+        # Empty chains should not cause rendering error
+
+
+@pytest.mark.unit
+class TestGetIncomeCodeDescription:
+    """Tests for get_income_code_description function."""
+
+    def test_returns_known_code_description(self):
+        """Known income codes return their descriptions."""
+        assert get_income_code_description("401") == "Crypto capital income (staking, rewards, airdrops)"
+        assert get_income_code_description("402") == "Crypto interest (lending, deposit interest)"
+        assert get_income_code_description("403") == "Mining income"
+        assert get_income_code_description("404") == "Fork income"
+        assert get_income_code_description("405") == "Crypto dividends"
+
+    def test_returns_fallback_for_unknown_code(self):
+        """Unknown income codes return a fallback string with the code."""
+        unknown_code = "999"
+        result = get_income_code_description(unknown_code)
+        assert result == f"Income code {unknown_code}"
+
+    def test_fallback_includes_original_code(self):
+        """Fallback preserves the original code value."""
+        code = "ABC"
+        result = get_income_code_description(code)
+        assert code in result
+        assert "Income code" in result
+
+

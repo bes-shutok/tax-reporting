@@ -265,6 +265,7 @@ class TestCryptoReconciliationSection4:
         assert ws.cell(header_row, 1).value == "Source section"
         assert ws.cell(header_row, 2).value == "Asset"
         assert ws.cell(header_row, 3).value == "Skipped rows"
+        assert ws.cell(header_row, 4).value == "Suspicious"
 
     def test_skipped_tokens_data_rows(self):
         skipped = [
@@ -303,6 +304,45 @@ class TestCryptoReconciliationSection4:
         assert ws.cell(data_row, 1).value == "none"
         assert ws.cell(data_row, 2).value == ""
         assert ws.cell(data_row, 3).value == 0
+        assert ws.cell(data_row, 4).value == ""
+
+    def test_skipped_tokens_suspicious_flag_formatting(self):
+        """Test that suspicious assets are highlighted with red text and font."""
+        skipped = [
+            CryptoSkippedZeroValueToken(source_section="Capital Gains", asset="DUST", count=2, suspicious=False),
+            CryptoSkippedZeroValueToken(source_section="Rewards", asset="РUB", count=5, suspicious=True),
+        ]
+        report = _make_crypto_tax_report(skipped_tokens=skipped)
+        wb = openpyxl.Workbook()
+        write_crypto_reconciliation_sheet(wb, report)
+        ws = wb["Crypto Reconciliation"]
+        header_row = None
+        for r in range(1, ws.max_row + 1):
+            if ws.cell(r, 1).value == "Source section" and ws.cell(r, 2).value == "Asset":
+                header_row = r
+                break
+        assert header_row is not None
+        # First row (DUST) - not suspicious, should have default formatting
+        non_suspicious_row = header_row + 1
+        assert ws.cell(non_suspicious_row, 1).value == "Capital Gains"
+        assert ws.cell(non_suspicious_row, 2).value == "DUST"
+        assert ws.cell(non_suspicious_row, 3).value == 2
+        # No suspicious flag is set when not suspicious - cell remains None
+        assert ws.cell(non_suspicious_row, 4).value in (None, "")
+        # Second row (РUB) - suspicious, should have red formatting
+        suspicious_row = header_row + 2
+        assert ws.cell(suspicious_row, 1).value == "Rewards"
+        assert ws.cell(suspicious_row, 2).value == "РUB"
+        assert ws.cell(suspicious_row, 3).value == 5
+        assert ws.cell(suspicious_row, 4).value == "YES - non-Latin characters, probable scam"
+        # Verify red text formatting for suspicious column
+        suspicious_cell = ws.cell(suspicious_row, 4)
+        assert suspicious_cell.font.color.rgb in ("FFFF0000", "00FF0000")  # Red text (alpha may vary)
+        assert suspicious_cell.font.bold is False
+        # Verify asset cell is also highlighted in red
+        asset_cell = ws.cell(suspicious_row, 2)
+        assert asset_cell.font.color.rgb in ("FFFF0000", "00FF0000")  # Red text (alpha may vary)
+        assert asset_cell.font.bold is True
 
 
 @pytest.mark.unit

@@ -111,7 +111,7 @@ def test_example_full_pipeline_generates_excel(tmp_path: Path):
     wb = openpyxl.load_workbook(output_path)
     assert "Reporting" in wb.sheetnames
     assert "Crypto Gains" in wb.sheetnames
-    assert "Crypto Rewards" in wb.sheetnames
+    assert "Crypto Supplementary" in wb.sheetnames
     assert "Crypto Reconciliation" in wb.sheetnames
     assert "Loan Activity" in wb.sheetnames
     assert "Platform Assumptions" in wb.sheetnames
@@ -243,6 +243,56 @@ def test_example_crypto_rewards_are_many_but_classified():
     assert len(taxable) + len(deferred) == len(crypto.reward_entries), (
         f"Taxable ({len(taxable)}) + deferred ({len(deferred)}) should equal total ({len(crypto.reward_entries)})"
     )
+
+
+@pytest.mark.e2e
+def test_example_taxable_now_rewards_are_reported_on_reporting_sheet(tmp_path: Path):
+    """Given the example report data, immediately taxable fiat rewards are visible on Reporting
+    as aggregate rows with exact gross, tax, net, and raw-row-count values, and still
+    traceable on Crypto Supplementary."""
+    ib_data = parse_ib_export_all(EXAMPLE_IB_EXPORT)
+    leftover_trades: TradeCyclePerCompany = {}
+    capital_gains = {}
+    calculate_fifo_gains(ib_data.trade_cycles, leftover_trades, capital_gains)
+    crypto = load_koinly_crypto_report(EXAMPLE_KOINLY_DIR)
+    output_path = tmp_path / "extract.xlsx"
+    generate_tax_report(output_path, capital_gains, ib_data.dividend_income, crypto_tax_report=crypto)
+
+    wb = openpyxl.load_workbook(output_path)
+    reporting_ws = wb["Reporting"]
+    rows = list(reporting_ws.iter_rows(values_only=True))
+
+    found_other = False
+    reward_row = None
+    for row in rows:
+        if row and isinstance(row[0], str) and "OTHER CAPITAL INVESTMENT INCOME" in row[0]:
+            found_other = True
+        if found_other and row and len(row) > 1 and isinstance(row[0], str) and row[0].startswith("Crypto"):
+            reward_row = row
+            break
+
+    assert found_other, "OTHER CAPITAL INVESTMENT INCOME subsection not found in Reporting"
+    assert reward_row is not None, "Taxable fiat reward row not found in Reporting"
+
+    assert reward_row[0] == "Crypto capital income (staking, rewards, airdrops)"
+    assert reward_row[1] == "IE"
+    assert float(reward_row[3]) == pytest.approx(30.00), f"Expected gross 30.00, got {reward_row[3]}"
+    assert float(reward_row[4]) == pytest.approx(0.0), f"Expected foreign tax 0, got {reward_row[4]}"
+    assert float(reward_row[11]) == pytest.approx(30.00), f"Expected net 30.00, got {reward_row[11]}"
+    assert reward_row[13] == 10, f"Expected raw_row_count 10, got {reward_row[13]}"
+    assert reward_row[12] == "Koinly"
+
+    rewards_ws = wb["Crypto Supplementary"]
+    rewards_labels = []
+    for row in rewards_ws.iter_rows(values_only=True):
+        first_cell = row[0] if row else None
+        if isinstance(first_cell, str):
+            rewards_labels.append(first_cell)
+    assert "2. TAXABLE-NOW - SUPPORT DETAIL" in rewards_labels, (
+        "Crypto Supplementary should still have support detail for taxable-now rewards"
+    )
+
+    wb.close()
 
 
 @pytest.mark.e2e

@@ -2,6 +2,7 @@
 
 from decimal import Decimal
 
+import openpyxl
 import pytest
 
 from tax_reporting.application.crypto_reporting import (
@@ -13,6 +14,7 @@ from tax_reporting.application.crypto_reporting import (
     CryptoSkippedZeroValueToken,
     CryptoTaxReport,
     HoldingsSnapshot,
+    RewardTaxClassification,
     resolve_operator_origin,
 )
 from tax_reporting.application.persisting import generate_tax_report
@@ -85,19 +87,19 @@ class TestDividendExcelPersisting:
 
             if found_dividend_section and row and len(row) > 0:
                 # Check for header row
-                if isinstance(row[0], str) and "Beneficiary" in row[0]:
+                if isinstance(row[0], str) and "Type of capital income" in row[0]:
                     continue
 
                 # Count data rows
-                if dividend_row_count < 3 and row[1] == "Dividends":
+                if dividend_row_count < 3 and row[0] == "Share dividends":
                     dividend_row_count += 1
                     # Verify data integrity
-                    symbol = row[8] if len(row) > 8 else None
-                    country = row[2] if len(row) > 2 else None
-                    isin = row[3] if len(row) > 3 else None
-                    original_gross = row[10] if len(row) > 10 else None
-                    original_tax = row[11] if len(row) > 11 else None
-                    net_amount = row[12] if len(row) > 12 else None
+                    symbol = row[7] if len(row) > 7 else None
+                    country = row[1] if len(row) > 1 else None
+                    isin = row[2] if len(row) > 2 else None
+                    original_gross = row[9] if len(row) > 9 else None
+                    original_tax = row[10] if len(row) > 10 else None
+                    net_amount = row[11] if len(row) > 11 else None
 
                     # Verify expected values based on symbol
                     if symbol == "AAPL":
@@ -184,34 +186,34 @@ class TestDividendExcelPersisting:
         # Find dividend row and check formulas
         dividend_row = None
         for row_idx, row in enumerate(worksheet.iter_rows(values_only=False), 1):
-            if row and len(row) > 1 and row[1].value == "Dividends":
+            if row and len(row) > 1 and row[0].value == "Share dividends":
                 dividend_row = row_idx
                 break
 
         assert dividend_row is not None, "Dividend row not found"
 
         # Check converted gross amount formula (column 5, index 4)
-        gross_amount_cell = worksheet.cell(row=dividend_row, column=5)
+        gross_amount_cell = worksheet.cell(row=dividend_row, column=4)
         assert gross_amount_cell.data_type == "f"  # Formula cell
         assert "=V" in str(gross_amount_cell.value)  # Contains reference to exchange rate
         assert "100.5" in str(gross_amount_cell.value)  # Contains original amount
 
         # Check converted tax amount formula (column 6, index 5)
-        tax_amount_cell = worksheet.cell(row=dividend_row, column=6)
+        tax_amount_cell = worksheet.cell(row=dividend_row, column=5)
         assert tax_amount_cell.data_type == "f"  # Formula cell
         assert "=V" in str(tax_amount_cell.value)  # Contains reference to exchange rate
         assert "15.25" in str(tax_amount_cell.value)  # Contains original amount
 
         # Check original amounts (should be string values)
-        original_gross_cell = worksheet.cell(row=dividend_row, column=11)
+        original_gross_cell = worksheet.cell(row=dividend_row, column=10)
         assert original_gross_cell.data_type == "s"  # String value
         assert original_gross_cell.value == "100.50"
 
-        original_tax_cell = worksheet.cell(row=dividend_row, column=12)
+        original_tax_cell = worksheet.cell(row=dividend_row, column=11)
         assert original_tax_cell.data_type == "s"  # String value
         assert original_tax_cell.value == "15.25"
 
-        net_amount_cell = worksheet.cell(row=dividend_row, column=13)
+        net_amount_cell = worksheet.cell(row=dividend_row, column=12)
         assert net_amount_cell.data_type == "s"  # String value
         assert net_amount_cell.value == "85.25"  # 100.50 - 15.25
 
@@ -265,8 +267,8 @@ class TestDividendExcelPersisting:
         # Find dividend rows and check currency columns
         dividend_currencies = []
         for _row_idx, row in enumerate(worksheet.iter_rows(values_only=True), 1):
-            if row and len(row) > 1 and row[1] == "Dividends":
-                currency = row[9] if len(row) > 9 else None  # Currency column
+            if row and len(row) > 1 and row[0] == "Share dividends":
+                currency = row[8] if len(row) > 8 else None  # Currency column
                 if currency:
                     dividend_currencies.append(currency)
 
@@ -372,7 +374,7 @@ class TestDividendExcelPersisting:
 
         workbook = openpyxl.load_workbook(report_path)
         assert "Crypto Gains" in workbook.sheetnames
-        assert "Crypto Rewards" in workbook.sheetnames
+        assert "Crypto Supplementary" in workbook.sheetnames
         assert "Crypto Reconciliation" in workbook.sheetnames
 
         gains_sheet = workbook["Crypto Gains"]
@@ -385,7 +387,7 @@ class TestDividendExcelPersisting:
                 gains_labels.add(first_cell)
 
         rewards_labels = set()
-        for row in workbook["Crypto Rewards"].iter_rows(values_only=True):
+        for row in workbook["Crypto Supplementary"].iter_rows(values_only=True):
             first_cell = row[0] if row else None
             if isinstance(first_cell, str):
                 rewards_labels.add(first_cell)
@@ -397,9 +399,10 @@ class TestDividendExcelPersisting:
                 recon_labels.add(first_cell)
 
         assert "1. CAPITAL GAINS" in gains_labels
-        assert "2. REWARDS INCOME - IRS-READY FILING SUMMARY" in rewards_labels
-        assert "2b. DEFERRED BY LAW - SUPPORT DETAIL" in rewards_labels
-        assert "2c. REWARDS CLASSIFICATION RECONCILIATION" in rewards_labels
+        assert "1. INCOME CODES REFERENCE" in rewards_labels
+        assert "2. TAXABLE-NOW - SUPPORT DETAIL" in rewards_labels
+        assert "3. DEFERRED BY LAW - SUPPORT DETAIL" in rewards_labels
+        assert "4. REWARDS CLASSIFICATION RECONCILIATION" in rewards_labels
         assert "3. RECONCILIATION" in recon_labels
         assert "4. SKIPPED ZERO VALUE TOKENS" in recon_labels
         assert "PDF period" in gains_labels
@@ -486,7 +489,7 @@ class TestDividendExcelPersisting:
 
         workbook = openpyxl.load_workbook(report_path)
         gains_sheet = workbook["Crypto Gains"]
-        rewards_sheet = workbook["Crypto Rewards"]
+        rewards_sheet = workbook["Crypto Supplementary"]
 
         # Find the capital gains header row and check for chain column
         capital_headers_found = False
@@ -888,7 +891,7 @@ class TestDividendExcelPersisting:
 
         workbook = openpyxl.load_workbook(report_path)
         gains_sheet = workbook["Crypto Gains"]
-        rewards_sheet = workbook["Crypto Rewards"]
+        rewards_sheet = workbook["Crypto Supplementary"]
 
         # Find capital gains data row on Crypto Gains sheet
         capital_review_cell = None
@@ -898,7 +901,7 @@ class TestDividendExcelPersisting:
                 capital_review_cell = row[14] if len(row) > 14 else None
                 found_capital_review = True
 
-        # Find reward row in deferred support detail section on Crypto Rewards sheet
+        # Find reward row in deferred support detail section on Crypto Supplementary sheet
         reward_review_cell = None
         found_reward_review = False
         in_deferred = False
@@ -1027,20 +1030,20 @@ class TestDividendExcelPersisting:
         # Find dividend row and check formatting
         dividend_row = None
         for row_idx, row in enumerate(worksheet.iter_rows(values_only=False), 1):
-            if row and len(row) > 1 and row[1].value == "Dividends":
+            if row and len(row) > 1 and row[0].value == "Share dividends":
                 dividend_row = row_idx
                 break
 
         assert dividend_row is not None
 
         # Check number format for original amounts
-        original_gross_cell = worksheet.cell(row=dividend_row, column=11)
+        original_gross_cell = worksheet.cell(row=dividend_row, column=10)
         assert original_gross_cell.number_format == "0.00"
 
-        original_tax_cell = worksheet.cell(row=dividend_row, column=12)
+        original_tax_cell = worksheet.cell(row=dividend_row, column=11)
         assert original_tax_cell.number_format == "0.00"
 
-        net_amount_cell = worksheet.cell(row=dividend_row, column=13)
+        net_amount_cell = worksheet.cell(row=dividend_row, column=12)
         assert net_amount_cell.number_format == "0.00"
 
         # Check values are stored as strings with full precision
@@ -1439,7 +1442,7 @@ class TestDividendExcelPersisting:
 
         workbook = openpyxl.load_workbook(report_path)
         gains_sheet = workbook["Crypto Gains"]
-        rewards_sheet = workbook["Crypto Rewards"]
+        rewards_sheet = workbook["Crypto Supplementary"]
 
         gains_labels = []
         for row in gains_sheet.iter_rows(values_only=True):
@@ -1463,8 +1466,8 @@ class TestDividendExcelPersisting:
         stats_idx = gains_labels.index("1b. CAPITAL GAINS STATISTICS")
 
         assert section_1_idx < stats_idx, "Statistics section must appear after capital gains detail"
-        assert "2. REWARDS INCOME - IRS-READY FILING SUMMARY" in rewards_labels, (
-            "Rewards section should be in Crypto Rewards sheet"
+        assert "2. TAXABLE-NOW - SUPPORT DETAIL" in rewards_labels, (
+            "Taxable-now support detail should be in Crypto Supplementary sheet"
         )
 
         workbook.close()
@@ -1544,5 +1547,372 @@ class TestDividendExcelPersisting:
         assert data_rows["Grand Total"][2] == pytest.approx(425.0)
         assert data_rows["Grand Total"][3] == pytest.approx(495.0)
         assert data_rows["Grand Total"][4] == pytest.approx(70.0)
+
+        workbook.close()
+
+
+class TestExcelGenerationIntegration:
+    """Integration tests for fiat reward income in the Reporting worksheet."""
+
+    def _build_minimal_crypto_report(
+        self,
+        reward_entries: list[CryptoRewardIncomeEntry],
+        capital_entries: list[CryptoCapitalGainEntry] | None = None,
+    ) -> CryptoTaxReport:
+        """Build a CryptoTaxReport with the given reward entries and optional capital entries."""
+        capitals = capital_entries or []
+        return CryptoTaxReport(
+            tax_year=2025,
+            capital_entries=capitals,
+            reward_entries=reward_entries,
+            reconciliation=CryptoReconciliationSummary(
+                capital_rows=len(capitals),
+                reward_rows=len(reward_entries),
+                short_term_rows=len(capitals),
+                long_term_rows=0,
+                mixed_rows=0,
+                unknown_rows=0,
+                capital_cost_total_eur=Decimal("0"),
+                capital_proceeds_total_eur=Decimal("0"),
+                capital_gain_total_eur=Decimal("0"),
+                reward_total_eur=sum(e.value_eur for e in reward_entries),
+                opening_holdings=None,
+                closing_holdings=None,
+            ),
+            capital_gain_stats=CryptoCapitalGainStats.from_entries(capitals),
+            skipped_zero_value_tokens=[],
+            pdf_summary=None,
+        )
+
+    @pytest.mark.integration
+    def test_taxable_fiat_rewards_appear_in_reporting_capital_investment_income(self, tmp_path):
+        """Given a crypto report with one EUR lending-interest reward and no IB dividends,
+        the Reporting worksheet includes the capital investment income section and a taxable
+        reward row, and Crypto Supplementary retains support detail."""
+        kraken_origin = resolve_operator_origin("Kraken")
+
+        reward_entries = [
+            CryptoRewardIncomeEntry(
+                date="2025-01-15",
+                asset="EUR",
+                amount=Decimal("3"),
+                value_eur=Decimal("3.00"),
+                income_label="Lending interest",
+                source_type="Lending interest",
+                wallet="Kraken",
+                platform="Kraken",
+                chain="Kraken",
+                operator_origin=kraken_origin,
+                annex_hint="J",
+                review_required=False,
+                description="",
+                tax_classification=RewardTaxClassification.TAXABLE_NOW,
+            ),
+        ]
+
+        crypto_report = self._build_minimal_crypto_report(reward_entries)
+        report_path = tmp_path / "fiat_reward_reporting.xlsx"
+        generate_tax_report(
+            extract=report_path,
+            capital_gain_lines_per_company={},
+            dividend_income_per_company={},
+            crypto_tax_report=crypto_report,
+        )
+
+        assert report_path.exists()
+        workbook = openpyxl.load_workbook(report_path)
+
+        reporting_ws = workbook["Reporting"]
+        rows = list(reporting_ws.iter_rows(values_only=True))
+
+        found_cii_section = False
+        found_other_subsection = False
+        found_reward_row = False
+        for row in rows:
+            if row and isinstance(row[0], str) and "CAPITAL INVESTMENT INCOME" in row[0]:
+                found_cii_section = True
+            if row and isinstance(row[0], str) and "OTHER CAPITAL INVESTMENT INCOME" in row[0]:
+                found_other_subsection = True
+            if row and len(row) > 1 and row[0] == "Crypto interest (lending, deposit interest)":
+                found_reward_row = True
+                assert row[1] == "IE"
+                assert float(row[3]) == pytest.approx(3.00), f"Expected gross 3.00, got {row[3]}"
+
+        assert found_cii_section, "CAPITAL INVESTMENT INCOME section not found in Reporting"
+        assert found_other_subsection, "OTHER CAPITAL INVESTMENT INCOME subsection not found"
+        assert found_reward_row, "Taxable fiat reward row not found in Reporting"
+
+        rewards_ws = workbook["Crypto Supplementary"]
+        rewards_labels = []
+        for row in rewards_ws.iter_rows(values_only=True):
+            first_cell = row[0] if row else None
+            if isinstance(first_cell, str):
+                rewards_labels.append(first_cell)
+        assert "2. TAXABLE-NOW - SUPPORT DETAIL" in rewards_labels, (
+            "Crypto Supplementary should retain support detail section"
+        )
+
+        workbook.close()
+
+    @pytest.mark.integration
+    def test_taxable_fiat_rewards_are_aggregated_before_reporting(self, tmp_path):
+        """Given two taxable-now EUR rewards sharing income code and source country,
+        Reporting has exactly one OTHER CAPITAL INVESTMENT INCOME row with summed values."""
+        kraken_origin = resolve_operator_origin("Kraken")
+
+        reward_entries = [
+            CryptoRewardIncomeEntry(
+                date="2025-02-10",
+                asset="EUR",
+                amount=Decimal("5"),
+                value_eur=Decimal("5.00"),
+                income_label="Reward",
+                source_type="Reward",
+                wallet="Kraken",
+                platform="Kraken",
+                chain="Kraken",
+                operator_origin=kraken_origin,
+                annex_hint="J",
+                review_required=False,
+                description="",
+                tax_classification=RewardTaxClassification.TAXABLE_NOW,
+                foreign_tax_eur=Decimal("0.50"),
+            ),
+            CryptoRewardIncomeEntry(
+                date="2025-03-15",
+                asset="EUR",
+                amount=Decimal("7"),
+                value_eur=Decimal("7.00"),
+                income_label="Reward",
+                source_type="Reward",
+                wallet="Kraken",
+                platform="Kraken",
+                chain="Kraken",
+                operator_origin=kraken_origin,
+                annex_hint="J",
+                review_required=False,
+                description="",
+                tax_classification=RewardTaxClassification.TAXABLE_NOW,
+                foreign_tax_eur=Decimal("0.30"),
+            ),
+        ]
+
+        crypto_report = self._build_minimal_crypto_report(reward_entries)
+        report_path = tmp_path / "aggregated_fiat_reward.xlsx"
+        generate_tax_report(
+            extract=report_path,
+            capital_gain_lines_per_company={},
+            dividend_income_per_company={},
+            crypto_tax_report=crypto_report,
+        )
+
+        workbook = openpyxl.load_workbook(report_path)
+        reporting_ws = workbook["Reporting"]
+        rows = list(reporting_ws.iter_rows(values_only=True))
+
+        other_rows = []
+        in_other = False
+        for row in rows:
+            if row and isinstance(row[0], str) and "OTHER CAPITAL INVESTMENT INCOME" in row[0]:
+                in_other = True
+                continue
+            if in_other and row and len(row) > 1 and isinstance(row[0], str) and row[0].startswith("Crypto"):
+                other_rows.append(row)
+            elif in_other and row and row[0] is None and row[1] is None:
+                break
+
+        assert len(other_rows) == 1, f"Expected exactly 1 aggregated reward row, got {len(other_rows)}"
+
+        agg_row = other_rows[0]
+        assert agg_row[0] == "Crypto capital income (staking, rewards, airdrops)"
+        assert agg_row[1] == "IE"
+        assert float(agg_row[3]) == pytest.approx(12.00), f"Expected gross 12.00, got {agg_row[3]}"
+        assert float(agg_row[4]) == pytest.approx(0.80), f"Expected foreign tax 0.80, got {agg_row[4]}"
+        net_val = float(agg_row[11]) if agg_row[11] is not None else None
+        assert net_val == pytest.approx(11.20), f"Expected net 11.20, got {agg_row[11]}"
+        assert agg_row[13] == 2, f"Expected raw_row_count 2, got {agg_row[13]}"
+
+        workbook.close()
+
+    @pytest.mark.integration
+    def test_deferred_crypto_rewards_do_not_create_reporting_income_rows(self, tmp_path):
+        """Given BTC, WXT, and USDT reward entries classified as deferred,
+        no OTHER CAPITAL INVESTMENT INCOME row appears in Reporting."""
+        wirex_origin = resolve_operator_origin("Wirex", transaction_type="crypto_deposit")
+        bybit_origin = resolve_operator_origin("ByBit")
+
+        reward_entries = [
+            CryptoRewardIncomeEntry(
+                date="2025-01-01",
+                asset="BTC",
+                amount=Decimal("0.001"),
+                value_eur=Decimal("50.00"),
+                income_label="Reward",
+                source_type="Reward",
+                wallet="Wirex",
+                platform="Wirex",
+                chain="Wirex",
+                operator_origin=wirex_origin,
+                annex_hint="J",
+                review_required=False,
+                description="",
+                tax_classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            ),
+            CryptoRewardIncomeEntry(
+                date="2025-02-01",
+                asset="WXT",
+                amount=Decimal("100"),
+                value_eur=Decimal("10.00"),
+                income_label="Reward",
+                source_type="Reward",
+                wallet="Wirex",
+                platform="Wirex",
+                chain="Wirex",
+                operator_origin=wirex_origin,
+                annex_hint="J",
+                review_required=False,
+                description="",
+                tax_classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            ),
+            CryptoRewardIncomeEntry(
+                date="2025-03-01",
+                asset="USDT",
+                amount=Decimal("100"),
+                value_eur=Decimal("100.00"),
+                income_label="Staking",
+                source_type="Staking",
+                wallet="ByBit",
+                platform="ByBit",
+                chain="ByBit",
+                operator_origin=bybit_origin,
+                annex_hint="J",
+                review_required=False,
+                description="",
+                tax_classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            ),
+        ]
+
+        crypto_report = self._build_minimal_crypto_report(reward_entries)
+        report_path = tmp_path / "deferred_only_rewards.xlsx"
+        generate_tax_report(
+            extract=report_path,
+            capital_gain_lines_per_company={},
+            dividend_income_per_company={},
+            crypto_tax_report=crypto_report,
+        )
+
+        workbook = openpyxl.load_workbook(report_path)
+        reporting_ws = workbook["Reporting"]
+        rows = list(reporting_ws.iter_rows(values_only=True))
+
+        for row in rows:
+            if row and isinstance(row[0], str):
+                assert "OTHER CAPITAL INVESTMENT INCOME" not in row[0], (
+                    "OTHER CAPITAL INVESTMENT INCOME should not appear for deferred-only rewards"
+                )
+            if row and len(row) > 1 and isinstance(row[1], str) and row[1].startswith("Income code"):
+                pytest.fail("No income code row should appear in Reporting for deferred-only rewards")
+
+        found_cii = False
+        for row in rows:
+            if row and isinstance(row[0], str) and "CAPITAL INVESTMENT INCOME" in row[0]:
+                found_cii = True
+                break
+        assert not found_cii, (
+            "CAPITAL INVESTMENT INCOME section should not appear when there are no dividends "
+            "and no taxable-now rewards"
+        )
+
+        rewards_ws = workbook["Crypto Supplementary"]
+        rewards_labels = []
+        for row in rewards_ws.iter_rows(values_only=True):
+            first_cell = row[0] if row else None
+            if isinstance(first_cell, str):
+                rewards_labels.append(first_cell)
+        assert "3. DEFERRED BY LAW - SUPPORT DETAIL" in rewards_labels, (
+            "Deferred rewards should appear in Crypto Supplementary"
+        )
+
+        workbook.close()
+
+    @pytest.mark.integration
+    def test_both_dividends_and_taxable_rewards_produce_single_cii_section(self, tmp_path):
+        """Given IB dividends and taxable fiat rewards together, the Reporting sheet has
+        exactly one CAPITAL INVESTMENT INCOME section containing both SHARE DIVIDENDS and
+        OTHER CAPITAL INVESTMENT INCOME subsections."""
+        kraken_origin = resolve_operator_origin("Kraken")
+
+        reward_entries = [
+            CryptoRewardIncomeEntry(
+                date="2025-01-15",
+                asset="EUR",
+                amount=Decimal("5"),
+                value_eur=Decimal("5.00"),
+                income_label="Lending interest",
+                source_type="Lending interest",
+                wallet="Kraken",
+                platform="Kraken",
+                chain="Kraken",
+                operator_origin=kraken_origin,
+                annex_hint="J",
+                review_required=False,
+                description="",
+                tax_classification=RewardTaxClassification.TAXABLE_NOW,
+            ),
+        ]
+
+        dividend_income = DividendIncomePerCompany(
+            {
+                "AAPL": DividendIncomePerSecurity(
+                    symbol="AAPL",
+                    isin="US0378331005",
+                    country="United States",
+                    gross_amount=Decimal("100.00"),
+                    total_taxes=Decimal("15.00"),
+                    currency=parse_currency("USD"),
+                ),
+            },
+        )
+
+        crypto_report = self._build_minimal_crypto_report(reward_entries)
+        report_path = tmp_path / "combined_dividends_rewards.xlsx"
+        generate_tax_report(
+            extract=report_path,
+            capital_gain_lines_per_company={},
+            dividend_income_per_company=dividend_income,
+            crypto_tax_report=crypto_report,
+        )
+
+        assert report_path.exists()
+        workbook = openpyxl.load_workbook(report_path)
+
+        reporting_ws = workbook["Reporting"]
+        rows = list(reporting_ws.iter_rows(values_only=True))
+
+        cii_count = sum(
+            1
+            for row in rows
+            if row and isinstance(row[0], str) and row[0] == "CAPITAL INVESTMENT INCOME"
+        )
+        assert cii_count == 1, f"Expected exactly 1 CII section, found {cii_count}"
+
+        found_share_dividends = any(
+            row and isinstance(row[0], str) and "SHARE DIVIDENDS" in row[0] for row in rows
+        )
+        found_other = any(
+            row and isinstance(row[0], str) and "OTHER CAPITAL INVESTMENT INCOME" in row[0]
+            for row in rows
+        )
+        assert found_share_dividends, "SHARE DIVIDENDS subsection not found"
+        assert found_other, "OTHER CAPITAL INVESTMENT INCOME subsection not found"
+
+        dividend_data_rows = [
+            row for row in rows if row and len(row) > 1 and row[0] == "Share dividends"
+        ]
+        reward_data_rows = [
+            row for row in rows if row and len(row) > 1 and isinstance(row[1], str) and row[0].startswith("Crypto")
+        ]
+        assert len(dividend_data_rows) == 1, f"Expected 1 dividend row, found {len(dividend_data_rows)}"
+        assert len(reward_data_rows) == 1, f"Expected 1 reward row, found {len(reward_data_rows)}"
 
         workbook.close()

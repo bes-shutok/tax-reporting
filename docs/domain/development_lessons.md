@@ -49,21 +49,43 @@ error_message = (
 - 3-tier structure: unit (`tests/unit/`) → integration (`tests/integration/`) → e2e (`tests/end_to_end/`).
 - Markers: `@pytest.mark.unit`, `@pytest.mark.integration`, `@pytest.mark.e2e`.
 - Unit tests may access internal functions; integration/e2e use only public APIs.
+- Edge case coverage: When testing string sanitization, validation, or parsing functions, explicitly test edge cases:
+  - Empty strings and whitespace-only inputs
+  - Multi-byte UTF-8 characters
+  - Control characters (null, newline, carriage return)
+  - Multi-character prefixes (e.g., `==`, `++` vs single `=`, `+`)
+  - Padded inputs (leading/trailing whitespace)
+- Error path coverage: Test double-failure scenarios where multiple error conditions occur together (e.g., aggregation fails AND workbook.close fails).
 
-## 7. Refactoring and Maintenance
+## 7. Excel Output Security
+- All external data string fields (from any provider: Koinly, IB, etc.) must be wrapped with `safe_cell_value()` before writing to Excel cells. Formula injection vulnerabilities exist if even one field is unprotected.
+- Check consistency: if most fields in a section use `safe_cell_value()`, any unprotected field is likely a bug.
+- Common unprotected fields to watch: `review_reason`, `description`, chain names, wallet labels, platform names.
+
+## 8. Type Annotation Specificity
+- Use specific element types for generic collections: `list[Type] | None` instead of `list | None`.
+- Specific types improve documentation, IDE autocomplete, and static analysis.
+- When the type is imported only for annotations, keep it inside `TYPE_CHECKING` block.
+
+## 9. Exception Handler Specificity
+- Catch specific exception types (`FileProcessingError`, `ValueError`) instead of broad `Exception`.
+- Broad exception handlers mask programming errors and make debugging harder.
+- When a function documents raising a specific exception, catch that exact type in callers.
+
+## 10. Refactoring and Maintenance
 - Make small incremental changes and run `uv run pytest` after each one.
 - Remove temporary scripts immediately after use.
 
-## 8. Error Handling and Logging
+## 11. Error Handling and Logging
 - Always include row numbers and problematic data in error messages.
 - Use `from e` exception chaining to preserve original context.
 - Logging: parameterised format (`%s`). Exceptions: f-strings. See §1 Instruction Rules for full detail.
 
-## 9. API Design for Production vs Testing
+## 12. API Design for Production vs Testing
 - Do not add features or parameters solely to satisfy tests; adjust tests to match production patterns instead.
 - When tests need special handling, first try to make tests reflect real usage before adding complexity to production code.
 
-## 10. Test Path and Fixture Management
+## 13. Test Path and Fixture Management
 - Never use `Path(__file__).parent.parent` in tests — breaks when files move.
 - Always use pytest fixtures (`tmp_path`, `tmp_path_factory`) for file operations:
 
@@ -76,46 +98,46 @@ def test_file(tmp_path: Path) -> Path:
     return f
 ```
 
-## 11. Simplify Unnecessary Complexity (YAGNI)
+## 14. Simplify Unnecessary Complexity (YAGNI)
 - Remove parameters that always have the same value (e.g. `require_trades_section=True` → hardcode it).
 - Do not add features "just in case".
 
-## 12. Excel/openpyxl Column Width
+## 15. Excel/openpyxl Column Width
 - openpyxl stores formulas as strings; `cell.value` returns the raw formula (e.g., `"=USD EUR*(1234.56)"`), not the computed result.
 - Auto-width logic must skip formula cells (`cell.data_type == "f"`) and size columns from headers + non-formula values only.
 - The crypto sheet auto-width block has a missing `default=0` in `max()` that raises `ValueError` on empty columns — always provide `default=0` when calling `max()` on a generator.
 
-## 13. Test Real Behavior, Not Implementation Details
+## 16. Test Real Behavior, Not Implementation Details
 - Verify that a feature works end-to-end, not just that it returns a certain value.
 - Use realistic test data; check that integrated components produce correct outputs.
 
-## 14. Test CSV Data Construction — Column Alignment
+## 17. Test CSV Data Construction — Column Alignment
 
-See `~/Projects/docs/python_guidelines.md` #1 for full prevention rules.
+See `~/Projects/.ai-playbook/python_guidelines.md` #1 for full prevention rules.
 Repo context: Koinly `_TH_HEADER` has 20 columns; hand-counting commas is the biggest source of wasted debug iterations.
 
 ## 15. Post-Extraction Cleanup
 
-See `~/Projects/docs/python_guidelines.md` #2 for full cleanup procedure.
+See `~/Projects/.ai-playbook/python_guidelines.md` #2 for full cleanup procedure.
 Repo context: past extractions (crypto_reporting.py → token_origin.py + koinly_parser.py) left unused imports and dead code.
 
 ## 16. Aggregation Logic — Test Both Directions
 
-See `~/Projects/docs/agent_workflow_guidelines.md` #1.
+See `~/Projects/.ai-playbook/agent_workflow_guidelines.md` #1.
 Repo context: LP liquidity operations — fixing "in" direction broke "out" because liquidity out produces multiple outputs from one input.
 
 ## 17. Operator Mapping Field Semantics (`service_start_date` / `valid_from`)
 
-See `~/Projects/docs/agent_workflow_guidelines.md` #3 for the generic field-semantics lesson.
+See `~/Projects/.ai-playbook/agent_workflow_guidelines.md` #3 for the generic field-semantics lesson.
 Repo-specific constraint: `valid_from` is audit-only (when the mapping was verified from source docs). `service_start_date` is for transaction matching (when the platform started offering this service). Never use `valid_from` as a matching gate. When both are known, `service_start_date <= valid_from`.
 
 ## 18. Review Agent False Positives
 
-See `~/Projects/docs/agent_workflow_guidelines.md` #2.
+See `~/Projects/.ai-playbook/agent_workflow_guidelines.md` #2.
 
 ## 19. Descriptive Output Labels
 
-See `~/Projects/docs/coding_guidelines.md` #9 for the canonical rule.
+See `~/Projects/.ai-playbook/coding_guidelines.md` #9 for the canonical rule.
 Repo context: crypto gains sheet headers renamed from terse Koinly CSV names to self-explanatory terms (e.g. "Quantity" not "Amount", "Acquisition Cost (EUR)" not "Cost (EUR)").
 
 ## 20. Frozen Dataclass `__post_init__` Field Normalization
@@ -225,12 +247,12 @@ Use `perl -i -pe 's/\bold_name\b/new_name/g' file` for word-boundary renames on 
 
 ## 36. Avoid `__getattr__` Delegation in Wrapper Dataclasses
 
-See `~/Projects/docs/python_guidelines.md` #3 for the canonical rule.
+See `~/Projects/.ai-playbook/python_guidelines.md` #3 for the canonical rule.
 Repo context: `AcquisitionContext`/`ConsumptionContext` wrappers were introduced to attach `tx_key` and `source_row_index` to domain entities without modifying the domain layer. The `__getattr__` delegation made type checkers unable to verify delegated field access (`.date`, `.asset`, etc.), and the `with_acq()`/`with_con()` factory methods were called only twice combined. The correct fix is to add `tx_key` and `source_row_index` directly to `CryptoAcquisition` and `CryptoConsumption` in the domain layer.
 
 ## 37. Monkeypatch Module-Level Path Constants in Unit Tests
 
-See `~/Projects/docs/python_guidelines.md` #4 for the canonical rule.
+See `~/Projects/.ai-playbook/python_guidelines.md` #4 for the canonical rule.
 Repo context: `_DECISION_POINTS_DIR = _REPO_ROOT / "docs/tax/decision_points"` in `config.py` is resolved at import time. Tests in `TestLoadTaxJurisdictionConfig` that called `_load_tax_jurisdiction_config()` without patching this constant silently read the real `2025.toml` from the working tree. They passed because the real file existed and had PT=True — any rename, move, or fiscal-year change would cause a cryptic `FileNotFoundError` rather than a meaningful test failure.
 Fix: monkeypatch `_DECISION_POINTS_DIR` to a `tmp_path`-based directory with a minimal TOML fixture, identical to the pattern in `TestLoadDecisionPointsFlags`.
 
@@ -251,7 +273,7 @@ except FileNotFoundError as e:
 
 ## 39. Resource-Release Flag Must Be Set After Successful Release Only
 
-See `~/Projects/docs/python_guidelines.md` #5 for the canonical rule.
+See `~/Projects/.ai-playbook/python_guidelines.md` #5 for the canonical rule.
 Repo context: `workbook_builder.py` set `workbook_closed = True` unconditionally after a `try/except` that swallowed `workbook.close()` exceptions. The `finally` block then skipped the fallback `workbook.close()` call because the flag was already `True`, leaking the file handle whenever both the crypto sheet rendering and the subsequent close both raised.
 
 ## 40. Defensive Warnings Must Also Record Items in the Failure-Tracking Structure
@@ -363,6 +385,253 @@ When a subsystem requires a complete set of N files from an external tool export
 - **All N present** → proceed normally.
 
 The silent-data-loss case that triggered this lesson: `income_file = None` was handled as `reward_entries = []` with no warning or error, so Wirex EUR lending interest vanished from the Crypto Rewards tab without any indication. The user attributed the disappearance to a code change, but the actual cause was a missing export file. Fail-fast on partial sets eliminates this class of confusion.
+
+## 52. Suspicious Asset Detection via Non-Latin Script Characters
+
+Asset tickers that use non-Latin script characters (Cyrillic, Greek, etc.) are strong indicators of homoglyph scam tokens. Example: **UЅDT** (Latin USDT with Cyrillic Ѕ instead of S) or **WBТC** (Latin WBTC with Cyrillic Т instead of T).
+
+**Detection rule**: Use Unicode codepoint ranges to identify non-Latin characters. Allow:
+- Basic Latin (ASCII): U+0000–U+007F
+- Latin-1 Supplement: U+0080–U+00FF (accented Latin like é, ñ, ö)
+- Latin Extended-A/B: U+0100–U+024F
+
+**Action**: Flag assets with characters outside these ranges as suspicious:
+- In reward/gains parsing: set `review_required=True` with reason "Asset ticker '{asset}' contains non-Latin characters - potential homoglyph scam token"
+- In skipped assets tracking: mark `suspicious=True` to highlight in reconciliation report
+- Do NOT normalize these to Latin (preserving the scam characters makes them visible for investigation)
+
+**Implementation**: `src/tax_reporting/infrastructure/koinly_parser.py:contains_non_latin_characters()`
+
+## 53. Zero-Value Flagging vs Skipping
+
+**Rewards**: Skip zero-value rows by default, but flag known/popular tokens for review instead of skipping.
+
+**Capital gains**: Flag zero-cost or zero-proceeds entries with specific review reasons:
+- Zero cost: "Zero acquisition cost - verify basis (airdrop, data error, or misclassification)"
+- Zero proceeds: "Zero disposal proceeds - verify sale data (transfer error, data quality issue)"
+
+**Known assets**: Use both:
+- Hardcoded popular tokens list (`_POPULAR_CRYPTO_TOKENS` with ~100 tokens: BTC, ETH, SOL, USDT, etc.)
+- Dynamic discovery: scan files first for assets with non-zero values, use that as `known_assets` set
+- Substring matching: catch Koinly variants like TSTON (contains "TON"), TSUSDE (contains "USDE")
+
+**Reporting**: Flagged entries appear with red fill and "YES: <reason>" in the Review column.
+
+## 54. Substring Matching for Token Variants
+
+Koinly uses prefixes/suffixes for tracked or staked tokens (e.g., **TSTON**, **TSUSDE**) — these don't match exact popular token names but contain the base token as a substring.
+
+**Implementation**: `_contains_popular_token()` checks if any popular token exists as a substring (case-insensitive) within the asset ticker.
+
+**Use**: Zero-value flagging uses this to catch variants like:
+- TSTON → contains "TON" → flagged
+- TSUSDE → contains "USDE" → flagged
+- USDT itself → exact match → flagged
+
+## 55. Verify Staged Diff Matches Implementation Before Finalizing
+
+When finalizing work for code review or commit, the staged diff (`git diff master...HEAD`) must match the actual implementation in the working directory. Untracked files that are part of the implementation create a discrepancy — reviewers evaluate stale code while the working directory has different logic.
+
+**Check before finalizing**: Run `git status` and verify no files that are part of the implementation appear as untracked (`??`). If a new source file or test exists in the working directory but is not staged, add it with `git add <file>` before considering the work ready for review.
+
+**Why**: Code reviews evaluate staged changes. If staged code differs from working directory, review findings may be obsolete or the review may miss issues that exist only in untracked files.
+
+## 56. Try/Finally Resource-Cleanup Scope Must Cover All Raising Operations
+
+When using try/finally for resource cleanup (e.g., `workbook.close()`, `file.close()`), ensure all operations that can raise exceptions before the finally block are covered by the same try block. If an operation outside the try/finally raises, the cleanup never runs.
+
+**Fix by**: Either (1) start the try block early enough to cover all operations that can raise, or (2) wrap early operations in their own try/except with explicit cleanup before re-raising.
+
+**Example**: In workbook_builder.py, `aggregate_taxable_rewards()` was called before the try/finally that closes the workbook. If aggregation raised, the workbook was never closed. Fixed by moving aggregation inside the try block so any exception triggers workbook cleanup.
+
+## 57. When Removing Functions, Remove Their Tests
+
+When removing or deleting a function from a module, check for and remove any tests that import or test that function. Leaving tests that import deleted functions causes `ImportError` during test collection.
+
+**Check**: Use `grep -rn "<function_name>" tests/` to find test references before removing the function.
+
+## 58. Update Documentation When Code Structure Changes
+
+When restructuring code (changing sheet layouts, renaming components, merging or splitting modules), update all documentation that describes the structure in the same session. README files, walkthough documents, and project overviews that describe the old structure become misleading and cause confusion.
+
+**Scope**: Check README.md, any walkthrough or presentation docs, and any architectural decision documents that mention the changed components.
+
+## 59. Hardcoded Set Maintenance — Check Across All Sections for Duplicates
+
+When maintaining multi-section hardcoded collections (like `_POPULAR_CRYPTO_TOKENS`, `_INCOME_CODE_DESCRIPTIONS`), items can legitimately belong to multiple categories. Before adding an item to one section, grep across all sections to verify it doesn't already exist elsewhere in the same collection.
+
+**Problem**: Frozensets and dicts silently deduplicate, so duplicate entries don't cause runtime errors but create confusion for maintenance and can mislead readers about category boundaries.
+
+**Check pattern**: `grep -n '"ITEM_NAME"' src/tax_reporting/application/crypto_reporting.py` before adding a new token.
+
+**Example**: "ARB", "OP", "MATIC" appeared in both "Layer 1 / Major chains" and "Layer 2 / Scaling" sections — keep each token in its most appropriate category only.
+
+## 60. Document Tradeoffs for Fuzzy Matching in Docstrings
+
+When implementing fuzzy matching (substring matching, regex patterns, glob patterns, etc.) that could produce false positives, document the tradeoff explicitly in the docstring so future maintainers understand the design decision and don't "fix" what isn't broken.
+
+**What to document**:
+- What the fuzzy matching catches (intended targets)
+- What false positives it may produce (collateral matches)
+- Why the approach is acceptable despite its imperfections
+- The consequence of a false positive (usually just flagging for review rather than skipping important data)
+
+**Example** (from `_contains_popular_token`): "Tradeoff: Substring matching may cause false positives for tickers that coincidentally contain popular token names as substrings (e.g., 'MATICAL' matches 'MATIC'). This is acceptable because the consequence is merely flagging for review rather than incorrectly skipping a legitimate zero-value reward."
+
+## 61. Add Logging to Silent Exception Handlers
+
+When using `except Exception: continue` or similar graceful degradation patterns, add warning-level logging before continuing. Silent failures hide real issues (file corruption, permission problems, malformed data) and make debugging impossible.
+
+**What to log**: At minimum, log the file path, exception type, and message so the degradation is observable in logs.
+
+**Pattern**:
+```python
+# ❌ WRONG — silent failure hides the problem
+try:
+    rows = read_koinly_rows(file_path)
+    # ... process rows ...
+except Exception:
+    continue  # No visibility into what failed
+
+# ✅ CORRECT — observable degradation
+try:
+    rows = read_koinly_rows(file_path)
+    # ... process rows ...
+except Exception as e:
+    logger.warning("Failed to scan %s: %s. Continuing with empty set.", file_path, e)
+    continue
+```
+
+**Why**: When the function fails silently, you can't tell whether the empty result is correct (no data) or caused by a bug (file couldn't be read). Logging makes the difference visible.
+
+## 62. Review Documents Are Temporary Artifacts
+
+Code review documents in `docs/reviews/` are temporary staging artifacts for the review workflow, not permanent documentation. They serve as:
+- Approval artifacts before posting review comments to a PR
+- Persistent record of what was reviewed and what changed
+
+**Lifecycle**:
+1. Created during code review with findings marked as `pending`
+2. Updated to `fixed` / `drop` / `post` as findings are addressed
+3. After all findings are addressed: either delete the file or move to `docs/tmp/` if it has reference value
+
+**Do not**: Accumulate stale review documents in `docs/reviews/`. After the branch is merged, these documents have no further purpose.
+
+## 63. Fail Fast for Data-Completeness Operations
+
+For scan/aggregation functions that populate lookup sets used for validation or classification, fail fast when ALL inputs fail rather than returning empty results that cause incorrect downstream behavior. Partial success with warning is acceptable; total failure should raise an error.
+
+**Pattern**:
+```python
+# ❌ WRONG - Silent degradation causes incorrect behavior
+def _collect_known_assets(files):
+    known = set()
+    for f in files:
+        try:
+            known.update(parse(f))
+        except Exception:
+            pass  # Silently return empty set if all files fail
+    return frozenset(known)
+
+# ✅ CORRECT - Fail fast when all inputs fail
+def _collect_known_assets(files):
+    known = set()
+    failures = []
+    for f in files:
+        try:
+            known.update(parse(f))
+        except Exception as e:
+            failures.append((f, e))
+
+    if files and len(failures) == len(files):
+        raise FileProcessingError(f"All files failed: {failures}")
+    return frozenset(known)
+```
+
+**Why**: When the function returns empty due to total failure, downstream code incorrectly treats valid known assets as unknown, causing data loss. Raising an error surfaces the root cause (file format/parse errors) prominently.
+
+## 64. Context Managers for Resource Cleanup
+
+For resource cleanup with multiple exit paths (success, multiple failure types, nested try-except), use context managers for clarity and guaranteed cleanup.
+
+**Pattern**:
+```python
+# ❌ WRONG - Complex nested structure, cleanup duplicated in except and finally
+def process():
+    resource = acquire()
+    closed = False
+    try:
+        do_work(resource)
+    except Exception:
+        resource.close()
+        closed = True
+        raise
+    finally:
+        if not closed:
+            resource.close()
+
+# ✅ CORRECT - Context manager encapsulates lifecycle
+@contextmanager
+def _resource_lifecycle():
+    resource = acquire()
+    try:
+        yield resource
+    finally:
+        resource.close()
+
+def process():
+    with _resource_lifecycle() as resource:
+        do_work(resource)
+```
+
+**Why**: Context managers make the success path clearer (no flag tracking) and guarantee cleanup even for unexpected exceptions. The cleanup logic is defined once and reused.
+
+## 65. Parameter Objects for Complex Signatures
+
+When a function signature grows beyond ~5 parameters, especially when they represent shared parsing/accumulation state rather than primary inputs, group related parameters into a context/Parameter Object.
+
+**Pattern**:
+```python
+# ❌ WRONG - Hard to track which parameters belong together
+def _parse_file(path, skipped, resolver, reviews, known, assets, flags):
+    pass
+
+# ✅ CORRECT - Group related state into a context object
+@dataclass(frozen=True)
+class ParsingContext:
+    skipped_assets: Counter
+    origin_resolver: Resolver
+    review_entries: list[Review]
+    known_assets: frozenset[str]
+    loan_affected_assets: frozenset[str]
+
+def _parse_file(path, context: ParsingContext):
+    pass
+```
+
+**When to use Parameter Objects**:
+- Parameters are passed together to multiple functions
+- Parameters represent shared state across a processing pipeline
+- The set of parameters is growing over time
+- Improves readability and testability
+
+## 66. Externalize Frequently-Changing Lists
+
+Hardcoded lists that change frequently (popular tokens, supported exchanges, asset tickers) should be externalized to data files, not embedded in source code. Use cached loading for performance.
+
+**Pattern**:
+```python
+# ❌ WRONG - Requires code change for every new token
+_POPULAR_TOKENS = frozenset(("BTC", "ETH", "SOL", ...))  # 70+ items
+
+# ✅ CORRECT - External data file, cached in memory
+@lru_cache(maxsize=1)
+def _load_popular_tokens() -> frozenset[str]:
+    with open("docs/tax/popular_crypto_tokens.json") as f:
+        return frozenset(json.load(f)["tokens"])
+```
+
+**Why**: Lists representing external reality (crypto market, exchange support, regulatory lists) change independently of code. Externalizing allows updates without code changes and separates configuration from logic.
 
 ## Quality Assurance Commands
 

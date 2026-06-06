@@ -44,13 +44,13 @@ Specifically:
 - The repo is a Portugal-specific layer on top of generic crypto tax exports. It does not replace Koinly's import, matching, or gain-calculation engine; it prepares the output for Portuguese reporting.
 - The project is grounded in current official sources and professional guidance. Those materials are mirrored in the repo, tracked in source manifests, and re-checked before they are used in analysis or implementation.
 - Koinly FIFO rows are combined into one line per sale event, grouped by disposal date (day-level precision), asset, platform, and holding period. The grouping matches the Anexo J Quadro 9.4 form which only has Ano/Mês/Dia date columns -- no time-of-day field exists (PT-C-020). Coarser grouping (per month, per year) is not acceptable.
-- Crypto rewards are classified as taxable now when paid in fiat money and deferred by law when paid in crypto, under CIRS article 5(11), and then grouped by income code and source country for Anexo J Quadro 8A.
+- Crypto rewards are classified as taxable now when paid in fiat money and deferred by law when paid in crypto, under CIRS article 5(11). Taxable-now fiat rewards are aggregated by income code and source country and written to the `Reporting` worksheet under `OTHER CAPITAL INVESTMENT INCOME` for Anexo J Quadro 8A filing. The `Crypto Rewards` worksheet retains classification detail and reconciliation.
 - `País da Fonte` is determined using Portuguese source-country rules tied to the operator or paying entity, because generic aggregators usually provide wallet or platform labels but not the country attribution needed for the tax return.
 - Sub-1-EUR lines are filtered out because they have no material tax impact and the AT portal requires manual entry per line.
 - Holding period is preserved in the output because short-term taxable disposals and `>=365`-day excluded disposals have different Portuguese treatment and may belong in different annexes.
 - The LLM instruction set is part of the architecture. Before crypto logic is changed, it directs the implementation flow back through the domain rule files, implementation guidelines, and source manifests. This helps the project stay legally grounded while still supporting robust and fast-paced implementation.
 
-The result: 900 raw capital-gains rows become 4 reporting lines. 160 raw reward rows are classified and either grouped into a filing summary or documented as deferred.
+The result: 900 raw capital-gains rows become 4 reporting lines. 160 raw reward rows are classified; taxable-now fiat rewards are grouped into the Reporting worksheet's capital investment income section, and deferred crypto-denominated rewards are documented as support detail.
 
 Demo asset: run `uv run pytest tests/end_to_end/test_example_report_generation.py -v` to see this compression in action.
 
@@ -140,7 +140,7 @@ The 160 synthetic reward rows split into two categories:
 
 Taxable now (10 rows -- EUR referral rewards from Kraken):
 
-Ten EUR-denominated referral rewards are immediately taxable as Category E income under CIRS art. 5(11) because the remuneration is not in the form of cryptoassets, so the deferral rule does not apply. These rows are grouped by income code from Tabela V and source country from Tabela X into a single summary line for Anexo J Quadro 8A: income code 401, country IE, 30.00 EUR gross.
+Ten EUR-denominated referral rewards are immediately taxable as Category E income under CIRS art. 5(11) because the remuneration is not in the form of cryptoassets, so the deferral rule does not apply. These rows are grouped by income code from Tabela V and source country from Tabela X into a single summary line written to the `Reporting` worksheet under `OTHER CAPITAL INVESTMENT INCOME`: income code 401, country IE, 30.00 EUR gross. The `Crypto Rewards` worksheet retains the per-row classification detail and reconciliation for auditability but is not a filing target for these taxable-now aggregates.
 
 Deferred by law (150 rows):
 

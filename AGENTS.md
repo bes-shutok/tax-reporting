@@ -49,7 +49,7 @@ This file provides guidance to coding agents when working with code in this repo
 - After aggregation, exclude entries where `|gain/loss| < 1 EUR`. Do not remove `_filter_immaterial_entries()` or parameterize `_MATERIALITY_THRESHOLD` without a `crypto_rules.md` update.
 - Crypto reward income must be aggregated by `(income_code, source_country)` before inclusion in the IRS-ready filing table. Do not bypass or remove `aggregate_taxable_rewards()`.
 - Reward classification into taxable_now vs deferred_by_law must use `_classify_reward_tax_status()` and cite CRG-001/CRG-002 rule IDs.
-- Crypto worksheet must present rewards in two sections: IRS-ready filing summary (taxable_now only) and support detail (both classifications).
+- Taxable-now crypto-origin fiat rewards must be validated and aggregated before inclusion in the `Reporting` capital investment income section under `OTHER CAPITAL INVESTMENT INCOME`. The `Crypto Supplementary` worksheet retains support detail (per-row trace data, classification, reconciliation) for both taxable-now and deferred rewards but is not a filing target. See SRG-008.
 - The aggregation step must fail with `FileProcessingError` if any taxable-now row cannot be assigned all mandatory IRS fields (valid Tabela X country code).
 - When `review_required=True` is set on `CryptoCapitalGainEntry` or `CryptoRewardIncomeEntry`, the `review_reason` field must contain a specific, actionable explanation. The Excel output shows "YES: \<reason\>" rather than a bare boolean. See PT-C-030.
 - `OperatorOrigin` carries two separate review flags: `review_required` (row-level, triggers "YES: <reason>" and red fill on the transaction row) and `platform_review_required` (platform-level, controls the Platform Assumptions tab only — does NOT color transaction rows). Never conflate them. See CRG-016.
@@ -317,7 +317,7 @@ tax-reporting/
 │       │       ├── rollover.py           # Rollover CSV export
 │       │       ├── workbook_builder.py   # Orchestrator: creates workbook, delegates to sheet writers
 │       │       ├── crypto_gains_sheet.py       # Crypto Gains tab
-│       │       ├── crypto_rewards_sheet.py     # Crypto Rewards tab
+│       │       ├── crypto_supplementary_sheet.py  # Crypto Supplementary tab
 │       │       ├── crypto_reconciliation_sheet.py  # Crypto Reconciliation tab
 │       │       ├── loan_activity_sheet.py      # Loan Activity tab (per-asset balances)
 │       │       └── assumptions_sheet.py        # Platform Assumptions tab (operator manifest)

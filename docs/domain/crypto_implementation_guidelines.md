@@ -905,6 +905,51 @@ When decision points or rules conflict, always verify against the primary author
 - Verify the current paragraph number against the consolidated CIRS PDF before relying on AT citations
 - See `docs/tax/laws/pt/crypto-tax/` for archived official sources
 
+## Traceability and Review Flagging
+
+### Review Entries Must Not Be Ghost Data
+
+When flagging entries for manual review, ensure they remain visible in their primary data context. If an entry appears ONLY in a "REVIEW REQUIRED" section and not in the main capital gains/reward data, users cannot trace it back to source rows—creating a "ghost" review item with no audit trail.
+
+**Correct pattern**: Zero-value entries for known assets should be added to the main entry list with `review_required=True`, AND added to review_entries for prominence. Review-only sections should be additive cross-references, not the sole location for flagged items.
+
+```python
+# ❌ WRONG - Zero-value known tokens appear only in review section
+if is_all_zero and is_known_token:
+    review_entries.append(CryptoReviewEntry(...))
+    continue  # Skips adding to capital_entries
+
+# ✅ CORRECT - Zero-value known tokens appear in both places
+if is_all_zero and is_known_token:
+    review_entries.append(CryptoReviewEntry(...))
+    review_required = True  # Set flag
+# Continue to create entry in capital_entries below with review_required=True
+```
+
+**Impact**: Traceability requires that every review-flagged item can be traced back to its source row in the main data set.
+
+### Testing Excel Rendering Features
+
+When adding new Excel sections or conditional formatting features (suspicious flags, review sections, color-coding), add test coverage for:
+
+1. **Section structure**: Title, headers, note text
+2. **Data row values**: Correct cell values for each column
+3. **Formatting**: Red font, bold, italics, color fills
+4. **Empty state**: Behavior when no items exist
+
+**Example test structure**:
+```python
+def test_suspicious_flag_formatting(self):
+    """Test that suspicious assets are highlighted with red font."""
+    entry = CryptoReviewEntry(..., is_suspicious=True)
+    # Write to Excel
+    asset_cell = ws.cell(row, 3)
+    assert asset_cell.font.bold is True
+    assert asset_cell.font.color.rgb in ("FFFF0000", "00FF0000")
+```
+
+**Why**: Excel rendering is UI surface. Conditional formatting and new sections are user-visible and should have test coverage equivalent to unit tests for business logic.
+
 ## References
 
 - Plan: `docs/plans/aggregate-crypto-rewards-income.md`

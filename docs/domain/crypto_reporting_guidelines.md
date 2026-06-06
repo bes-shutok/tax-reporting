@@ -58,7 +58,7 @@ The country determination follows the same hierarchy, with these clarifications:
 - Pure protocol interaction → Use chain origin from `operator_chain_origin_registry.md`
 
 **CRG-007**
-The final Crypto sheet must be IRS-ready: filing-facing rows must not be missing mandatory IRS fields, and broad placeholders such as `Multiple jurisdictions` must not appear when a repository mapping policy exists.
+Taxable-now reward aggregates must be IRS-ready when projected to the `Reporting` worksheet: filing-facing rows written to the `CAPITAL INVESTMENT INCOME` section must not be missing mandatory IRS fields, and broad placeholders such as `Multiple jurisdictions` must not appear when a repository mapping policy exists. The `Crypto Rewards` worksheet is support detail and classification reconciliation; it retains per-row trace data and deferred-by-law entries but is not a second filing target for taxable-now aggregates.
 
 ## Data Normalization Guidance
 

@@ -129,43 +129,56 @@ def format_datetime(value: datetime) -> str:
 
 
 def normalize_asset_ticker(asset: str) -> str:
-    """Normalize common character encoding issues in asset tickers.
+    """Normalize asset ticker using Unicode canonical form.
 
-    Fixes known encoding issues such as:
-    - Cyrillic 'Т' (U+0422) instead of Latin 'T' in WBТC
-    - Cyrillic 'Е' (U+0415) instead of Latin 'E'
-    - Other visually similar Cyrillic-Latin character pairs
+    Applies NFKC normalization for compatibility but does NOT convert
+    between scripts (no Cyrillic-to-Latin mapping). Non-Latin characters
+    are preserved for security — they may indicate homoglyph scam tokens.
 
     Args:
         asset: The raw asset ticker from Koinly.
 
     Returns:
-        Normalized asset ticker with known character substitutions applied.
+        Normalized asset ticker with Unicode NFKC normalization applied.
+        Non-Latin script characters (Cyrillic, Greek, etc.) are preserved.
     """
-    # Replace commonly confused Cyrillic characters with Latin equivalents
-    cyrillic_to_latin = {
-        "Т": "T",  # U+0422 Cyrillic Te -> Latin T
-        "Е": "E",  # U+0415 Cyrillic Ie -> Latin E
-        "О": "O",  # U+041E Cyrillic O -> Latin O (same visual, different codepoint)
-        "Р": "P",  # U+0420 Cyrillic Er -> Latin P
-        "А": "A",  # U+0410 Cyrillic A -> Latin A
-        "Н": "H",  # U+041D Cyrillic En -> Latin H
-        "К": "K",  # U+041A Cyrillic Ka -> Latin K
-        "М": "M",  # U+041C Cyrillic Em -> Latin M
-        "С": "C",  # U+0421 Cyrillic Es -> Latin C
-        "В": "B",  # U+0412 Cyrillic Ve -> Latin B
-        "Х": "X",  # U+0425 Cyrillic Ha -> Latin X
-        "у": "y",  # U+0443 Cyrillic U -> Latin y (lowercase)
-        "е": "e",  # U+0435 Cyrillic ie -> Latin e (lowercase)
-        "о": "o",  # U+043E Cyrillic o -> Latin o (lowercase)
-        "р": "p",  # U+0440 Cyrillic er -> Latin p (lowercase)
-        "а": "a",  # U+0430 Cyrillic a -> Latin a (lowercase)
-    }
-    for cyrillic, latin in cyrillic_to_latin.items():
-        asset = asset.replace(cyrillic, latin)
     # Normalize unicode characters to canonical composed form
     asset = unicodedata.normalize("NFKC", asset)
     return asset.strip()
+
+
+def contains_non_latin_characters(asset: str) -> bool:
+    """Check if an asset ticker contains non-Latin script characters.
+
+    This is a security check to detect potential homoglyph scam tokens.
+    Scammers use visually similar characters from other scripts (Cyrillic, Greek, etc.)
+    to create fake tokens that look like legitimate ones (e.g., UЅDT vs USDT).
+
+    Args:
+        asset: The asset ticker to check.
+
+    Returns:
+        True if the asset contains characters from non-Latin scripts.
+    """
+    for char in asset:
+        if char == " " or char == "-" or char == "_" or char == ".":
+            continue  # Skip common separators
+        codepoint = ord(char)
+        # Basic Latin (ASCII): U+0000 to U+007F
+        if 0x00 <= codepoint <= 0x7F:
+            continue
+        # Latin-1 Supplement: U+0080 to U+00FF (includes accented Latin characters)
+        if 0x80 <= codepoint <= 0xFF:
+            continue
+        # Latin Extended-A: U+0100 to U+017F
+        if 0x100 <= codepoint <= 0x17F:
+            continue
+        # Latin Extended-B: U+0180 to U+024F
+        if 0x180 <= codepoint <= 0x24F:
+            continue
+        # Anything else is non-Latin (Cyrillic U+0400-U+04FF, Greek U+0370-U+03FF, etc.)
+        return True
+    return False
 
 
 def normalize_platform_name(wallet: str) -> str:

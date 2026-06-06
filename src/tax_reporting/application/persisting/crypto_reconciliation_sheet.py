@@ -77,6 +77,7 @@ def write_crypto_reconciliation_sheet(workbook: openpyxl.Workbook, crypto_tax_re
     worksheet.cell(row_no, 1, "Source section")
     worksheet.cell(row_no, 2, "Asset")
     worksheet.cell(row_no, 3, "Skipped rows")
+    worksheet.cell(row_no, 4, "Suspicious")
     row_no += 1
 
     if crypto_tax_report.skipped_zero_value_tokens:
@@ -84,10 +85,17 @@ def write_crypto_reconciliation_sheet(workbook: openpyxl.Workbook, crypto_tax_re
             worksheet.cell(row_no, 1, skipped.source_section)
             worksheet.cell(row_no, 2, skipped.asset)
             worksheet.cell(row_no, 3, skipped.count)
+            # Mark suspicious assets (potential homoglyph scam tokens)
+            if skipped.suspicious:
+                suspicious_cell = worksheet.cell(row_no, 4, "YES - non-Latin characters, probable scam")
+                suspicious_cell.font = Font(color="FF0000")  # Red text
+                suspicious_cell = worksheet.cell(row_no, 2, skipped.asset)
+                suspicious_cell.font = Font(color="FF0000", bold=True)  # Also highlight asset in red
             row_no += 1
     else:
         worksheet.cell(row_no, 1, "none")
         worksheet.cell(row_no, 2, "")
         worksheet.cell(row_no, 3, 0)
+        worksheet.cell(row_no, 4, "")
 
     auto_column_width(worksheet)

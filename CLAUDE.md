@@ -21,6 +21,8 @@ This file provides guidance to coding agents when working with code in this repo
 
 ### 2. Repository Style and Conventions
 
+- Use specific type annotations for generic collections (`list[Type] | None` instead of `list | None`). See `docs/domain/development_lessons.md #8`.
+- Catch specific exception types (`FileProcessingError`, `ValueError`) instead of broad `Exception`. See `docs/domain/development_lessons.md #9`.
 - Koinly source discovery must be year-agnostic (`koinly*`) and prefer a year matching parsed IB data when available.
 - If an inferred IB tax year exists and the selected Koinly directory year differs, skip crypto loading for that run.
 - Dividend aggregation must validate one currency per symbol; mismatches must raise `FileProcessingError`.
@@ -49,7 +51,7 @@ This file provides guidance to coding agents when working with code in this repo
 - After aggregation, exclude entries where `|gain/loss| < 1 EUR`. Do not remove `_filter_immaterial_entries()` or parameterize `_MATERIALITY_THRESHOLD` without a `crypto_rules.md` update.
 - Crypto reward income must be aggregated by `(income_code, source_country)` before inclusion in the IRS-ready filing table. Do not bypass or remove `aggregate_taxable_rewards()`.
 - Reward classification into taxable_now vs deferred_by_law must use `_classify_reward_tax_status()` and cite CRG-001/CRG-002 rule IDs.
-- Crypto worksheet must present rewards in two sections: IRS-ready filing summary (taxable_now only) and support detail (both classifications).
+- Taxable-now crypto-origin fiat rewards must be validated and aggregated before inclusion in the `Reporting` capital investment income section under `OTHER CAPITAL INVESTMENT INCOME`. The `Crypto Supplementary` worksheet retains support detail (per-row trace data, classification, reconciliation) for both taxable-now and deferred rewards but is not a filing target. See SRG-008.
 - The aggregation step must fail with `FileProcessingError` if any taxable-now row cannot be assigned all mandatory IRS fields (valid Tabela X country code).
 - When `review_required=True` is set on `CryptoCapitalGainEntry` or `CryptoRewardIncomeEntry`, the `review_reason` field must contain a specific, actionable explanation. The Excel output shows "YES: \<reason\>" rather than a bare boolean. See PT-C-030.
 - `OperatorOrigin` carries two separate review flags: `review_required` (row-level, triggers "YES: <reason>" and red fill on the transaction row) and `platform_review_required` (platform-level, controls the Platform Assumptions tab only — does NOT color transaction rows). Never conflate them. See CRG-016.
@@ -73,6 +75,8 @@ This file provides guidance to coding agents when working with code in this repo
 
 ### 4. Agent Workflow Rules
 
+- When testing string sanitization, validation, or parsing functions, explicitly test edge cases (empty strings, whitespace-only, multi-byte, control chars, multi-char prefixes, padded inputs). See `docs/domain/development_lessons.md #6`.
+- Test error path coverage including double-failure scenarios (e.g., aggregation fails AND workbook.close fails). See `docs/domain/development_lessons.md #6`.
 - Examine existing source data files in the repository (e.g., `resources/source/koinly*/`) directly before asking the user to provide samples or examples. Use Glob and Read tools to find and analyze the actual data.
 - Do not commit changes unless explicitly asked by the user.
 - Always use `uv run pytest`, not `uvx pytest`.
@@ -177,6 +181,7 @@ The application generates professional Excel reports with:
 ### Report Structure
 - **Column Headers**: Clear, descriptive headers with line breaks for readability
 - **Currency Conversion**: Automatic conversion using configured exchange rates
+- **Security**: All external data string fields are wrapped with `safe_cell_value()` to prevent Excel formula injection. See `docs/domain/development_lessons.md #7`.
 - **Formulas**: Excel formulas for dynamic calculations
 - **Auto-sizing**: Column widths automatically adjusted for content with `MAX_CELL_WIDTH=50` cap and `MIN_DATA_WIDTH=12` floor (see `excel_utils.py`)
 
@@ -210,7 +215,7 @@ The system automatically integrates data from previous tax cycles:
 ## Testing Strategy
 
 ### Test Structure
-3-tier architecture: `tests/unit/` (770 tests), `tests/integration/` (29), `tests/e2e/` (25).
+3-tier architecture: `tests/unit/` (401 unit-marked tests), `tests/integration/` (10 integration-marked tests), `tests/e2e/` (26 e2e-marked tests), plus 451 tests without explicit markers (total 888).
 
 ### Testing Commands
 ```bash
@@ -317,7 +322,7 @@ tax-reporting/
 │       │       ├── rollover.py           # Rollover CSV export
 │       │       ├── workbook_builder.py   # Orchestrator: creates workbook, delegates to sheet writers
 │       │       ├── crypto_gains_sheet.py       # Crypto Gains tab
-│       │       ├── crypto_rewards_sheet.py     # Crypto Rewards tab
+│       │       ├── crypto_supplementary_sheet.py  # Crypto Supplementary tab
 │       │       ├── crypto_reconciliation_sheet.py  # Crypto Reconciliation tab
 │       │       ├── loan_activity_sheet.py      # Loan Activity tab (per-asset balances)
 │       │       └── assumptions_sheet.py        # Platform Assumptions tab (operator manifest)
@@ -329,13 +334,13 @@ tax-reporting/
 │           ├── logging_config.py # Logging configuration
 │           └── validation.py    # Input validation
 ├── tests/                  # Test suite
-│   ├── unit/               # Unit tests (767 tests)
+│   ├── unit/               # Unit tests (401 unit-marked tests)
 │   │   ├── domain/         # Domain layer unit tests
 │   │   ├── infrastructure/ # Infrastructure layer unit tests
 │   │   └── application/    # Application layer unit tests
 │   │       └── persisting/ # Persisting module unit tests
-│   ├── integration/        # Integration tests (29 tests)
-│   ├── end_to_end/         # End-to-end tests (25 tests)
+│   ├── integration/        # Integration tests (10 integration-marked tests)
+│   ├── end_to_end/         # End-to-end tests (26 e2e-marked tests)
 │   └── conftest.py         # Pytest configuration and fixtures
 ├── resources/              # Data directories
 │   ├── source/             # Input CSV files

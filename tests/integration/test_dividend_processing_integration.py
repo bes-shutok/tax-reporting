@@ -110,18 +110,18 @@ class TestDividendIntegrationFlow:
         # Find dividend section
         dividend_rows = []
         for row_idx, row in enumerate(worksheet.iter_rows(values_only=True), 1):
-            if row and len(row) > 1 and row[1] == "Dividends":
+            if row and len(row) > 1 and row[0] == "Share dividends":
                 dividend_rows.append((row_idx, row))
 
         assert len(dividend_rows) == 3  # Three dividend entries
 
         # Verify AAPL dividend row
-        aapl_row = next(row for row in dividend_rows if row[1][8] == "AAPL")
-        assert aapl_row[1][2] == "United States"  # Country
-        assert aapl_row[1][3] == "US0378331005"  # ISIN
-        assert aapl_row[1][10] == "72.00"  # Original gross
-        assert aapl_row[1][11] == "10.80"  # Original tax
-        assert aapl_row[1][12] == "61.20"  # Net amount
+        aapl_row = next(row for row in dividend_rows if row[1][7] == "AAPL")
+        assert aapl_row[1][1] == "United States"  # Country
+        assert aapl_row[1][2] == "US0378331005"  # ISIN
+        assert aapl_row[1][9] == "72.00"  # Original gross
+        assert aapl_row[1][10] == "10.80"  # Original tax
+        assert aapl_row[1][11] == "61.20"  # Net amount
 
         workbook.close()
 

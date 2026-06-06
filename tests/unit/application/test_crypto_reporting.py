@@ -9,15 +9,21 @@ from pathlib import Path
 import pytest
 
 from tax_reporting.application.crypto_reporting import (
+    CapitalGainsParsingContext,
     CryptoCapitalGainEntry,
+    CryptoSkippedZeroValueToken,
     OperatorOrigin,
     RewardTaxClassification,
     _aggregate_capital_entries,
     _classify_reward_tax_status,
+    _collect_known_asset_tickers,
     _derive_chain,
     _filter_immaterial_entries,
     _is_temporally_valid,
     _is_valid_tabela_x_country,
+    _load_popular_crypto_tokens,
+    _parse_capital_gains_file,
+    _parse_income_file,
     _parse_transaction_date,
     _resolve_income_code,
     _validate_capital_entries_have_valid_countries,
@@ -431,6 +437,7 @@ def test_load_koinly_crypto_report_skips_zero_value_rows_and_tracks_assets(tmp_p
                 "Date,Asset,Amount,Value (EUR),Type,Description,Wallet Name",
                 '01/01/2025 00:01,AAA,"1,00000000",0.0,Reward,,Wirex',
                 '02/01/2025 00:01,BBB,"2,00000000","2,10",Reward,,Wirex',
+                '03/01/2025 00:01,WBТC,"3,00000000",0.0,Reward,,Kraken',  # Cyrillic Т (homoglyph)
             ]
         ),
         encoding="utf-8",
@@ -466,6 +473,16 @@ def test_load_koinly_crypto_report_skips_zero_value_rows_and_tracks_assets(tmp_p
     assert ("capital_gains", "FEE", 1) in skipped_assets
     assert ("income", "AAA", 1) in skipped_assets
     assert ("holdings_opening", "ZERO", 1) in skipped_assets
+
+    # Verify suspicious field for assets with non-Latin characters
+    wbtc_entry = next((e for e in report.skipped_zero_value_tokens if e.asset == "WBТC"), None)
+    assert wbtc_entry is not None, "WBТC (with Cyrillic Т) should be in skipped_zero_value_tokens"
+    assert wbtc_entry.suspicious is True, "WBТC contains Cyrillic Т and should be flagged as suspicious"
+
+    # Verify regular assets are not flagged as suspicious
+    aaa_entry = next((e for e in report.skipped_zero_value_tokens if e.asset == "AAA"), None)
+    assert aaa_entry is not None
+    assert aaa_entry.suspicious is False, "AAA is a regular asset and should not be flagged as suspicious"
 
 
 def test_load_koinly_crypto_report_parses_complete_pdf_summary(tmp_path):
@@ -1772,7 +1789,7 @@ def test_aggregate_taxable_rewards_fails_on_invalid_country():
         ),
     ]
 
-    with pytest.raises(FileProcessingError, match="cannot be assigned a valid Tabela X country code"):
+    with pytest.raises(FileProcessingError, match="has an unresolved platform/operator"):
         aggregate_taxable_rewards(entries)
 
 
@@ -1935,6 +1952,17 @@ def test_resolve_income_code_from_koinly_type():
     assert _resolve_income_code("STAKING") == "401"
     assert _resolve_income_code("Airdrop") == "401"
     assert _resolve_income_code("  lending  ") == "402"
+
+    # Edge cases: whitespace-only defaults to 401
+    assert _resolve_income_code("   ") == "401"
+    assert _resolve_income_code("\t\n") == "401"
+    assert _resolve_income_code("  \t  ") == "401"
+
+    # Edge cases: formula-prefix-only defaults to 401 (not a digit)
+    assert _resolve_income_code("===") == "401"
+    assert _resolve_income_code("+++") == "401"
+    assert _resolve_income_code("---") == "401"
+    assert _resolve_income_code("@@@") == "401"
 
 
 def test_aggregate_preserves_reconciliation_trail():
@@ -2236,18 +2264,23 @@ def test_normalize_platform_name_preserves_bybit_prefixed_wallets():
 
 
 def test_normalize_asset_ticker_cyrillic_to_latin():
-    """Asset tickers with Cyrillic characters should be normalized to Latin equivalents.
+    """Asset tickers with Cyrillic characters should NOT be normalized.
 
-    This test verifies the fix for the WBТC issue where the 'T' was a Cyrillic
-    character (U+0422) instead of Latin 'T'.
+    Non-Latin script characters (Cyrillic, Greek, etc.) are preserved as they may
+    indicate homoglyph scam tokens. These are detected separately via
+    contains_non_latin_characters() for scam token flagging.
     """
-    from tax_reporting.infrastructure.koinly_parser import normalize_asset_ticker
+    from tax_reporting.infrastructure.koinly_parser import normalize_asset_ticker, contains_non_latin_characters
 
-    # Cyrillic Т (U+0422) -> Latin T
-    assert normalize_asset_ticker("WBТC") == "WBTC"
-    assert normalize_asset_ticker("BТC") == "BTC"
-    # Multiple Cyrillic characters
-    assert normalize_asset_ticker("ТЕSТ") == "TEST"
+    # Cyrillic characters are preserved (NOT converted to Latin)
+    assert normalize_asset_ticker("WBТC") == "WBТC"  # Cyrillic Т preserved
+    assert normalize_asset_ticker("BТC") == "BТC"
+    # But they are flagged as suspicious
+    assert contains_non_latin_characters("WBТC")
+    assert contains_non_latin_characters("BТC")
+    # Latin characters work normally
+    assert normalize_asset_ticker("WBTC") == "WBTC"
+    assert not contains_non_latin_characters("WBTC")
 
 
 def test_normalize_asset_ticker_unicode_normalization():
@@ -3267,11 +3300,17 @@ def test_parse_capital_gains_file_with_populated_resolver(tmp_path):
 
     from collections import Counter
 
-    from tax_reporting.application.crypto_reporting import TokenOriginResolver, _parse_capital_gains_file
+    from tax_reporting.application.crypto_reporting import TokenOriginResolver
 
     resolver = TokenOriginResolver(th_csv)
     skipped: Counter[tuple[str, str]] = Counter()
-    entries, _ = _parse_capital_gains_file(capital_csv, skipped, resolver)
+    review_entries: list = []
+    context = CapitalGainsParsingContext(
+        skipped_assets=skipped,
+        origin_resolver=resolver,
+        review_entries=review_entries,
+    )
+    entries, _ = _parse_capital_gains_file(capital_csv, context)
 
     assert len(entries) == 1
     assert entries[0].token_swap_history != "", (
@@ -3392,10 +3431,16 @@ def test_capital_entry_review_reason_missing_cost_basis(tmp_path):
 
     from collections import Counter
 
-    from tax_reporting.application.crypto_reporting import TokenOriginResolver, _parse_capital_gains_file
+    from tax_reporting.application.crypto_reporting import TokenOriginResolver
 
     skipped = Counter()
-    entries, _ = _parse_capital_gains_file(csv_file, skipped, TokenOriginResolver())
+    review_entries: list = []
+    context = CapitalGainsParsingContext(
+        skipped_assets=skipped,
+        origin_resolver=TokenOriginResolver(),
+        review_entries=review_entries,
+    )
+    entries, _ = _parse_capital_gains_file(csv_file, context)
     assert len(entries) == 1
     entry = entries[0]
     assert entry.review_required is True
@@ -3490,16 +3535,103 @@ def test_bybit_review_reason_propagates_through_capital_gains_csv(tmp_path):
 
     from collections import Counter
 
-    from tax_reporting.application.crypto_reporting import TokenOriginResolver, _parse_capital_gains_file
+    from tax_reporting.application.crypto_reporting import TokenOriginResolver
 
     skipped = Counter()
-    entries, _ = _parse_capital_gains_file(csv_file, skipped, TokenOriginResolver())
+    review_entries: list = []
+    context = CapitalGainsParsingContext(
+        skipped_assets=skipped,
+        origin_resolver=TokenOriginResolver(),
+        review_entries=review_entries,
+    )
+    entries, _ = _parse_capital_gains_file(csv_file, context)
     assert len(entries) == 1
     entry = entries[0]
     # Bybit has platform_assumption, not row-level review
     assert entry.review_required is False
     assert entry.operator_origin.platform_assumption is not None
     assert "account-region" in entry.operator_origin.platform_assumption
+
+
+def test_build_zero_basis_review_reason_zero_cost():
+    """Zero cost triggers review with correct reason."""
+    from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
+
+    review_required, review_reason = _build_zero_basis_review_reason(
+        cost_eur=Decimal("0"),
+        proceeds_eur=Decimal("100"),
+        review_required=False,
+        review_reason="",
+    )
+
+    assert review_required is True
+    assert "Zero acquisition cost" in review_reason
+    assert "verify basis" in review_reason
+
+
+def test_build_zero_basis_review_reason_zero_proceeds():
+    """Zero proceeds triggers review with correct reason."""
+    from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
+
+    review_required, review_reason = _build_zero_basis_review_reason(
+        cost_eur=Decimal("100"),
+        proceeds_eur=Decimal("0"),
+        review_required=False,
+        review_reason="",
+    )
+
+    assert review_required is True
+    assert "Zero disposal proceeds" in review_reason
+    assert "verify sale data" in review_reason
+
+
+def test_build_zero_basis_review_reason_both_zero():
+    """When both cost and proceeds are zero, both reasons are included."""
+    from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
+
+    review_required, review_reason = _build_zero_basis_review_reason(
+        cost_eur=Decimal("0"),
+        proceeds_eur=Decimal("0"),
+        review_required=False,
+        review_reason="",
+    )
+
+    assert review_required is True
+    assert "Zero acquisition cost" in review_reason
+    assert "Zero disposal proceeds" in review_reason
+    # Check both reasons are separated by semicolon
+    assert "; " in review_reason
+
+
+def test_build_zero_basis_review_reason_appends_to_existing_reason():
+    """Review reasons are correctly appended when existing reasons exist."""
+    from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
+
+    review_required, review_reason = _build_zero_basis_review_reason(
+        cost_eur=Decimal("0"),
+        proceeds_eur=Decimal("100"),
+        review_required=True,
+        review_reason="Existing review reason",
+    )
+
+    assert review_required is True
+    assert review_reason.startswith("Existing review reason;")
+    assert "Zero acquisition cost" in review_reason
+
+
+def test_build_zero_basis_review_reason_no_trigger_when_both_nonzero():
+    """When both cost and proceeds are non-zero, review flag and reason remain unchanged."""
+    from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
+
+    review_required, review_reason = _build_zero_basis_review_reason(
+        cost_eur=Decimal("100"),
+        proceeds_eur=Decimal("200"),
+        review_required=False,
+        review_reason="",
+    )
+
+    assert review_required is False
+    assert review_reason == ""
 
 
 def test_platforms_without_service_start_date_allow_old_transactions():
@@ -3582,15 +3714,19 @@ def test_zero_value_entries_never_reach_report(tmp_path):
     csv_file = tmp_path / "capital_gains.csv"
     csv_file.write_text(csv_content, encoding="utf-8")
 
-    from collections import Counter
+    from tax_reporting.application.crypto_reporting import TokenOriginResolver
 
-    from tax_reporting.application.crypto_reporting import TokenOriginResolver, _parse_capital_gains_file
-
-    skipped = Counter()
-    entries, _ = _parse_capital_gains_file(csv_file, skipped, TokenOriginResolver())
+    skipped = {}
+    review_entries: list = []
+    context = CapitalGainsParsingContext(
+        skipped_assets=skipped,
+        origin_resolver=TokenOriginResolver(),
+        review_entries=review_entries,
+    )
+    entries, _ = _parse_capital_gains_file(csv_file, context)
     assert len(entries) == 0
-    assert skipped[("capital_gains", "FEE1")] == 1
-    assert skipped[("capital_gains", "FEE2")] == 1
+    assert skipped[("capital_gains", "FEE1")] == {"count": 1, "suspicious": False}
+    assert skipped[("capital_gains", "FEE2")] == {"count": 1, "suspicious": False}
 
 
 # =============================================================================
@@ -5662,10 +5798,14 @@ def test_parse_capital_gains_file_skips_dynamically_discovered_assets(tmp_path):
 
     skipped: Counter[tuple[str, str]] = Counter()
     resolver = TokenOriginResolver(None)
-    entries, _ = _parse_capital_gains_file(
-        cg_path, skipped, resolver,
+    review_entries: list = []
+    context = CapitalGainsParsingContext(
+        skipped_assets=skipped,
+        origin_resolver=resolver,
+        review_entries=review_entries,
         loan_affected_assets=frozenset({"NEWASSET"}),
     )
+    entries, _ = _parse_capital_gains_file(cg_path, context)
 
     assets = {e.asset for e in entries}
     assert "NEWASSET" not in assets
@@ -5908,3 +6048,650 @@ def test_apply_phantom_flags_only_for_unresolved_transfers(tmp_path):
             assert "phantom" not in entry.review_reason.lower(), (
                 f"Resolved transfer should not produce phantom flag, got: {entry.review_reason}"
             )
+
+
+@pytest.mark.unit
+def test_collect_known_asset_tickers_raises_when_all_files_fail_to_parse(tmp_path):
+    """Fail-fast: FileProcessingError raised when all provided files fail to parse."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Create malformed capital gains file (invalid CSV structure)
+    capital_file = koinly_dir / "koinly_2025_capital_gains_report_test.csv"
+    capital_file.write_text("not a valid csv", encoding="utf-8")
+
+    # Create malformed income file (invalid CSV structure)
+    income_file = koinly_dir / "koinly_2025_income_report_test.csv"
+    income_file.write_text("also not valid", encoding="utf-8")
+
+    from tax_reporting.domain.exceptions import FileProcessingError
+
+    with pytest.raises(FileProcessingError, match="Failed to scan all Koinly files"):
+        _collect_known_asset_tickers(capital_file, income_file)
+
+
+@pytest.mark.unit
+def test_collect_known_asset_tickers_warns_on_partial_failure(caplog, tmp_path):
+    """Partial failure: logs warning but continues when at least one file parses successfully."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Create valid capital gains file with non-zero BTC row
+    capital_file = koinly_dir / "koinly_2025_capital_gains_report_test.csv"
+    capital_content = "\n".join([
+        "Capital gains report 2025",
+        "",
+        "Date Sold,Date Acquired,Asset,Amount,Cost (EUR),Proceeds (EUR),Gain / loss,Notes,Wallet Name,Holding period",
+        "01/01/2025 10:00,01/01/2024 10:00,BTC,\"0,10000000\",\"1000,00\",\"1200,00\",\"200,00\",,Kraken,Long term",
+    ])
+    capital_file.write_text(capital_content, encoding="utf-8")
+
+    # Create malformed income file
+    income_file = koinly_dir / "koinly_2025_income_report_test.csv"
+    income_file.write_text("malformed", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"):
+        result = _collect_known_asset_tickers(capital_file, income_file)
+
+    # Should return assets from the valid file
+    assert "BTC" in result
+
+    # Should log warning about the failed file
+    assert any("Failed to scan known assets" in record.message for record in caplog.records)
+
+
+@pytest.mark.unit
+def test_collect_known_asset_tickers_returns_empty_when_no_files_exist(tmp_path):
+    """Returns empty frozenset when no files exist (graceful degradation)."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    capital_file = koinly_dir / "koinly_2025_capital_gains_report_test.csv"
+    income_file = koinly_dir / "koinly_2025_income_report_test.csv"
+
+    # Neither file exists
+    result = _collect_known_asset_tickers(capital_file, income_file)
+
+    assert result == frozenset()
+
+
+@pytest.mark.unit
+def test_collect_known_asset_tickers_collects_non_zero_assets(tmp_path):
+    """Collects asset tickers from rows with non-zero proceeds or value."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Create capital gains file with mix of zero and non-zero proceeds
+    capital_file = koinly_dir / "koinly_2025_capital_gains_report_test.csv"
+    capital_content = "\n".join([
+        "Capital gains report 2025",
+        "",
+        "Date Sold,Date Acquired,Asset,Amount,Cost (EUR),Proceeds (EUR),Gain / loss,Notes,Wallet Name,Holding period",
+        "01/01/2025 10:00,01/01/2024 10:00,BTC,\"0,10000000\",\"1000,00\",\"1200,00\",\"200,00\",,Kraken,Long term",
+        "02/01/2025 10:00,01/01/2024 10:00,ETH,\"0,20000000\",\"500,00\",\"0,00\",\"-500,00\",,Kraken,Short term",
+        "03/01/2025 10:00,01/01/2024 10:00,USDT,\"1,00000000\",\"0,00\",\"0,00\",\"0,00\",,Kraken,Short term",
+    ])
+    capital_file.write_text(capital_content, encoding="utf-8")
+
+    # Create income file with mix of zero and non-zero values
+    income_file = koinly_dir / "koinly_2025_income_report_test.csv"
+    income_content = "\n".join([
+        "Income report 2025",
+        "",
+        "Date,Asset,Amount,Value (EUR),Type,Description,Wallet Name",
+        "01/01/2025 00:01,USDC,\"10,00000000\",\"50,00\",Reward,,Wirex",
+        "02/01/2025 00:01,DAI,\"5,00000000\",\"0,00\",Reward,,Wirex",
+    ])
+    income_file.write_text(income_content, encoding="utf-8")
+
+    result = _collect_known_asset_tickers(capital_file, income_file)
+
+    # Should only include assets with non-zero values
+    assert "BTC" in result
+    assert "USDC" in result
+    # ETH has zero proceeds - should not be collected
+    assert "ETH" not in result
+    # USDT has zero proceeds - should not be collected
+    assert "USDT" not in result
+    # DAI has zero value - should not be collected
+    assert "DAI" not in result
+
+
+@pytest.mark.unit
+def test_parse_income_file_flags_zero_value_known_assets_for_review(tmp_path, caplog):
+    """Zero-value rewards for known assets are flagged with review_required=True."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Create income file with zero-value rewards for known assets
+    income_file = koinly_dir / "koinly_2025_income_report_test.csv"
+    income_content = "\n".join([
+        "Income report 2025",
+        "",
+        "Date,Asset,Amount,Value (EUR),Type,Description,Wallet Name",
+        "01/01/2025 00:01,BTC,\"1,00000000\",0.0,Reward,,Kraken",
+        "02/01/2025 00:01,ETH,\"2,00000000\",0.0,Reward,,Kraken",
+        "03/01/2025 00:01,USDT,\"10,00000000\",0.0,Reward,,Kraken",
+    ])
+    income_file.write_text(income_content, encoding="utf-8")
+
+    skipped_assets: dict[tuple[str, str], dict] = {}
+
+    with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"):
+        entries = _parse_income_file(income_file, skipped_assets, known_assets=frozenset(["BTC", "ETH", "USDT"]))
+
+    # All three zero-value rewards should be created with review_required=True
+    assert len(entries) == 3
+    for entry in entries:
+        assert entry.review_required is True
+        assert "Zero EUR value for known crypto asset" in entry.review_reason
+
+    # None should be in skipped_assets (they were flagged for review instead)
+    assert len(skipped_assets) == 0
+
+
+@pytest.mark.unit
+def test_parse_income_file_skips_zero_value_unknown_assets(tmp_path):
+    """Zero-value rewards for unknown assets are skipped."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Create income file with zero-value rewards for unknown assets
+    income_file = koinly_dir / "koinly_2025_income_report_test.csv"
+    income_content = "\n".join([
+        "Income report 2025",
+        "",
+        "Date,Asset,Amount,Value (EUR),Type,Description,Wallet Name",
+        "01/01/2025 00:01,UNKNOWN1,\"1,00000000\",0.0,Reward,,Kraken",
+        "02/01/2025 00:01,UNKNOWN2,\"2,00000000\",0.0,Reward,,Kraken",
+    ])
+    income_file.write_text(income_content, encoding="utf-8")
+
+    skipped_assets: dict[tuple[str, str], dict] = {}
+
+    entries = _parse_income_file(income_file, skipped_assets, known_assets=frozenset(["BTC"]))
+
+    # No entries should be created (unknown assets are skipped)
+    assert len(entries) == 0
+
+    # Both should be in skipped_assets
+    assert skipped_assets[("income", "UNKNOWN1")]["count"] == 1
+    assert skipped_assets[("income", "UNKNOWN2")]["count"] == 1
+    assert skipped_assets[("income", "UNKNOWN1")]["suspicious"] is False
+    assert skipped_assets[("income", "UNKNOWN2")]["suspicious"] is False
+
+
+@pytest.mark.unit
+def test_parse_income_file_zero_value_with_popular_token_matching(tmp_path):
+    """Zero-value rewards for popular tokens (via substring matching) are flagged for review."""
+    from unittest.mock import patch
+
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Create income file with zero-value rewards for token variants
+    income_file = koinly_dir / "koinly_2025_income_report_test.csv"
+    income_content = "\n".join([
+        "Income report 2025",
+        "",
+        "Date,Asset,Amount,Value (EUR),Type,Description,Wallet Name",
+        "01/01/2025 00:01,TSTON,\"1,00000000\",0.0,Reward,,Kraken",
+        "02/01/2025 00:01,TSUSDE,\"2,00000000\",0.0,Reward,,Kraken",
+        "03/01/2025 00:01,UNKNOWNX,\"3,00000000\",0.0,Reward,,Kraken",
+    ])
+    income_file.write_text(income_content, encoding="utf-8")
+
+    skipped_assets: dict[tuple[str, str], dict] = {}
+
+    # Mock _get_popular_crypto_tokens to include TON and USDE for substring matching
+    with patch("tax_reporting.application.crypto_reporting._get_popular_crypto_tokens", return_value=frozenset(["BTC", "ETH", "TON", "USDE"])):
+        entries = _parse_income_file(income_file, skipped_assets, known_assets=frozenset(["TON", "USDE"]))
+
+    # TSTON (contains TON) and TSUSDE (contains USDE) should be flagged for review
+    # UNKNOWNX should be skipped
+    assert len(entries) == 2
+
+    entry_assets = {e.asset for e in entries}
+    assert "TSTON" in entry_assets
+    assert "TSUSDE" in entry_assets
+    assert "UNKNOWNX" not in entry_assets
+
+    for entry in entries:
+        assert entry.review_required is True
+        assert "Zero EUR value for known crypto asset" in entry.review_reason
+
+    # Only UNKNOWNX should be in skipped_assets
+    assert skipped_assets[("income", "UNKNOWNX")]["count"] == 1
+    assert ("income", "TSTON") not in skipped_assets
+    assert ("income", "TSUSDE") not in skipped_assets
+
+
+@pytest.mark.unit
+def test_parse_income_file_non_zero_rewards_always_processed(tmp_path):
+    """Non-zero rewards are always processed regardless of known_assets."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Create income file with non-zero rewards
+    income_file = koinly_dir / "koinly_2025_income_report_test.csv"
+    income_content = "\n".join([
+        "Income report 2025",
+        "",
+        "Date,Asset,Amount,Value (EUR),Type,Description,Wallet Name",
+        "01/01/2025 00:01,BTC,\"1,00000000\",\"100,00\",Reward,,Kraken",
+        "02/01/2025 00:01,UNKNOWNX,\"2,00000000\",\"50,00\",Reward,,Kraken",
+    ])
+    income_file.write_text(income_content, encoding="utf-8")
+
+    skipped_assets: dict[tuple[str, str], dict] = {}
+
+    # Even with known_assets, all non-zero rewards should be processed
+    entries = _parse_income_file(income_file, skipped_assets, known_assets=frozenset(["BTC"]))
+
+    assert len(entries) == 2
+
+    entry_assets = {e.asset for e in entries}
+    assert "BTC" in entry_assets
+    assert "UNKNOWNX" in entry_assets
+
+    # No assets should be skipped (all have non-zero values)
+    assert len(skipped_assets) == 0
+
+
+@pytest.mark.unit
+def test_load_popular_crypto_tokens_caches_result():
+    """Verify that _load_popular_crypto_tokens caches the result after first load."""
+    from unittest.mock import patch
+
+    # Mock the file operations to count how many times the file is read
+    read_count = 0
+
+    original_exists = Path.exists
+    original_open = open
+
+    def mock_exists(self):
+        # Always return False to simulate file not found (graceful degradation)
+        return False
+
+    def mock_open(*args, **kwargs):
+        nonlocal read_count
+        read_count += 1
+        raise FileNotFoundError("Mocked file not found")
+
+    with patch.object(Path, "exists", mock_exists):
+        with patch("builtins.open", side_effect=mock_open):
+            # Clear the cache before the test
+            _load_popular_crypto_tokens.cache_clear()
+
+            # First call - should read from file (and fail gracefully)
+            result1 = _load_popular_crypto_tokens()
+            assert result1 == frozenset()
+
+            # Second call - should use cached result, not attempt to read file again
+            result2 = _load_popular_crypto_tokens()
+            assert result2 == frozenset()
+
+            # Both results should be identical (same cached object)
+            assert result1 is result2
+
+
+@pytest.mark.unit
+def test_load_popular_crypto_tokens_cache_clear_on_manual_invalidation():
+    """Verify that cache can be cleared and reloaded."""
+    from unittest.mock import patch
+
+    def mock_exists(self):
+        return False
+
+    with patch.object(Path, "exists", mock_exists):
+        # Clear the cache
+        _load_popular_crypto_tokens.cache_clear()
+
+        # First call
+        result1 = _load_popular_crypto_tokens()
+        assert result1 == frozenset()
+
+        # Clear cache explicitly
+        _load_popular_crypto_tokens.cache_clear()
+
+        # Second call after cache clear - should read again (and still return empty set)
+        result2 = _load_popular_crypto_tokens()
+        assert result2 == frozenset()
+
+
+@pytest.mark.unit
+def test_skipped_zero_value_tokens_suspicious_flag_for_non_latin_assets(tmp_path):
+    """Verify that assets with non-Latin characters are flagged with suspicious=True."""
+    from tax_reporting.application.crypto_reporting import load_koinly_crypto_report
+    from tax_reporting.infrastructure.koinly_parser import format_datetime, parse_koinly_decimal
+
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Capital gains with Cyrillic Т (homoglyph of T)
+    (koinly_dir / "koinly_2025_capital_gains_report_test.csv").write_text(
+        "\n".join([
+            "Capital gains report 2025",
+            "",
+            ",".join([
+                "Date Sold", "Date Acquired", "Asset", "Amount", "Cost (EUR)", "Proceeds (EUR)",
+                "Gain / loss", "Notes", "Wallet Name", "Holding period",
+            ]),
+            ",".join([
+                "01/01/2025 10:00", "01/01/2024 10:00", "WBТC", '"0,10000000"', "0.0", "0.0", "0.0",
+                "", "Kraken", "Long term",
+            ]),
+        ]),
+        encoding="utf-8",
+    )
+
+    # Income with Cyrillic characters
+    (koinly_dir / "koinly_2025_income_report_test.csv").write_text(
+        "\n".join([
+            "Income report 2025",
+            "",
+            "Date,Asset,Amount,Value (EUR),Type,Description,Wallet Name",
+            '01/01/2025 00:01,ВОС,"1,00000000",0.0,Reward,,Wirex',  # Cyrillic В and С
+        ]),
+        encoding="utf-8",
+    )
+
+    (koinly_dir / "koinly_2025_beginning_of_year_holdings_report_test.csv").write_text(
+        "\n".join([
+            "Balances as at 01/01/2025 00:00",
+            "",
+            "Asset,Quantity,Cost (EUR),Value (EUR),Description",
+            'ZERО,"1,00000000","10,00",0.0,',  # Cyrillic О
+        ]),
+        encoding="utf-8",
+    )
+
+    _write_minimal_transaction_history(koinly_dir)
+
+    report = load_koinly_crypto_report(koinly_dir)
+
+    assert report is not None
+
+    # Verify all skipped tokens have suspicious=True due to non-Latin characters
+    for token in report.skipped_zero_value_tokens:
+        if token.asset in ["WBТC", "ВОС", "ZERО"]:
+            assert token.suspicious is True, f"{token.asset} should be flagged as suspicious (contains non-Latin)"
+
+
+@pytest.mark.unit
+def test_skipped_zero_value_tokens_normal_assets_not_suspicious(tmp_path):
+    """Verify that normal assets (Latin only) are not flagged as suspicious."""
+    from tax_reporting.application.crypto_reporting import load_koinly_crypto_report
+
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Normal assets with zero value (Latin characters only)
+    (koinly_dir / "koinly_2025_capital_gains_report_test.csv").write_text(
+        "\n".join([
+            "Capital gains report 2025",
+            "",
+            ",".join([
+                "Date Sold", "Date Acquired", "Asset", "Amount", "Cost (EUR)", "Proceeds (EUR)",
+                "Gain / loss", "Notes", "Wallet Name", "Holding period",
+            ]),
+            ",".join([
+                "01/01/2025 10:00", "01/01/2024 10:00", "AAA", '"0,10000000"', "0.0", "0.0", "0.0",
+                "", "Kraken", "Long term",
+            ]),
+        ]),
+        encoding="utf-8",
+    )
+
+    (koinly_dir / "koinly_2025_income_report_test.csv").write_text(
+        "\n".join([
+            "Income report 2025",
+            "",
+            "Date,Asset,Amount,Value (EUR),Type,Description,Wallet Name",
+            '01/01/2025 00:01,BBB,"1,00000000",0.0,Reward,,Wirex',
+        ]),
+        encoding="utf-8",
+    )
+
+    (koinly_dir / "koinly_2025_beginning_of_year_holdings_report_test.csv").write_text(
+        "\n".join([
+            "Balances as at 01/01/2025 00:00",
+            "",
+            "Asset,Quantity,Cost (EUR),Value (EUR),Description",
+            'CCC,"1,00000000","10,00",0.0,',
+        ]),
+        encoding="utf-8",
+    )
+
+    _write_minimal_transaction_history(koinly_dir)
+
+    report = load_koinly_crypto_report(koinly_dir)
+
+    assert report is not None
+
+    # Verify all skipped tokens have suspicious=False (normal assets)
+    for token in report.skipped_zero_value_tokens:
+        if token.asset in ["AAA", "BBB", "CCC"]:
+            assert token.suspicious is False, f"{token.asset} should not be flagged as suspicious (Latin only)"
+
+
+@pytest.mark.unit
+def test_skipped_zero_value_tokens_suspicious_field_populated_in_report():
+    """Verify that suspicious field is correctly populated in CryptoTaxReport."""
+    from tax_reporting.application.crypto_reporting import (
+        CryptoSkippedZeroValueToken,
+        CryptoTaxReport,
+        CryptoReconciliationSummary,
+        CryptoCapitalGainStats,
+    )
+    from tax_reporting.domain.exceptions import FileProcessingError
+
+    # Create a report with skipped tokens that include suspicious assets
+    skipped_tokens = [
+        CryptoSkippedZeroValueToken(
+            source_section="income",
+            asset="WBТC",  # Cyrillic Т
+            count=1,
+            suspicious=True,
+        ),
+        CryptoSkippedZeroValueToken(
+            source_section="income",
+            asset="BTC",
+            count=2,
+            suspicious=False,
+        ),
+    ]
+
+    report = CryptoTaxReport(
+        tax_year=2025,
+        capital_entries=[],
+        reward_entries=[],
+        reconciliation=CryptoReconciliationSummary(
+            capital_rows=0,
+            reward_rows=0,
+            short_term_rows=0,
+            long_term_rows=0,
+            mixed_rows=0,
+            unknown_rows=0,
+            capital_cost_total_eur=Decimal("0"),
+            capital_proceeds_total_eur=Decimal("0"),
+            capital_gain_total_eur=Decimal("0"),
+            reward_total_eur=Decimal("0"),
+            opening_holdings=None,
+            closing_holdings=None,
+        ),
+        capital_gain_stats=CryptoCapitalGainStats.from_entries([]),
+        skipped_zero_value_tokens=skipped_tokens,
+    )
+
+    # Verify the suspicious field is preserved
+    wbtc_token = next((t for t in report.skipped_zero_value_tokens if t.asset == "WBТC"), None)
+    assert wbtc_token is not None
+    assert wbtc_token.suspicious is True
+
+    btc_token = next((t for t in report.skipped_zero_value_tokens if t.asset == "BTC"), None)
+    assert btc_token is not None
+    assert btc_token.suspicious is False
+
+
+@pytest.mark.unit
+def test_parse_capital_gains_file_creates_review_entry_for_zero_value_known_assets(tmp_path):
+    """Verify that CryptoReviewEntry is created when a known asset has all-zero values."""
+    from tax_reporting.application.crypto_reporting import _parse_capital_gains_file, CapitalGainsParsingContext
+    from tax_reporting.application.crypto_reporting import CryptoReviewEntry
+
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Create capital gains file with zero-value known assets
+    capital_file = koinly_dir / "koinly_2025_capital_gains_report_test.csv"
+    capital_content = "\n".join([
+        "Capital gains report 2025",
+        "",
+        "Date Sold,Date Acquired,Asset,Amount,Cost (EUR),Proceeds (EUR),Gain / loss,Notes,Wallet Name,Holding period",
+        "01/01/2025 10:00,01/01/2024 10:00,BTC,\"0,10000000\",0.0,0.0,0.0,,Kraken,Long term",
+        "02/01/2025 10:00,01/01/2024 10:00,ETH,\"0,20000000\",0.0,0.0,0.0,,Kraken,Short term",
+    ])
+    capital_file.write_text(capital_content, encoding="utf-8")
+
+    from unittest.mock import MagicMock
+    from tax_reporting.application.token_origin import TokenOriginResolver
+
+    # Create mock origin resolver
+    origin_resolver = MagicMock(spec=TokenOriginResolver)
+    origin_resolver.resolve.return_value = {"origin": "Unknown"}
+
+    review_entries: list = []
+    known_assets = frozenset(["BTC", "ETH"])
+
+    context = CapitalGainsParsingContext(
+        skipped_assets={},
+        origin_resolver=origin_resolver,
+        review_entries=review_entries,
+        known_assets=known_assets,
+        loan_affected_assets=frozenset(),
+    )
+
+    # Mock _get_popular_crypto_tokens to return known assets
+    from unittest.mock import patch
+
+    with patch("tax_reporting.application.crypto_reporting._get_popular_crypto_tokens", return_value=known_assets):
+        entries, _ = _parse_capital_gains_file(capital_file, context)
+
+    # Verify review entries were created for the zero-value known assets
+    assert len(review_entries) == 2
+
+    # Check BTC review entry
+    btc_review = next((e for e in review_entries if e.asset == "BTC"), None)
+    assert btc_review is not None
+    assert "zero" in btc_review.review_reason.lower()
+    assert btc_review.is_suspicious is False
+
+    # Check ETH review entry
+    eth_review = next((e for e in review_entries if e.asset == "ETH"), None)
+    assert eth_review is not None
+
+
+@pytest.mark.unit
+def test_parse_capital_gains_file_review_reason_includes_suspicious_flag(tmp_path):
+    """Verify that review_reason includes suspicious flag for non-Latin assets."""
+    from tax_reporting.application.crypto_reporting import _parse_capital_gains_file, CapitalGainsParsingContext
+    from unittest.mock import MagicMock
+    from tax_reporting.application.token_origin import TokenOriginResolver
+
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    # Create capital gains file with zero-value asset containing non-Latin characters
+    capital_file = koinly_dir / "koinly_2025_capital_gains_report_test.csv"
+    capital_content = "\n".join([
+        "Capital gains report 2025",
+        "",
+        "Date Sold,Date Acquired,Asset,Amount,Cost (EUR),Proceeds (EUR),Gain / loss,Notes,Wallet Name,Holding period",
+        "01/01/2025 10:00,01/01/2024 10:00,WBТC,\"0,10000000\",0.0,0.0,0.0,,Kraken,Long term",
+    ])
+    capital_file.write_text(capital_content, encoding="utf-8")
+
+    # Create mock origin resolver
+    origin_resolver = MagicMock(spec=TokenOriginResolver)
+    origin_resolver.resolve.return_value = {"origin": "Unknown"}
+
+    review_entries: list = []
+    skipped_assets: dict = {}
+    # Include the Cyrillic version in known_assets to trigger review entry creation
+    known_assets = frozenset(["WBТC"])
+
+    context = CapitalGainsParsingContext(
+        skipped_assets=skipped_assets,
+        origin_resolver=origin_resolver,
+        review_entries=review_entries,
+        known_assets=known_assets,
+        loan_affected_assets=frozenset(),
+    )
+
+    entries, _ = _parse_capital_gains_file(capital_file, context)
+
+    # Verify review entry for WBТC (with Cyrillic Т)
+    wbtc_review = next((e for e in review_entries if e.asset == "WBТC"), None)
+    assert wbtc_review is not None
+    assert wbtc_review.is_suspicious is True
+    assert "non-latin" in wbtc_review.review_reason.lower() or "suspicious" in wbtc_review.review_reason.lower()
+
+
+@pytest.mark.unit
+def test_crypto_tax_report_review_entries_field_populated():
+    """Verify that review_entries in CryptoTaxReport contains the expected entries."""
+    from tax_reporting.application.crypto_reporting import (
+        CryptoTaxReport,
+        CryptoReviewEntry,
+        CryptoReconciliationSummary,
+        CryptoCapitalGainStats,
+    )
+
+    # Create a report with review entries
+    review_entries = [
+        CryptoReviewEntry(
+            source_section="capital_gains",
+            date="2025-01-15",
+            asset="BTC",
+            platform="Kraken",
+            review_reason="Zero cost basis",
+            is_suspicious=False,
+        ),
+        CryptoReviewEntry(
+            source_section="capital_gains",
+            date="2025-01-16",
+            asset="ETH",
+            platform="ByBit",
+            review_reason="Zero proceeds",
+            is_suspicious=False,
+        ),
+    ]
+
+    report = CryptoTaxReport(
+        tax_year=2025,
+        capital_entries=[],
+        reward_entries=[],
+        reconciliation=CryptoReconciliationSummary(
+            capital_rows=0,
+            reward_rows=0,
+            short_term_rows=0,
+            long_term_rows=0,
+            mixed_rows=0,
+            unknown_rows=0,
+            capital_cost_total_eur=Decimal("0"),
+            capital_proceeds_total_eur=Decimal("0"),
+            capital_gain_total_eur=Decimal("0"),
+            reward_total_eur=Decimal("0"),
+            opening_holdings=None,
+            closing_holdings=None,
+        ),
+        capital_gain_stats=CryptoCapitalGainStats.from_entries([]),
+        review_entries=review_entries,
+    )
+
+    # Verify review_entries field contains the expected entries
+    assert len(report.review_entries) == 2
+    assert report.review_entries[0].asset == "BTC"
+    assert report.review_entries[1].asset == "ETH"
+    assert all(e.is_suspicious is False for e in report.review_entries)

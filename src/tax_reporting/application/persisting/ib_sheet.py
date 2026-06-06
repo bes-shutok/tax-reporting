@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import openpyxl
 from openpyxl.comments import Comment
 from openpyxl.styles import Font, PatternFill
@@ -12,18 +14,18 @@ from ...domain.collections import (
 )
 from ...domain.constants import (
     EXCEL_COLUMN_OFFSET,
-    EXCEL_HEADER_ROW_1,
-    EXCEL_HEADER_ROW_2,
     EXCEL_NUMBER_FORMAT,
-    EXCEL_START_COLUMN,
-    EXCEL_START_ROW,
     PLACEHOLDER_YEAR,
     ZERO_QUANTITY,
 )
 from ...domain.exceptions import ReportGenerationError
 from ...infrastructure.config import Config, ConversionRate
 from ...infrastructure.logging_config import create_module_logger
-from .excel_utils import REVIEW_ROW_FILL, auto_column_width
+from .excel_utils import REVIEW_ROW_FILL, auto_column_width, safe_cell_value
+from .tax_constants import get_income_code_description
+
+if TYPE_CHECKING:
+    from ..crypto_reporting import AggregatedRewardIncomeEntry
 
 
 def write_ib_reporting_sheet(  # noqa: PLR0912, PLR0915
@@ -31,6 +33,7 @@ def write_ib_reporting_sheet(  # noqa: PLR0912, PLR0915
     config: Config,
     capital_gain_lines_per_company: CapitalGainLinesPerCompany,
     dividend_income_per_company: DividendIncomePerCompany | None = None,
+    other_capital_income_entries: list[AggregatedRewardIncomeEntry] | None = None,
 ) -> None:
     """Write the IB Reporting sheet with capital gains and dividend income.
 
@@ -39,8 +42,20 @@ def write_ib_reporting_sheet(  # noqa: PLR0912, PLR0915
         config: Application configuration with exchange rates.
         capital_gain_lines_per_company: Calculated capital gains grouped by company.
         dividend_income_per_company: Dividend income data grouped by company (optional).
+        other_capital_income_entries: Aggregated taxable fiat reward entries for the
+            OTHER CAPITAL INVESTMENT INCOME subsection (optional).
     """
     logger = create_module_logger(__name__)
+
+    # Write CAPITAL GAINS section title at the top if there are capital gains
+    line_number = 1
+    if capital_gain_lines_per_company:
+        section_title_cell = worksheet.cell(line_number, 1, "CAPITAL GAINS")
+        section_title_cell.font = Font(bold=True)  # type: ignore[assignment]
+        line_number += 2  # Leave one blank row after section title
+    else:
+        # No capital gains, start from row 1
+        line_number = 0
 
     first_header = [
         "Beneficiary",
@@ -86,15 +101,16 @@ def write_ib_reporting_sheet(  # noqa: PLR0912, PLR0915
     ]
 
     last_column: int = max(len(first_header), len(second_header))
-    exchange_rates: dict[str, str] = create_currency_table(worksheet, last_column + 2, 1, config)
+    exchange_rates: dict[str, str] = create_currency_table(worksheet, last_column + 2, line_number + 1, config)
     logger.debug("Created currency exchange table with %s rates", len(config.rates) + 1)
 
     for i in range(len(first_header)):
-        _ = worksheet.cell(EXCEL_HEADER_ROW_1, i + 1, first_header[i])
-        _ = worksheet.cell(EXCEL_HEADER_ROW_2, i + 1, second_header[i])
+        _ = worksheet.cell(line_number + 1, i + 1, first_header[i])
+        _ = worksheet.cell(line_number + 2, i + 1, second_header[i])
 
-    start_column = EXCEL_START_COLUMN
-    line_number = EXCEL_START_ROW
+    start_column = 2  # Start at column 2 (first SALE sub-column), country of source is column 1
+    capital_gains_start_row = line_number + 3  # Save for country of source pass
+    line_number += 3  # Move past title row, blank row, and two header rows
     processed_lines = ZERO_QUANTITY
 
     for currency_company, capital_gain_lines in capital_gain_lines_per_company.items():
@@ -166,55 +182,81 @@ def write_ib_reporting_sheet(  # noqa: PLR0912, PLR0915
 
     logger.debug("Processed %s capital gain lines", processed_lines)
 
-    line_number = EXCEL_START_ROW
+    line_number = capital_gains_start_row
     for currency_company, capital_gain_lines in capital_gain_lines_per_company.items():
         company = currency_company.company
         for _ in capital_gain_lines:
-            _ = worksheet.cell(line_number, 2, company.country_of_issuance)
-            _ = worksheet.cell(line_number, 11, company.country_of_issuance)
+            _ = worksheet.cell(line_number, 1, company.country_of_issuance)
+            _ = worksheet.cell(line_number, 10, company.country_of_issuance)
             line_number += 1
 
-    if dividend_income_per_company:
-        logger.info("Adding CAPITAL INVESTMENT INCOME section with %s securities", len(dividend_income_per_company))
+    _write_capital_investment_income_section(
+        worksheet, exchange_rates, dividend_income_per_company, other_capital_income_entries
+    )
 
-        line_number += 1
+    auto_column_width(worksheet)
 
-        section_title_cell = worksheet.cell(line_number, 1, "5. CAPITAL INVESTMENT INCOME:")
-        section_title_cell.font = Font(bold=True)  # type: ignore[assignment]
-        line_number += 1
 
-        line_number += 1
+def _write_capital_investment_income_section(
+    worksheet: openpyxl.worksheet.worksheet.Worksheet,
+    exchange_rates: dict[str, str],
+    dividend_income_per_company: DividendIncomePerCompany | None,
+    other_capital_income_entries: list[AggregatedRewardIncomeEntry] | None,
+) -> None:
+    """Write the CAPITAL INVESTMENT INCOME section with SHARE DIVIDENDS and OTHER subsections."""
+    logger = create_module_logger(__name__)
 
-        dividend_headers = [
-            "Beneficiary\n(choose one)",
-            "Type of capital income\n(choose one)",
-            "Country of source",
-            "ISIN",
-            "Gross amount",
-            "Withholding tax at source",
-            "Withholding tax in Portugal\n(if any)",
-            "",
-            "Symbol",
-            "Currency",
-            "Original gross amount",
-            "Original tax amount",
-            "Net amount",
-        ]
+    has_dividends = bool(dividend_income_per_company)
+    has_other = bool(other_capital_income_entries)
+    if not has_dividends and not has_other:
+        return
 
-        for i, header in enumerate(dividend_headers):
-            _ = worksheet.cell(line_number, i + 1, header)
+    logger.info(
+        "Adding CAPITAL INVESTMENT INCOME section (dividends=%s, other=%s)",
+        has_dividends,
+        len(other_capital_income_entries) if other_capital_income_entries else 0,
+    )
 
+    line_number = worksheet.max_row + 2
+
+    section_title_cell = worksheet.cell(line_number, 1, "CAPITAL INVESTMENT INCOME")
+    section_title_cell.font = Font(bold=True)  # type: ignore[assignment]
+    line_number += 2
+
+    income_headers = [
+        "Type of capital income\n(choose one)",
+        "Country of source",
+        "ISIN",
+        "Gross amount",
+        "Withholding tax at source",
+        "Withholding tax in Portugal\n(if any)",
+        "",
+        "Symbol",
+        "Currency",
+        "Original gross amount",
+        "Original tax amount",
+        "Net amount",
+        "Source system",
+        "Raw row count",
+    ]
+
+    for i, header in enumerate(income_headers):
+        _ = worksheet.cell(line_number, i + 1, header)
+    line_number += 1
+
+    if has_dividends:
+        subsection_cell = worksheet.cell(line_number, 1, "SHARE DIVIDENDS")
+        subsection_cell.font = Font(bold=True)  # type: ignore[assignment]
         line_number += 1
 
         for symbol, dividend_data in dividend_income_per_company.items():
-            _ = worksheet.cell(line_number, 1, "")
-            _ = worksheet.cell(line_number, 2, "Dividends")
+            _ = worksheet.cell(line_number, 1, "Share dividends")
 
             if dividend_data.isin == "MISSING_ISIN_REQUIRES_ATTENTION":
-                country_cell = worksheet.cell(line_number, 3, "\u26a0\ufe0f MISSING DATA")
+                country_cell = worksheet.cell(line_number, 2, "⚠️ MISSING DATA")
                 country_cell.fill = PatternFill(start_color="FFCCCC", end_color="FFCCCC", fill_type="solid")  # type: ignore[assignment]
 
-                isin_cell = worksheet.cell(line_number, 4, f"\u26a0\ufe0f {symbol}")
+                isin_cell = worksheet.cell(line_number, 3, f"⚠️ {symbol}")
                 isin_cell.fill = PatternFill(start_color="FFCCCC", end_color="FFCCCC", fill_type="solid")  # type: ignore[assignment]
 
                 isin_cell.comment = Comment(  # type: ignore[assignment]
@@ -222,36 +264,36 @@ def write_ib_reporting_sheet(  # noqa: PLR0912, PLR0915
                     "Shares Reporting",
                 )
             else:
-                _ = worksheet.cell(line_number, 3, dividend_data.country)
-                _ = worksheet.cell(line_number, 4, dividend_data.isin)
+                _ = worksheet.cell(line_number, 2, dividend_data.country)
+                _ = worksheet.cell(line_number, 3, dividend_data.isin)
 
             gross_amount_cell = worksheet.cell(
                 line_number,
-                5,
+                4,
                 "=" + exchange_rates[dividend_data.currency.currency] + "*(" + str(dividend_data.gross_amount) + ")",
             )
             gross_amount_cell.number_format = EXCEL_NUMBER_FORMAT  # type: ignore[assignment]
 
             tax_amount_cell = worksheet.cell(
                 line_number,
-                6,
+                5,
                 "=" + exchange_rates[dividend_data.currency.currency] + "*(" + str(dividend_data.total_taxes) + ")",
             )
             tax_amount_cell.number_format = EXCEL_NUMBER_FORMAT  # type: ignore[assignment]
 
-            _ = worksheet.cell(line_number, 7, "")
+            _ = worksheet.cell(line_number, 6, "")
 
-            _ = worksheet.cell(line_number, 9, symbol)
-            _ = worksheet.cell(line_number, 10, dividend_data.currency.currency)
+            _ = worksheet.cell(line_number, 8, symbol)
+            _ = worksheet.cell(line_number, 9, dividend_data.currency.currency)
 
-            original_gross_cell = worksheet.cell(line_number, 11, str(dividend_data.gross_amount))
+            original_gross_cell = worksheet.cell(line_number, 10, str(dividend_data.gross_amount))
             original_gross_cell.number_format = EXCEL_NUMBER_FORMAT
 
-            original_tax_cell = worksheet.cell(line_number, 12, str(dividend_data.total_taxes))
+            original_tax_cell = worksheet.cell(line_number, 11, str(dividend_data.total_taxes))
             original_tax_cell.number_format = EXCEL_NUMBER_FORMAT
 
             net_amount = dividend_data.gross_amount - dividend_data.total_taxes
-            net_amount_cell = worksheet.cell(line_number, 13, str(net_amount))
+            net_amount_cell = worksheet.cell(line_number, 12, str(net_amount))
             net_amount_cell.number_format = EXCEL_NUMBER_FORMAT
 
             logger.debug(
@@ -264,7 +306,73 @@ def write_ib_reporting_sheet(  # noqa: PLR0912, PLR0915
             )
             line_number += 1
 
-    auto_column_width(worksheet)
+    if other_capital_income_entries:
+        if has_dividends:
+            line_number += 1  # Add blank row separator
+        other_subsection_cell = worksheet.cell(line_number, 1, "OTHER CAPITAL INVESTMENT INCOME")
+        other_subsection_cell.font = Font(bold=True)  # type: ignore[assignment]
+        line_number += 1
+
+        line_number = _write_other_capital_income_subsection(
+            worksheet, line_number, other_capital_income_entries
+        )
+
+
+def _write_other_capital_income_subsection(
+    worksheet: openpyxl.worksheet.worksheet.Worksheet,
+    line_number: int,
+    other_capital_income_entries: list[AggregatedRewardIncomeEntry],
+) -> int:
+    """Write the OTHER CAPITAL INVESTMENT INCOME subsection rows.
+
+    Args:
+        worksheet: The openpyxl worksheet to populate.
+        line_number: The starting row number (1-based).
+        other_capital_income_entries: Aggregated taxable fiat reward entries.
+
+    Returns:
+        The updated line_number after writing all rows.
+    """
+    logger = create_module_logger(__name__)
+
+    for entry in other_capital_income_entries:
+        source_detail = safe_cell_value(", ".join(sorted(entry.chains)))
+        income_type_label = safe_cell_value(get_income_code_description(entry.income_code))
+        net_eur = entry.gross_income_eur - entry.foreign_tax_eur
+
+        columns = [
+            (1, income_type_label, None),
+            (2, safe_cell_value(entry.source_country), None),
+            (3, "", None),
+            (4, str(entry.gross_income_eur), EXCEL_NUMBER_FORMAT),
+            (5, str(entry.foreign_tax_eur), EXCEL_NUMBER_FORMAT),
+            (6, "", None),
+            (7, "", None),
+            (8, source_detail, None),
+            (9, "EUR", None),
+            (10, str(entry.gross_income_eur), EXCEL_NUMBER_FORMAT),
+            (11, str(entry.foreign_tax_eur), EXCEL_NUMBER_FORMAT),
+            (12, str(net_eur), EXCEL_NUMBER_FORMAT),
+            (13, "Koinly", None),
+            (14, entry.raw_row_count, None),
+        ]
+
+        for col_idx, value, number_format in columns:
+            cell = worksheet.cell(line_number, col_idx, value)
+            if number_format:
+                cell.number_format = number_format  # type: ignore[assignment]
+
+        logger.debug(
+            "Added other capital income row: code=%s country=%s gross=%s tax=%s net=%s",
+            entry.income_code,
+            entry.source_country,
+            entry.gross_income_eur,
+            entry.foreign_tax_eur,
+            net_eur,
+        )
+        line_number += 1
+
+    return line_number
 
 
 def create_currency_table(

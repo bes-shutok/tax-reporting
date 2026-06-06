@@ -102,22 +102,27 @@ def apply_review_row_fill(worksheet: Worksheet, row_no: int, start_col: int, end
 
 
 def safe_cell_value(value: str) -> str:
-    """Prevent Excel formula injection by prefixing '='-leading strings with a space.
+    """Prevent Excel formula injection and strip control characters from cell values.
 
-    openpyxl stores any string starting with '=' as a formula when the workbook is
-    opened in Excel or LibreOffice. User-controlled strings (platform names, wallet
-    labels, assumption text) should be wrapped with this function before writing to
-    worksheet cells.
+    Neutralizes formula prefixes (=, +, -, @) by prepending a space, and removes
+    control/newline characters that would corrupt cell rendering. User-controlled
+    strings (platform names, wallet labels, Koinly-derived values) should be wrapped
+    with this function before writing to worksheet cells.
+
+    See docs/domain/development_lessons.md #7 for Excel security guidance.
 
     Args:
         value: The raw string to write to a cell.
 
     Returns:
-        The value unchanged, or prefixed with a space if it starts with '='.
+        The sanitized value safe for Excel cell writing. Empty strings are safe
+        and returned as-is (no space prefix needed).
     """
-    if value.startswith("="):
-        return f" {value}"
-    return value
+    cleaned = "".join(ch for ch in value if ch >= " " or ch in ("\t",))
+    # Empty strings (after stripping control chars) are safe - no prefix needed
+    if cleaned[:1] in ("=", "+", "-", "@"):
+        return f" {cleaned}"
+    return cleaned
 
 
 def safe_remove_file(path: str | PathLike[str]) -> None:
