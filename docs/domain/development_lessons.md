@@ -671,6 +671,53 @@ validation error until the field was added to the domain model.
 
 **See also:** `config.py` lines 44-51 (`_KNOWN_DECISION_FLAGS` derivation), `jurisdiction.py`
 
+---
+
+## 69. Excel Output Visual Structure Tests
+
+When adding or modifying Excel report layouts, add visual structure tests to verify row placement, cell merging, blank rows, and header structure — not just data values. This prevents regressions where structural changes accidentally modify layout.
+
+**What to test:**
+- **Row placement**: Section title row, blank row count (exactly one vs double), header row positions, data start row
+- **Cell coordinates**: Verify specific values at expected positions (e.g., "CAPITAL GAINS" at A1, "Day" at B4)
+- **Cell merging**: Verify merged cell ranges using `sheet.merged_cells.ranges` (e.g., SALE header spans B3:E3)
+- **Cell formatting**: Verify bold fonts, red fills, and other visual indicators
+- **Column positions**: Regression guard against column index changes (e.g., Country of Source at col 1, sell_day at col 2)
+
+**Pattern:**
+```python
+# Test section title placement and formatting
+def test_section_title_at_row_1(self, sheet):
+    assert sheet["A1"].value == "CAPITAL GAINS"
+    assert sheet["A1"].font.bold
+
+# Test blank row count (not double-spaced)
+def test_single_blank_row_after_title(self, sheet):
+    assert sheet["A2"].value is None  # Row 2 is blank
+    assert sheet["A3"].value is not None  # Row 3 has header
+
+# Test cell merging
+def test_sale_header_merged_across_4_columns(self, sheet):
+    assert "B3:E3" in {r.coord for r in sheet.merged_cells.ranges}
+```
+
+**Why**: Data-value tests alone cannot detect layout regressions. A structural change like modifying `start_column` from 2 to 1 would misalign data columns without breaking data-value assertions. Visual structure tests catch these regressions by explicitly verifying the expected layout geometry.
+
+**See also**: `tests/unit/application/persisting/test_ib_sheet.py::TestWriteIbReportingSheetCapitalGains` for example visual structure tests
+
+## 70. Structural Change Verification for Absolute-Position Code
+
+When modifying table structures (adding/removing columns), verify that all downstream code using those positions is correct. Distinguish between:
+
+- **Absolute-position code** (writes to specific column numbers) — needs manual verification after structural changes
+- **Offset-based code** (uses `start_column + N`) — may auto-adjust but still needs verification
+
+**Pattern:** After removing/adding columns, grep for all code that writes to specific column indices and verify correctness. For the IB sheet, the country pass writes to absolute positions (col 1 and col 10) and was unaffected by Beneficiary removal because it uses direct column indices rather than offsets from `start_column`.
+
+**Verification step:** Add a verification task to the plan when structural changes affect column positions. Run the relevant tests to confirm no regression.
+
+**Example:** After removing the Beneficiary column from the CAPITAL GAINS table, verify that the country pass (lines 196-197 of `ib_sheet.py`) still writes to the correct columns: column 1 (Country of Source) and column 10 (WITHOLDING TAX/Country).
+
 ## Quality Assurance Commands
 
 ```bash

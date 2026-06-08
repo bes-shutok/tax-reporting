@@ -235,6 +235,8 @@ uv run pytest --cov=src --cov-report=html  # Coverage
 
 **Test Value Assessment**: test meaningful business logic, real edge cases, avoid duplicating coverage. High-value: complex IB CSV formats, tax calculations, error handling. Low-value: zero amounts, trivial parsing, cases already covered.
 
+**Excel Output Tests**: When adding or modifying Excel report layouts, add visual structure tests to verify row placement, cell merging, blank rows, and header structure — not just data values. See development_lessons.md #69. For structural changes (adding/removing columns), verify that absolute-position code (writes to specific column numbers) is still correct. See development_lessons.md #70.
+
 ## Development Best Practices
 
 ### Incremental Development with Testing

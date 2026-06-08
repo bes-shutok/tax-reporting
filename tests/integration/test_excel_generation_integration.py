@@ -195,13 +195,13 @@ class TestDividendExcelPersisting:
         # Check converted gross amount formula (column 5, index 4)
         gross_amount_cell = worksheet.cell(row=dividend_row, column=4)
         assert gross_amount_cell.data_type == "f"  # Formula cell
-        assert "=V" in str(gross_amount_cell.value)  # Contains reference to exchange rate
+        assert "=U" in str(gross_amount_cell.value)  # Contains reference to exchange rate (column U after removing Beneficiary)
         assert "100.5" in str(gross_amount_cell.value)  # Contains original amount
 
         # Check converted tax amount formula (column 6, index 5)
         tax_amount_cell = worksheet.cell(row=dividend_row, column=5)
         assert tax_amount_cell.data_type == "f"  # Formula cell
-        assert "=V" in str(tax_amount_cell.value)  # Contains reference to exchange rate
+        assert "=U" in str(tax_amount_cell.value)  # Contains reference to exchange rate (column U after removing Beneficiary)
         assert "15.25" in str(tax_amount_cell.value)  # Contains original amount
 
         # Check original amounts (should be string values)
@@ -1910,7 +1910,7 @@ class TestExcelGenerationIntegration:
             row for row in rows if row and len(row) > 1 and row[0] == "Share dividends"
         ]
         reward_data_rows = [
-            row for row in rows if row and len(row) > 1 and isinstance(row[1], str) and row[0].startswith("Crypto")
+            row for row in rows if row and len(row) > 1 and isinstance(row[0], str) and isinstance(row[1], str) and row[0].startswith("Crypto")
         ]
         assert len(dividend_data_rows) == 1, f"Expected 1 dividend row, found {len(dividend_data_rows)}"
         assert len(reward_data_rows) == 1, f"Expected 1 reward row, found {len(reward_data_rows)}"

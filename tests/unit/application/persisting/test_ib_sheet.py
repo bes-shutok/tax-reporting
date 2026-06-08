@@ -191,8 +191,8 @@ class TestWriteIbReportingSheetHeaders:
         lines: CapitalGainLinesPerCompany = {}
         write_ib_reporting_sheet(ws, config, lines)
         # When there are no capital gains, no section title is written, headers at rows 1-2
-        assert ws.cell(1, 1).value == "Beneficiary"
-        assert ws.cell(1, 2).value == "Country of Source"
+        assert ws.cell(1, 1).value == "Country of Source"
+        assert ws.cell(1, 2).value == "SALE"
 
     def test_writes_second_header_row(self):
         wb = openpyxl.Workbook()
@@ -202,7 +202,7 @@ class TestWriteIbReportingSheetHeaders:
         lines: CapitalGainLinesPerCompany = {}
         write_ib_reporting_sheet(ws, config, lines)
         # When there are no capital gains, no section title is written, headers at rows 1-2
-        assert ws.cell(2, 3).value == "Day "
+        assert ws.cell(2, 2).value == "Day "
 
 
 @pytest.mark.unit
@@ -218,7 +218,7 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        assert ws.cell(6, 2).value == 15
+        assert ws.cell(5, 2).value == 15
 
     def test_writes_sell_month_name(self):
         wb = openpyxl.Workbook()
@@ -229,7 +229,7 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        assert ws.cell(6, 3).value == "June"
+        assert ws.cell(5, 3).value == "June"
 
     def test_writes_sell_year(self):
         wb = openpyxl.Workbook()
@@ -240,7 +240,7 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        assert ws.cell(6, 4).value == 2025
+        assert ws.cell(5, 4).value == 2025
 
     def test_sell_amount_is_formula(self):
         wb = openpyxl.Workbook()
@@ -251,7 +251,7 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        sell_amount_cell = ws.cell(6, 5)
+        sell_amount_cell = ws.cell(5, 5)
         assert sell_amount_cell.data_type == "f"
         assert sell_amount_cell.value.startswith("=")
 
@@ -264,7 +264,7 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        assert ws.cell(6, 6).value == 10
+        assert ws.cell(5, 6).value == 10
 
     def test_buy_amount_is_formula(self):
         wb = openpyxl.Workbook()
@@ -275,7 +275,7 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        buy_amount_cell = ws.cell(6, 9)
+        buy_amount_cell = ws.cell(5, 9)
         assert buy_amount_cell.data_type == "f"
 
     def test_expense_cell_is_formula(self):
@@ -287,7 +287,7 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        expense_cell = ws.cell(6, 12)
+        expense_cell = ws.cell(5, 12)
         assert expense_cell.data_type == "f"
         assert expense_cell.number_format == "0.00"
 
@@ -300,8 +300,8 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        assert ws.cell(6, 1).value == "US"
-        assert ws.cell(6, 10).value == "US"
+        assert ws.cell(5, 1).value == "US"
+        assert ws.cell(5, 10).value == "US"
 
     def test_symbol_and_currency_written(self):
         wb = openpyxl.Workbook()
@@ -312,8 +312,8 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        assert ws.cell(6, 14).value == "AAPL"
-        assert ws.cell(6, 15).value == "USD"
+        assert ws.cell(5, 14).value == "AAPL"
+        assert ws.cell(5, 15).value == "USD"
 
     def test_multiple_lines_write_on_separate_rows(self):
         wb = openpyxl.Workbook()
@@ -325,8 +325,8 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line1, line2]}
         write_ib_reporting_sheet(ws, config, lines)
-        assert ws.cell(6, 2).value == 5
-        assert ws.cell(7, 2).value == 10
+        assert ws.cell(5, 2).value == 5
+        assert ws.cell(6, 2).value == 10
 
     def test_placeholder_buy_row_has_red_fill(self):
         wb = openpyxl.Workbook()
@@ -337,8 +337,132 @@ class TestWriteIbReportingSheetCapitalGains:
         cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
         lines: CapitalGainLinesPerCompany = {cc: [line]}
         write_ib_reporting_sheet(ws, config, lines)
-        cell = ws.cell(6, 2)
+        cell = ws.cell(5, 2)
         assert cell.fill.start_color.rgb == "FFFF0000"
+
+    def test_section_title_at_row_1(self):
+        """Verify CAPITAL GAINS section title is at row 1 with bold font."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        line = _make_capital_gain_line()
+        cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
+        lines: CapitalGainLinesPerCompany = {cc: [line]}
+        write_ib_reporting_sheet(ws, config, lines)
+
+        assert ws.cell(1, 1).value == "CAPITAL GAINS"
+        assert ws.cell(1, 1).font.bold == True
+
+    def test_single_blank_row_after_title(self):
+        """Verify there is exactly one blank row after the section title."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        line = _make_capital_gain_line()
+        cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
+        lines: CapitalGainLinesPerCompany = {cc: [line]}
+        write_ib_reporting_sheet(ws, config, lines)
+
+        # Row 2 should be empty (the blank row after title)
+        # Check all 19 columns (header has 18, plus column 19) to catch accidental writes beyond expected structure
+        for col in range(1, 20):
+            assert ws.cell(2, col).value is None
+
+    def test_first_header_row_structure(self):
+        """Verify first header row has correct structure at row 3."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        line = _make_capital_gain_line()
+        cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
+        lines: CapitalGainLinesPerCompany = {cc: [line]}
+        write_ib_reporting_sheet(ws, config, lines)
+
+        assert ws.cell(3, 1).value == "Country of Source"
+        assert ws.cell(3, 2).value == "SALE"
+        assert ws.cell(3, 6).value == "PURCHASE"
+
+    def test_second_header_row_structure(self):
+        """Verify second header row has correct sub-headers at row 4."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        line = _make_capital_gain_line()
+        cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
+        lines: CapitalGainLinesPerCompany = {cc: [line]}
+        write_ib_reporting_sheet(ws, config, lines)
+
+        assert ws.cell(4, 2).value == "Day "
+        assert ws.cell(4, 3).value == "Month "
+        assert ws.cell(4, 4).value == "Year"
+        assert ws.cell(4, 5).value == "Amount"
+
+    def test_sale_header_merged_across_4_columns(self):
+        """Verify SALE header is merged across columns 2-5."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        line = _make_capital_gain_line()
+        cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
+        lines: CapitalGainLinesPerCompany = {cc: [line]}
+        write_ib_reporting_sheet(ws, config, lines)
+
+        # Check that the range (2-5, 3) is merged
+        # Note: String matching on merged_cells.ranges is used because openpyxl does not provide
+        # a direct range coordinate comparison API. The format is stable across versions.
+        merge_ranges = [str(r) for r in ws.merged_cells.ranges]
+        assert any("B3:E3" in r or r.startswith("B3") and r.endswith("E3") for r in merge_ranges)
+
+    def test_purchase_header_merged_across_4_columns(self):
+        """Verify PURCHASE header is merged across columns 6-9."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        line = _make_capital_gain_line()
+        cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
+        lines: CapitalGainLinesPerCompany = {cc: [line]}
+        write_ib_reporting_sheet(ws, config, lines)
+
+        # Check that the range (6-9, 3) is merged
+        # Note: String matching on merged_cells.ranges is used because openpyxl does not provide
+        # a direct range coordinate comparison API. The format is stable across versions.
+        merge_ranges = [str(r) for r in ws.merged_cells.ranges]
+        assert any("F3:I3" in r or r.startswith("F3") and r.endswith("I3") for r in merge_ranges)
+
+    def test_data_starts_at_row_5(self):
+        """Verify first data row is at row 5 with sell_day value."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        line = _make_capital_gain_line(sell_date=TradeDate(2025, 6, 15))
+        cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
+        lines: CapitalGainLinesPerCompany = {cc: [line]}
+        write_ib_reporting_sheet(ws, config, lines)
+
+        # Data should start at row 5
+        assert ws.cell(5, 2).value == 15
+
+    def test_country_and_sell_day_at_different_columns(self):
+        """Regression test: verify Country of Source (col 1) and sell_day (col 2) are in different columns."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        line = _make_capital_gain_line(sell_date=TradeDate(2025, 6, 15))
+        cc = CurrencyCompany(Currency("USD"), Company("AAPL", country_of_issuance="US"))
+        lines: CapitalGainLinesPerCompany = {cc: [line]}
+        write_ib_reporting_sheet(ws, config, lines)
+
+        # Country at col 1, sell_day at col 2 -- must be different columns
+        assert ws.cell(5, 1).value == "US"
+        assert ws.cell(5, 2).value == 15
 
 
 @pytest.mark.unit
@@ -470,7 +594,7 @@ class TestWriteIbReportingSheetCurrencyTable:
         lines: CapitalGainLinesPerCompany = {}
         write_ib_reporting_sheet(ws, config, lines)
         found = False
-        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=21, max_col=21):
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=20, max_col=20):
             if row[0].value == "Currency exchange rate":
                 found = True
                 break
@@ -517,15 +641,15 @@ class TestWriteIbReportingSheetAutoWidth:
         lines: CapitalGainLinesPerCompany = {cc: [line1, line2, line3]}
         write_ib_reporting_sheet(ws, config, lines)
 
-        # Expected widths for headers: M=45 (longest), Q=11, R=10, S=15, E=6, I=6
+        # Expected widths for headers: L=45 (longest), P=11, Q=10, R=15, E=6, I=6
         # All formula-heavy columns should use measured header length with MIN_DATA_WIDTH as floor
         expected_widths = {
             "E": 6,    # "Amount" (sell)
             "I": 6,    # "Amount" (buy)
-            "M": 45,   # "Expenses incurred with obtaining the capital gains"
-            "Q": 11,   # "Sale amount"
-            "R": 10,   # "Buy amount"
-            "S": 15,   # "Expenses amount"
+            "L": 45,   # "Expenses incurred with obtaining the capital gains"
+            "P": 11,   # "Sale amount"
+            "Q": 10,   # "Buy amount"
+            "R": 15,   # "Expenses amount"
         }
 
         for col_letter, expected_header_len in expected_widths.items():
