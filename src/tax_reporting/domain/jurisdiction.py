@@ -17,9 +17,12 @@ class TaxJurisdictionConfig:
             from capital gains (e.g., True for PT per CIRS art. 10(20)).
         zero_basis_review_threshold: Entries with zero cost basis and gain/loss at or
             above this threshold are flagged for review in the report.
+        futures_derivatives_taxable: Whether futures and derivatives liquidations are
+            treated as taxable disposals (e.g., True for PT per CIRS art. 10(1)(e)).
     """
 
     country: str
     fiscal_year: int
     exclude_loan_repayment_gains: bool
     zero_basis_review_threshold: Decimal
+    futures_derivatives_taxable: bool = False

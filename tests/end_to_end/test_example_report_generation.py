@@ -114,7 +114,7 @@ def test_example_full_pipeline_generates_excel(tmp_path: Path):
     assert "Crypto Supplementary" in wb.sheetnames
     assert "Crypto Reconciliation" in wb.sheetnames
     assert "Loan Activity" in wb.sheetnames
-    assert "Platform Assumptions" in wb.sheetnames
+    assert "Assumptions & Methodology" in wb.sheetnames
 
     # Verify Loan Activity sheet has expected structure
     loan_ws = wb["Loan Activity"]

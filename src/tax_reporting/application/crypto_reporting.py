@@ -338,6 +338,9 @@ class CryptoCapitalGainEntry:
     notes: str
     review_reason: str | None = None
     token_swap_history: str = ""
+    # Set during aggregation when the entry combines FIFO lots from multiple
+    # acquisition dates. Triggers blue fill in Excel output. See PT-C-027.
+    multi_acquisition_dates: bool = False
 
     def __post_init__(self) -> None:
         """Validate review_reason is provided when review_required is True."""
@@ -1837,6 +1840,7 @@ def _rebuild_fifo_for_loan_affected_assets(
                 notes=r.notes or "",
                 review_reason=combined_review_reason,
                 token_swap_history=str(origin),
+                multi_acquisition_dates=False,
             )
         )
 
@@ -2180,6 +2184,23 @@ def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[Cr
                 first.asset,
                 first.disposal_date,
             )
+        # Detect multiple acquisition dates within the aggregated group
+        unique_acquisition_dates = sorted(set(dict.fromkeys(non_empty_dates)))
+        multi_acquisition_dates = len(unique_acquisition_dates) > 1
+
+        # Build multi-date note when multiple acquisition dates exist
+        multi_date_note = ""
+        if multi_acquisition_dates:
+            dates_str = ", ".join(unique_acquisition_dates)
+            multi_date_note = f"Acquired: {dates_str} ({len(group)} lot{'s' if len(group) != 1 else ''})"
+
+        # Merge existing notes with multi-date note (multi-date note first for prominence)
+        existing_notes = list(dict.fromkeys(e.notes for e in group if e.notes))
+        all_note_parts = list(dict.fromkeys(existing_notes))
+        if multi_date_note:
+            all_note_parts.insert(0, multi_date_note)
+        merged_notes = "; ".join(all_note_parts) or ""
+
         result.append(
             CryptoCapitalGainEntry(
                 disposal_date=first.disposal_date,
@@ -2197,8 +2218,9 @@ def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[Cr
                 annex_hint=first.annex_hint,
                 review_required=any(e.review_required for e in group),
                 review_reason="; ".join(dict.fromkeys(e.review_reason for e in group if e.review_reason)) or None,
-                notes="; ".join(dict.fromkeys(e.notes for e in group if e.notes)),
+                notes=merged_notes,
                 token_swap_history=_aggregate_origin_field(group),
+                multi_acquisition_dates=multi_acquisition_dates,
             )
         )
     result.sort(key=lambda e: (e.disposal_date, e.asset, e.platform, e.holding_period))
@@ -2544,6 +2566,7 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
             review_reason=review_reason,
             notes=notes,
             token_swap_history=token_origin_str,
+            multi_acquisition_dates=False,
         )
 
         if is_loan_affected:

@@ -21,6 +21,8 @@ This file provides guidance to coding agents when working with code in this repo
 
 ### 2. Repository Style and Conventions
 
+- Use specific type annotations for generic collections (`list[Type] | None` instead of `list | None`). See `docs/domain/development_lessons.md #8`.
+- Catch specific exception types (`FileProcessingError`, `ValueError`) instead of broad `Exception`. See `docs/domain/development_lessons.md #9`.
 - Koinly source discovery must be year-agnostic (`koinly*`) and prefer a year matching parsed IB data when available.
 - If an inferred IB tax year exists and the selected Koinly directory year differs, skip crypto loading for that run.
 - Dividend aggregation must validate one currency per symbol; mismatches must raise `FileProcessingError`.
@@ -32,6 +34,7 @@ This file provides guidance to coding agents when working with code in this repo
 - When consulting AT guidance (folheto, PIVs, ofícios circulados) that cites a CIRS paragraph number, verify the current number against the consolidated CIRS PDF — AT documents may predate renumbering amendments and use outdated paragraph references. See `docs/project-guidelines.md` #3.
 - For tax/origin web sources, prefer authoritative PDFs or extracted Markdown/PDF over raw HTML, and reuse local mirrors.
 - Under `docs/tax/`, use `laws/<jurisdiction>/crypto-tax/` for tax-law archives (e.g. `laws/pt/crypto-tax/`, `laws/eu/crypto-tax/`) and `crypto-origin/` for chain/operator domicile archives.
+- When adding a new boolean flag to `docs/tax/decision_points/<year>.toml`, add the corresponding field to `TaxJurisdictionConfig` in `domain/jurisdiction.py`. The config system auto-discovers known flags from the dataclass's bool fields. See `development_lessons.md` #68.
 - Share crypto `País da Fonte` resolution across rewards and capital gains. Never use taxpayer residence.
 - Keep the `docs/tax/crypto-origin/` source manifest, registry, and decision log synchronized when changing crypto chain/operator mappings.
 - Chain derivation must use deterministic normalization rules and validate against trusted sources in `docs/tax/crypto-origin/`.
@@ -70,9 +73,12 @@ This file provides guidance to coding agents when working with code in this repo
 - Run `_validate_capital_entries_have_valid_countries()`, `_aggregate_capital_entries()`, and `_filter_immaterial_entries()` only after FIFO-derived entries are merged with raw CG rows.
 - Cross-asset FIFO carry-over must match by TH transaction identifier, never by day-level date alone.
 - Any excluded asset that yields zero FIFO output must log at warning level or higher.
+- When processing crypto derivatives/futures liquidations that report losses, understand that leveraged positions report as disposals of collateral even when liquidating at a loss — this is correct tax treatment (alienação onerosa), not an error. See `development_lessons.md` #67.
 
 ### 4. Agent Workflow Rules
 
+- When testing string sanitization, validation, or parsing functions, explicitly test edge cases (empty strings, whitespace-only, multi-byte, control chars, multi-char prefixes, padded inputs). See `docs/domain/development_lessons.md #6`.
+- Test error path coverage including double-failure scenarios (e.g., aggregation fails AND workbook.close fails). See `docs/domain/development_lessons.md #6`.
 - Examine existing source data files in the repository (e.g., `resources/source/koinly*/`) directly before asking the user to provide samples or examples. Use Glob and Read tools to find and analyze the actual data.
 - Do not commit changes unless explicitly asked by the user.
 - Always use `uv run pytest`, not `uvx pytest`.
@@ -177,6 +183,7 @@ The application generates professional Excel reports with:
 ### Report Structure
 - **Column Headers**: Clear, descriptive headers with line breaks for readability
 - **Currency Conversion**: Automatic conversion using configured exchange rates
+- **Security**: All external data string fields are wrapped with `safe_cell_value()` to prevent Excel formula injection. See `docs/domain/development_lessons.md #7`.
 - **Formulas**: Excel formulas for dynamic calculations
 - **Auto-sizing**: Column widths automatically adjusted for content with `MAX_CELL_WIDTH=50` cap and `MIN_DATA_WIDTH=12` floor (see `excel_utils.py`)
 
@@ -210,7 +217,7 @@ The system automatically integrates data from previous tax cycles:
 ## Testing Strategy
 
 ### Test Structure
-3-tier architecture: `tests/unit/` (770 tests), `tests/integration/` (29), `tests/e2e/` (25).
+3-tier architecture: `tests/unit/` (401 unit-marked tests), `tests/integration/` (10 integration-marked tests), `tests/e2e/` (26 e2e-marked tests), plus 451 tests without explicit markers (total 888).
 
 ### Testing Commands
 ```bash
@@ -329,13 +336,13 @@ tax-reporting/
 │           ├── logging_config.py # Logging configuration
 │           └── validation.py    # Input validation
 ├── tests/                  # Test suite
-│   ├── unit/               # Unit tests (767 tests)
+│   ├── unit/               # Unit tests (401 unit-marked tests)
 │   │   ├── domain/         # Domain layer unit tests
 │   │   ├── infrastructure/ # Infrastructure layer unit tests
 │   │   └── application/    # Application layer unit tests
 │   │       └── persisting/ # Persisting module unit tests
-│   ├── integration/        # Integration tests (29 tests)
-│   ├── end_to_end/         # End-to-end tests (25 tests)
+│   ├── integration/        # Integration tests (10 integration-marked tests)
+│   ├── end_to_end/         # End-to-end tests (26 e2e-marked tests)
 │   └── conftest.py         # Pytest configuration and fixtures
 ├── resources/              # Data directories
 │   ├── source/             # Input CSV files

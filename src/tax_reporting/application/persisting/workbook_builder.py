@@ -21,7 +21,7 @@ from ...domain.exceptions import ConfigurationError, FileProcessingError, Report
 from ...infrastructure.config import Config, load_configuration_from_file
 from ...infrastructure.logging_config import create_module_logger
 from ..crypto_reporting import aggregate_taxable_rewards
-from .assumptions_sheet import write_platform_assumptions_sheet
+from .assumptions_sheet import write_assumptions_and_methodology_sheet
 from .crypto_gains_sheet import write_crypto_gains_sheet
 from .crypto_reconciliation_sheet import write_crypto_reconciliation_sheet
 from .crypto_supplementary_sheet import write_crypto_supplementary_sheet
@@ -160,7 +160,7 @@ def generate_tax_report(  # noqa: PLR0912, PLR0915
                 write_crypto_supplementary_sheet(workbook, crypto_tax_report)
                 write_crypto_reconciliation_sheet(workbook, crypto_tax_report)
                 write_loan_activity_sheet(workbook, crypto_tax_report)
-                write_platform_assumptions_sheet(
+                write_assumptions_and_methodology_sheet(
                     workbook,
                     capital_entries=crypto_tax_report.capital_entries,
                     reward_entries=crypto_tax_report.reward_entries,
@@ -173,7 +173,7 @@ def generate_tax_report(  # noqa: PLR0912, PLR0915
                     "Crypto Supplementary",
                     "Crypto Reconciliation",
                     "Loan Activity",
-                    "Platform Assumptions",
+                    "Assumptions & Methodology",
                 ):
                     if name in workbook.sheetnames:
                         workbook.remove(workbook[name])

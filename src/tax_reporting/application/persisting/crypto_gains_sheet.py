@@ -12,7 +12,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 if TYPE_CHECKING:
     from ..crypto_reporting import CryptoCapitalGainEntry, CryptoTaxReport
 
-from .excel_utils import apply_review_row_fill, auto_column_width
+from .excel_utils import apply_multi_date_row_fill, apply_review_row_fill, auto_column_width, safe_cell_value
 
 _CAPITAL_GAINS_NUM_COLS = 17
 
@@ -40,11 +40,13 @@ def _render_capital_gain_row(
     worksheet.cell(row_no, 14, entry.annex_hint)
     review_display = f"YES: {entry.review_reason or '(no reason propagated)'}" if entry.review_required else "NO"
     worksheet.cell(row_no, 15, review_display)
-    worksheet.cell(row_no, 16, entry.notes)
+    worksheet.cell(row_no, 16, safe_cell_value(entry.notes))
     worksheet.cell(row_no, 17, entry.token_swap_history or "")
     needs_fill = entry.review_required or (entry.cost_eur == 0 and abs(entry.gain_loss_eur) >= threshold)
     if needs_fill:
         apply_review_row_fill(worksheet, row_no, 1, _CAPITAL_GAINS_NUM_COLS)
+    elif entry.multi_acquisition_dates:
+        apply_multi_date_row_fill(worksheet, row_no, 1, _CAPITAL_GAINS_NUM_COLS)
 
 
 def write_crypto_gains_sheet(workbook: openpyxl.Workbook, crypto_tax_report: CryptoTaxReport) -> None:  # noqa: PLR0915

@@ -1,8 +1,12 @@
-"""Platform Assumptions sheet writer for platform-level verification notes.
+"""Assumptions & Methodology sheet writer for platform-level verification notes.
 
-This sheet provides a complete manifest of every platform seen in the tax report,
-showing operator entity, country, confidence level, any verification assumption,
-and whether the platform requires manual review before filing.
+This sheet provides:
+1. A complete manifest of every platform seen in the tax report, showing operator
+   entity, country, confidence level, any verification assumption, and whether
+   the platform requires manual review before filing.
+2. Methodology assumptions documenting the legal basis and rationale for reporting
+   decisions (aggregation approach, FIFO methodology, holding period classification,
+   materiality threshold, data sources).
 
 Platforms with platform_review_required=True are highlighted in red and sorted
 to the top so they are immediately visible.
@@ -23,7 +27,7 @@ from .excel_utils import REVIEW_ROW_FILL, auto_column_width, safe_cell_value
 
 @dataclass
 class _PlatformSummary:
-    """Aggregated per-platform data for the Platform Assumptions sheet."""
+    """Aggregated per-platform data for the Assumptions & Methodology sheet."""
 
     platform: str
     operator_entity: str
@@ -75,18 +79,16 @@ def _collect_platform_summaries(
     return list(summaries.values())
 
 
-def write_platform_assumptions_sheet(
+def write_assumptions_and_methodology_sheet(
     workbook: openpyxl.Workbook,
     capital_entries: list[CryptoCapitalGainEntry] | None = None,
     reward_entries: list[CryptoRewardIncomeEntry] | None = None,
 ) -> None:
-    """Create and populate a 'Platform Assumptions' worksheet.
+    """Create and populate an 'Assumptions & Methodology' worksheet.
 
-    Lists every platform seen in the report. Platforms with platform_review_required=True
-    are highlighted red and sorted to the top — these must be resolved before filing.
-
-    Columns: Platform | Operator Entity | Country | Confidence |
-             Review Required | Assumption / Verification Note | Transaction Count
+    Contains two sections:
+    1. Platform Assumptions — complete manifest of platforms with operator metadata
+    2. Methodology Assumptions — legal basis and rationale for reporting decisions
 
     Args:
         workbook: The Excel workbook to add the sheet to.
@@ -98,11 +100,11 @@ def write_platform_assumptions_sheet(
     """
     summaries = _collect_platform_summaries(capital_entries, reward_entries)
 
-    worksheet = workbook.create_sheet("Platform Assumptions")
+    worksheet = workbook.create_sheet("Assumptions & Methodology")
     row_no = 1
 
     # Title
-    worksheet.cell(row_no, 1, "Platform Assumptions / Require Verification")
+    worksheet.cell(row_no, 1, "Assumptions & Methodology")
     worksheet.cell(row_no, 1).font = openpyxl.styles.Font(bold=True, size=14)
     row_no += 2
 
@@ -121,7 +123,7 @@ def write_platform_assumptions_sheet(
         auto_column_width(worksheet)
         return
 
-    # Headers
+    # Headers for Platform Assumptions section
     headers = [
         "Platform",
         "Operator Entity",
@@ -150,6 +152,54 @@ def write_platform_assumptions_sheet(
         if s.platform_review_required:
             for col_idx in range(1, 8):
                 worksheet.cell(row_no, col_idx).fill = REVIEW_ROW_FILL  # type: ignore[assignment]
+        row_no += 1
+
+    # After platform data section, add methodology section
+    row_no += 2
+    worksheet.cell(row_no, 1, "Methodology Assumptions")
+    worksheet.cell(row_no, 1).font = openpyxl.styles.Font(bold=True, size=12)
+    row_no += 2
+
+    methodology_items = [
+        (
+            "Aggregation Approach",
+            "FIFO lots from the same sale event are aggregated into one line. "
+            "Legal basis: Quadro 9.4 (Anexo J) has one 'Data de aquisição' field per line. "
+            "Multiple FIFO lots matched to the same sale event can reasonably be reported "
+            "as one aggregated line (PT-C-025). Multi-lot sales show full acquisition date "
+            "detail in the Notes column ('Acquired: date1, date2 (N lots)') and are "
+            "highlighted with blue fill for easy identification. "
+            "See PT-C-025 and PT-C-027 in docs/domain/crypto_rules.md.",
+        ),
+        (
+            "FIFO Methodology",
+            "First-In-First-Out is mandatory per CIRS art. 43 n.6 al.g. "
+            "Applied per wallet/exchange independently per CIRS art. 43 n.7. "
+            "See PT-C-008 and PT-C-009 in docs/domain/crypto_rules.md.",
+        ),
+        (
+            "Holding Period Classification",
+            "Short-term (<365 days) = taxable, Long-term (≥365 days) = exempt. "
+            "Calendar-year arithmetic used (2024-02-29 + 365 days = 2025-03-01, not 2025-02-28). "
+            "See PT-C-011 in docs/domain/crypto_rules.md.",
+        ),
+        (
+            "Materiality Threshold",
+            "Lines where |gain/loss| < 1 EUR are excluded from the report. "
+            "These have no material tax impact and reduce manual filing burden. "
+            "See PT-C-028 in docs/domain/crypto_rules.md.",
+        ),
+        (
+            "Data Sources",
+            "Interactive Brokers (dividends, capital gains), Koinly (crypto), "
+            "config.ini (exchange rates). See README.md for data requirements.",
+        ),
+    ]
+
+    for label, description in methodology_items:
+        worksheet.cell(row_no, 1, label)
+        worksheet.cell(row_no, 1).font = openpyxl.styles.Font(bold=True)
+        worksheet.cell(row_no, 2, description)
         row_no += 1
 
     auto_column_width(worksheet)

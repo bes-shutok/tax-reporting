@@ -214,7 +214,7 @@ class TestGenerateTaxReportHappyPath:
             "Crypto Supplementary",
             "Crypto Reconciliation",
             "Loan Activity",
-            "Platform Assumptions",
+            "Assumptions & Methodology",
         }
         actual_sheets = set(wb.sheetnames)
         assert actual_sheets == expected_sheets, f"Expected sheets {expected_sheets}, got {actual_sheets}"

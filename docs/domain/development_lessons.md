@@ -633,6 +633,44 @@ def _load_popular_tokens() -> frozenset[str]:
 
 **Why**: Lists representing external reality (crypto market, exchange support, regulatory lists) change independently of code. Externalizing allows updates without code changes and separates configuration from logic.
 
+## 67. Futures/Derivatives Liquidation Mechanics
+
+A leveraged futures position (e.g., SOL/USDT with USDT as collateral) creates a counterintuitive tax reporting outcome: even when the position is liquidated at a loss, the system reports a **disposal** of the collateral asset. This is correct behavior under Portuguese tax law, not an error.
+
+**Why this happens:**
+- A leveraged futures position has the collateral (e.g., USDT) as the underlying asset
+- Liquidation is a forced closure where the exchange disposes of the collateral to cover the loss
+- For tax purposes, this is an **alienação onerosa** (onerous disposal) under CIRS art. 10(1)(e) — "instrumentos financeiros derivados"
+- The disposal amount (e.g., "280.36 USDT disposed") reflects the collateral being removed from the position
+- The **negative capital gain** (the loss) appears in the gain/loss column and is deductible per PT-C-016 (5-year carry-forward for short-term)
+
+**Key distinction:** A futures liquidation is NOT a withdrawal. A withdrawal (to your own wallet) is not a taxable event for the asset itself. A liquidation is a forced disposal by the exchange and IS taxable — the loss can offset future gains.
+
+**Concrete example:** ByBit SOL/USDT position `<POSITION_ID>` liquidated on 19 Jan 2025, 11:28:53 PM. Koinly reported -42.26 USD loss at 11:29:46 PM. The system correctly assessed disposal of 280.36 USDT (271.79 EUR) as the collateral disposition, with the loss appearing as negative gain/loss.
+
+**See also:** DP-010 in `docs/tax/decision_points/2025.md`, PT-C-031 and PT-C-032 in `docs/domain/crypto_rules.md`
+
+## 68. Decision Point Flags Require TaxJurisdictionConfig Field
+
+When adding a new boolean decision point flag to `docs/tax/decision_points/<year>.toml`,
+you must also add the corresponding field to `TaxJurisdictionConfig` in `src/tax_reporting/domain/jurisdiction.py`.
+
+**Why this is required:** The config validation system auto-discovers known decision point flags
+via `_KNOWN_DECISION_FLAGS` in `config.py` (lines 44-51), which is derived from all bool fields
+in `TaxJurisdictionConfig`. If a flag exists in TOML but has no corresponding field in the dataclass,
+validation fails with "Unknown decision points flag" error and all config-dependent tests break.
+
+**Pattern:**
+1. Add bool field to `TaxJurisdictionConfig` (e.g., `futures_derivatives_taxable: bool = False`)
+2. Add flag to `docs/tax/decision_points/<year>.toml` under `[countries.<CC>]` section
+3. Run tests — config validation now recognizes the flag
+
+**Example:** The `futures_derivatives_taxable` flag was added to `2025.toml` but the field was
+missing from `TaxJurisdictionConfig`. This caused all integration tests to fail with config
+validation error until the field was added to the domain model.
+
+**See also:** `config.py` lines 44-51 (`_KNOWN_DECISION_FLAGS` derivation), `jurisdiction.py`
+
 ## Quality Assurance Commands
 
 ```bash

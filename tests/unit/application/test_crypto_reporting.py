@@ -932,6 +932,326 @@ def test_aggregate_different_wallet_aliases_with_different_dates_stay_separate()
     assert all(e.platform == "ByBit" for e in result)
 
 
+def test_aggregate_multi_date_acquisition_adds_note_and_flag():
+    """Given multiple lots with different acquisition dates, expects note with all dates and multi_acquisition_dates=True."""
+    entries = [
+        _make_entry(
+            disposal_date="2025-06-14",
+            acquisition_date="2024-04-13",
+            asset="SEI",
+            amount=Decimal("189.7173"),
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("200"),
+            gain_loss_eur=Decimal("100"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+        ),
+        _make_entry(
+            disposal_date="2025-06-14",
+            acquisition_date="2024-04-19",
+            asset="SEI",
+            amount=Decimal("188.9919"),
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("200"),
+            gain_loss_eur=Decimal("100"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+        ),
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 1
+    aggregated = result[0]
+    assert aggregated.acquisition_date == "2024-04-13"  # Earliest date preserved
+    assert aggregated.amount == Decimal("378.7092")  # Sum of both lots
+    assert aggregated.multi_acquisition_dates is True
+    assert aggregated.notes == "Acquired: 2024-04-13, 2024-04-19 (2 lots)"
+
+
+def test_aggregate_single_date_no_note_or_flag():
+    """Given multiple lots with the same acquisition date, expects no note and multi_acquisition_dates=False."""
+    entries = [
+        _make_entry(
+            disposal_date="2025-06-14",
+            acquisition_date="2024-04-13",  # SAME date for both
+            asset="SEI",
+            amount=Decimal("189.7173"),
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("200"),
+            gain_loss_eur=Decimal("100"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+        ),
+        _make_entry(
+            disposal_date="2025-06-14",
+            acquisition_date="2024-04-13",  # SAME date
+            asset="SEI",
+            amount=Decimal("188.9919"),
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("200"),
+            gain_loss_eur=Decimal("100"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+        ),
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 1
+    aggregated = result[0]
+    assert aggregated.multi_acquisition_dates is False
+    assert aggregated.notes == ""
+
+
+def test_aggregate_multi_date_with_existing_notes_merges():
+    """Given lots with different dates and existing notes, expects multi-date note prepended to existing notes."""
+    entries = [
+        _make_entry(
+            disposal_date="2025-06-14",
+            acquisition_date="2024-04-13",
+            asset="SEI",
+            amount=Decimal("189.7173"),
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("200"),
+            gain_loss_eur=Decimal("100"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+            notes="Existing note about fee",  # Existing note
+        ),
+        _make_entry(
+            disposal_date="2025-06-14",
+            acquisition_date="2024-04-19",
+            asset="SEI",
+            amount=Decimal("188.9919"),
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("200"),
+            gain_loss_eur=Decimal("100"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+            notes="Another existing note",  # Different existing note
+        ),
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 1
+    aggregated = result[0]
+    assert aggregated.multi_acquisition_dates is True
+    # Multi-date note first, then existing notes de-duplicated and joined (order preserved from first occurrence)
+    assert aggregated.notes == "Acquired: 2024-04-13, 2024-04-19 (2 lots); Existing note about fee; Another existing note"
+
+
+def test_aggregate_multi_date_three_lots_shows_all_dates():
+    """Given three lots with three different dates, expects all dates in note."""
+    entries = [
+        _make_entry(
+            disposal_date="2025-06-14",
+            acquisition_date="2024-01-01",
+            asset="SEI",
+            amount=Decimal("100"),
+            cost_eur=Decimal("50"),
+            proceeds_eur=Decimal("100"),
+            gain_loss_eur=Decimal("50"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+        ),
+        _make_entry(
+            disposal_date="2025-06-14",
+            acquisition_date="2024-04-13",
+            asset="SEI",
+            amount=Decimal("100"),
+            cost_eur=Decimal("50"),
+            proceeds_eur=Decimal("100"),
+            gain_loss_eur=Decimal("50"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+        ),
+        _make_entry(
+            disposal_date="2025-06-14",
+            acquisition_date="2024-04-19",
+            asset="SEI",
+            amount=Decimal("100"),
+            cost_eur=Decimal("50"),
+            proceeds_eur=Decimal("100"),
+            gain_loss_eur=Decimal("50"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+        ),
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 1
+    aggregated = result[0]
+    assert aggregated.multi_acquisition_dates is True
+    assert aggregated.notes == "Acquired: 2024-01-01, 2024-04-13, 2024-04-19 (3 lots)"
+
+
+def test_aggregate_multi_date_with_review_required_preserves_review_flag():
+    """Given multi-date entry with review_required=True, expects review_required preserved in aggregation (rendering tested separately in Task 6)."""
+    entries = [
+        _make_entry(
+            disposal_date="2025-06-14",
+            acquisition_date="2024-04-13",
+            asset="SEI",
+            amount=Decimal("189.7173"),
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("200"),
+            gain_loss_eur=Decimal("100"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+            review_required=True,  # REVIEW REQUIRED
+            review_reason="Test review reason",
+        ),
+        _make_entry(
+            disposal_date="2025-06-14",
+            acquisition_date="2024-04-19",
+            asset="SEI",
+            amount=Decimal("188.9919"),
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("200"),
+            gain_loss_eur=Decimal("100"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+        ),
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 1
+    aggregated = result[0]
+    assert aggregated.multi_acquisition_dates is True  # Still set
+    assert aggregated.review_required is True  # Takes precedence via OR logic
+    assert aggregated.notes == "Acquired: 2024-04-13, 2024-04-19 (2 lots)"
+    assert aggregated.review_reason == "Test review reason"  # review_reason is a separate field
+
+
+def test_aggregate_multi_date_all_empty_dates_no_flag():
+    """Given all lots with empty acquisition dates, expects multi_acquisition_dates=False and no note."""
+    entries = [
+        _make_entry(
+            disposal_date="2025-06-14",
+            acquisition_date="",
+            asset="SEI",
+            amount=Decimal("100"),
+            cost_eur=Decimal("50"),
+            proceeds_eur=Decimal("100"),
+            gain_loss_eur=Decimal("50"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+        ),
+        _make_entry(
+            disposal_date="2025-06-14",
+            acquisition_date="",
+            asset="SEI",
+            amount=Decimal("100"),
+            cost_eur=Decimal("50"),
+            proceeds_eur=Decimal("100"),
+            gain_loss_eur=Decimal("50"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+        ),
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 1
+    aggregated = result[0]
+    assert aggregated.multi_acquisition_dates is False
+    assert aggregated.notes == ""
+
+
+def test_aggregate_multi_date_mixed_empty_and_valid_dates():
+    """Given lots with mixed empty and valid acquisition dates, expects only valid dates counted."""
+    entries = [
+        _make_entry(
+            disposal_date="2025-06-14",
+            acquisition_date="",
+            asset="SEI",
+            amount=Decimal("100"),
+            cost_eur=Decimal("50"),
+            proceeds_eur=Decimal("100"),
+            gain_loss_eur=Decimal("50"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+        ),
+        _make_entry(
+            disposal_date="2025-06-14",
+            acquisition_date="2024-04-13",
+            asset="SEI",
+            amount=Decimal("100"),
+            cost_eur=Decimal("50"),
+            proceeds_eur=Decimal("100"),
+            gain_loss_eur=Decimal("50"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+        ),
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 1
+    aggregated = result[0]
+    # Empty dates are excluded, only one valid date means no multi-date flag
+    assert aggregated.multi_acquisition_dates is False
+    assert aggregated.notes == ""
+
+
+def test_aggregate_single_lot_no_multi_date_flag():
+    """Given a single lot, expects multi_acquisition_dates=False and no note."""
+    entry = _make_entry(
+        disposal_date="2025-06-14",
+        acquisition_date="2024-04-13",
+        asset="SEI",
+        amount=Decimal("100"),
+        cost_eur=Decimal("50"),
+        proceeds_eur=Decimal("100"),
+        gain_loss_eur=Decimal("50"),
+        holding_period="Short term",
+        wallet="ByBit",
+        platform="ByBit",
+        chain="ETH",
+    )
+
+    result = _aggregate_capital_entries([entry])
+
+    assert len(result) == 1
+    aggregated = result[0]
+    assert aggregated.multi_acquisition_dates is False
+    assert aggregated.notes == ""
+
+
 # --- _filter_immaterial_entries tests ---
 
 

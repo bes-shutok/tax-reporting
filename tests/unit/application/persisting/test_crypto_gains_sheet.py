@@ -541,3 +541,80 @@ class TestCryptoGainsSheetZeroCostRedBackground:
         data_row = _find_header_row(ws) + 1
         for col in range(1, _NUM_CAPITAL_COLUMNS + 1):
             assert not _is_red_fill(ws.cell(data_row, col)), f"Column {col} should NOT have red fill below threshold"
+
+
+_BLUE_FILL = PatternFill(start_color="FFCCFFFF", end_color="FFCCFFFF", fill_type="solid")
+
+
+def _is_blue_fill(cell: openpyxl.cell.cell.Cell) -> bool:
+    fill = cell.fill
+    return (
+        fill.start_color.rgb == "FFCCFFFF"
+        and fill.end_color.rgb == "FFCCFFFF"
+        and fill.fill_type == "solid"
+    )
+
+
+@pytest.mark.unit
+class TestCryptoGainsSheetMultiDateBlueBackground:
+    """Tests for blue background rendering on multi-acquisition-date entries."""
+
+    def test_render_multi_date_entry_has_blue_background(self):
+        """Entry with multi_acquisition_dates=True and review_required=False gets blue fill."""
+        entry = _make_capital_entry(
+            multi_acquisition_dates=True,
+            notes="Acquired: 2024-04-13, 2024-04-19 (2 lots)",
+        )
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        wb = openpyxl.Workbook()
+        write_crypto_gains_sheet(wb, report)
+        ws = wb["Crypto Gains"]
+        data_row = _find_header_row(ws) + 1
+        for col in range(1, _NUM_CAPITAL_COLUMNS + 1):
+            assert _is_blue_fill(ws.cell(data_row, col)), f"Column {col} should have blue fill"
+
+    def test_render_review_required_takes_precedence_over_blue(self):
+        """Entry with multi_acquisition_dates=True and review_required=True gets red fill, not blue."""
+        entry = _make_capital_entry(
+            multi_acquisition_dates=True,
+            review_required=True,
+            review_reason="Test reason",
+            notes="",
+        )
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        wb = openpyxl.Workbook()
+        write_crypto_gains_sheet(wb, report)
+        ws = wb["Crypto Gains"]
+        data_row = _find_header_row(ws) + 1
+        for col in range(1, _NUM_CAPITAL_COLUMNS + 1):
+            assert _is_red_fill(ws.cell(data_row, col)), f"Column {col} should have red fill (precedence)"
+            assert not _is_blue_fill(ws.cell(data_row, col)), f"Column {col} should NOT have blue fill"
+
+    def test_render_single_date_entry_no_background(self):
+        """Entry with multi_acquisition_dates=False has no fill (default)."""
+        entry = _make_capital_entry(multi_acquisition_dates=False)
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        wb = openpyxl.Workbook()
+        write_crypto_gains_sheet(wb, report)
+        ws = wb["Crypto Gains"]
+        data_row = _find_header_row(ws) + 1
+        for col in range(1, _NUM_CAPITAL_COLUMNS + 1):
+            cell = ws.cell(data_row, col)
+            assert not _is_red_fill(cell), f"Column {col} should NOT have red fill"
+            assert not _is_blue_fill(cell), f"Column {col} should NOT have blue fill"
+
+    def test_render_zero_cost_red_takes_precedence_over_blue(self):
+        """Zero-cost entry above threshold gets red fill even with multi_acquisition_dates=True."""
+        entry = _make_capital_entry(
+            cost_eur=Decimal("0"),
+            gain_loss_eur=Decimal("100"),
+            multi_acquisition_dates=True,
+        )
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        wb = openpyxl.Workbook()
+        write_crypto_gains_sheet(wb, report)
+        ws = wb["Crypto Gains"]
+        data_row = _find_header_row(ws) + 1
+        for col in range(1, _NUM_CAPITAL_COLUMNS + 1):
+            assert _is_red_fill(ws.cell(data_row, col)), f"Column {col} should have red fill (zero-cost)"
+            assert not _is_blue_fill(ws.cell(data_row, col)), f"Column {col} should NOT have blue fill"

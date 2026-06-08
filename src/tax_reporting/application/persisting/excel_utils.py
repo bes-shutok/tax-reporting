@@ -22,6 +22,9 @@ HEADER_THRESHOLD = 10  # Max length for a cell to be considered a header/label v
 # Shared fill for rows that require manual review (review_required=True or placeholder buys)
 REVIEW_ROW_FILL = PatternFill(start_color="FFFF0000", end_color="FFFF0000", fill_type="solid")
 
+# Fill for rows where aggregated capital gain consumed lots from multiple acquisition dates
+MULTI_DATE_ROW_FILL = PatternFill(start_color="FFCCFFFF", end_color="FFCCFFFF", fill_type="solid")
+
 
 def auto_column_width(worksheet: Worksheet) -> None:
     """Set column widths to fit the widest non-formula cell value plus padding.
@@ -99,6 +102,24 @@ def apply_review_row_fill(worksheet: Worksheet, row_no: int, start_col: int, end
     """
     for col_idx in range(start_col, end_col + 1):
         worksheet.cell(row_no, col_idx).fill = REVIEW_ROW_FILL  # type: ignore[assignment]
+
+
+def apply_multi_date_row_fill(worksheet: Worksheet, row_no: int, start_col: int, end_col: int) -> None:
+    """Apply the multi-date acquisition blue fill to a range of cells in a row.
+
+    Use this for rows where the aggregated capital gain consumed lots from multiple
+    acquisition dates, to visually distinguish them from single-date rows.
+    This presentation enhancement supports PT-C-027 aggregation behavior by making
+    multi-lot sales visually distinct.
+
+    Args:
+        worksheet: The worksheet containing the row.
+        row_no: 1-based row index to fill.
+        start_col: 1-based index of the first column to fill (inclusive).
+        end_col: 1-based index of the last column to fill (inclusive).
+    """
+    for col_idx in range(start_col, end_col + 1):
+        worksheet.cell(row_no, col_idx).fill = MULTI_DATE_ROW_FILL  # type: ignore[assignment]
 
 
 def safe_cell_value(value: str) -> str:

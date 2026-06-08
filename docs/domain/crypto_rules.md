@@ -137,6 +137,27 @@ Losses arising from transactions where the counterparty is in a **blacklisted ju
 (regime fiscal claramente mais favorável) are **not deductible** (CIRS art. 43 n.5).
 > Source: AT folheto 2026-01-12.
 
+**PT-C-031** `[OFFICIAL | CIRS art. 10(1)(e)]`
+Futures and derivatives (including perpetual swaps, options, and other derivative instruments)
+are classified as "instrumentos financeiros derivados" under CIRS art. 10(1)(e).
+Disposals of derivative positions, including liquidations, are treated as alienação onerosa
+and are taxable events. A liquidation is a forced disposal event, not a withdrawal.
+> Source: CIRS art. 10(1)(e) - "Operações relativas a instrumentos financeiros derivados";
+> confirmed via official AT portal rendering in `cirs_art10_portal_2026-04-01.html`.
+
+> **Example:** ByBit SOL/USDT position `<POSITION_ID>` liquidated on 19 Jan 2025,
+> 11:28:53 PM. Koinly reported -42.26 USD loss at 11:29:46 PM. The system assessed disposal
+> of 280.36 USDT (271.79 EUR) as collateral disposition with negative gain/loss — this is
+> correct treatment, not an error.
+
+**PT-C-032** `[OFFICIAL | CIRS art. 10(19)]`
+Losses from derivatives follow the same holding-period rules as gains:
+- **Short-term (<365 days):** losses can be carried forward for 5 years (PT-C-016)
+- **Long-term (≥365 days):** both gains AND losses are excluded from taxation
+The text states: "São excluídos os ganhos obtidos, bem como as perdas incorridas"
+(obtained gains are excluded, as well as incurred losses) for assets held ≥365 days.
+> Source: CIRS art. 10(19); official AT portal rendering in `cirs_art10_portal_2026-04-01.html`.
+
 ---
 
 ## Section 7 — Declaration Forms
@@ -242,6 +263,12 @@ as Ano/Mês/Dia (year, month, day) — no time-of-day field exists. Aggregation 
 **day-level or finer**; coarser aggregation (per month, per year) would merge distinct
 disposal events and is not acceptable. The current implementation uses day-level dates
 internally for grouping, matching the Anexo J form's Ano/Mes/Dia precision (PT-C-020).
+
+**Multi-date acquisition behavior:** when aggregated rows consume lots from multiple acquisition
+dates, the Notes field shows all acquisition dates (comma-separated) and the row is highlighted
+with blue fill. This visual distinction signals that the aggregated line combines multiple
+acquisition origins within the same holding period, helping the user verify that short-term and
+long-term gains remain correctly separated (PT-C-011).
 
 **PT-C-028** `[IMPLEMENTATION DECISION | 2026-03-14]`
 After day-level aggregation, lines where **|gain/loss| < 1 EUR** are excluded from
