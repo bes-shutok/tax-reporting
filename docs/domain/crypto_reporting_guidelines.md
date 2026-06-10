@@ -112,6 +112,32 @@ Distinguish between platform-level review concerns and row-level review flags:
 
 **Test fixture rule:** Tests that verify row-level "YES:"/"NO" rendering must use explicit hardcoded `review_required` / `review_reason` values on the entry, not delegate to `origin.review_required`. The latter changes when the platform mapping changes and will silently break the rendering test.
 
+## Other Gains Report (OGR) Validation
+
+**CRG-017**
+The Other Gains Report (OGR) provides authoritative DIRECTION for crypto disposal events (gain vs loss), while the Capital Gains (CG) report provides MAGNITUDE via FIFO calculation. The system uses directional authority semantics, not wholesale replacement.
+
+**Directional authority logic:**
+- **Direction conflict (OGR and CG have different signs):** Use OGR direction with CG magnitude
+  - Example: CG=+100 EUR (gain), OGR=-147 EUR (loss) → final = -100 EUR (loss with CG magnitude)
+  - Flag with RED fill and review_required=True, reason="OGR direction override"
+- **Directions agree (same sign):** Use OGR magnitude (more accurate for derivatives/futures)
+  - Example: CG=-100 EUR, OGR=-105 EUR → final = -105 EUR (use OGR magnitude)
+  - Flag with YELLOW fill only if magnitude exceeds thresholds
+
+**Magnitude thresholds (both conditions must be met):**
+- Relative difference > 5% (prevents noise on near-zero percentage fluctuations)
+- Absolute difference > 1 EUR (prevents noise on small absolute values)
+
+**Implementation details:**
+- OGR data is indexed by `(disposal_date, asset, wallet)` and matched to CG entries
+- Validation is applied per-lot before aggregation via `_apply_ogr_direction_override()`
+- `OgrValidationResult` is attached to each entry with comparison metadata
+- Multiple lots for the same disposal each get OGR validation attached; aggregation combines them
+- Excel conditional formatting priority: RED (direction conflict) > YELLOW (magnitude diff) > entry-level review flags
+
+**See also:** Lesson #78 in development_lessons.md, plan `docs/plans/2026-06-10-ogr-validation-design.md`
+
 ## Token Origin Resolution
 
 **CRG-015**

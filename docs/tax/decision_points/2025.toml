@@ -16,5 +16,14 @@ exclude_loan_repayment_gains = true
 #   - Long-term (≥365 days): both gains and losses are excluded (CIRS art. 10(19))
 futures_derivatives_taxable = true
 
+# DP-011: For futures and derivatives, use Koinly Other Gains Report values
+# rather than Capital Gains Report when available.
+# Legal basis: CIRS art. 10(1)(e) for derivatives; OGR provides more granular
+# Type classification (Profit/Loss) and better handling of collateral flow.
+# Interaction with DP-010: DP-010 says derivatives are taxable; DP-011 specifies
+# which Koinly report carries the authoritative value when both are present.
+# When OGR overrides CG: futures/derivatives with Type="Loss" or Type="Profit"
+use_other_gains_report = true
+
 [countries.US]
 exclude_loan_repayment_gains = false

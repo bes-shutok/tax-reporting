@@ -71,12 +71,15 @@ This file provides guidance to coding agents when working with code in this repo
 - `discover_loan_affected_assets()` uses only `"loan"` and `"loan repayment"` tags (not `"loan fee"`) to identify loan principal assets; `"loan fee"` rows are intentionally excluded from discovery because their Sent Currency is the gas/service fee asset (not the loan principal).
 - When IB data has no current-year trades (`tax_year_hint` is None), the Koinly directory year hint falls back to `TaxJurisdictionConfig.fiscal_year` from config. This means the configured `FISCAL_YEAR` drives Koinly directory selection when no IB trades are present (e.g., crypto-only reporting runs).
 - Run `_validate_capital_entries_have_valid_countries()`, `_aggregate_capital_entries()`, and `_filter_immaterial_entries()` only after FIFO-derived entries are merged with raw CG rows.
+- OGR overrides must be applied BEFORE `_aggregate_capital_entries()` when `jurisdiction.use_other_gains_report=True`. CG rows are individual FIFO lots that get summed in aggregation; OGR contains the correct total gain/loss for the disposal event. Overriding after aggregation would lose the lot-level trail. See `development_lessons.md` #75, #78 (directional authority semantics), #80 (aggregation field semantics), #85 (recalculate validation from aggregated values).
 - Cross-asset FIFO carry-over must match by TH transaction identifier, never by day-level date alone.
 - Any excluded asset that yields zero FIFO output must log at warning level or higher.
 - When processing crypto derivatives/futures liquidations that report losses, understand that leveraged positions report as disposals of collateral even when liquidating at a loss — this is correct tax treatment (alienação onerosa), not an error. See `development_lessons.md` #67.
 
 ### 4. Agent Workflow Rules
 
+- When investigating and fixing bugs, follow TDD approach: create failing test first (RED), then implement fix (GREEN). See `development_lessons.md` #76.
+- When building an index from source data, handle duplicate keys explicitly by summing. Never silently overwrite. See `development_lessons.md` #77.
 - When testing string sanitization, validation, or parsing functions, explicitly test edge cases (empty strings, whitespace-only, multi-byte, control chars, multi-char prefixes, padded inputs). See `docs/domain/development_lessons.md #6`.
 - Test error path coverage including double-failure scenarios (e.g., aggregation fails AND workbook.close fails). See `docs/domain/development_lessons.md #6`.
 - Examine existing source data files in the repository (e.g., `resources/source/koinly*/`) directly before asking the user to provide samples or examples. Use Glob and Read tools to find and analyze the actual data.
@@ -85,12 +88,16 @@ This file provides guidance to coding agents when working with code in this repo
 - `valid_from` = audit-only; `service_start_date` = matching. See `development_lessons.md` #17.
 - Never write files to `docs/review/` (singular). The project convention is `docs/reviews/` (plural) for all code review and plan review output.
 - **Never introduce a hardcoded value (asset ticker, constant set, threshold, magic string, fixed ordering) without first flagging it to the user and asking whether they want it hardcoded or derived dynamically.** This applies to plans, implementation, and code review. If you notice an existing hardcoded value while working on related code, flag it immediately before proceeding.
+- When a plan investigates "is X handled correctly?", use verification-first task ordering: code inspection, test execution, and documentation review before implementation tasks. Skip implementation if verification shows correctness. See `development_lessons.md` #71.
+- **CRITICAL:** When investigating "is X handled correctly?", code inspection alone is INSUFFICIENT. You must perform data trace verification: trace the user's specific case from source CSV through to final output, verify output matches source classifications, and validate across ALL source reports (TH, CG, Other Gains). See `development_lessons.md` #72, #73.
+- When adding functions that call cross-module utilities, verify imports are complete. Run `uv run python -c "from module import function"` to verify imports resolve. See `development_lessons.md` #74.
+- When adding a new feature controlled by a boolean flag (like `use_other_gains_report`), create dedicated backward compatibility tests that verify the "disabled" state preserves existing behavior — not just that the "enabled" state works correctly. See `development_lessons.md` #84.
 
 ### 5. Domain Knowledge References
 
 - Before changing crypto reporting logic, read `docs/domain/crypto_rules.md`, `docs/domain/crypto_reporting_guidelines.md`, and `docs/domain/crypto_implementation_guidelines.md`. Cite PT-C / CRG rule IDs for law-driven changes.
 - Before implementing new crypto features, read `docs/domain/crypto_implementation_guidelines.md` for lessons learned and common pitfalls to avoid.
-- Before processing Koinly exports or changing Koinly-related code, read `docs/domain/koinly_guidelines.md` for known Koinly behaviors and defects that affect Portuguese reporting (loan repayment disposal treatment, wrapped-asset repair workflow, required settings).
+- Before processing Koinly exports or changing Koinly-related code, read `docs/domain/koinly_guidelines.md` for known Koinly behaviors and defects that affect Portuguese reporting (loan repayment disposal treatment, wrapped-asset repair workflow, Other Gains Report relevance, required settings).
 - Before discussing crypto tax treatment, proposing architecture changes, or advising on Koinly settings, check `docs/tax/decision_points/` first — answers to cost-basis methodology, taxability of swaps, and tool settings are pre-decided there.
 - Before changing cross-cutting report-generation behavior, read `docs/domain/tax_reporting_guidelines.md` and cite SRG rule IDs for repository-policy changes.
 - Before writing implementation plans, read `docs/domain/plan_quality_guidelines.md` for patterns that minimize review iterations.
@@ -186,6 +193,8 @@ The application generates professional Excel reports with:
 - **Security**: All external data string fields are wrapped with `safe_cell_value()` to prevent Excel formula injection. See `docs/domain/development_lessons.md #7`.
 - **Formulas**: Excel formulas for dynamic calculations
 - **Auto-sizing**: Column widths automatically adjusted for content with `MAX_CELL_WIDTH=50` cap and `MIN_DATA_WIDTH=12` floor (see `excel_utils.py`)
+- **Conditional Formatting**: Priority-based fill ordering for validation issues. See `development_lessons.md` #81.
+- **Column Additions**: When adding columns, update all related constants. See `development_lessons.md` #82, #83.
 
 ## Data Flow
 
@@ -235,7 +244,7 @@ uv run pytest --cov=src --cov-report=html  # Coverage
 
 **Test Value Assessment**: test meaningful business logic, real edge cases, avoid duplicating coverage. High-value: complex IB CSV formats, tax calculations, error handling. Low-value: zero amounts, trivial parsing, cases already covered.
 
-**Excel Output Tests**: When adding or modifying Excel report layouts, add visual structure tests to verify row placement, cell merging, blank rows, and header structure — not just data values. See development_lessons.md #69. For structural changes (adding/removing columns), verify that absolute-position code (writes to specific column numbers) is still correct. See development_lessons.md #70.
+**Excel Output Tests**: When adding or modifying Excel report layouts, add visual structure tests to verify row placement, cell merging, blank rows, and header structure — not just data values. See development_lessons.md #69, #81 (conditional formatting priority), #82 (constant updates), #83 (blank/null handling). For structural changes (adding/removing columns), verify that absolute-position code (writes to specific column numbers) is still correct. See development_lessons.md #70.
 
 ## Development Best Practices
 

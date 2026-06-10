@@ -27,6 +27,9 @@ __all__ = [
     "normalize_asset_ticker",
     "normalize_platform_name",
     "parse_koinly_decimal",
+    "_extract_ogr_gain_loss",
+    "_parse_other_gains_row",
+    "_find_and_parse_other_gains_file",
 ]
 
 DATE_FORMATS: Final = (
@@ -275,3 +278,116 @@ def parse_koinly_decimal(value: str) -> Decimal:
         return Decimal(text)
     except InvalidOperation as exc:
         raise ValueError(f"Unsupported Koinly decimal format: {value}") from exc
+
+
+def _extract_ogr_gain_loss(ogr_row: dict[str, str]) -> Decimal | None:
+    """Extract gain/loss value from OGR row based on Type field.
+
+    OGR format: Date,Asset,Amount,Value (EUR),Type,Wallet Name
+    - Amount is negative for Loss (quantity, not EUR)
+    - Value (EUR) is positive magnitude for both Loss and Profit
+    - Type indicates direction: "Loss" = negative, "Profit" = positive
+
+    Args:
+        ogr_row: Row dictionary from Other Gains Report CSV.
+
+    Returns:
+        Negative Decimal for Loss, positive for Profit, None for invalid/zero values.
+    """
+    value_str = ogr_row.get("Value (EUR)", "")
+    value_eur = parse_koinly_decimal(value_str)
+
+    # Skip zero-value rows (fee tokens, dust)
+    if value_eur == 0:
+        return None
+
+    row_type = ogr_row.get("Type", "").strip().lower()
+
+    if row_type == "loss":
+        return -value_eur
+    elif row_type == "profit":
+        return value_eur
+    else:
+        # Unknown type - log warning and skip
+        return None
+
+
+def _parse_other_gains_row(
+    ogr_row: dict[str, str],
+) -> tuple[datetime, str, Decimal, str, str] | None:
+    """Parse a single Other Gains Report row.
+
+    Args:
+        ogr_row: Row dictionary from Other Gains Report CSV.
+
+    Returns:
+        Tuple of (date, asset, amount_eur, type, wallet) or None if parsing fails.
+    """
+    try:
+        date_str = ogr_row.get("Date", "")
+        date = parse_koinly_datetime(date_str)
+
+        asset = normalize_asset_ticker(ogr_row.get("Asset", ""))
+
+        gain_loss = _extract_ogr_gain_loss(ogr_row)
+        if gain_loss is None:
+            return None
+
+        row_type = ogr_row.get("Type", "").strip()
+        wallet = ogr_row.get("Wallet Name", "").strip()
+
+        return (date, asset, gain_loss, row_type, wallet)
+    except ValueError:
+        # Skip rows with parsing errors
+        return None
+
+
+def _find_report_path(koinly_dir: Path, marker: str, suffix: str) -> Path | None:
+    """Find a Koinly report file by marker and suffix.
+
+    Args:
+        koinly_dir: Directory containing Koinly export files.
+        marker: String marker in filename (e.g., "other_gains_report").
+        suffix: File suffix (e.g., ".csv").
+
+    Returns:
+        Path to the first matching file, or None if no matches.
+    """
+    matches = sorted(koinly_dir.glob(f"*{marker}*{suffix}"))
+    return matches[0] if matches else None
+
+
+def _find_and_parse_other_gains_file(
+    koinly_dir: Path,
+) -> dict[tuple[str, str, str], Decimal]:
+    """Find and parse the Other Gains Report CSV file.
+
+    Args:
+        koinly_dir: Directory containing Koinly export files.
+
+    Returns:
+        Dictionary mapping (date, asset, wallet) -> gain_loss_eur.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    other_gains_file = _find_report_path(koinly_dir, "other_gains_report", ".csv")
+    if other_gains_file is None:
+        return {}
+
+    logger.info("Parsing Other Gains Report: %s", other_gains_file)
+    rows = read_koinly_rows(other_gains_file)
+
+    result: dict[tuple[str, str, str], Decimal] = {}
+    for row in rows:
+        parsed = _parse_other_gains_row(row)
+        if parsed is None:
+            continue
+
+        date, asset, gain_loss, row_type, wallet = parsed
+        key = (format_datetime(date), asset, wallet)
+        # Sum values for duplicate keys (multiple fees/losses on same date)
+        result[key] = result.get(key, Decimal("0")) + gain_loss
+
+    return result

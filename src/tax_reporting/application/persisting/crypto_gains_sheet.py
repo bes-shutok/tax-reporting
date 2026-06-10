@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 import openpyxl
-from openpyxl.styles import Font
+from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.worksheet import Worksheet
 
 if TYPE_CHECKING:
@@ -14,7 +14,11 @@ if TYPE_CHECKING:
 
 from .excel_utils import apply_multi_date_row_fill, apply_review_row_fill, auto_column_width, safe_cell_value
 
-_CAPITAL_GAINS_NUM_COLS = 17
+_CAPITAL_GAINS_NUM_COLS = 20
+
+# Fill colors for OGR validation
+_RED_FILL = PatternFill(start_color="FFFF0000", end_color="FFFF0000", fill_type="solid")
+_YELLOW_FILL = PatternFill(start_color="FFFFFF00", end_color="FFFFFF00", fill_type="solid")
 
 
 def _render_capital_gain_row(
@@ -23,7 +27,7 @@ def _render_capital_gain_row(
     entry: CryptoCapitalGainEntry,
     threshold: Decimal,
 ) -> None:
-    """Write a single capital gain entry row and apply red fill when review is needed."""
+    """Write a single capital gain entry row and apply conditional formatting."""
     worksheet.cell(row_no, 1, entry.disposal_date)
     worksheet.cell(row_no, 2, entry.acquisition_date)
     worksheet.cell(row_no, 3, entry.asset)
@@ -42,6 +46,55 @@ def _render_capital_gain_row(
     worksheet.cell(row_no, 15, review_display)
     worksheet.cell(row_no, 16, safe_cell_value(entry.notes))
     worksheet.cell(row_no, 17, entry.token_swap_history or "")
+
+    # OGR validation columns (18, 19, 20)
+    ogr_val = entry.ogr_validation
+    if ogr_val:
+        worksheet.cell(row_no, 18, ogr_val.ogr_gain_loss)
+        worksheet.cell(row_no, 19, ogr_val.magnitude_diff_percent)
+        ogr_review_display = (
+            f"YES: {ogr_val.review_reason}" if ogr_val.review_required else "NO"
+        )
+        worksheet.cell(row_no, 20, ogr_review_display)
+    else:
+        # Leave blank when no OGR validation
+        worksheet.cell(row_no, 18, None)
+        worksheet.cell(row_no, 19, None)
+        worksheet.cell(row_no, 20, None)
+
+    # Apply conditional formatting
+    _apply_conditional_formatting(worksheet, row_no, entry, threshold)
+
+
+def _apply_conditional_formatting(
+    worksheet: Worksheet,
+    row_no: int,
+    entry: CryptoCapitalGainEntry,
+    threshold: Decimal,
+) -> None:
+    """Apply conditional formatting to a capital gain row based on OGR validation and other rules.
+
+    Priority order:
+    1. RED fill for OGR direction override (highest priority)
+    2. YELLOW fill for OGR magnitude differences
+    3. RED fill for entry review required or zero-cost above threshold
+    4. BLUE fill for multi-acquisition dates
+    5. No fill (default)
+    """
+    # Check OGR validation conditions first (highest priority)
+    if entry.ogr_validation and entry.ogr_validation.review_required:
+        if entry.ogr_validation.review_reason and "OGR direction override" in entry.ogr_validation.review_reason:
+            # RED fill for direction conflict
+            for col in range(1, _CAPITAL_GAINS_NUM_COLS + 1):
+                worksheet.cell(row_no, col).fill = _RED_FILL
+            return
+        else:
+            # YELLOW fill for magnitude differences
+            for col in range(1, _CAPITAL_GAINS_NUM_COLS + 1):
+                worksheet.cell(row_no, col).fill = _YELLOW_FILL
+            return
+
+    # Existing rules for entry-level review and zero-cost
     needs_fill = entry.review_required or (entry.cost_eur == 0 and abs(entry.gain_loss_eur) >= threshold)
     if needs_fill:
         apply_review_row_fill(worksheet, row_no, 1, _CAPITAL_GAINS_NUM_COLS)
@@ -96,6 +149,9 @@ def write_crypto_gains_sheet(workbook: openpyxl.Workbook, crypto_tax_report: Cry
         "Review flag",
         "Notes",
         "Token origin",
+        "OGR Gain/Loss (EUR)",
+        "OGR Diff (%)",
+        "OGR Review",
     ]
     for idx, header in enumerate(capital_headers, start=1):
         worksheet.cell(row_no, idx, header)

@@ -18,9 +18,11 @@ import pycountry
 
 from ..domain.constants import LOAN_STATUS_OVERPAID
 from ..domain.crypto_fifo import AssetFifoResult, CryptoFifoRealization
+from ..domain.entities import OgrValidationResult
 from ..domain.exceptions import FileProcessingError
 from ..infrastructure.config import DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD, TaxJurisdictionConfig
 from ..infrastructure.koinly_parser import (
+    _extract_ogr_gain_loss,
     contains_non_latin_characters,
     format_datetime,
     normalize_asset_ticker,
@@ -28,6 +30,7 @@ from ..infrastructure.koinly_parser import (
     parse_koinly_datetime,
     parse_koinly_decimal,
     read_koinly_rows,
+    _find_and_parse_other_gains_file,
 )
 from .crypto_fifo import (
     MergedAssetFifoResult,
@@ -341,6 +344,9 @@ class CryptoCapitalGainEntry:
     # Set during aggregation when the entry combines FIFO lots from multiple
     # acquisition dates. Triggers blue fill in Excel output. See PT-C-027.
     multi_acquisition_dates: bool = False
+    # OGR validation result, populated when OGR comparison is performed.
+    # This field is independent of entry-level review_required/review_reason.
+    ogr_validation: OgrValidationResult | None = None
 
     def __post_init__(self) -> None:
         """Validate review_reason is provided when review_required is True."""
@@ -1994,6 +2000,22 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
     reward_entries = _parse_income_file(income_file, skipped_assets, known_assets) if income_file else []
 
     capital_entries = _validate_capital_entries_have_valid_countries(capital_entries)
+
+    # CRITICAL: OGR override must happen BEFORE _aggregate_capital_entries
+    # because CG rows are individual FIFO lots that get summed in aggregation.
+    # OGR contains the correct total gain/loss for the disposal event.
+    # Overriding after aggregation would lose the lot-level trail.
+    if jurisdiction and jurisdiction.use_other_gains_report:
+        ogr_index = _find_and_parse_other_gains_file(koinly_dir)
+        if ogr_index:
+            logging.getLogger(__name__).info(
+                "Applying OGR directional authority: %d entries in OGR index",
+                len(ogr_index),
+            )
+            capital_entries = _apply_ogr_direction_override(
+                capital_entries, ogr_index, jurisdiction
+            )
+
     capital_entries = _aggregate_capital_entries(capital_entries)
     pre_filter_count = len(capital_entries)
     capital_entries = _filter_immaterial_entries(capital_entries)
@@ -2147,6 +2169,74 @@ def _aggregate_origin_field(group: list[CryptoCapitalGainEntry]) -> str:
     return "; ".join(parts)
 
 
+def _aggregate_ogr_validation(group: list[CryptoCapitalGainEntry]) -> OgrValidationResult | None:
+    """Aggregate OGR validation results across FIFO lots in a group.
+
+    All lots in a group share the same OGR value because they share the same
+    (date, asset, wallet) lookup key. This function combines validation results:
+
+    - ogr_gain_loss: taken from the first entry with a non-None value (all lots have the same OGR value)
+    - calculated_gain_loss: summed across all lots
+    - direction_conflict: True if ANY lot has direction_conflict=True
+    - magnitude_diff_percent: maximum value across all lots
+    - review_required: True if ANY lot has review_required=True
+    - review_reason: unique reasons joined with "; "
+
+    Returns None if all entries have ogr_validation=None.
+    """
+    # Filter to entries with OGR validation
+    with_ogr = [e for e in group if e.ogr_validation is not None]
+    if not with_ogr:
+        return None
+
+    # Take OGR gain/loss from first entry (all lots share the same OGR value per lookup key)
+    first_ogr = with_ogr[0].ogr_validation
+    ogr_gain_loss = first_ogr.ogr_gain_loss
+
+    # Sum calculated gain/loss across all lots
+    calculated_gain_loss = sum((e.ogr_validation.calculated_gain_loss for e in with_ogr), start=ZERO)
+
+    # Recalculate direction_conflict using AGGREGATED calculated_gain_loss
+    # Individual lots may not have conflicts, but the aggregated result might
+    direction_conflict = (ogr_gain_loss < 0) != (calculated_gain_loss < 0)
+
+    # Recalculate magnitude_diff_percent using AGGREGATED calculated_gain_loss
+    # Individual lots have tiny values leading to misleading percentages (e.g., 5474%)
+    # After aggregation, the comparison is meaningful
+    magnitude_diff_percent = None
+    if calculated_gain_loss != 0:
+        magnitude_diff_percent = abs((ogr_gain_loss - calculated_gain_loss) / calculated_gain_loss * 100)
+
+    # Determine review_required based on AGGREGATED values
+    review_required = False
+    if direction_conflict:
+        # Direction override: require review if both magnitudes are significant
+        if abs(ogr_gain_loss) > Decimal("1") and abs(calculated_gain_loss) > Decimal("1"):
+            review_required = True
+    elif magnitude_diff_percent and magnitude_diff_percent > 5:
+        # Magnitude difference: require review if diff > 5% AND absolute diff > 1 EUR
+        magnitude_diff = abs(ogr_gain_loss - calculated_gain_loss)
+        if magnitude_diff > Decimal("1"):
+            review_required = True
+
+    # Build review_reason from aggregated state
+    review_reason = None
+    if review_required:
+        if direction_conflict:
+            review_reason = f"OGR direction override: CG indicated {'loss' if calculated_gain_loss < 0 else 'gain'}"
+        elif magnitude_diff_percent and magnitude_diff_percent > 5:
+            review_reason = f"OGR magnitude differs from CG by {magnitude_diff_percent:.1f}%"
+
+    return OgrValidationResult(
+        ogr_gain_loss=ogr_gain_loss,
+        calculated_gain_loss=calculated_gain_loss,
+        direction_conflict=direction_conflict,
+        magnitude_diff_percent=magnitude_diff_percent,
+        review_required=review_required,
+        review_reason=review_reason,
+    )
+
+
 def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[CryptoCapitalGainEntry]:
     """Aggregate FIFO lot rows into one line per sale event (same date + asset + platform + holding_period).
 
@@ -2201,6 +2291,9 @@ def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[Cr
             all_note_parts.insert(0, multi_date_note)
         merged_notes = "; ".join(all_note_parts) or ""
 
+        # Aggregate OGR validation results across lots
+        ogr_validation = _aggregate_ogr_validation(group)
+
         result.append(
             CryptoCapitalGainEntry(
                 disposal_date=first.disposal_date,
@@ -2221,6 +2314,7 @@ def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[Cr
                 notes=merged_notes,
                 token_swap_history=_aggregate_origin_field(group),
                 multi_acquisition_dates=multi_acquisition_dates,
+                ogr_validation=ogr_validation,
             )
         )
     result.sort(key=lambda e: (e.disposal_date, e.asset, e.platform, e.holding_period))
@@ -3032,3 +3126,247 @@ def _derive_chain(wallet: str) -> str:  # noqa: PLR0911, PLR0912
 
     # No match found - return Unknown instead of guessing
     return "Unknown"
+
+
+def _build_ogr_index(ogr_rows: list[dict]) -> dict[tuple[str, str, str], Decimal]:
+    """Build index for efficient CG entry lookup.
+
+    Args:
+        ogr_rows: List of parsed OGR row dictionaries from Other Gains Report CSV.
+
+    Returns:
+        Dictionary mapping (date_only, asset_normalized, wallet_normalized) to gain_loss_eur.
+        - date_only: ISO format YYYY-MM-DD (time stripped from Date field)
+        - asset_normalized: Via normalize_asset_ticker()
+        - wallet_normalized: Via normalize_platform_name()
+        - gain_loss_eur: Negative for Loss, positive for Profit
+
+    Rows with zero value or unknown type are skipped.
+    """
+    index: dict[tuple[str, str, str], Decimal] = {}
+
+    for row in ogr_rows:
+        date_str = parse_koinly_datetime(row["Date"])
+        date_only = format_datetime(date_str)  # YYYY-MM-DD, time stripped
+        asset = normalize_asset_ticker(row["Asset"])
+        wallet = normalize_platform_name(row["Wallet Name"])
+        gain_loss = _extract_ogr_gain_loss(row)
+
+        if gain_loss is not None:
+            index[(date_only, asset, wallet)] = gain_loss
+
+    return index
+
+
+def _apply_ogr_overrides(
+    capital_entries: list[CryptoCapitalGainEntry],
+    ogr_index: dict[tuple[str, str, str], Decimal],
+    jurisdiction: TaxJurisdictionConfig,
+) -> list[CryptoCapitalGainEntry]:
+    """Apply OGR gain/loss overrides to capital gains entries.
+
+    When jurisdiction.use_other_gains_report is enabled, this function overrides
+    the gain/loss values from Koinly Capital Gains report with the authoritative
+    values from the Other Gains Report. This is necessary for futures/derivatives
+    where the CG report may not correctly reflect the true gain/loss.
+
+    CRITICAL: This override must happen BEFORE _aggregate_capital_entries
+    because CG rows are individual FIFO lots that get summed in aggregation.
+    OGR contains the correct total gain/loss for the disposal event.
+    Overriding after aggregation would lose the lot-level trail.
+
+    Args:
+        capital_entries: List of capital gain entries from CG parsing.
+        ogr_index: Index built by _build_ogr_index mapping (date, asset, wallet) to gain_loss_eur.
+        jurisdiction: Tax jurisdiction config with use_other_gains_report flag.
+
+    Returns:
+        List of capital gain entries with OGR overrides applied. Entries without
+        OGR matches are returned unchanged.
+    """
+    # If jurisdiction doesn't use OGR, return entries unchanged
+    if not jurisdiction.use_other_gains_report:
+        return capital_entries
+
+    logger = logging.getLogger(__name__)
+    result: list[CryptoCapitalGainEntry] = []
+
+    for entry in capital_entries:
+        # Build lookup key: (date, asset_normalized, wallet_normalized)
+        lookup_key = (
+            entry.disposal_date,
+            normalize_asset_ticker(entry.asset),
+            normalize_platform_name(entry.wallet),
+        )
+
+        ogr_gain_loss = ogr_index.get(lookup_key)
+
+        if ogr_gain_loss is not None:
+            # OGR has a value for this entry - override gain/loss and proceeds
+            # Cost basis stays the same; only gain/loss and proceeds are adjusted
+            new_proceeds = entry.cost_eur + ogr_gain_loss
+
+            # Build note documenting the override
+            override_note = (
+                f"OGR override: gain/loss adjusted from {entry.gain_loss_eur} EUR "
+                f"to {ogr_gain_loss} EUR per Other Gains Report"
+            )
+            merged_notes = f"{override_note}; {entry.notes}" if entry.notes else override_note
+
+            logger.info(
+                "OGR override applied: %s on %s: gain/loss changed from %s EUR to %s EUR",
+                entry.asset,
+                entry.disposal_date,
+                entry.gain_loss_eur,
+                ogr_gain_loss,
+            )
+
+            result.append(
+                replace(
+                    entry,
+                    gain_loss_eur=ogr_gain_loss,
+                    proceeds_eur=new_proceeds,
+                    notes=merged_notes,
+                )
+            )
+        else:
+            # No OGR match - keep original entry
+            logger.debug(
+                "No OGR match for CG entry: %s on %s at %s",
+                entry.asset,
+                entry.disposal_date,
+                entry.wallet,
+            )
+            result.append(entry)
+
+    return result
+
+
+def _apply_ogr_direction_override(
+    capital_entries: list[CryptoCapitalGainEntry],
+    ogr_index: dict[tuple[str, str, str], Decimal],
+    jurisdiction: TaxJurisdictionConfig,
+) -> list[CryptoCapitalGainEntry]:
+    """Apply OGR directional authority to capital gains entries.
+
+    When jurisdiction.use_other_gains_report is enabled, this function uses OGR
+    values for DIRECTIONAL authority (loss vs gain) while preserving CG-calculated
+    magnitude. This is necessary for futures/derivatives where OGR correctly
+    reports the overall gain/loss direction but CG provides the per-lot FIFO
+    allocation.
+
+    CRITICAL: This override must happen BEFORE _aggregate_capital_entries
+    because CG rows are individual FIFO lots that get summed in aggregation.
+    OGR contains the correct total gain/loss for the disposal event.
+    Overriding after aggregation would lose the lot-level trail.
+
+    Directional Authority Semantics:
+    - OGR is AUTHORITATIVE for DIRECTION (loss vs gain)
+    - CG provides MAGNITUDE via standard FIFO calculation
+    - When OGR and CG agree on direction, use OGR magnitude (more accurate for derivatives)
+    - Magnitude differences > 5% → YELLOW flag (review recommended, not blocking)
+    - Absolute threshold of 1 EUR to avoid noise on near-zero gains
+
+    Args:
+        capital_entries: List of capital gain entries from CG parsing.
+        ogr_index: Index built by _build_ogr_index mapping (date, asset, wallet) to gain_loss_eur.
+        jurisdiction: Tax jurisdiction config with use_other_gains_report flag.
+
+    Returns:
+        List of capital gain entries with OGR direction override applied.
+        Entries without OGR matches are returned unchanged (ogr_validation=None).
+    """
+    # If jurisdiction doesn't use OGR, return entries unchanged
+    if not jurisdiction.use_other_gains_report:
+        return capital_entries
+
+    logger = logging.getLogger(__name__)
+    result: list[CryptoCapitalGainEntry] = []
+
+    for entry in capital_entries:
+        # Build lookup key: (date, asset_normalized, wallet_normalized)
+        lookup_key = (
+            entry.disposal_date,
+            normalize_asset_ticker(entry.asset),
+            normalize_platform_name(entry.wallet),
+        )
+
+        ogr_gain_loss = ogr_index.get(lookup_key)
+
+        if ogr_gain_loss is not None:
+            # OGR has a value for this entry - apply directional authority
+            direction_conflict = (ogr_gain_loss < 0) != (entry.gain_loss_eur < 0)
+            magnitude_diff_percent = (
+                abs((ogr_gain_loss - entry.gain_loss_eur) / entry.gain_loss_eur * 100)
+                if entry.gain_loss_eur != 0
+                else None
+            )
+
+            # Determine final gain/loss value and validation result
+            final_gain_loss = entry.gain_loss_eur
+            review_required = False
+            review_reason = None
+
+            if direction_conflict:
+                # OGR is authoritative for direction: use OGR sign with CG magnitude
+                final_gain_loss = (
+                    -abs(entry.gain_loss_eur) if ogr_gain_loss < 0 else abs(entry.gain_loss_eur)
+                )
+                # Only require review if both magnitudes are significant
+                # This avoids flagging noise on near-zero values
+                if abs(ogr_gain_loss) > Decimal("1") and abs(entry.gain_loss_eur) > Decimal("1"):
+                    review_required = True
+                    review_reason = (
+                        f"OGR direction override: CG indicated "
+                        f"{'loss' if entry.gain_loss_eur < 0 else 'gain'}"
+                    )
+            else:
+                # Directions agree - use OGR magnitude (more accurate for derivatives)
+                final_gain_loss = ogr_gain_loss
+
+                # Check if magnitude difference is significant
+                if magnitude_diff_percent and magnitude_diff_percent > 5:
+                    # Also require absolute difference > 1 EUR to avoid noise on near-zero gains
+                    magnitude_diff = abs(ogr_gain_loss - entry.gain_loss_eur)
+                    if magnitude_diff > Decimal("1"):
+                        review_required = True
+                        review_reason = (
+                            f"OGR magnitude differs from CG by {magnitude_diff_percent:.1f}%"
+                        )
+
+            validation = OgrValidationResult(
+                ogr_gain_loss=ogr_gain_loss,
+                calculated_gain_loss=entry.gain_loss_eur,
+                direction_conflict=direction_conflict,
+                magnitude_diff_percent=magnitude_diff_percent,
+                review_required=review_required,
+                review_reason=review_reason,
+            )
+
+            logger.info(
+                "OGR direction override applied: %s on %s: gain/loss changed from %s EUR to %s EUR",
+                entry.asset,
+                entry.disposal_date,
+                entry.gain_loss_eur,
+                final_gain_loss,
+            )
+
+            result.append(
+                replace(
+                    entry,
+                    gain_loss_eur=final_gain_loss,
+                    proceeds_eur=entry.cost_eur + final_gain_loss,
+                    ogr_validation=validation,
+                )
+            )
+        else:
+            # No OGR match - keep original entry without validation
+            logger.debug(
+                "No OGR match for CG entry: %s on %s at %s",
+                entry.asset,
+                entry.disposal_date,
+                entry.wallet,
+            )
+            result.append(entry)
+
+    return result

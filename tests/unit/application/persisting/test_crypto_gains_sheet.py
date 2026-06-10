@@ -15,6 +15,7 @@ from tax_reporting.application.crypto_reporting import (
     CryptoTaxReport,
 )
 from tax_reporting.application.persisting.crypto_gains_sheet import write_crypto_gains_sheet
+from tax_reporting.domain.entities import OgrValidationResult
 from tests.conftest import make_operator_origin
 
 
@@ -426,7 +427,7 @@ class TestCryptoGainsSheetAutoWidth:
         write_crypto_gains_sheet(wb, report)
         ws = wb["Crypto Gains"]
 
-        for col_idx in range(1, 18):  # Columns A through Q
+        for col_idx in range(1, 21):  # Columns A through T (20 columns with OGR validation)
             col_letter = openpyxl.utils.get_column_letter(col_idx)
             width = ws.column_dimensions[col_letter].width
             assert width is not None, f"Column {col_letter} should have a width set"
@@ -453,7 +454,8 @@ class TestCryptoGainsSheetEmptyEntries:
 
 
 _RED_FILL = PatternFill(start_color="FFFF0000", end_color="FFFF0000", fill_type="solid")
-_NUM_CAPITAL_COLUMNS = 17
+_YELLOW_FILL = PatternFill(start_color="FFFFFF00", end_color="FFFFFF00", fill_type="solid")
+_NUM_CAPITAL_COLUMNS = 20  # Updated to include OGR validation columns
 
 
 def _find_header_row(ws: openpyxl.worksheet.worksheet.Worksheet) -> int:
@@ -618,3 +620,201 @@ class TestCryptoGainsSheetMultiDateBlueBackground:
         for col in range(1, _NUM_CAPITAL_COLUMNS + 1):
             assert _is_red_fill(ws.cell(data_row, col)), f"Column {col} should have red fill (zero-cost)"
             assert not _is_blue_fill(ws.cell(data_row, col)), f"Column {col} should NOT have blue fill"
+
+
+@pytest.mark.unit
+class TestCryptoGainsSheetLossValues:
+    """Tests that negative gain/loss values are preserved in Excel output."""
+
+    def test_loss_value_written_to_excel(self):
+        """Entry with negative gain_loss_eur appears as negative value in Excel (not absolute)."""
+        entry = _make_capital_entry(
+            disposal_date="2025-01-13",
+            asset="USDT",
+            gain_loss_eur=Decimal("-138.73"),
+        )
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        wb = openpyxl.Workbook()
+        write_crypto_gains_sheet(wb, report)
+        ws = wb["Crypto Gains"]
+        data_row = _find_header_row(ws) + 1
+        # Column 7 is Gain/Loss (EUR)
+        gain_loss_cell = ws.cell(data_row, 7)
+        assert gain_loss_cell.value == Decimal("-138.73"), f"Expected -138.73, got {gain_loss_cell.value}"
+        # Verify it's actually negative (not positive absolute value)
+        assert gain_loss_cell.value < 0, "Loss value must be negative"
+
+    def test_ogr_override_reflected_in_excel(self):
+        """OGR-overridden loss shows correct negative value in Excel output."""
+        # This test simulates the case where OGR override changes +22.71 EUR (CG)
+        # to -138.73 EUR (OGR Type="Loss")
+        entry = _make_capital_entry(
+            disposal_date="2025-01-13",
+            asset="USDT",
+            platform="ByBit",
+            gain_loss_eur=Decimal("-138.73"),  # OGR-overridden value
+        )
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        wb = openpyxl.Workbook()
+        write_crypto_gains_sheet(wb, report)
+        ws = wb["Crypto Gains"]
+        data_row = _find_header_row(ws) + 1
+        # Verify the full entry including the overridden loss value
+        assert ws.cell(data_row, 1).value == "2025-01-13"  # Disposal date
+        assert ws.cell(data_row, 3).value == "USDT"  # Asset
+        assert ws.cell(data_row, 10).value == "ByBit"  # Platform
+        # Column 7 is Gain/Loss (EUR) - must show the OGR loss value
+        gain_loss_cell = ws.cell(data_row, 7)
+        assert gain_loss_cell.value == Decimal("-138.73"), f"Expected -138.73 (OGR loss), got {gain_loss_cell.value}"
+        assert gain_loss_cell.value < 0, "OGR loss value must be negative in Excel"
+
+
+def _is_yellow_fill(cell: openpyxl.cell.cell.Cell) -> bool:
+    fill = cell.fill
+    return (
+        fill.start_color.rgb == "FFFFFF00"
+        and fill.end_color.rgb == "FFFFFF00"
+        and fill.fill_type == "solid"
+    )
+
+
+@pytest.mark.unit
+class TestCryptoGainsSheetOgrValidation:
+    """Tests for OGR validation columns in the Crypto Gains sheet."""
+
+    OGR_VALIDATION_HEADERS = [
+        "OGR Gain/Loss (EUR)",
+        "OGR Diff (%)",
+        "OGR Review",
+    ]
+
+    def test_ogr_validation_headers_written(self):
+        """Verify that OGR validation headers are present in the sheet."""
+        wb = openpyxl.Workbook()
+        report = _make_crypto_tax_report()
+        write_crypto_gains_sheet(wb, report)
+        ws = wb["Crypto Gains"]
+        header_row = _find_header_row(ws)
+        # Columns 18, 19, 20 should be the OGR validation headers
+        assert ws.cell(header_row, 18).value == "OGR Gain/Loss (EUR)"
+        assert ws.cell(header_row, 19).value == "OGR Diff (%)"
+        assert ws.cell(header_row, 20).value == "OGR Review"
+
+    def test_ogr_validation_columns_blank_when_ogr_validation_none(self):
+        """When ogr_validation is None, OGR columns should be blank."""
+        entry = _make_capital_entry(ogr_validation=None)
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        wb = openpyxl.Workbook()
+        write_crypto_gains_sheet(wb, report)
+        ws = wb["Crypto Gains"]
+        data_row = _find_header_row(ws) + 1
+        assert ws.cell(data_row, 18).value is None
+        assert ws.cell(data_row, 19).value is None
+        assert ws.cell(data_row, 20).value is None
+
+    def test_ogr_review_shows_no_when_review_required_false(self):
+        """When ogr_validation.review_required=False, OGR Review shows NO."""
+        ogr_val = OgrValidationResult(
+            ogr_gain_loss=Decimal("100"),
+            calculated_gain_loss=Decimal("100"),
+            direction_conflict=False,
+            magnitude_diff_percent=Decimal("0"),
+            review_required=False,
+            review_reason=None,
+        )
+        entry = _make_capital_entry(ogr_validation=ogr_val)
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        wb = openpyxl.Workbook()
+        write_crypto_gains_sheet(wb, report)
+        ws = wb["Crypto Gains"]
+        data_row = _find_header_row(ws) + 1
+        assert ws.cell(data_row, 18).value == Decimal("100")  # OGR Gain/Loss
+        assert ws.cell(data_row, 19).value == Decimal("0")  # OGR Diff (%)
+        assert ws.cell(data_row, 20).value == "NO"  # OGR Review
+        # No special fill
+        assert not _is_red_fill(ws.cell(data_row, 18))
+        assert not _is_yellow_fill(ws.cell(data_row, 18))
+
+    def test_ogr_direction_override_shows_red_fill(self):
+        """When review_reason contains 'OGR direction override', entire row gets RED fill."""
+        ogr_val = OgrValidationResult(
+            ogr_gain_loss=Decimal("-50"),
+            calculated_gain_loss=Decimal("50"),
+            direction_conflict=True,
+            magnitude_diff_percent=Decimal("200"),
+            review_required=True,
+            review_reason="OGR direction override: OGR shows loss, CG shows gain",
+        )
+        entry = _make_capital_entry(ogr_validation=ogr_val)
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        wb = openpyxl.Workbook()
+        write_crypto_gains_sheet(wb, report)
+        ws = wb["Crypto Gains"]
+        data_row = _find_header_row(ws) + 1
+        # Verify OGR values
+        assert ws.cell(data_row, 18).value == Decimal("-50")  # OGR Gain/Loss
+        assert ws.cell(data_row, 19).value == Decimal("200")  # OGR Diff (%)
+        assert ws.cell(data_row, 20).value == "YES: OGR direction override: OGR shows loss, CG shows gain"
+        # Verify RED fill on the entire row (all 20 columns)
+        for col in range(1, _NUM_CAPITAL_COLUMNS + 1):
+            assert _is_red_fill(ws.cell(data_row, col)), f"Column {col} should have RED fill for direction override"
+
+    def test_ogr_magnitude_diff_shows_yellow_fill(self):
+        """When magnitude differs, entire row gets YELLOW fill."""
+        ogr_val = OgrValidationResult(
+            ogr_gain_loss=Decimal("100"),
+            calculated_gain_loss=Decimal("90"),
+            direction_conflict=False,
+            magnitude_diff_percent=Decimal("10"),
+            review_required=True,
+            review_reason="magnitude differs by 10%",
+        )
+        entry = _make_capital_entry(ogr_validation=ogr_val)
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        wb = openpyxl.Workbook()
+        write_crypto_gains_sheet(wb, report)
+        ws = wb["Crypto Gains"]
+        data_row = _find_header_row(ws) + 1
+        # Verify OGR values
+        assert ws.cell(data_row, 18).value == Decimal("100")  # OGR Gain/Loss
+        assert ws.cell(data_row, 19).value == Decimal("10")  # OGR Diff (%)
+        assert ws.cell(data_row, 20).value == "YES: magnitude differs by 10%"
+        # Verify YELLOW fill on the entire row (all 20 columns)
+        for col in range(1, _NUM_CAPITAL_COLUMNS + 1):
+            assert _is_yellow_fill(ws.cell(data_row, col)), f"Column {col} should have YELLOW fill for magnitude diff"
+
+    def test_ogr_gain_loss_value_displayed(self):
+        """OGR Gain/Loss column shows the ogr_gain_loss value when present."""
+        ogr_val = OgrValidationResult(
+            ogr_gain_loss=Decimal("150.25"),
+            calculated_gain_loss=Decimal("150.25"),
+            direction_conflict=False,
+            magnitude_diff_percent=Decimal("0"),
+            review_required=False,
+            review_reason=None,
+        )
+        entry = _make_capital_entry(ogr_validation=ogr_val)
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        wb = openpyxl.Workbook()
+        write_crypto_gains_sheet(wb, report)
+        ws = wb["Crypto Gains"]
+        data_row = _find_header_row(ws) + 1
+        assert ws.cell(data_row, 18).value == Decimal("150.25")
+
+    def test_ogr_diff_percent_displayed(self):
+        """OGR Diff (%) column shows the magnitude_diff_percent value."""
+        ogr_val = OgrValidationResult(
+            ogr_gain_loss=Decimal("100"),
+            calculated_gain_loss=Decimal("85"),
+            direction_conflict=False,
+            magnitude_diff_percent=Decimal("15"),
+            review_required=True,
+            review_reason="magnitude differs by 15%",
+        )
+        entry = _make_capital_entry(ogr_validation=ogr_val)
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        wb = openpyxl.Workbook()
+        write_crypto_gains_sheet(wb, report)
+        ws = wb["Crypto Gains"]
+        data_row = _find_header_row(ws) + 1
+        assert ws.cell(data_row, 19).value == Decimal("15")

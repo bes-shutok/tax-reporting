@@ -648,7 +648,7 @@ A leveraged futures position (e.g., SOL/USDT with USDT as collateral) creates a 
 
 **Concrete example:** ByBit SOL/USDT position `<POSITION_ID>` liquidated on 19 Jan 2025, 11:28:53 PM. Koinly reported -42.26 USD loss at 11:29:46 PM. The system correctly assessed disposal of 280.36 USDT (271.79 EUR) as the collateral disposition, with the loss appearing as negative gain/loss.
 
-**See also:** DP-010 in `docs/tax/decision_points/2025.md`, PT-C-031 and PT-C-032 in `docs/domain/crypto_rules.md`
+**See also:** DP-010 in `docs/tax/decision_points/2025.md`, PT-C-031 and PT-C-032 in `docs/domain/crypto_rules.md`, lesson #73 (Cross-Report Validation), lesson #75 (OGR override timing)
 
 ## 68. Decision Point Flags Require TaxJurisdictionConfig Field
 
@@ -730,7 +730,278 @@ grep -r "= True" src/ --include="*.py" | grep -v "def " | head -10
 
 uv run pytest -m unit          # Fast feedback during development
 uv run pytest -m integration   # Before committing
-uv run pytest -m e2e           # Before release
 
-grep -n "def test_" tests/ | cut -d: -f3 | sort | uniq -d  # Duplicate test names
+## 71. Validation-First Investigation Pattern
+
+When a plan investigates "is X handled correctly?" or "does the system correctly handle Y?", structure the plan with verification tasks before implementation tasks:
+
+1. **Start with verification:** Code inspection, test execution, and documentation review
+2. **Then decide on implementation:** Skip implementation tasks if verification shows correctness
+3. **Document findings:** Create investigation artifacts under `docs/tmp/` (or promote to canonical docs if reusable)
+
+This pattern prevents unnecessary work when the current implementation is already correct. It applies to any "is this handled correctly?" question, regardless of domain.
+
+**Example:** The 2026-06-07 futures/derivatives loss treatment plan used Tasks 1, 3, 5, 7, 8 for verification (code inspection, source archiving, docs review, Koinly investigation, test execution) and skipped Tasks 2, 4, 6 (country-specific config, tests, guidance) because verification confirmed the existing implementation was correct. See `docs/tmp/futures_loss_treatment_summary.md` for the investigation record and `docs/plans/2026-06-07-futures-derivatives-loss-treatment.md` for the full plan.
+
+**See also:** plan_quality_guidelines.md for plan structure guidance on verification-before-implementation task ordering.
+
+## 72. Data Trace Verification Requirement
+
+When a plan investigates "is X handled correctly?" or "does the system correctly handle Y?", code inspection alone is INSUFFICIENT. The investigation must include ACTUAL data trace verification:
+
+1. **Trace the user's specific case:** For the exact reported scenario, verify data flows from source CSV through to final output. Do not rely on code inspection alone.
+2. **Verify output matches source classification:** If the source report shows "Loss" and the output shows "Gain", the investigation is incomplete regardless of whether code CAN handle negatives.
+3. **Command pattern:** `grep "specific_value" source.csv` → compare with actual Excel output cell value
+4. **Failure consequence:** An investigation that concludes "no code changes needed" without performing data trace verification is INCOMPLETE and must be redone.
+
+**Example:** The 2026-06-07 futures/derivatives loss treatment investigation concluded "no code changes needed" based on code inspection alone. However, data trace verification revealed that Koinly's Other Gains Report classified entries as "Loss" while the Excel output showed them as "Gain" — a clear discrepancy that code inspection missed.
+
+## 73. Cross-Report Validation for Multi-Report Systems
+
+When investigating systems that process data from multiple source reports (e.g., Koinly Transaction History, Capital Gains Report, Other Gains Report), verify classifications match across ALL reports before concluding correctness:
+
+1. **Identify all source reports:** List every CSV/report the system processes
+2. **Cross-reference classifications:** If one report shows Type="Loss" and another shows Gain/Loss=positive, investigate which report drives the final output
+3. **Verify final output reflects the correct classification:** The Excel/final output must match the economically correct classification, not just the mechanically calculated one
+4. **Document which report is authoritative:** When source reports disagree, state which report's classification is correct and why
+
+**Example:** Koinly's Other Gains Report correctly classified futures liquidations as "Loss" with negative amounts, while the Capital Gains Report calculated positive gains based on collateral proceeds. The system only processes Capital Gains Report, so losses appeared as gains in the final output. Cross-report validation would have caught this discrepancy.
+
+**See also:** Lesson #75 (Authoritative Source Overrides Must Precede Aggregation)
+
+## 74. Cross-Module Function Dependencies Require Complete Imports
+
+When adding a function in one module that calls a function from another module, verify the import is complete. Unit tests that don't exercise the full code path (e.g., only test helper functions but not the file-discovery wrapper) can miss import errors that would cause runtime `NameError`.
+
+**Verification:** After adding cross-module function calls, run `uv run python -c "from module import function"` to verify imports resolve at import time, not just at call time.
+
+**Example:** `_find_and_parse_other_gains_file()` in `koinly_parser.py` called `_find_report_path()` from `crypto_reporting.py` without importing it. Unit tests for the helper functions (`_extract_ogr_gain_loss`, `_parse_other_gains_row`) passed because they didn't call the file-discovery function. A full import check would have revealed the missing dependency before runtime.
+
+## 75. Authoritative Source Overrides Must Precede Aggregation
+
+When applying overrides from an authoritative source (e.g., OGR) to calculated data (e.g., CG), the override must happen BEFORE aggregation when working with lot-level entries.
+
+**Why this matters:** CG rows are individual FIFO lots that get summed in aggregation. The authoritative source (OGR) contains the correct total gain/loss for the disposal event. Overriding after aggregation would lose the lot-level trail and make reconciliation impossible.
+
+**Pattern:**
+1. Parse calculated source (CG) — produces individual lot entries
+2. Parse authoritative source (OGR) — produces event-level totals
+3. Match and override lot entries with authoritative values
+4. Aggregate overridden lots — preserves lot-level trail in output
+
+**Example:** In `crypto_reporting.py`, `_apply_ogr_overrides()` is called after `_parse_capital_gains_file` but BEFORE `_aggregate_capital_entries()`. This ensures that when OGR reports an authoritative per-disposal loss, each individual FIFO lot for that disposal is overridden with that authoritative value before being summed. If aggregation happened first, the lot-level detail would be lost and the override could not be traced back to specific lots.
+
+**See also:** Lesson #73 (Cross-Report Validation), AGENTS.md constraint on OGR override timing
+
+## 76. TDD for Bug Fixes
+
+When investigating and fixing bugs, follow the TDD approach: create a failing test first (RED stage), then implement the fix (GREEN stage). Do not skip the test creation step even if the fix seems obvious.
+
+**Why this matters:** Creating a failing test first:
+- Documents the bug with a concrete example
+- Prevents regression
+- Forces understanding of the issue before implementing
+- Makes the fix verifiable
+
+**Pattern:**
+1. Write test that reproduces the bug (RED)
+2. Run test to confirm it fails
+3. Implement minimal fix (GREEN)
+4. Run test to confirm it passes
+5. Run full test suite to ensure no regressions
+
+**Example:** For the OGR duplicate-key bug, `test_ogr_index_sums_duplicate_keys` was created first to demonstrate that entries with the same key were being overwritten instead of summed. Only after the test failed (showing only the last per-row value instead of the summed aggregate across all rows for the key) was the fix implemented.
+
+**See also:** Lesson #77 (Duplicate Key Handling in Index Building)
+
+## 77. Duplicate Key Handling in Index Building
+
+When building an index from source data where multiple entries may share the same key, handle duplicate keys explicitly by summing (or another appropriate aggregation). Never silently overwrite previous entries with new ones.
+
+**Why this matters:** Silent data loss occurs when duplicate keys overwrite previous values. This is especially dangerous when the index is used for authoritative values in calculations.
+
+**Verification:** After building an index, if the sum of all indexed values should equal a known total, verify this invariant holds.
+
+**Pattern:**
+```python
+# Wrong: silent overwrite
+result[key] = value  # Last value wins, previous values lost
+
+# Correct: explicit summation
+result[key] = result.get(key, ZERO) + value  # All values summed
 ```
+
+**Example:** In `_find_and_parse_other_gains_file()`, the OGR file contained three entries for the same platform+asset+date key (a funding fee, a futures fee, and a realized P&L). The buggy code `result[key] = gain_loss` stored only the last value. The fix `result[key] = result.get(key, ZERO) + gain_loss` correctly sums all values for the key.
+
+**See also:** Lesson #76 (TDD for Bug Fixes), Lesson #78 (OGR Validation vs Replacement Design)
+
+## 78. OGR Directional Authority vs Wholesale Replacement (Completed)
+
+**Status:** Completed — see `docs/plans/2026-06-10-ogr-validation-design.md`
+
+The OGR (Other Gains Report) feature uses **directional authority semantics**, not wholesale replacement. OGR provides authoritative DIRECTION (gain vs loss) while CG (Capital Gains) provides MAGNITUDE via standard FIFO calculation.
+
+**Directional authority logic:**
+- **Direction conflict (OGR sign != CG sign):** Use OGR direction with CG magnitude
+  - Example: CG=+100 (gain), OGR=-147 (loss) → final = -100 (loss with CG magnitude)
+  - Flag with review_required=True, reason="OGR direction override"
+- **Directions agree (same sign):** Use OGR magnitude (more accurate for derivatives)
+  - Example: CG=-100, OGR=-105 → final = -105 (use OGR magnitude)
+  - Flag with review_required=True only if magnitude diff > 5% AND absolute diff > 1 EUR
+
+**Implementation details:**
+- Applied per-lot before aggregation via `_apply_ogr_direction_override()`
+- Creates `OgrValidationResult` attached to each entry with comparison metadata
+- Absolute threshold (1 EUR) prevents noise on near-zero values for both direction conflicts and magnitude diffs
+- Multiple lots for same disposal each get ogr_validation attached; aggregation combines them
+
+**See also:** Lesson #75 (Authoritative Source Overrides Timing), Lesson #79 (Independent Validation Fields), CRG-017 in crypto_reporting_guidelines.md
+
+## 79. Independent Validation Fields vs Entry-Level Review Flags
+
+When adding validation-related fields to a dataclass that already has `review_required`/`review_reason` fields, distinguish between:
+- **Entry-level review flags** — domain-specific validations that apply to the entry itself
+- **Independent validation results** — cross-report or cross-system validations that have their own review criteria
+
+**Pattern:**
+- Add validation results as optional nested dataclass fields (e.g., `ogr_validation: OgrValidationResult | None = None`)
+- Do NOT integrate validation-result `review_required` into entry-level `__post_init__` validation
+- Keep the two review mechanisms independent — validation result carries its own `review_required`/`review_reason`
+- Tests that verify "YES:"/"NO" rendering must set the nested field explicitly, not delegate to origin fields
+
+**Why:** Entry-level validation enforces that `review_reason` is set when `review_required=True`. Independent validations have their own lifecycle and should not trigger entry-level validation. Tests must verify independence explicitly.
+
+**Example:** In Task 1 of the OGR validation design, `ogr_validation` was added to `CryptoCapitalGainEntry` as an optional field. The `__post_init__` validation only checks entry-level `review_reason`, not `ogr_validation.review_reason`. The test `test_ogr_validation_attached_to_entry` verifies this independence.
+
+**See also:** Lesson #43 (Two-Level Review Flags), CRG-016 in crypto_rules.md
+
+## 80. Field Aggregation Strategy Depends on Semantics
+
+When aggregating grouped entries (e.g., FIFO lots into sale events), field aggregation strategy depends on field semantics — not all fields should be summed.
+
+**Pattern:** For each field in the aggregated result, choose the strategy based on what the field represents:
+- **Lookup value fields** — Take from first entry (all entries in group share the same lookup key, so the value is identical across entries). Example: `ogr_gain_loss` from OGR lookup by (date, asset, wallet)
+- **Per-lot contribution fields** — Sum across all entries. Example: `calculated_gain_loss` where each lot contributes to the total
+- **Boolean flags** — Use OR logic (True if ANY entry has True). Example: `direction_conflict`, `review_required`
+- **Severity indicator fields** — Use maximum value. Example: `magnitude_diff_percent` to show worst deviation
+- **Narrative text fields** — Join unique values with delimiter and deduplicate. Example: `review_reason` joined with "; "
+
+**Implementation:** `_aggregate_ogr_validation()` in Task 3 of OGR validation design demonstrates all five patterns.
+
+**Why:** Assuming "sum" for all numeric fields is incorrect — some numeric fields represent a shared lookup value that must NOT be summed, while others represent independent contributions that must be summed. Mixing these semantics produces incorrect results (e.g., summing `ogr_gain_loss` would multiply the OGR value by the number of lots, which is wrong).
+
+**Example:** In crypto capital gains aggregation, `ogr_gain_loss` comes from the first entry because all FIFO lots for the same disposal share the same OGR lookup value. But `calculated_gain_loss` is summed because each lot contributes its own gain/loss to the total.
+
+**See also:** Lesson #75 (Authoritative Source Overrides Timing)
+
+## 81. Excel Conditional Formatting Priority Matters
+
+When applying multiple conditional fill conditions to Excel rows, implement explicit priority ordering. Highest-priority conditions should be checked first and return early, preventing lower-priority conditions from masking important issues.
+
+**Pattern:**
+1. Create a dedicated conditional formatting function (e.g., `_apply_conditional_formatting`) that documents the priority order in its docstring
+2. Check conditions in priority order and return early after applying the highest-priority fill
+3. Use early returns to prevent fallthrough to lower-priority conditions
+
+**Priority example (highest to lowest):**
+1. RED fill for critical issues (e.g., OGR direction conflict indicating sign disagreement between authoritative source and calculation)
+2. YELLOW fill for warnings (e.g., magnitude differences exceeding threshold)
+3. RED fill for entry-level review requirements (e.g., zero-cost gains above threshold)
+4. BLUE fill for informational highlights (e.g., multi-acquisition dates)
+5. No fill (default)
+
+**Why:** Without explicit priority, the last condition checked wins regardless of severity. A critical issue could be masked by a less severe condition that happens to apply first.
+
+**Example:** In Task 4 of the OGR validation design, `_apply_conditional_formatting()` checks OGR conditions before entry-level review conditions. An OGR direction override (critical) gets RED fill even if the entry also has `review_required=True` (less severe). If the order were reversed, the entry-level RED fill would be applied first and the critical direction conflict would be masked.
+
+**Implementation notes:**
+- Fill colors should be defined as module-level constants for consistency and to avoid repeating color codes
+- When adding columns, update the column count constant AND the conditional formatting loop range
+- Add helper functions for fill assertions (e.g., `_is_yellow_fill()`) to keep tests consistent
+
+**See also:** Lesson #7 (Excel Output Security), Lesson #15 (Excel Column Width), Lesson #69 (Excel Output Visual Structure Tests)
+
+## 82. Adding Excel Columns Requires Constant Updates
+
+When adding new columns to an Excel sheet output, update all related constants and ranges in the same commit. A single new column typically requires updates in multiple places.
+
+**Required updates when adding columns:**
+1. Column count constant (e.g., `_CAPITAL_GAINS_NUM_COLS`)
+2. Headers list (add new header string)
+3. Data row rendering (write new cell value or blank/None)
+4. Conditional formatting range (loop bound must match new column count)
+5. Test constants (e.g., `_NUM_CAPITAL_COLUMNS`)
+6. Auto-width tests (loop bound for column iteration)
+
+**Verification:** Run tests after adding columns. Common failures:
+- `IndexError` from loops using old column count
+- Misaligned headers vs data columns
+- Conditional formatting not covering new columns
+
+**Why:** These constants are coupled — they all represent "how many columns exist." Missing one causes bugs that only appear at runtime or in specific test scenarios.
+
+**Example:** In Task 4 of the OGR validation design, three new OGR validation columns were added (18, 19, 20). The implementation updated:
+- `_CAPITAL_GAINS_NUM_COLS` from 17 to 20
+- `capital_headers` list with three new header strings
+- `_render_capital_gain_row()` to write OGR values (or None when absent)
+- `_apply_conditional_formatting()` to loop through all 20 columns
+- Test `_NUM_CAPITAL_COLUMNS` from 17 to 20
+- Auto-width test to check 21 columns (headers + 1 blank)
+
+**Pattern:** When adding multiple columns at once, consider using a local constant or calculated offset to avoid off-by-one errors. For example, `FIRST_OGR_COL = 18` and `NUM_OGR_COLS = 3` makes the range explicit.
+
+**See also:** Lesson #81 (Excel Conditional Formatting Priority)
+
+## 83. Test Blank/Null Handling Explicitly for New Optional Columns
+
+When adding columns that can be blank/None (e.g., when validation data is absent), add dedicated tests for that state. Do not assume "no data" works correctly based on "with data" tests.
+
+**Pattern:**
+1. Add a test specifically for the blank/None state (e.g., `test_ogr_validation_columns_blank_when_ogr_validation_none`)
+2. Verify the column cells are `None` (not empty string, not zero, not default value)
+3. Verify conditional formatting does NOT apply for blank state (no fill when no data)
+
+**Why:** "With data" tests only exercise the populated path. The blank/None path has different code branches (skipped assignments, no formatting applied) and is a common source of bugs.
+
+**Example:** In Task 4 of the OGR validation design, the test `test_ogr_validation_columns_blank_when_ogr_validation_none` verifies that when `entry.ogr_validation` is `None`, the OGR columns (18, 19, 20) are explicitly `None` rather than containing leftover data or default values.
+
+**See also:** Lesson #81 (Excel Conditional Formatting Priority), Lesson #82 (Adding Excel Columns Requires Constant Updates)
+
+## 84. Backward Compatibility Testing for Flag-Controlled Features
+
+When adding a new feature controlled by a boolean flag (like `use_other_gains_report`), create dedicated backward compatibility tests that verify the "disabled" state preserves existing behavior — not just that the "enabled" state works correctly.
+
+**Pattern:**
+1. Create a dedicated test class for backward compatibility (e.g., `TestOgrDisabledBackwardCompatibility`)
+2. Test that the disabled state yields the same results as before the feature existed
+3. Verify that flag-specific fields are None/blank when disabled
+4. Verify that core values (gain/loss, proceeds, cost) remain unchanged from original input
+
+**Why:** Tests for the "enabled" state only verify the new behavior works. Without explicit tests for the "disabled" state, you may silently break existing users who have the flag disabled.
+
+**Example:** In Task 6 of the OGR validation design, the test `test_ogr_disabled_entries_have_no_ogr_validation` verifies that when `use_other_gains_report=False`, all entries have `ogr_validation=None` and gain/loss values match the original CG values exactly.
+
+**Implementation trade-off note:** When a plan specifies a cosmetic constraint (e.g., "Excel has no OGR columns when disabled"), but the implementation uses a fixed column structure with blank cells, prefer verifying behavioral correctness over cosmetic compliance. A consistent column structure is often a reasonable engineering trade-off.
+
+## 85. Recalculate Validation Metrics from Aggregated Values
+
+When validating aggregated data against an external source (OGR, statements, etc.), compute validation metrics from the **aggregated totals**, not from individual pre-aggregation rows.
+
+**Problem:** Comparing individual rows to aggregated totals produces misleading percentages:
+- Single lot CG: 1.72 EUR vs OGR total: 137.73 EUR → "differs by 5474%" ❌ (noise)
+- Aggregated CG: ~137 EUR vs OGR: 137.73 EUR → "differs by ~0.5%" ✅ (signal)
+
+**Pattern:**
+1. Apply corrections (e.g., direction override) to individual lots before aggregation if needed for correct totals
+2. During/after aggregation, recalculate all validation metrics from aggregated values:
+   - `direction_conflict` = sign(agr_OGR) ≠ sign(agr_CG)
+   - `magnitude_diff_percent` = |(agr_OGR - agr_CG) / agr_CG| × 100
+   - `review_required` = based on aggregated thresholds
+   - `review_reason` = built from aggregated state
+3. Don't inherit/OR individual lot flags — they reflect pre-aggregation noise
+
+**Why:** Pre-aggregation rows are accounting artifacts, not the reportable event. The tax return reports the aggregated sale, so only aggregated-level validation is meaningful to the reviewer.
+
+**Example:** In `_aggregate_ogr_validation`, the function recalculates `direction_conflict`, `magnitude_diff_percent`, and `review_required` from the summed `calculated_gain_loss` and the shared `ogr_gain_loss`, rather than taking max/OR from individual lots.
+
+**See also:** CRG-017 (Other Gains Report Validation), Lesson #78 (OGR Directional Authority vs Wholesale Replacement)

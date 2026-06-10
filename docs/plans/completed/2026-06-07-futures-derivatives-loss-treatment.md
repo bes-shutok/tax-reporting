@@ -1,7 +1,7 @@
 # Plan: Futures Derivatives Loss Treatment for Portugal 2025
 
 Related decision point: DP-010 (futures/derivatives losses are taxable disposals, not withdrawals)
-Plan review: docs/reviews/2026-06-07-plan-review-2026-06-07-futures-derivatives-loss-treatment-r2.md
+Plan review: the local review record
 
 ## Gist & Examples
 
@@ -83,11 +83,11 @@ Files:
 - `src/tax_reporting/application/crypto_reporting.py`
 - `src/tax_reporting/application/persisting/crypto_gains_sheet.py`
 
-- [ ] Review `parse_koinly_decimal` function in `koinly_parser.py` — given a negative input string like "-42.26", expects `Decimal("-42.26")` (negative preserved)
-- [ ] Review `CryptoCapitalGainEntry.gain_loss_eur` field — given negative parsed value, expects value stored without sign conversion
-- [ ] Review aggregation sums in `crypto_reporting.py` — given list of negative gains, expects sum produces negative total (not absolute)
-- [ ] Review Excel write in `crypto_gains_sheet.py` — given entry with negative `gain_loss_eur`, expects negative value written to cell (not absolute)
-- [ ] Document findings in `docs/tmp/negative_gain_handling_verification.md` — summarize whether current implementation is correct or needs fixes
+- [x] Review `parse_koinly_decimal` function in `koinly_parser.py` — given a negative input string like "-42.26", expects `Decimal("-42.26")` (negative preserved)
+- [x] Review `CryptoCapitalGainEntry.gain_loss_eur` field — given negative parsed value, expects value stored without sign conversion
+- [x] Review aggregation sums in `crypto_reporting.py` — given list of negative gains, expects sum produces negative total (not absolute)
+- [x] Review Excel write in `crypto_gains_sheet.py` — given entry with negative `gain_loss_eur`, expects negative value written to cell (not absolute)
+- [x] Document findings in the local investigation record — summarize whether current implementation is correct or needs fixes
 
 **Note:** This task determines whether subsequent implementation tasks are needed. If current handling is already correct, the plan reduces to documentation and verification only.
 
@@ -96,7 +96,9 @@ Files:
 - Tasks 3, 5, 7, 8 still run (verification/documentation/investigation)
 - Proceed to final validation
 
-### Task 2: Add Country-Specific Derivatives Loss Configuration (if needed)
+### Task 2: Add Country-Specific Derivatives Loss Configuration (if needed) ⏭️ **SKIPPED**
+
+**SKIP REASON:** Task 1 found current implementation is already correct. This task is not needed.
 
 If Task 1 reveals that changes are needed, add configuration for country-specific derivatives loss treatment.
 
@@ -150,12 +152,12 @@ Files:
 - `docs/tax/laws/pt/crypto-tax/sources.md` *(verify)*
 - `docs/tax/laws/pt/crypto-tax/official/cirs_art10_portal_2026-04-01.html` *(already archived)*
 
-- [ ] `verify_cirs_art10_derivatives_coverage` — given `cirs_art10_portal_2026-04-01.html`, expects file exists and contains "instrumentos financeiros derivados" text at line ~580
-- [ ] `verify_at_folheto_downloaded` — given sources.md entry for `at_folheto_criptoativos_2026-01-12.pdf`, expects PDF file exists in official/
-- [ ] `verify_cirs_consolidated_downloaded` — given sources.md entry for `cirs_2025-07_code_consolidated.pdf`, expects PDF file exists and includes art. 10(17)-(22)
-- [ ] `verify_sources_md_complete` — given sources.md, expects all 14 listed official files exist in `official/` directory
-- [ ] Run → expect GREEN (verification only, no code changes)
-- [ ] If any files are missing, document gap in `docs/tmp/missing_pt_tax_docs.md` for remediation
+- [x] `verify_cirs_art10_derivatives_coverage` — given `cirs_art10_portal_2026-04-01.html`, expects file exists and contains "instrumentos financeiros derivados" text at line ~580
+- [x] `verify_at_folheto_downloaded` — given sources.md entry for `at_folheto_criptoativos_2026-01-12.pdf`, expects PDF file exists in official/
+- [x] `verify_cirs_consolidated_downloaded` — given sources.md entry for `cirs_2025-07_code_consolidated.pdf`, expects PDF file exists and includes art. 10(17)-(22)
+- [x] `verify_sources_md_complete` — given sources.md, expects all 14 listed official files exist in `official/` directory
+- [x] Run → expect GREEN (verification only, no code changes)
+- [x] If any files are missing, document gap in the local investigation record for remediation
 
 **Verification command:**
 ```bash
@@ -171,7 +173,9 @@ done
 grep "instrumentos financeiros derivados" official/cirs_art10_portal_2026-04-01.html
 ```
 
-### Task 4: Add Tests for Country-Specific Loss Handling
+### Task 4: Add Tests for Country-Specific Loss Handling ⏭️ **SKIPPED**
+
+**SKIP REASON:** Task 1 found current implementation is already correct. This task is not needed.
 
 Add tests to verify that negative gains are handled correctly per country configuration.
 
@@ -196,14 +200,16 @@ Files:
 - `docs/tax/decision_points/2025.md` *(already updated)*
 - `docs/tax/decision_points/2025.toml` *(already updated)*
 
-- [ ] Verify PT-C-031 exists in `crypto_rules.md` — expects rule states derivatives are covered under CIRS art. 10(1)(e)
-- [ ] Verify PT-C-032 exists in `crypto_rules.md` — expects rule states losses follow holding-period rules with carry-forward for short-term
-- [ ] Verify DP-010 exists in `2025.md` — expects decision point states futures/derivatives losses are taxable disposals
-- [ ] Verify `futures_derivatives_taxable = true` in `2025.toml` — expects config setting exists for PT
-- [ ] Run → expect GREEN (verification only, documentation already complete)
-- [ ] No commit needed (already done in investigation phase)
+- [x] Verify PT-C-031 exists in `crypto_rules.md` — expects rule states derivatives are covered under CIRS art. 10(1)(e)
+- [x] Verify PT-C-032 exists in `crypto_rules.md` — expects rule states losses follow holding-period rules with carry-forward for short-term
+- [x] Verify DP-010 exists in `2025.md` — expects decision point states futures/derivatives losses are taxable disposals
+- [x] Verify `futures_derivatives_taxable = true` in `2025.toml` — expects config setting exists for PT
+- [x] Run → expect GREEN (verification only, documentation already complete)
+- [x] No commit needed (already done in investigation phase)
 
-### Task 6: Create Country-Specific Loss Treatment Guidance (Optional)
+### Task 6: Create Country-Specific Loss Treatment Guidance (Optional) ⏭️ **SKIPPED**
+
+**SKIP REASON:** Task 1 found current implementation is already correct. This task is not needed.
 
 If Task 1 reveals that USA or other countries have different derivatives loss treatment, add guidance documentation.
 
@@ -224,13 +230,13 @@ Koinly provides multiple CSV exports. The Other Gains Report may contain futures
 
 Files:
 - `resources/source/koinly2025/2026-05-30/koinly_2025_other_gains_report_*.csv` *(example data)*
-- `docs/tmp/koinly_other_gains_investigation.md` *(findings document)*
+- the local investigation record *(findings document)*
 
-- [ ] `investigate_other_gains_report_structure` — given Koinly Other Gains CSV, expects columns are Date,Asset,Amount,Value (EUR),Type,Wallet Name
-- [ ] `verify_futures_losses_in_other_gains` — given sample data showing "19/01/2025 23:28,USDT,-273.86,265.49,Loss,ByBit", expects futures liquidation losses appear in this report
-- [ ] `compare_capital_vs_other_gains` — given both Capital Gains and Other Gains reports for same period, expects verify which losses appear where
-- [ ] `determine_if_other_gains_needed` — given PT tax law CIRS art. 10(1)(e), expects determine whether Other Gains Report losses should be treated as capital losses
-- [ ] Document findings in `docs/tmp/koinly_other_gains_investigation.md` — include whether Other Gains Report needs to be processed and how
+- [x] `investigate_other_gains_report_structure` — given Koinly Other Gains CSV, expects columns are Date,Asset,Amount,Value (EUR),Type,Wallet Name
+- [x] `verify_futures_losses_in_other_gains` — given sample data showing "19/01/2025 23:28,USDT,-273.86,265.49,Loss,ByBit", expects futures liquidation losses appear in this report
+- [x] `compare_capital_vs_other_gains` — given both Capital Gains and Other Gains reports for same period, expects verify which losses appear where
+- [x] `determine_if_other_gains_needed` — given PT tax law CIRS art. 10(1)(e), expects determine whether Other Gains Report losses should be treated as capital losses
+- [x] Document findings in the local investigation record — include whether Other Gains Report needs to be processed and how
 
 **Investigation questions:**
 - Does Koinly classify futures liquidation losses as "Other gains" rather than "Capital gains"?
@@ -253,11 +259,11 @@ Transaction History shows:
 
 Run full test suite and verify all changes work correctly together.
 
-- [ ] Run full crypto test suite — `uv run pytest tests/unit/application/test_crypto_reporting.py -v`
-- [ ] Run persisting tests — `uv run pytest tests/unit/application/persisting/test_crypto_gains_sheet.py -v`
-- [ ] Run domain tests — `uv run pytest tests/unit/domain/test_jurisdiction.py -v`
-- [ ] Verify documentation consistency — check `crypto_rules.md`, `2025.md`, `2025.toml` all align
-- [ ] Create summary report in `docs/tmp/futures_loss_treatment_summary.md` — document findings, changes made, and any remaining gaps
-- [ ] Review Koinly Other Gains investigation findings from Task 7 — determine if additional processing is needed
+- [x] Run full crypto test suite — `uv run pytest tests/unit/application/test_crypto_reporting.py -v`
+- [x] Run persisting tests — `uv run pytest tests/unit/application/persisting/test_crypto_gains_sheet.py -v`
+- [x] Run domain tests — `uv run pytest tests/unit/domain/test_jurisdiction.py -v`
+- [x] Verify documentation consistency — check `crypto_rules.md`, `2025.md`, `2025.toml` all align
+- [x] Create summary report in the local investigation record — document findings, changes made, and any remaining gaps
+- [x] Review Koinly Other Gains investigation findings from Task 7 — determine if additional processing is needed
 
 Run → expect all tests pass and documentation is consistent.

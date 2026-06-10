@@ -147,7 +147,40 @@ In that case, only fix the specific mislabeled row instead of reconstructing the
 
 ---
 
-## Section 3 -- Koinly Sources
+## Section 3 -- Other Gains Report Content and Relevance
+
+### What the Other Gains Report Contains
+
+The Koinly Other Gains Report is a separate export (`*_other_gains_report_*.csv`) that includes:
+
+1. **Small fee losses** - Individual futures fee rows (e.g., 5.60 EUR "Futures fee")
+2. **Fee token disposals** - FEE token sales with zero EUR value
+3. **Some trading P/L** - May duplicate entries already in Capital Gains Report
+
+### Derivatives P/L Treatment
+
+**Key finding:** Material derivatives/futures liquidation losses (the actual P/L from position closures) appear in the **Capital Gains Report**, not only in Other Gains.
+
+For example, a 265.49 EUR futures liquidation loss from ByBit (19/01/2025) appears in both:
+- Transaction History: `crypto_withdrawal`, `Realized gain`, -265.49 EUR
+- Capital Gains Report: Disposal row with `Gain / loss` column populated
+- Other Gains Report: Also shows the loss as a separate row
+
+### System Design Implication
+
+The system does NOT process the Other Gains Report because:
+
+1. **Derivatives P/L is already captured** - Material futures liquidation gains/losses are in the Capital Gains Report, which the system parses today.
+2. **Other Gains contains non-material items** - Small fee losses and fee token artifacts do not meet the definition of capital gains/losses under Portuguese tax law.
+3. **No separate legal requirement** - Portuguese tax law (CIRS art. 10) treats derivatives disposals as capital gains/losses, reported in Anexo G/G1 (domestic) or Anexo J Quadro 9.4 (foreign). There is no separate "other gains" category for derivatives.
+
+### Investigation Record
+
+See findings document: `docs/tmp/koinly_other_gains_investigation.md` (2026-06-08) for detailed analysis of sample Other Gains Report rows and their mapping to Capital Gains Report entries.
+
+---
+
+## Section 4 -- Koinly Sources
 
 Official documentation consulted:
 

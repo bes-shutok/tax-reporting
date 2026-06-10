@@ -148,7 +148,9 @@ and are taxable events. A liquidation is a forced disposal event, not a withdraw
 > **Example:** ByBit SOL/USDT position `<POSITION_ID>` liquidated on 19 Jan 2025,
 > 11:28:53 PM. Koinly reported -42.26 USD loss at 11:29:46 PM. The system assessed disposal
 > of 280.36 USDT (271.79 EUR) as collateral disposition with negative gain/loss — this is
-> correct treatment, not an error.
+> correct treatment, not an error. For a detailed verification of how negative gains flow
+> through the pipeline (parsing, storage, aggregation, Excel output), see
+> `docs/domain/negative_gain_handling_verification.md`.
 
 **PT-C-032** `[OFFICIAL | CIRS art. 10(19)]`
 Losses from derivatives follow the same holding-period rules as gains:
@@ -157,6 +159,21 @@ Losses from derivatives follow the same holding-period rules as gains:
 The text states: "São excluídos os ganhos obtidos, bem como as perdas incorridas"
 (obtained gains are excluded, as well as incurred losses) for assets held ≥365 days.
 > Source: CIRS art. 10(19); official AT portal rendering in `cirs_art10_portal_2026-04-01.html`.
+
+**PT-C-033** `[OFFICIAL | 2026-01-12 | CIRS art. 10(1)(e) | AT folheto 2026-01-12]`
+For futures and derivatives reporting, use the Koinly Other Gains Report (OGR) values
+when available, rather than Capital Gains Report values. The OGR provides:
+- Explicit Type classification ("Loss" or "Profit") for better tax treatment
+- More accurate handling of collateral flow during liquidations
+- Better alignment with CIRS art. 10(1)(e) treatment of "instrumentos financeiros derivados"
+
+When OGR contains a futures/derivatives entry (detected by Type="Loss" or Type="Profit"),
+use the OGR value as the authoritative source for gain/loss calculation, overriding any
+corresponding entry in the Capital Gains Report. This ensures derivatives are reported
+with proper classification and collateral flow handling per Portuguese law.
+> Source: CIRS art. 10(1)(e) "Operações relativas a instrumentos financeiros derivados";
+> AT folheto "Criptoativos — Conceito fiscal e tributação", published 2026-01-12;
+> official AT portal rendering in `cirs_art10_portal_2026-04-01.html`.
 
 ---
 

@@ -19,6 +19,8 @@ class TaxJurisdictionConfig:
             above this threshold are flagged for review in the report.
         futures_derivatives_taxable: Whether futures and derivatives liquidations are
             treated as taxable disposals (e.g., True for PT per CIRS art. 10(1)(e)).
+        use_other_gains_report: Whether the jurisdiction uses Koinly Other Gains Report
+            classifications (e.g., True for certain futures/derivatives treatments).
     """
 
     country: str
@@ -26,3 +28,4 @@ class TaxJurisdictionConfig:
     exclude_loan_repayment_gains: bool
     zero_basis_review_threshold: Decimal
     futures_derivatives_taxable: bool = False
+    use_other_gains_report: bool = False

@@ -258,3 +258,24 @@ class DividendIncomePerSecurity:
             raise DataValidationError("ISIN cannot be empty")
         if not self.country:
             raise DataValidationError("Country cannot be empty")
+
+
+@dataclass(frozen=True)
+class OgrValidationResult:
+    """Result of comparing OGR value against calculated gain/loss.
+
+    Attributes:
+        ogr_gain_loss: Gain/loss value from Other Gains Report, or None if no OGR match found.
+        calculated_gain_loss: Gain/loss value calculated from capital gains data.
+        direction_conflict: True when OGR and calculated values have opposite signs (loss vs gain).
+        magnitude_diff_percent: Percentage difference between OGR and calculated values, or None when ogr_gain_loss is None.
+        review_required: Whether this validation result requires manual review.
+        review_reason: Human-readable explanation of why review is required, or None if not required.
+    """
+
+    ogr_gain_loss: Decimal | None
+    calculated_gain_loss: Decimal
+    direction_conflict: bool
+    magnitude_diff_percent: Decimal | None
+    review_required: bool
+    review_reason: str | None

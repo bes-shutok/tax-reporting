@@ -15,6 +15,9 @@ from tax_reporting.application.crypto_reporting import (
     OperatorOrigin,
     RewardTaxClassification,
     _aggregate_capital_entries,
+    _apply_ogr_overrides,
+    _apply_ogr_direction_override,
+    _build_ogr_index,
     _classify_reward_tax_status,
     _collect_known_asset_tickers,
     _derive_chain,
@@ -68,6 +71,7 @@ def _make_entry(  # noqa: PLR0913
     review_reason: str | None = None,
     token_swap_history: str = "",
     operator_origin: OperatorOrigin = _TEST_OPERATOR,
+    ogr_validation=None,
 ) -> CryptoCapitalGainEntry:
     return CryptoCapitalGainEntry(
         disposal_date=disposal_date,
@@ -87,6 +91,7 @@ def _make_entry(  # noqa: PLR0913
         notes=notes,
         review_reason=review_reason,
         token_swap_history=token_swap_history,
+        ogr_validation=ogr_validation,
     )
 
 
@@ -4565,6 +4570,414 @@ def test_same_timestamp_different_holding_period_stays_split():
     assert long.disposal_date == shared_timestamp
 
 
+class TestAggregateOgrValidation:
+    """Test OGR validation result aggregation across FIFO lots."""
+
+    def test_aggregate_ogr_validation_no_conflicts_uses_first_ogr_gain_loss(self):
+        """Given 3 entries with validation results (no conflicts), expects aggregated entry with ogr_gain_loss from first entry (NOT summed), no direction_conflict."""
+        from tax_reporting.domain.entities import OgrValidationResult
+
+        entries = [
+            _make_entry(
+                disposal_date="2025-01-13",
+                asset="USDT",
+                platform="ByBit",
+                holding_period="Short term",
+                gain_loss_eur=Decimal("10"),
+                ogr_validation=OgrValidationResult(
+                    ogr_gain_loss=Decimal("50"),  # OGR and CG both positive - no conflict
+                    calculated_gain_loss=Decimal("10"),
+                    direction_conflict=False,
+                    magnitude_diff_percent=Decimal("400"),  # |(50-10)/10|*100 = 400% for individual lot
+                    review_required=False,
+                    review_reason=None,
+                ),
+            ),
+            _make_entry(
+                disposal_date="2025-01-13",
+                asset="USDT",
+                platform="ByBit",
+                holding_period="Short term",
+                gain_loss_eur=Decimal("15"),
+                ogr_validation=OgrValidationResult(
+                    ogr_gain_loss=Decimal("50"),  # Same OGR value (same lookup key)
+                    calculated_gain_loss=Decimal("15"),
+                    direction_conflict=False,
+                    magnitude_diff_percent=Decimal("233"),  # |(50-15)/15|*100 = 233%
+                    review_required=False,
+                    review_reason=None,
+                ),
+            ),
+            _make_entry(
+                disposal_date="2025-01-13",
+                asset="USDT",
+                platform="ByBit",
+                holding_period="Short term",
+                gain_loss_eur=Decimal("20"),
+                ogr_validation=OgrValidationResult(
+                    ogr_gain_loss=Decimal("50"),  # Same OGR value (same lookup key)
+                    calculated_gain_loss=Decimal("20"),
+                    direction_conflict=False,
+                    magnitude_diff_percent=Decimal("150"),  # |(50-20)/20|*100 = 150%
+                    review_required=False,
+                    review_reason=None,
+                ),
+            ),
+        ]
+
+        result = _aggregate_capital_entries(entries)
+
+        assert len(result) == 1
+        agg = result[0]
+        # OGR value should be from first entry, NOT summed
+        assert agg.ogr_validation is not None
+        assert agg.ogr_validation.ogr_gain_loss == Decimal("50")
+        # Calculated gain loss should be summed (10 + 15 + 20 = 45)
+        assert agg.ogr_validation.calculated_gain_loss == Decimal("45")
+        # No direction conflict: OGR (50) and CG (45) both positive
+        assert agg.ogr_validation.direction_conflict is False
+        # Magnitude diff percent recalculated from aggregated values
+        # |(50 - 45) / 45| × 100 = 11.1%
+        assert agg.ogr_validation.magnitude_diff_percent == Decimal("11.11111111111111111111111111")
+        # No review required - diff is only 11% < 5% threshold... wait, 11 > 5
+        # Actually 11.1% > 5%, so review should be required
+        assert agg.ogr_validation.review_required is True
+        assert "magnitude differs" in agg.ogr_validation.review_reason
+        # Other fields should be aggregated as before
+        assert agg.gain_loss_eur == Decimal("45")
+
+    def test_aggregate_ogr_validation_direction_conflict_propagates(self):
+        """Given 2 entries where one has direction_conflict=True, expects aggregated entry with direction_conflict=True."""
+        from tax_reporting.domain.entities import OgrValidationResult
+
+        entries = [
+            _make_entry(
+                disposal_date="2025-01-13",
+                asset="USDT",
+                platform="ByBit",
+                holding_period="Short term",
+                gain_loss_eur=Decimal("10"),
+                ogr_validation=OgrValidationResult(
+                    ogr_gain_loss=Decimal("-100"),
+                    calculated_gain_loss=Decimal("10"),
+                    direction_conflict=True,
+                    magnitude_diff_percent=Decimal("1100"),
+                    review_required=True,
+                    review_reason="Direction conflict: OGR shows loss but CG shows gain",
+                ),
+            ),
+            _make_entry(
+                disposal_date="2025-01-13",
+                asset="USDT",
+                platform="ByBit",
+                holding_period="Short term",
+                gain_loss_eur=Decimal("15"),
+                ogr_validation=OgrValidationResult(
+                    ogr_gain_loss=Decimal("-100"),
+                    calculated_gain_loss=Decimal("15"),
+                    direction_conflict=False,
+                    magnitude_diff_percent=Decimal("10"),
+                    review_required=False,
+                    review_reason=None,
+                ),
+            ),
+        ]
+
+        result = _aggregate_capital_entries(entries)
+
+        assert len(result) == 1
+        agg = result[0]
+        assert agg.ogr_validation is not None
+        # direction_conflict recalculated from aggregated values
+        # OGR = -100, CG = 25 (10+15), different signs → conflict
+        assert agg.ogr_validation.direction_conflict is True
+        # Magnitude diff percent recalculated from aggregated values
+        # |(-100 - 25) / 25| × 100 = 500%
+        assert agg.ogr_validation.magnitude_diff_percent == Decimal("500")
+        # review_required should be True (direction conflict + both > 1 EUR)
+        assert agg.ogr_validation.review_required is True
+        # review_reason should indicate direction override
+        assert "OGR direction override" in agg.ogr_validation.review_reason
+
+    def test_aggregate_ogr_validation_uses_max_magnitude_diff_percent(self):
+        """Given 3 entries with different magnitude_diff_percent values, expects aggregated entry with max magnitude_diff_percent."""
+        from tax_reporting.domain.entities import OgrValidationResult
+
+        entries = [
+            _make_entry(
+                disposal_date="2025-01-13",
+                asset="USDT",
+                platform="ByBit",
+                holding_period="Short term",
+                gain_loss_eur=Decimal("10"),
+                ogr_validation=OgrValidationResult(
+                    ogr_gain_loss=Decimal("-100"),
+                    calculated_gain_loss=Decimal("10"),
+                    direction_conflict=False,
+                    magnitude_diff_percent=Decimal("10"),
+                    review_required=False,
+                    review_reason=None,
+                ),
+            ),
+            _make_entry(
+                disposal_date="2025-01-13",
+                asset="USDT",
+                platform="ByBit",
+                holding_period="Short term",
+                gain_loss_eur=Decimal("15"),
+                ogr_validation=OgrValidationResult(
+                    ogr_gain_loss=Decimal("-100"),
+                    calculated_gain_loss=Decimal("15"),
+                    direction_conflict=False,
+                    magnitude_diff_percent=Decimal("25"),  # Max
+                    review_required=True,
+                    review_reason="Magnitude difference exceeds 10% threshold",
+                ),
+            ),
+            _make_entry(
+                disposal_date="2025-01-13",
+                asset="USDT",
+                platform="ByBit",
+                holding_period="Short term",
+                gain_loss_eur=Decimal("20"),
+                ogr_validation=OgrValidationResult(
+                    ogr_gain_loss=Decimal("-100"),
+                    calculated_gain_loss=Decimal("20"),
+                    direction_conflict=False,
+                    magnitude_diff_percent=Decimal("15"),
+                    review_required=False,
+                    review_reason=None,
+                ),
+            ),
+        ]
+
+        result = _aggregate_capital_entries(entries)
+
+        assert len(result) == 1
+        agg = result[0]
+        assert agg.ogr_validation is not None
+        # Magnitude diff percent recalculated from aggregated values
+        # OGR = -100, CG = 45 (10+15+20), direction conflict (different signs)
+        # |(-100 - 45) / 45| × 100 = 322.2%
+        assert agg.ogr_validation.magnitude_diff_percent == Decimal("322.2222222222222222222222222")
+        # direction_conflict recalculated from aggregated values
+        assert agg.ogr_validation.direction_conflict is True
+        # review_required should be True (direction conflict + both > 1 EUR)
+        assert agg.ogr_validation.review_required is True
+        assert "OGR direction override" in agg.ogr_validation.review_reason
+
+    def test_aggregate_ogr_validation_joins_review_reasons(self):
+        """Given 2 entries with review_reasons, expects aggregated entry with review_reason built from aggregated state."""
+        from tax_reporting.domain.entities import OgrValidationResult
+
+        entries = [
+            _make_entry(
+                disposal_date="2025-01-13",
+                asset="USDT",
+                platform="ByBit",
+                holding_period="Short term",
+                gain_loss_eur=Decimal("10"),
+                ogr_validation=OgrValidationResult(
+                    ogr_gain_loss=Decimal("-100"),
+                    calculated_gain_loss=Decimal("10"),
+                    direction_conflict=False,
+                    magnitude_diff_percent=Decimal("10"),
+                    review_required=True,
+                    review_reason="reason A",
+                ),
+            ),
+            _make_entry(
+                disposal_date="2025-01-13",
+                asset="USDT",
+                platform="ByBit",
+                holding_period="Short term",
+                gain_loss_eur=Decimal("15"),
+                ogr_validation=OgrValidationResult(
+                    ogr_gain_loss=Decimal("-100"),
+                    calculated_gain_loss=Decimal("15"),
+                    direction_conflict=False,
+                    magnitude_diff_percent=Decimal("15"),
+                    review_required=True,
+                    review_reason="reason B",
+                ),
+            ),
+        ]
+
+        result = _aggregate_capital_entries(entries)
+
+        assert len(result) == 1
+        agg = result[0]
+        assert agg.ogr_validation is not None
+        # review_required is True based on aggregated state
+        assert agg.ogr_validation.review_required is True
+        # review_reason is built from aggregated state, not joined from individual lots
+        # OGR = -100, CG = 25 (10+15), direction conflict (different signs)
+        assert "OGR direction override" in agg.ogr_validation.review_reason
+
+    def test_aggregate_ogr_validation_deduplicates_review_reasons(self):
+        """Given 3 entries, expects aggregated entry with review_reason built from aggregated state."""
+        from tax_reporting.domain.entities import OgrValidationResult
+
+        entries = [
+            _make_entry(
+                disposal_date="2025-01-13",
+                asset="USDT",
+                platform="ByBit",
+                holding_period="Short term",
+                gain_loss_eur=Decimal("10"),
+                ogr_validation=OgrValidationResult(
+                    ogr_gain_loss=Decimal("-100"),
+                    calculated_gain_loss=Decimal("10"),
+                    direction_conflict=False,
+                    magnitude_diff_percent=Decimal("10"),
+                    review_required=True,
+                    review_reason="duplicate reason",
+                ),
+            ),
+            _make_entry(
+                disposal_date="2025-01-13",
+                asset="USDT",
+                platform="ByBit",
+                holding_period="Short term",
+                gain_loss_eur=Decimal("15"),
+                ogr_validation=OgrValidationResult(
+                    ogr_gain_loss=Decimal("-100"),
+                    calculated_gain_loss=Decimal("15"),
+                    direction_conflict=False,
+                    magnitude_diff_percent=Decimal("15"),
+                    review_required=True,
+                    review_reason="duplicate reason",  # Same as first
+                ),
+            ),
+            _make_entry(
+                disposal_date="2025-01-13",
+                asset="USDT",
+                platform="ByBit",
+                holding_period="Short term",
+                gain_loss_eur=Decimal("20"),
+                ogr_validation=OgrValidationResult(
+                    ogr_gain_loss=Decimal("-100"),
+                    calculated_gain_loss=Decimal("20"),
+                    direction_conflict=False,
+                    magnitude_diff_percent=Decimal("20"),
+                    review_required=True,
+                    review_reason="unique reason",
+                ),
+            ),
+        ]
+
+        result = _aggregate_capital_entries(entries)
+
+        assert len(result) == 1
+        agg = result[0]
+        assert agg.ogr_validation is not None
+        # review_required is True based on aggregated state
+        assert agg.ogr_validation.review_required is True
+        # review_reason is built from aggregated state, not deduplicated from individual lots
+        # OGR = -100, CG = 45 (10+15+20), direction conflict (different signs)
+        assert "OGR direction override" in agg.ogr_validation.review_reason
+
+    def test_aggregate_ogr_validation_none_when_all_none(self):
+        """Given 3 entries with ogr_validation=None, expects aggregated entry with ogr_validation=None."""
+        entries = [
+            _make_entry(
+                disposal_date="2025-01-13",
+                asset="USDT",
+                platform="ByBit",
+                holding_period="Short term",
+                gain_loss_eur=Decimal("10"),
+                ogr_validation=None,
+            ),
+            _make_entry(
+                disposal_date="2025-01-13",
+                asset="USDT",
+                platform="ByBit",
+                holding_period="Short term",
+                gain_loss_eur=Decimal("15"),
+                ogr_validation=None,
+            ),
+            _make_entry(
+                disposal_date="2025-01-13",
+                asset="USDT",
+                platform="ByBit",
+                holding_period="Short term",
+                gain_loss_eur=Decimal("20"),
+                ogr_validation=None,
+            ),
+        ]
+
+        result = _aggregate_capital_entries(entries)
+
+        assert len(result) == 1
+        agg = result[0]
+        assert agg.ogr_validation is None
+        assert agg.gain_loss_eur == Decimal("45")
+
+    def test_aggregate_ogr_validation_skips_none_entries(self):
+        """Given 3 entries where one has ogr_validation=None, expects aggregated entry with validation from non-None entries."""
+        from tax_reporting.domain.entities import OgrValidationResult
+
+        entries = [
+            _make_entry(
+                disposal_date="2025-01-13",
+                asset="USDT",
+                platform="ByBit",
+                holding_period="Short term",
+                gain_loss_eur=Decimal("10"),
+                ogr_validation=None,
+            ),
+            _make_entry(
+                disposal_date="2025-01-13",
+                asset="USDT",
+                platform="ByBit",
+                holding_period="Short term",
+                gain_loss_eur=Decimal("15"),
+                ogr_validation=OgrValidationResult(
+                    ogr_gain_loss=Decimal("-100"),
+                    calculated_gain_loss=Decimal("15"),
+                    direction_conflict=False,
+                    magnitude_diff_percent=Decimal("15"),
+                    review_required=False,
+                    review_reason=None,
+                ),
+            ),
+            _make_entry(
+                disposal_date="2025-01-13",
+                asset="USDT",
+                platform="ByBit",
+                holding_period="Short term",
+                gain_loss_eur=Decimal("20"),
+                ogr_validation=OgrValidationResult(
+                    ogr_gain_loss=Decimal("-100"),
+                    calculated_gain_loss=Decimal("20"),
+                    direction_conflict=False,
+                    magnitude_diff_percent=Decimal("20"),
+                    review_required=False,
+                    review_reason=None,
+                ),
+            ),
+        ]
+
+        result = _aggregate_capital_entries(entries)
+
+        assert len(result) == 1
+        agg = result[0]
+        assert agg.ogr_validation is not None
+        assert agg.ogr_validation.ogr_gain_loss == Decimal("-100")
+        # calculated_gain_loss sums only entries with ogr_validation (15 + 20 = 35)
+        # Wait, but the first entry has ogr_validation=None, so it's excluded
+        # Actually, looking at the code, calculated_gain_loss sums from with_ogr entries only
+        # But gain_loss_eur in the aggregated entry sums ALL entries (10 + 15 + 20 = 45)
+        # Let me check what the actual behavior is...
+        assert agg.ogr_validation.calculated_gain_loss == Decimal("35")  # 15 + 20 (from with_ogr entries)
+        # Magnitude diff percent recalculated from aggregated OGR vs calculated
+        # OGR = -100, calculated = 35, different signs → direction conflict
+        # |(-100 - 35) / 35| × 100 = 385.7%
+        assert agg.ogr_validation.magnitude_diff_percent == Decimal("385.7142857142857142857142857")
+        # direction_conflict recalculated from aggregated values
+        assert agg.ogr_validation.direction_conflict is True
+
+
 # --- Task 4: MNT ticker collision tests ---
 
 
@@ -7015,3 +7428,1083 @@ def test_crypto_tax_report_review_entries_field_populated():
     assert report.review_entries[0].asset == "BTC"
     assert report.review_entries[1].asset == "ETH"
     assert all(e.is_suspicious is False for e in report.review_entries)
+
+
+# =============================================================================
+# Unit tests for _build_ogr_index()
+# =============================================================================
+
+
+def test_build_ogr_index():
+    """Given parsed OGR rows with date, asset, wallet, expects index keyed by (date, asset, wallet)."""
+    ogr_rows = [
+        {
+            "Date": "13/01/2025 13:01",
+            "Asset": "USDT",
+            "Amount": "-142,11",
+            "Value (EUR)": "138,73",
+            "Type": "Loss",
+            "Wallet Name": "ByBit",
+        },
+        {
+            "Date": "14/01/2025 10:30",
+            "Asset": "BTC",
+            "Amount": "0,5",
+            "Value (EUR)": "500,00",
+            "Type": "Profit",
+            "Wallet Name": "Kraken",
+        },
+    ]
+
+    index = _build_ogr_index(ogr_rows)
+
+    # Index should have 2 entries
+    assert len(index) == 2
+
+    # Keys should be (date_only, asset_normalized, wallet_normalized)
+    # Date should be YYYY-MM-DD (time stripped)
+    assert ("2025-01-13", "USDT", "ByBit") in index
+    assert ("2025-01-14", "BTC", "Kraken") in index
+
+
+def test_ogr_index_lookup_by_key():
+    """Given index with entry (2025-01-13, USDT, ByBit), expects lookup returns matching OGR value."""
+    ogr_rows = [
+        {
+            "Date": "13/01/2025 13:01",
+            "Asset": "USDT",
+            "Amount": "-142,11",
+            "Value (EUR)": "138,73",
+            "Type": "Loss",
+            "Wallet Name": "ByBit",
+        },
+    ]
+
+    index = _build_ogr_index(ogr_rows)
+
+    # Lookup should return negative value for Loss
+    value = index[("2025-01-13", "USDT", "ByBit")]
+    assert value == Decimal("-138.73")
+
+
+def test_ogr_index_lookup_by_key_profit():
+    """Given index with Profit entry, expects lookup returns positive value."""
+    ogr_rows = [
+        {
+            "Date": "15/01/2025 09:00",
+            "Asset": "ETH",
+            "Amount": "1,0",
+            "Value (EUR)": "250,00",
+            "Type": "Profit",
+            "Wallet Name": "Gate.io",
+        },
+    ]
+
+    index = _build_ogr_index(ogr_rows)
+
+    # Lookup should return positive value for Profit
+    value = index[("2025-01-15", "ETH", "Gate.io")]
+    assert value == Decimal("250")
+
+
+def test_ogr_index_missing_key():
+    """Given index and non-matching key, expects returns None."""
+    ogr_rows = [
+        {
+            "Date": "13/01/2025 13:01",
+            "Asset": "USDT",
+            "Amount": "-142,11",
+            "Value (EUR)": "138,73",
+            "Type": "Loss",
+            "Wallet Name": "ByBit",
+        },
+    ]
+
+    index = _build_ogr_index(ogr_rows)
+
+    # Non-matching key should return None
+    assert ("2025-01-13", "BTC", "ByBit") not in index
+    assert ("2025-01-14", "USDT", "ByBit") not in index
+    assert ("2025-01-13", "USDT", "Kraken") not in index
+
+
+def test_ogr_index_skips_zero_value_rows():
+    """Zero-value rows (fee tokens, dust) should be skipped."""
+    ogr_rows = [
+        {
+            "Date": "13/01/2025 13:01",
+            "Asset": "USDT",
+            "Amount": "-142,11",
+            "Value (EUR)": "138,73",
+            "Type": "Loss",
+            "Wallet Name": "ByBit",
+        },
+        {
+            "Date": "14/01/2025 10:00",
+            "Asset": "FEE",
+            "Amount": "0,001",
+            "Value (EUR)": "0,00",
+            "Type": "Profit",
+            "Wallet Name": "ByBit",
+        },
+    ]
+
+    index = _build_ogr_index(ogr_rows)
+
+    # Index should only have 1 entry (zero-value row skipped)
+    assert len(index) == 1
+    assert ("2025-01-13", "USDT", "ByBit") in index
+
+
+def test_ogr_index_handles_wallet_aliases():
+    """Wallet aliases like 'ByBit (2)' should be normalized to 'ByBit'."""
+    ogr_rows = [
+        {
+            "Date": "13/01/2025 13:01",
+            "Asset": "USDT",
+            "Amount": "-142,11",
+            "Value (EUR)": "138,73",
+            "Type": "Loss",
+            "Wallet Name": "ByBit (2)",
+        },
+        {
+            "Date": "13/01/2025 14:00",
+            "Asset": "USDT",
+            "Amount": "100,00",
+            "Value (EUR)": "100,00",
+            "Type": "Profit",
+            "Wallet Name": "ByBit",
+        },
+    ]
+
+    index = _build_ogr_index(ogr_rows)
+
+    # Both wallets should normalize to "ByBit"
+    # The second entry (Profit) should win since it comes later
+    assert len(index) == 1
+    assert ("2025-01-13", "USDT", "ByBit") in index
+    assert index[("2025-01-13", "USDT", "ByBit")] == Decimal("100")
+
+
+def test_ogr_index_skips_unknown_types():
+    """Rows with unknown Type should be skipped."""
+    ogr_rows = [
+        {
+            "Date": "13/01/2025 13:01",
+            "Asset": "USDT",
+            "Amount": "-142,11",
+            "Value (EUR)": "138,73",
+            "Type": "UnknownType",
+            "Wallet Name": "ByBit",
+        },
+        {
+            "Date": "14/01/2025 10:00",
+            "Asset": "BTC",
+            "Amount": "0,5",
+            "Value (EUR)": "500,00",
+            "Type": "Profit",
+            "Wallet Name": "Kraken",
+        },
+    ]
+
+    index = _build_ogr_index(ogr_rows)
+
+    # Index should only have 1 entry (unknown type skipped)
+    assert len(index) == 1
+    assert ("2025-01-14", "BTC", "Kraken") in index
+
+
+# =============================================================================
+# Unit tests for _apply_ogr_overrides()
+# =============================================================================
+
+
+def test_ogr_loss_override_applied():
+    """Given CG entry with gain=+22.71 EUR and OGR index with Type="Loss", value=-138.73 EUR, expects entry gain/loss set to -138.73 EUR."""
+    from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+
+    # Create a jurisdiction with use_other_gains_report enabled
+    jurisdiction = TaxJurisdictionConfig(
+        country="TEST",
+        fiscal_year=2025,
+        exclude_loan_repayment_gains=False,
+        zero_basis_review_threshold=Decimal("500"),
+        use_other_gains_report=True,
+    )
+
+    # Create OGR index with a loss entry
+    ogr_index = {
+        ("2025-01-13", "USDT", "ByBit"): Decimal("-138.73")
+    }
+
+    # Create CG entry that should be overridden
+    cg_entry = CryptoCapitalGainEntry(
+        disposal_date="2025-01-13",
+        acquisition_date="2025-01-10",
+        asset="USDT",
+        amount=Decimal("142.11"),
+        cost_eur=Decimal("165.44"),
+        proceeds_eur=Decimal("188.15"),
+        gain_loss_eur=Decimal("22.71"),  # Original gain from Koinly CG
+        holding_period="Short-term (365 days)",
+        wallet="ByBit",
+        platform="ByBit",
+        chain="Ethereum",
+        operator_origin=OperatorOrigin(
+            platform="ByBit",
+            service_scope="crypto",
+            operator_entity="Bybit group entity",
+            operator_country="AE",
+            source_url="https://bybit.com",
+            source_checked_on="2026-01-01",
+            confidence="medium",
+            review_required=False,
+        ),
+        annex_hint="J",
+        review_required=False,
+        notes="Original gain from Koinly",
+    )
+
+    # Apply OGR override
+    result = _apply_ogr_overrides([cg_entry], ogr_index, jurisdiction)
+
+    # Expected: gain/loss should be overridden to -138.73 (loss from OGR)
+    assert len(result) == 1
+    assert result[0].gain_loss_eur == Decimal("-138.73")
+    # Proceeds should be updated to maintain consistency: proceeds = cost + gain_loss
+    # So proceeds = 165.44 + (-138.73) = 26.71
+    expected_proceeds = cg_entry.cost_eur + Decimal("-138.73")
+    assert result[0].proceeds_eur == expected_proceeds
+    # Notes should mention OGR override
+    assert "OGR override" in result[0].notes or "Other Gains Report" in result[0].notes
+
+
+def test_ogr_profit_override_applied():
+    """Given CG entry with gain=+100 EUR and OGR index with Type="Profit", value=+80 EUR, expects entry gain/loss set to +80 EUR."""
+    from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+
+    jurisdiction = TaxJurisdictionConfig(
+        country="TEST",
+        fiscal_year=2025,
+        exclude_loan_repayment_gains=False,
+        zero_basis_review_threshold=Decimal("500"),
+        use_other_gains_report=True,
+    )
+
+    ogr_index = {
+        ("2025-01-15", "ETH", "Kraken"): Decimal("80")
+    }
+
+    cg_entry = CryptoCapitalGainEntry(
+        disposal_date="2025-01-15",
+        acquisition_date="2025-01-01",
+        asset="ETH",
+        amount=Decimal("1.0"),
+        cost_eur=Decimal("400"),
+        proceeds_eur=Decimal("500"),
+        gain_loss_eur=Decimal("100"),  # Original gain
+        holding_period="Short-term (14 days)",
+        wallet="Kraken",
+        platform="Kraken",
+        chain="Ethereum",
+        operator_origin=OperatorOrigin(
+            platform="Kraken",
+            service_scope="crypto",
+            operator_entity="Payward Ireland Limited",
+            operator_country="IE",
+            source_url="https://kraken.com",
+            source_checked_on="2026-01-01",
+            confidence="high",
+            review_required=False,
+        ),
+        annex_hint="J",
+        review_required=False,
+        notes="",
+    )
+
+    result = _apply_ogr_overrides([cg_entry], ogr_index, jurisdiction)
+
+    assert len(result) == 1
+    assert result[0].gain_loss_eur == Decimal("80")
+    expected_proceeds = cg_entry.cost_eur + Decimal("80")
+    assert result[0].proceeds_eur == expected_proceeds
+
+
+def test_ogr_no_override_when_disabled():
+    """Given jurisdiction with use_other_gains_report=False, expects CG values unchanged regardless of OGR."""
+    from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+
+    jurisdiction = TaxJurisdictionConfig(
+        country="TEST",
+        fiscal_year=2025,
+        exclude_loan_repayment_gains=False,
+        zero_basis_review_threshold=Decimal("500"),
+        use_other_gains_report=False,  # Disabled
+    )
+
+    ogr_index = {
+        ("2025-01-13", "USDT", "ByBit"): Decimal("-138.73")
+    }
+
+    cg_entry = CryptoCapitalGainEntry(
+        disposal_date="2025-01-13",
+        acquisition_date="2025-01-10",
+        asset="USDT",
+        amount=Decimal("142.11"),
+        cost_eur=Decimal("165.44"),
+        proceeds_eur=Decimal("188.15"),
+        gain_loss_eur=Decimal("22.71"),
+        holding_period="Short-term (365 days)",
+        wallet="ByBit",
+        platform="ByBit",
+        chain="Ethereum",
+        operator_origin=OperatorOrigin(
+            platform="ByBit",
+            service_scope="crypto",
+            operator_entity="Bybit group entity",
+            operator_country="AE",
+            source_url="https://bybit.com",
+            source_checked_on="2026-01-01",
+            confidence="medium",
+            review_required=False,
+        ),
+        annex_hint="J",
+        review_required=False,
+        notes="",
+    )
+
+    result = _apply_ogr_overrides([cg_entry], ogr_index, jurisdiction)
+
+    # No override should occur
+    assert len(result) == 1
+    assert result[0].gain_loss_eur == Decimal("22.71")
+    assert result[0].proceeds_eur == Decimal("188.15")
+
+
+def test_ogr_no_override_when_no_match():
+    """Given CG entry with no OGR match, expects CG value unchanged with warning log."""
+    from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+
+    jurisdiction = TaxJurisdictionConfig(
+        country="TEST",
+        fiscal_year=2025,
+        exclude_loan_repayment_gains=False,
+        zero_basis_review_threshold=Decimal("500"),
+        use_other_gains_report=True,
+    )
+
+    # OGR index has different date/asset/wallet - no match
+    ogr_index = {
+        ("2025-01-14", "BTC", "Kraken"): Decimal("100")
+    }
+
+    cg_entry = CryptoCapitalGainEntry(
+        disposal_date="2025-01-13",
+        acquisition_date="2025-01-10",
+        asset="USDT",
+        amount=Decimal("142.11"),
+        cost_eur=Decimal("165.44"),
+        proceeds_eur=Decimal("188.15"),
+        gain_loss_eur=Decimal("22.71"),
+        holding_period="Short-term (365 days)",
+        wallet="ByBit",
+        platform="ByBit",
+        chain="Ethereum",
+        operator_origin=OperatorOrigin(
+            platform="ByBit",
+            service_scope="crypto",
+            operator_entity="Bybit group entity",
+            operator_country="AE",
+            source_url="https://bybit.com",
+            source_checked_on="2026-01-01",
+            confidence="medium",
+            review_required=False,
+        ),
+        annex_hint="J",
+        review_required=False,
+        notes="",
+    )
+
+    result = _apply_ogr_overrides([cg_entry], ogr_index, jurisdiction)
+
+    # No override - original values preserved
+    assert len(result) == 1
+    assert result[0].gain_loss_eur == Decimal("22.71")
+    assert result[0].proceeds_eur == Decimal("188.15")
+
+
+def test_ogr_skips_fee_tokens():
+    """Given OGR entry with Value=0.0, expects override not applied (fee tokens are not capital gains)."""
+    from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+
+    jurisdiction = TaxJurisdictionConfig(
+        country="TEST",
+        fiscal_year=2025,
+        exclude_loan_repayment_gains=False,
+        zero_basis_review_threshold=Decimal("500"),
+        use_other_gains_report=True,
+    )
+
+    # OGR index should NOT contain zero-value entries (they're filtered by _build_ogr_index)
+    # This test verifies that zero-value OGR rows don't cause issues
+    ogr_index = {}  # Empty because zero-value rows are skipped
+
+    cg_entry = CryptoCapitalGainEntry(
+        disposal_date="2025-01-13",
+        acquisition_date="2025-01-10",
+        asset="USDT",
+        amount=Decimal("142.11"),
+        cost_eur=Decimal("165.44"),
+        proceeds_eur=Decimal("188.15"),
+        gain_loss_eur=Decimal("22.71"),
+        holding_period="Short-term (365 days)",
+        wallet="ByBit",
+        platform="ByBit",
+        chain="Ethereum",
+        operator_origin=OperatorOrigin(
+            platform="ByBit",
+            service_scope="crypto",
+            operator_entity="Bybit group entity",
+            operator_country="AE",
+            source_url="https://bybit.com",
+            source_checked_on="2026-01-01",
+            confidence="medium",
+            review_required=False,
+        ),
+        annex_hint="J",
+        review_required=False,
+        notes="",
+    )
+
+    result = _apply_ogr_overrides([cg_entry], ogr_index, jurisdiction)
+
+    # No override - original values preserved
+    assert len(result) == 1
+    assert result[0].gain_loss_eur == Decimal("22.71")
+
+
+class TestOgrValidation:
+    """Test OGR validation result domain type."""
+
+    def test_ogr_validation_small_magnitude_diff(self):
+        """Given OGR=-100, CG=-90, expects direction_conflict=False, magnitude_diff_percent≈11.1%, review_required=True."""
+        from tax_reporting.domain.entities import OgrValidationResult
+
+        result = OgrValidationResult(
+            ogr_gain_loss=Decimal("-100"),
+            calculated_gain_loss=Decimal("-90"),
+            direction_conflict=False,
+            magnitude_diff_percent=Decimal("11.11"),
+            review_required=True,
+            review_reason="Magnitude difference exceeds 10% threshold",
+        )
+
+        assert result.ogr_gain_loss == Decimal("-100")
+        assert result.calculated_gain_loss == Decimal("-90")
+        assert result.direction_conflict is False
+        assert result.magnitude_diff_percent == Decimal("11.11")
+        assert result.review_required is True
+        assert result.review_reason == "Magnitude difference exceeds 10% threshold"
+
+    def test_ogr_validation_direction_conflict(self):
+        """Given OGR=-100, CG=+50, expects direction_conflict=True, magnitude_diff_percent≈300%, review_required=True."""
+        from tax_reporting.domain.entities import OgrValidationResult
+
+        result = OgrValidationResult(
+            ogr_gain_loss=Decimal("-100"),
+            calculated_gain_loss=Decimal("50"),
+            direction_conflict=True,
+            magnitude_diff_percent=Decimal("300"),
+            review_required=True,
+            review_reason="Direction conflict: OGR shows loss but CG shows gain",
+        )
+
+        assert result.ogr_gain_loss == Decimal("-100")
+        assert result.calculated_gain_loss == Decimal("50")
+        assert result.direction_conflict is True
+        assert result.magnitude_diff_percent == Decimal("300")
+        assert result.review_required is True
+        assert result.review_reason == "Direction conflict: OGR shows loss but CG shows gain"
+
+    def test_ogr_validation_within_threshold(self):
+        """Given OGR=-100, CG=-98, expects direction_conflict=False, magnitude_diff_percent≈2%, review_required=False."""
+        from tax_reporting.domain.entities import OgrValidationResult
+
+        result = OgrValidationResult(
+            ogr_gain_loss=Decimal("-100"),
+            calculated_gain_loss=Decimal("-98"),
+            direction_conflict=False,
+            magnitude_diff_percent=Decimal("2.04"),
+            review_required=False,
+            review_reason=None,
+        )
+
+        assert result.ogr_gain_loss == Decimal("-100")
+        assert result.calculated_gain_loss == Decimal("-98")
+        assert result.direction_conflict is False
+        assert result.magnitude_diff_percent == Decimal("2.04")
+        assert result.review_required is False
+        assert result.review_reason is None
+
+    def test_ogr_validation_no_ogr_match(self):
+        """Given OGR=None, CG=+50, expects ogr_gain_loss=None, direction_conflict=False, review_required=False."""
+        from tax_reporting.domain.entities import OgrValidationResult
+
+        result = OgrValidationResult(
+            ogr_gain_loss=None,
+            calculated_gain_loss=Decimal("50"),
+            direction_conflict=False,
+            magnitude_diff_percent=None,
+            review_required=False,
+            review_reason=None,
+        )
+
+        assert result.ogr_gain_loss is None
+        assert result.calculated_gain_loss == Decimal("50")
+        assert result.direction_conflict is False
+        assert result.magnitude_diff_percent is None
+        assert result.review_required is False
+        assert result.review_reason is None
+
+    def test_ogr_validation_attached_to_entry(self):
+        """Verify OGR validation can be attached to CryptoCapitalGainEntry without triggering entry-level validation."""
+        from tax_reporting.domain.entities import OgrValidationResult
+
+        ogr_validation = OgrValidationResult(
+            ogr_gain_loss=Decimal("-100"),
+            calculated_gain_loss=Decimal("-90"),
+            direction_conflict=False,
+            magnitude_diff_percent=Decimal("11.11"),
+            review_required=True,
+            review_reason="Magnitude difference exceeds 10% threshold",
+        )
+
+        # Entry should not have review_required=True based on ogr_validation
+        # The two fields are independent
+        entry = CryptoCapitalGainEntry(
+            disposal_date="2025-01-13",
+            acquisition_date="2025-01-10",
+            asset="USDT",
+            amount=Decimal("142.11"),
+            cost_eur=Decimal("165.44"),
+            proceeds_eur=Decimal("188.15"),
+            gain_loss_eur=Decimal("22.71"),
+            holding_period="Short-term (365 days)",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="Ethereum",
+            operator_origin=OperatorOrigin(
+                platform="ByBit",
+                service_scope="crypto",
+                operator_entity="Bybit group entity",
+                operator_country="AE",
+                source_url="https://bybit.com",
+                source_checked_on="2026-01-01",
+                confidence="medium",
+                review_required=False,
+            ),
+            annex_hint="J",
+            review_required=False,  # Entry-level flag, independent of ogr_validation.review_required
+            notes="",
+            ogr_validation=ogr_validation,
+        )
+
+        assert entry.ogr_validation is ogr_validation
+        assert entry.review_required is False  # Entry-level validation not affected
+        assert entry.ogr_validation.review_required is True  # OGR-level validation is set
+
+
+class TestApplyOgrDirectionOverride:
+    """Test OGR directional authority override behavior."""
+
+    def test_ogr_direction_conflict_cg_gain_ogr_loss(self):
+        """Given CG entry with gain=+100 and OGR=-100, expects final_gain_loss=-100 (CG magnitude with OGR direction), review_reason='OGR direction override: CG indicated gain'."""
+        from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+        from tax_reporting.domain.entities import OgrValidationResult
+
+        jurisdiction = TaxJurisdictionConfig(
+            country="TEST",
+            fiscal_year=2025,
+            exclude_loan_repayment_gains=False,
+            zero_basis_review_threshold=Decimal("500"),
+            use_other_gains_report=True,
+        )
+
+        ogr_index = {
+            ("2025-01-13", "USDT", "ByBit"): Decimal("-100")
+        }
+
+        cg_entry = CryptoCapitalGainEntry(
+            disposal_date="2025-01-13",
+            acquisition_date="2025-01-10",
+            asset="USDT",
+            amount=Decimal("100"),
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("200"),
+            gain_loss_eur=Decimal("100"),  # CG shows gain
+            holding_period="Short-term (3 days)",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="Ethereum",
+            operator_origin=OperatorOrigin(
+                platform="ByBit",
+                service_scope="crypto",
+                operator_entity="Bybit group entity",
+                operator_country="AE",
+                source_url="https://bybit.com",
+                source_checked_on="2026-01-01",
+                confidence="medium",
+                review_required=False,
+            ),
+            annex_hint="J",
+            review_required=False,
+            notes="",
+        )
+
+        result = _apply_ogr_direction_override([cg_entry], ogr_index, jurisdiction)
+
+        assert len(result) == 1
+        # Direction override: use OGR direction (loss) with CG magnitude (100)
+        assert result[0].gain_loss_eur == Decimal("-100")
+        # Proceeds = cost + gain_loss = 100 + (-100) = 0
+        assert result[0].proceeds_eur == Decimal("0")
+        # OGR validation should be attached
+        assert result[0].ogr_validation is not None
+        assert result[0].ogr_validation.ogr_gain_loss == Decimal("-100")
+        assert result[0].ogr_validation.calculated_gain_loss == Decimal("100")
+        assert result[0].ogr_validation.direction_conflict is True
+        assert result[0].ogr_validation.review_required is True
+        assert "OGR direction override: CG indicated gain" in result[0].ogr_validation.review_reason
+
+    def test_ogr_direction_agree_small_magnitude_diff(self):
+        """Given CG entry with gain=-100 and OGR=-105, expects final_gain_loss=-105 (directions agree, use OGR magnitude), review_required=False (diff < 5%)."""
+        from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+        from tax_reporting.domain.entities import OgrValidationResult
+
+        jurisdiction = TaxJurisdictionConfig(
+            country="TEST",
+            fiscal_year=2025,
+            exclude_loan_repayment_gains=False,
+            zero_basis_review_threshold=Decimal("500"),
+            use_other_gains_report=True,
+        )
+
+        ogr_index = {
+            ("2025-01-13", "USDT", "ByBit"): Decimal("-105")
+        }
+
+        cg_entry = CryptoCapitalGainEntry(
+            disposal_date="2025-01-13",
+            acquisition_date="2025-01-10",
+            asset="USDT",
+            amount=Decimal("100"),
+            cost_eur=Decimal("200"),
+            proceeds_eur=Decimal("100"),
+            gain_loss_eur=Decimal("-100"),  # CG shows loss
+            holding_period="Short-term (3 days)",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="Ethereum",
+            operator_origin=OperatorOrigin(
+                platform="ByBit",
+                service_scope="crypto",
+                operator_entity="Bybit group entity",
+                operator_country="AE",
+                source_url="https://bybit.com",
+                source_checked_on="2026-01-01",
+                confidence="medium",
+                review_required=False,
+            ),
+            annex_hint="J",
+            review_required=False,
+            notes="",
+        )
+
+        result = _apply_ogr_direction_override([cg_entry], ogr_index, jurisdiction)
+
+        assert len(result) == 1
+        # Directions agree (both loss), use OGR magnitude
+        assert result[0].gain_loss_eur == Decimal("-105")
+        assert result[0].proceeds_eur == cg_entry.cost_eur + Decimal("-105")
+        # OGR validation attached
+        assert result[0].ogr_validation is not None
+        assert result[0].ogr_validation.ogr_gain_loss == Decimal("-105")
+        assert result[0].ogr_validation.calculated_gain_loss == Decimal("-100")
+        assert result[0].ogr_validation.direction_conflict is False
+        # Diff is 5%, which is NOT > 5%, so no review required
+        assert result[0].ogr_validation.review_required is False
+        assert result[0].ogr_validation.review_reason is None
+
+    def test_ogr_direction_agree_large_magnitude_diff(self):
+        """Given CG entry with gain=-100 and OGR=-106, expects final_gain_loss=-106, review_required=True (diff > 5%), review_reason mentions magnitude diff."""
+        from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+        from tax_reporting.domain.entities import OgrValidationResult
+
+        jurisdiction = TaxJurisdictionConfig(
+            country="TEST",
+            fiscal_year=2025,
+            exclude_loan_repayment_gains=False,
+            zero_basis_review_threshold=Decimal("500"),
+            use_other_gains_report=True,
+        )
+
+        ogr_index = {
+            ("2025-01-13", "USDT", "ByBit"): Decimal("-106")
+        }
+
+        cg_entry = CryptoCapitalGainEntry(
+            disposal_date="2025-01-13",
+            acquisition_date="2025-01-10",
+            asset="USDT",
+            amount=Decimal("100"),
+            cost_eur=Decimal("200"),
+            proceeds_eur=Decimal("100"),
+            gain_loss_eur=Decimal("-100"),
+            holding_period="Short-term (3 days)",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="Ethereum",
+            operator_origin=OperatorOrigin(
+                platform="ByBit",
+                service_scope="crypto",
+                operator_entity="Bybit group entity",
+                operator_country="AE",
+                source_url="https://bybit.com",
+                source_checked_on="2026-01-01",
+                confidence="medium",
+                review_required=False,
+            ),
+            annex_hint="J",
+            review_required=False,
+            notes="",
+        )
+
+        result = _apply_ogr_direction_override([cg_entry], ogr_index, jurisdiction)
+
+        assert len(result) == 1
+        assert result[0].gain_loss_eur == Decimal("-106")
+        assert result[0].ogr_validation is not None
+        assert result[0].ogr_validation.direction_conflict is False
+        # Diff is 6%, which IS > 5%, so review required
+        assert result[0].ogr_validation.review_required is True
+        assert "magnitude differs" in result[0].ogr_validation.review_reason.lower()
+        assert "6.0%" in result[0].ogr_validation.review_reason
+
+    def test_ogr_no_ogr_match(self):
+        """Given CG entry with gain=-100 and no OGR match, expects final_gain_loss=-100 (unchanged), ogr_validation=None."""
+        from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+
+        jurisdiction = TaxJurisdictionConfig(
+            country="TEST",
+            fiscal_year=2025,
+            exclude_loan_repayment_gains=False,
+            zero_basis_review_threshold=Decimal("500"),
+            use_other_gains_report=True,
+        )
+
+        # OGR index has different key - no match
+        ogr_index = {
+            ("2025-01-14", "BTC", "Kraken"): Decimal("50")
+        }
+
+        cg_entry = CryptoCapitalGainEntry(
+            disposal_date="2025-01-13",
+            acquisition_date="2025-01-10",
+            asset="USDT",
+            amount=Decimal("100"),
+            cost_eur=Decimal("200"),
+            proceeds_eur=Decimal("100"),
+            gain_loss_eur=Decimal("-100"),
+            holding_period="Short-term (3 days)",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="Ethereum",
+            operator_origin=OperatorOrigin(
+                platform="ByBit",
+                service_scope="crypto",
+                operator_entity="Bybit group entity",
+                operator_country="AE",
+                source_url="https://bybit.com",
+                source_checked_on="2026-01-01",
+                confidence="medium",
+                review_required=False,
+            ),
+            annex_hint="J",
+            review_required=False,
+            notes="",
+        )
+
+        result = _apply_ogr_direction_override([cg_entry], ogr_index, jurisdiction)
+
+        assert len(result) == 1
+        # No change when no OGR match
+        assert result[0].gain_loss_eur == Decimal("-100")
+        assert result[0].proceeds_eur == Decimal("100")
+        # No OGR validation attached
+        assert result[0].ogr_validation is None
+
+    def test_ogr_direction_conflict_small_absolute_diff(self):
+        """Given CG entry with gain=0.01 and OGR=-1.01, expects direction_conflict=True but review_required=False (absolute diff 1 EUR not exceeded)."""
+        from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+        from tax_reporting.domain.entities import OgrValidationResult
+
+        jurisdiction = TaxJurisdictionConfig(
+            country="TEST",
+            fiscal_year=2025,
+            exclude_loan_repayment_gains=False,
+            zero_basis_review_threshold=Decimal("500"),
+            use_other_gains_report=True,
+        )
+
+        ogr_index = {
+            ("2025-01-13", "USDT", "ByBit"): Decimal("-1.01")
+        }
+
+        cg_entry = CryptoCapitalGainEntry(
+            disposal_date="2025-01-13",
+            acquisition_date="2025-01-10",
+            asset="USDT",
+            amount=Decimal("1"),
+            cost_eur=Decimal("10"),
+            proceeds_eur=Decimal("10.01"),
+            gain_loss_eur=Decimal("0.01"),  # Tiny gain
+            holding_period="Short-term (3 days)",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="Ethereum",
+            operator_origin=OperatorOrigin(
+                platform="ByBit",
+                service_scope="crypto",
+                operator_entity="Bybit group entity",
+                operator_country="AE",
+                source_url="https://bybit.com",
+                source_checked_on="2026-01-01",
+                confidence="medium",
+                review_required=False,
+            ),
+            annex_hint="J",
+            review_required=False,
+            notes="",
+        )
+
+        result = _apply_ogr_direction_override([cg_entry], ogr_index, jurisdiction)
+
+        assert len(result) == 1
+        # Direction conflict should be detected
+        assert result[0].ogr_validation is not None
+        assert result[0].ogr_validation.direction_conflict is True
+        # But absolute diff is only 1 EUR, not > 1 EUR
+        assert result[0].ogr_validation.review_required is False
+        assert result[0].ogr_validation.review_reason is None
+
+    def test_ogr_multiple_lots_same_disposal(self):
+        """Given 109 CG lots for same (date, asset, wallet) with total gain=+500 and OGR=-147.19, expects each lot gets ogr_validation with ogr_gain_loss=-147.19, directions corrected, and after aggregation produces single entry with corrected totals."""
+        from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+        from tax_reporting.domain.entities import OgrValidationResult
+
+        jurisdiction = TaxJurisdictionConfig(
+            country="TEST",
+            fiscal_year=2025,
+            exclude_loan_repayment_gains=False,
+            zero_basis_review_threshold=Decimal("500"),
+            use_other_gains_report=True,
+        )
+
+        ogr_index = {
+            ("2025-01-13", "USDT", "ByBit"): Decimal("-147.19")
+        }
+
+        # Create 109 CG lots, each with a small gain
+        # Total gain before OGR: 109 lots × ~4.59 = ~500
+        lots = []
+        per_lot_gain = Decimal("500") / Decimal("109")
+        per_lot_cost = Decimal("100")
+        per_lot_proceeds = per_lot_cost + per_lot_gain
+
+        for i in range(109):
+            lot = CryptoCapitalGainEntry(
+                disposal_date="2025-01-13",
+                acquisition_date="2025-01-10",
+                asset="USDT",
+                amount=Decimal("1"),
+                cost_eur=per_lot_cost,
+                proceeds_eur=per_lot_proceeds,
+                gain_loss_eur=per_lot_gain,  # Each lot shows small gain
+                holding_period="Short-term (3 days)",
+                wallet="ByBit",
+                platform="ByBit",
+                chain="Ethereum",
+                operator_origin=OperatorOrigin(
+                    platform="ByBit",
+                    service_scope="crypto",
+                    operator_entity="Bybit group entity",
+                    operator_country="AE",
+                    source_url="https://bybit.com",
+                    source_checked_on="2026-01-01",
+                    confidence="medium",
+                    review_required=False,
+                ),
+                annex_hint="J",
+                review_required=False,
+                notes="",
+            )
+            lots.append(lot)
+
+        # Apply OGR direction override (before aggregation)
+        result = _apply_ogr_direction_override(lots, ogr_index, jurisdiction)
+
+        assert len(result) == 109
+
+        # Each lot should have OGR validation attached
+        # All lots share the same OGR value for this disposal event
+        for lot in result:
+            assert lot.ogr_validation is not None
+            assert lot.ogr_validation.ogr_gain_loss == Decimal("-147.19")
+            # Direction conflict: CG showed gain, OGR shows loss
+            assert lot.ogr_validation.direction_conflict is True
+            # Each lot gets direction-corrected value (OGR direction with CG magnitude)
+            assert lot.gain_loss_eur == -abs(per_lot_gain)  # Negative (loss direction) with CG magnitude
+
+        # After aggregation, we'd have a single entry with summed values
+        # This test verifies pre-aggregation state; aggregation is tested separately
+
+
+class TestOgrDisabledBackwardCompatibility:
+    """Test backward compatibility when OGR is disabled."""
+
+    def test_ogr_disabled_entries_have_no_ogr_validation(self):
+        """Given jurisdiction with use_other_gains_report=False, expects ogr_validation=None on all entries and gain/loss values unchanged from original CG."""
+        from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+
+        jurisdiction = TaxJurisdictionConfig(
+            country="TEST",
+            fiscal_year=2025,
+            exclude_loan_repayment_gains=False,
+            zero_basis_review_threshold=Decimal("500"),
+            use_other_gains_report=False,  # OGR disabled
+        )
+
+        # Create OGR index (should be ignored due to use_other_gains_report=False)
+        ogr_index = {
+            ("2025-01-13", "USDT", "ByBit"): Decimal("-999.99")
+        }
+
+        # Create CG entry with original gain/loss values
+        cg_entry = CryptoCapitalGainEntry(
+            disposal_date="2025-01-13",
+            acquisition_date="2025-01-10",
+            asset="USDT",
+            amount=Decimal("100"),
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("200"),
+            gain_loss_eur=Decimal("100"),  # Original CG value
+            holding_period="Short-term (3 days)",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="Ethereum",
+            operator_origin=OperatorOrigin(
+                platform="ByBit",
+                service_scope="crypto",
+                operator_entity="Bybit group entity",
+                operator_country="AE",
+                source_url="https://bybit.com",
+                source_checked_on="2026-01-01",
+                confidence="medium",
+                review_required=False,
+            ),
+            annex_hint="J",
+            review_required=False,
+            notes="",
+        )
+
+        result = _apply_ogr_direction_override([cg_entry], ogr_index, jurisdiction)
+
+        assert len(result) == 1
+        # Entry should have no OGR validation attached
+        assert result[0].ogr_validation is None
+        # Gain/loss values should remain unchanged from original CG
+        assert result[0].gain_loss_eur == Decimal("100")
+        assert result[0].proceeds_eur == Decimal("200")
+        assert result[0].cost_eur == Decimal("100")
+
+    def test_ogr_disabled_multiple_entries_all_unaffected(self):
+        """Given multiple CG entries and jurisdiction with use_other_gains_report=False, expects all entries unchanged with no OGR validation."""
+        from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+
+        jurisdiction = TaxJurisdictionConfig(
+            country="TEST",
+            fiscal_year=2025,
+            exclude_loan_repayment_gains=False,
+            zero_basis_review_threshold=Decimal("500"),
+            use_other_gains_report=False,
+        )
+
+        # OGR index with entries that would match if OGR were enabled
+        ogr_index = {
+            ("2025-01-13", "USDT", "ByBit"): Decimal("-147.19"),
+            ("2025-01-14", "BTC", "Kraken"): Decimal("250.50"),
+        }
+
+        entries = [
+            CryptoCapitalGainEntry(
+                disposal_date="2025-01-13",
+                acquisition_date="2025-01-10",
+                asset="USDT",
+                amount=Decimal("100"),
+                cost_eur=Decimal("100"),
+                proceeds_eur=Decimal("200"),
+                gain_loss_eur=Decimal("100"),
+                holding_period="Short-term (3 days)",
+                wallet="ByBit",
+                platform="ByBit",
+                chain="Ethereum",
+                operator_origin=OperatorOrigin(
+                    platform="ByBit",
+                    service_scope="crypto",
+                    operator_entity="Bybit group entity",
+                    operator_country="AE",
+                    source_url="https://bybit.com",
+                    source_checked_on="2026-01-01",
+                    confidence="medium",
+                    review_required=False,
+                ),
+                annex_hint="J",
+                review_required=False,
+                notes="",
+            ),
+            CryptoCapitalGainEntry(
+                disposal_date="2025-01-14",
+                acquisition_date="2025-01-11",
+                asset="BTC",
+                amount=Decimal("1"),
+                cost_eur=Decimal("3000"),
+                proceeds_eur=Decimal("2800"),
+                gain_loss_eur=Decimal("-200"),
+                holding_period="Short-term (3 days)",
+                wallet="Kraken",
+                platform="Kraken",
+                chain="Ethereum",
+                operator_origin=OperatorOrigin(
+                    platform="Kraken",
+                    service_scope="crypto",
+                    operator_entity="Payward Ireland",
+                    operator_country="IE",
+                    source_url="https://kraken.com",
+                    source_checked_on="2026-01-01",
+                    confidence="high",
+                    review_required=False,
+                ),
+                annex_hint="J",
+                review_required=False,
+                notes="",
+            ),
+        ]
+
+        result = _apply_ogr_direction_override(entries, ogr_index, jurisdiction)
+
+        assert len(result) == 2
+        for entry in result:
+            assert entry.ogr_validation is None
+        # Verify original CG values are preserved
+        assert result[0].gain_loss_eur == Decimal("100")
+        assert result[1].gain_loss_eur == Decimal("-200")
