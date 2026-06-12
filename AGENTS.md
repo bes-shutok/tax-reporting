@@ -41,6 +41,8 @@ This file provides guidance to coding agents when working with code in this repo
 - Wallet labels are discovery hints only; final chain/country mappings come from archived operator origin documents.
 - When wallet labels don't allow reasonable chain derivation, use `Unknown` explicitly rather than guessing from asset symbols.
 - When adding operator mappings with temporal validity: use `service_start_date` for when the platform started offering this service (used for transaction matching), use `valid_from` for when this specific mapping was verified from source documents (used for audit trail), set `service_start_date` before `valid_from` when both are known, and for platforms with unknown verification dates, set `service_start_date` and leave `valid_from` as null.
+- When a module exceeds 1,000 lines or 50 functions/classes, extract cohesive responsibilities into separate modules under a subdirectory. See `development_lessons.md` #87, #88.
+- Orchestration layers should be thin (~500 lines max). When coordination logic grows beyond this, consider extracting sub-orchestrators or moving domain logic to dedicated services. See `development_lessons.md` #87.
 
 ### 3. Repository Constraints
 
@@ -92,6 +94,11 @@ This file provides guidance to coding agents when working with code in this repo
 - **CRITICAL:** When investigating "is X handled correctly?", code inspection alone is INSUFFICIENT. You must perform data trace verification: trace the user's specific case from source CSV through to final output, verify output matches source classifications, and validate across ALL source reports (TH, CG, Other Gains). See `development_lessons.md` #72, #73.
 - When adding functions that call cross-module utilities, verify imports are complete. Run `uv run python -c "from module import function"` to verify imports resolve. See `development_lessons.md` #74.
 - When adding a new feature controlled by a boolean flag (like `use_other_gains_report`), create dedicated backward compatibility tests that verify the "disabled" state preserves existing behavior — not just that the "enabled" state works correctly. See `development_lessons.md` #84.
+- When extracting a function to a new module, check for dependencies on constants from the source module to avoid circular imports. See `development_lessons.md` #86.
+- When addressing code review findings on a refactoring branch, fix all in-scope findings in the same branch: findings that touch files changed by the refactoring or address technical debt exposed by the extraction must be resolved now, not deferred. See `development_lessons.md` #92.
+- When adding edge case tests, read the function implementation first to understand what patterns it actually supports before writing expected results. Do not assume behavior based on function name or documentation. See `development_lessons.md` #89.
+- Validation functions with conditional logic need comprehensive edge case coverage: format checks, zero-padding, numeric ranges, calendar validity, time components, boundary conditions, and whitespace handling. See `development_lessons.md` #90.
+- Helper functions extracted from larger modules need direct unit test coverage, not just indirect integration tests. Verify early returns, conditional branches, boundary conditions, state mutation, and edge cases. See `development_lessons.md` #91.
 
 ### 5. Domain Knowledge References
 
@@ -315,7 +322,19 @@ tax-reporting/
 │       │   │   ├── contexts.py
 │       │   │   ├── state_machine.py
 │       │   │   └── processing.py
-│       │   ├── crypto_reporting.py # Crypto tax reporting and Koinly parsing
+│       │   ├── crypto/          # Crypto tax reporting package (refactored from god class, ~65% reduction)
+│       │   │   ├── __init__.py        # Package exports
+│       │   │   ├── aggregation.py     # Capital gains and rewards aggregation functions
+│       │   │   ├── chain_derivation.py # Chain derivation from wallet names
+│       │   │   ├── classification.py  # Tax classification logic (reward tax status, income codes)
+│       │   │   ├── entities.py        # Domain entities for crypto reporting
+│       │   │   ├── fifo_helpers.py    # FIFO engine helper functions
+│       │   │   ├── loan_activity.py   # Loan activity extraction
+│       │   │   ├── ogr_handler.py     # Other Gains Report handling
+│       │   │   ├── operator_origin.py # Operator/platform origin resolution
+│       │   │   ├── parsing.py         # Koinly report parsing functions
+│       │   │   └── validation.py      # Crypto-specific validation functions
+│       │   ├── crypto_reporting.py # Thin orchestration layer for crypto reporting
 │       │   ├── token_origin.py      # TokenOriginResolver application service
 │       │   ├── crypto_fifo/          # FIFO engine package (per CIRS art. 43 n.9)
 │       │   │   ├── __init__.py        # public re-exports

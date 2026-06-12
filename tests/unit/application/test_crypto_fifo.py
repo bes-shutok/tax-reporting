@@ -19,7 +19,8 @@ from tax_reporting.application.crypto_fifo import (
     resolve_cross_asset_exchanges as _resolve_cross_asset_exchanges_impl,
 )
 from tax_reporting.application.crypto_fifo.parsing import _build_composite_tx_key
-from tax_reporting.domain.crypto_fifo import AssetFifoResult, CryptoAcquisition, CryptoConsumption
+from tax_reporting.application.crypto.fifo_helpers import _apply_phantom_lot_flags
+from tax_reporting.domain.crypto_fifo import AssetFifoResult, CryptoAcquisition, CryptoConsumption, CryptoFifoRealization
 
 TH_HEADER = (
     "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
@@ -2415,3 +2416,185 @@ class TestFifoRebuildIntegration:
         # compute_fifo_for_asset, and resolve_cross_asset_exchanges can be chained
         # together successfully - which they can since the code ran to this point
         # without raising exceptions.
+
+
+class TestApplyPhantomLotFlags:
+    """Unit tests for _apply_phantom_lot_flags helper function."""
+
+    def test_no_phantom_transfers_returns_unchanged(self) -> None:
+        """Given empty phantom_transfers, returns result unchanged."""
+        result = AssetFifoResult(
+            realizations=[
+                CryptoFifoRealization(
+                    disposal_date="2025-03-15",
+                    acquisition_date="2024-01-01",
+                    asset="WBTC",
+                    amount=Decimal("1.0"),
+                    cost_eur=Decimal("50000"),
+                    proceeds_eur=Decimal("55000"),
+                    gain_loss_eur=Decimal("5000"),
+                    holding_period="long-term",
+                    wallet="Kraken",
+                    platform="Kraken",
+                    notes="",
+                    review_required=False,
+                    review_reason=None,
+                )
+            ],
+            carryover_cost_by_tx_key={},
+            partial_carryover_tx_keys=frozenset(),
+        )
+
+        result_out = _apply_phantom_lot_flags(result, "WBTC", "Kraken", frozenset())
+
+        assert result_out == result
+        assert len(result_out.realizations) == 1
+        assert result_out.realizations[0].review_required is False
+
+    def test_phantom_transfer_mismatching_asset_platform_returns_unchanged(self) -> None:
+        """Given phantom_transfers for different (asset, platform), returns result unchanged."""
+        phantom_transfers = frozenset({("BTC", "ByBit", "2025-02-01")})
+        result = AssetFifoResult(
+            realizations=[
+                CryptoFifoRealization(
+                    disposal_date="2025-03-15",
+                    acquisition_date="2024-01-01",
+                    asset="WBTC",
+                    amount=Decimal("1.0"),
+                    cost_eur=Decimal("50000"),
+                    proceeds_eur=Decimal("55000"),
+                    gain_loss_eur=Decimal("5000"),
+                    holding_period="long-term",
+                    wallet="Kraken",
+                    platform="Kraken",
+                    notes="",
+                    review_required=False,
+                    review_reason=None,
+                )
+            ],
+            carryover_cost_by_tx_key={},
+            partial_carryover_tx_keys=frozenset(),
+        )
+
+        result_out = _apply_phantom_lot_flags(result, "WBTC", "Kraken", phantom_transfers)
+
+        assert result_out.realizations[0].review_required is False
+
+    def test_flags_realizations_after_earliest_phantom_date(self) -> None:
+        """Given phantom_transfers matching (asset, platform), flags disposals on or after earliest date."""
+        phantom_transfers = frozenset({
+            ("WBTC", "Kraken", "2025-02-01"),
+            ("WBTC", "Kraken", "2025-03-01"),
+        })
+        result = AssetFifoResult(
+            realizations=[
+                CryptoFifoRealization(
+                    disposal_date="2025-01-15",
+                    acquisition_date="2024-01-01",
+                    asset="WBTC",
+                    amount=Decimal("1.0"),
+                    cost_eur=Decimal("50000"),
+                    proceeds_eur=Decimal("55000"),
+                    gain_loss_eur=Decimal("5000"),
+                    holding_period="long-term",
+                    wallet="Kraken",
+                    platform="Kraken",
+                    notes="",
+                    review_required=False,
+                    review_reason=None,
+                ),
+                CryptoFifoRealization(
+                    disposal_date="2025-02-15",
+                    acquisition_date="2024-02-01",
+                    asset="WBTC",
+                    amount=Decimal("0.5"),
+                    cost_eur=Decimal("25000"),
+                    proceeds_eur=Decimal("28000"),
+                    gain_loss_eur=Decimal("3000"),
+                    holding_period="long-term",
+                    wallet="Kraken",
+                    platform="Kraken",
+                    notes="",
+                    review_required=False,
+                    review_reason=None,
+                ),
+            ],
+            carryover_cost_by_tx_key={},
+            partial_carryover_tx_keys=frozenset(),
+        )
+
+        result_out = _apply_phantom_lot_flags(result, "WBTC", "Kraken", phantom_transfers)
+
+        # First realization (before earliest phantom) unchanged
+        assert result_out.realizations[0].disposal_date == "2025-01-15"
+        assert result_out.realizations[0].review_required is False
+
+        # Second realization (after earliest phantom) flagged
+        assert result_out.realizations[1].disposal_date == "2025-02-15"
+        assert result_out.realizations[1].review_required is True
+        assert "Phantom lot" in result_out.realizations[1].review_reason
+        assert "2025-02-01" in result_out.realizations[1].review_reason
+
+    def test_appends_phantom_reason_to_existing_review_reason(self) -> None:
+        """Given realization with existing review_reason, appends phantom reason."""
+        phantom_transfers = frozenset({("WBTC", "Kraken", "2025-02-01")})
+        existing_reason = "Zero acquisition cost - verify basis"
+        result = AssetFifoResult(
+            realizations=[
+                CryptoFifoRealization(
+                    disposal_date="2025-02-15",
+                    acquisition_date="2024-01-01",
+                    asset="WBTC",
+                    amount=Decimal("1.0"),
+                    cost_eur=Decimal("0"),
+                    proceeds_eur=Decimal("55000"),
+                    gain_loss_eur=Decimal("55000"),
+                    holding_period="long-term",
+                    wallet="Kraken",
+                    platform="Kraken",
+                    notes="",
+                    review_required=True,
+                    review_reason=existing_reason,
+                )
+            ],
+            carryover_cost_by_tx_key={},
+            partial_carryover_tx_keys=frozenset(),
+        )
+
+        result_out = _apply_phantom_lot_flags(result, "WBTC", "Kraken", phantom_transfers)
+
+        assert result_out.realizations[0].review_required is True
+        assert existing_reason in result_out.realizations[0].review_reason
+        assert "Phantom lot" in result_out.realizations[0].review_reason
+
+    def test_preserves_carryover_and_partial_tx_keys(self) -> None:
+        """Given result with carryover and partial tx keys, preserves them in output."""
+        phantom_transfers = frozenset({("WBTC", "Kraken", "2025-02-01")})
+        carryover = {"tx1:abc": Decimal("100")}
+        partial_keys = frozenset({"tx2:def"})
+        result = AssetFifoResult(
+            realizations=[
+                CryptoFifoRealization(
+                    disposal_date="2025-02-15",
+                    acquisition_date="2024-01-01",
+                    asset="WBTC",
+                    amount=Decimal("1.0"),
+                    cost_eur=Decimal("50000"),
+                    proceeds_eur=Decimal("55000"),
+                    gain_loss_eur=Decimal("5000"),
+                    holding_period="long-term",
+                    wallet="Kraken",
+                    platform="Kraken",
+                    notes="",
+                    review_required=False,
+                    review_reason=None,
+                )
+            ],
+            carryover_cost_by_tx_key=carryover,
+            partial_carryover_tx_keys=partial_keys,
+        )
+
+        result_out = _apply_phantom_lot_flags(result, "WBTC", "Kraken", phantom_transfers)
+
+        assert result_out.carryover_cost_by_tx_key == carryover
+        assert result_out.partial_carryover_tx_keys == partial_keys

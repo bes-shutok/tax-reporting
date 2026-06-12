@@ -17,10 +17,10 @@ from ...domain.collections import (
     CapitalGainLinesPerCompany,
     DividendIncomePerCompany,
 )
-from ...domain.exceptions import ConfigurationError, FileProcessingError, ReportGenerationError
+from ...domain.exceptions import ConfigurationError, ReportGenerationError
 from ...infrastructure.config import Config, load_configuration_from_file
 from ...infrastructure.logging_config import create_module_logger
-from ..crypto_reporting import aggregate_taxable_rewards
+from ..crypto.aggregation import aggregate_taxable_rewards
 from .assumptions_sheet import write_assumptions_and_methodology_sheet
 from .crypto_gains_sheet import write_crypto_gains_sheet
 from .crypto_reconciliation_sheet import write_crypto_reconciliation_sheet

@@ -1005,3 +1005,135 @@ When validating aggregated data against an external source (OGR, statements, etc
 **Example:** In `_aggregate_ogr_validation`, the function recalculates `direction_conflict`, `magnitude_diff_percent`, and `review_required` from the summed `calculated_gain_loss` and the shared `ogr_gain_loss`, rather than taking max/OR from individual lots.
 
 **See also:** CRG-017 (Other Gains Report Validation), Lesson #78 (OGR Directional Authority vs Wholesale Replacement)
+
+## 86. Avoid Circular Dependencies During Module Extraction
+
+When extracting a function to a new module, check what constants and functions it references from the source module. Circular imports occur when the new module imports from the source, and the source still needs to import from the new module.
+
+**Resolution options:**
+- Move shared constants to a lower-level module that both can import
+- Inline simple literals (like `Decimal('0')`) locally in the new module
+- Redesign to eliminate the cross-dependency
+
+**Example from Task 8:** Extracting `_extract_loan_activity()` from `crypto_reporting.py` to `crypto/loan_activity.py` required handling the `ZERO` constant. Defining `ZERO = Decimal('0')` locally in the new module avoided a circular import, since the constant is only used for loan balance calculations.
+
+## 87. Module and Class Size Limits
+
+Large modules and classes become difficult to understand, test, and maintain. They accumulate unrelated responsibilities over time ("god class" or "god object" anti-pattern).
+
+**Guidelines:**
+- When a module exceeds 1,000 lines or contains 50+ functions/classes, consider extraction
+- When a class exceeds 500 lines, evaluate whether it has multiple responsibilities
+- Aim for focused modules: 200-600 lines is a practical target for most application code
+- Orchestration layers should be thin: ~500 lines max for top-level coordination
+
+**Extraction signals:**
+- Module name describes multiple unrelated concepts
+- Functions can be grouped into cohesive subsystems (e.g., parsing, validation, aggregation)
+- Changes to one area of the module require understanding many unrelated sections
+- Testing requires extensive fixture setup due to cross-cutting dependencies
+
+**Example from crypto_reporting refactor:** The original `crypto_reporting.py` was 3,372 lines with 40+ functions handling parsing, validation, classification, aggregation, FIFO processing, and orchestration. After DDD-based extraction into focused modules (`crypto/entities.py`, `crypto/classification.py`, `crypto/validation.py`, `crypto/parsing.py`, `crypto/aggregation.py`, `crypto/ogr_handler.py`, `crypto/loan_activity.py`, `crypto/chain_derivation.py`, `crypto/operator_origin.py`, `crypto/fifo_helpers.py`), the orchestration layer reduced to 757 lines (~65% reduction), with each specialized module under 500 lines.
+
+## 88. Single Responsibility Principle for Modules
+
+Each module should have one clear reason to change. When a module's name or purpose cannot be described succinctly, or when it contains multiple independent subsystems, extraction is needed.
+
+**Module cohesion indicators:**
+- All functions serve the same domain concept (e.g., "crypto reward classification")
+- Functions can be organized around a single abstraction or entity
+- Changes to business requirements affect a predictable subset of functions
+- Module has a clear, narrow public API
+
+**Module cohesion anti-patterns:**
+- "Utility" modules that mix unrelated helpers (parsing, validation, transformation)
+- "Manager" classes that orchestrate unrelated workflows
+- Modules where functions reference different domain layers without clear hierarchy
+
+**Extraction approach:**
+1. Group functions by domain responsibility (parsing, validation, aggregation, etc.)
+2. Identify shared abstractions (entities, value objects)
+3. Create cohesive modules with clear names (`crypto/classification.py`, not `crypto/utils.py`)
+4. Maintain backward compatibility via package `__init__.py` re-exports
+5. Use domain-driven design: entities → services → orchestration
+
+**Example from crypto_reporting refactor:** Functions were grouped by responsibility into domain-aligned modules:
+- `crypto/entities.py`: 13 domain entities (OperatorOrigin, CryptoCapitalGainEntry, etc.)
+- `crypto/classification.py`: Tax classification logic with LRU-cached helper data
+- `crypto/validation.py`: Date/time validation with clear ISO format rules
+- `crypto/aggregation.py`: Capital gains and reward aggregation with materiality filtering
+- `crypto/ogr_handler.py`: Other Gains Report override logic
+- `crypto/loan_activity.py`: Loan activity extraction and balance calculation
+- `crypto/operator_origin.py`: Platform-to-operator-country resolution with temporal validity
+- `crypto/fifo_helpers.py`: FIFO processing for loan-affected assets
+- `crypto/parsing.py`: File discovery and PDF parsing
+- `crypto/chain_derivation.py`: Wallet-label-to-chain resolution
+
+Each module has a single, clear responsibility and can be understood independently.
+
+## 89. Read Implementation Before Writing Test Expectations
+
+When adding edge case tests for existing functions, read the actual implementation first to understand what patterns it supports before writing expected results.
+
+**Anti-pattern:** Writing test expectations based on function name, documentation, or assumptions about what the function "should" do, then debugging failures when expectations don't match reality.
+
+**Correct approach:**
+1. Read the function implementation completely
+2. Identify all conditional branches, special cases, and return paths
+3. Write test expectations that match the actual behavior
+4. Add tests for genuine edge cases, not imagined patterns
+
+**Example from chain derivation tests:** Initial tests expected "Ledger Nano X (SOL)" → "Solana" and "0x1234...abcd.eth" → "Ethereum", but the actual `_derive_chain` implementation returns "Unknown" for both patterns. Reading the implementation first would have revealed: the function only matches chains in a predefined `_KNOWN_CHAINS` set after normalization, it doesn't guess from ticker suffixes or address patterns.
+
+## 90. Edge Case Coverage for Validation Functions
+
+Validation functions with conditional logic need comprehensive edge case coverage for all validation branches.
+
+**Required coverage for date/time validation:**
+- Format checks: correct vs incorrect separators, missing components, extra components
+- Zero-padding: required vs missing vs over-padded (e.g., "2024-1-1", "2024-001-01")
+- Numeric ranges: non-numeric characters, out-of-range values (year < 2009, > 2100, month > 12, day > 31, hour > 23, minute > 59, second > 59)
+- Calendar validity: Feb 30, Apr 31, leap year Feb 29 (2024 vs 2023)
+- Time components: missing seconds, zero-padding, boundary values (00:00:00, 23:59:59)
+- Whitespace handling: leading/trailing whitespace, multiple spaces, empty strings
+- Boundary conditions: exact match on lower/upper bounds, before/after thresholds
+
+**Required coverage for string validation:**
+- Empty strings, whitespace-only strings, single-character inputs
+- Multi-byte characters, control characters
+- Multi-character prefixes, padded inputs
+- Case insensitivity when applicable
+
+**Example from date validation tests:** Added 57 edge case tests for `_validate_iso_date` and `_parse_transaction_date` covering zero-padding validation (2024-1-1 rejected), calendar dates (Feb 30 rejected), leap years (Feb 29 2024 accepted, Feb 29 2023 rejected), time boundaries (00:00:00 accepted, 24:00:00 rejected), and whitespace handling.
+
+## 91. Direct Unit Testing for Extracted Helper Functions
+
+When a complex function is extracted into a helper, add direct unit tests for the helper rather than relying only on indirect testing through integration tests.
+
+**What to test directly:**
+- Early return conditions (empty inputs, no matches)
+- Conditional branches (different input paths)
+- Boundary conditions (exact threshold values)
+- State mutation or concatenation (appending reasons, preserving carryover)
+- Edge cases (multiple items requiring min/max selection)
+
+**Example from FIFO helpers:** `_apply_phantom_lot_flags` was extracted but initially only tested indirectly through FIFO integration. Added direct unit tests covering: empty phantom_transfers (early return), mismatching asset/platform (no effect), realizations before vs after earliest_phantom date (conditional flagging), appending phantom reason to existing review_reason (concatenation), and preserving carryover/partial tx keys (state preservation).
+
+## 92. Fix In-Scope Refactoring Findings in the Same Branch
+
+When a branch is created for refactoring, any code review findings that result from or relate to that refactoring must be addressed in the same branch.
+
+**What counts as "in-scope":**
+- Findings that touch files already changed on the branch
+- Findings that address technical debt exposed by the refactoring (e.g., validation complexity in extracted modules)
+- Findings for missing test coverage on newly extracted functions
+- Findings for duplicate code created during extraction
+
+**What can be deferred:**
+- Findings in unrelated parts of the codebase not touched by this branch
+- Findings that would require substantial architectural changes beyond the refactoring scope
+- Findings for pre-existing technical debt unrelated to this change
+
+**Rationale:** Refactoring branches improve code quality and maintainability. Leaving related findings (especially Medium/High severity) creates a "half-refactored" state where the new structure exists but old problems remain in the same files. This forces reviewers to track another follow-up ticket and risks the findings never being addressed.
+
+**Example from god class refactor:** The refactoring extracted `crypto_reporting.py` into 12 modules. Code review found Medium-severity issues in the extracted modules (validation complexity in `__post_init__`, missing edge case tests). These were in-scope because they touched files created by the refactoring and addressed test coverage gaps exposed by the extraction. All were fixed in the same branch.

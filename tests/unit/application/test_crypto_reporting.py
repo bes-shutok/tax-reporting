@@ -8,29 +8,31 @@ from pathlib import Path
 
 import pytest
 
+from tax_reporting.application.crypto.aggregation import (
+    _aggregate_capital_entries,
+    _filter_immaterial_entries,
+    _is_valid_tabela_x_country,
+    _resolve_income_code,
+    aggregate_taxable_rewards,
+)
 from tax_reporting.application.crypto_reporting import (
     CapitalGainsParsingContext,
     CryptoCapitalGainEntry,
     CryptoSkippedZeroValueToken,
     OperatorOrigin,
     RewardTaxClassification,
-    _aggregate_capital_entries,
     _apply_ogr_overrides,
     _apply_ogr_direction_override,
     _build_ogr_index,
     _classify_reward_tax_status,
     _collect_known_asset_tickers,
     _derive_chain,
-    _filter_immaterial_entries,
     _is_temporally_valid,
-    _is_valid_tabela_x_country,
     _load_popular_crypto_tokens,
     _parse_capital_gains_file,
     _parse_income_file,
     _parse_transaction_date,
-    _resolve_income_code,
     _validate_capital_entries_have_valid_countries,
-    aggregate_taxable_rewards,
     load_koinly_crypto_report,
     resolve_operator_origin,
 )
@@ -2344,7 +2346,8 @@ def test_validate_capital_entries_with_all_valid_countries_passes():
     ]
 
     # Should return all entries unchanged (all valid countries)
-    result = _validate_capital_entries_have_valid_countries(entries)
+    jurisdiction = _pt_jurisdiction()
+    result = _validate_capital_entries_have_valid_countries(entries, jurisdiction)
     assert len(result) == 3
     assert all(not e.review_required for e in result)
 
@@ -2362,7 +2365,8 @@ def test_validate_capital_entries_flags_unknown_country_for_review(caplog):
     ]
 
     with caplog.at_level(logging.ERROR):
-        result = _validate_capital_entries_have_valid_countries(entries)
+        jurisdiction = _pt_jurisdiction()
+        result = _validate_capital_entries_have_valid_countries(entries, jurisdiction)
 
     assert len(result) == 1
     assert result[0].review_required is True
@@ -2389,7 +2393,8 @@ def test_validate_capital_entries_flags_multiple_unknown_countries(caplog):
     ]
 
     with caplog.at_level(logging.ERROR):
-        result = _validate_capital_entries_have_valid_countries(entries)
+        jurisdiction = _pt_jurisdiction()
+        result = _validate_capital_entries_have_valid_countries(entries, jurisdiction)
 
     assert len(result) == 2
     assert all(e.review_required for e in result)
@@ -2412,7 +2417,8 @@ def test_validate_capital_entries_logs_actionable_details(caplog):
     ]
 
     with caplog.at_level(logging.ERROR):
-        result = _validate_capital_entries_have_valid_countries(entries)
+        jurisdiction = _pt_jurisdiction()
+        result = _validate_capital_entries_have_valid_countries(entries, jurisdiction)
 
     assert len(result) == 1
     assert result[0].review_required is True
@@ -2637,7 +2643,7 @@ def test_wirex_fiat_reward_gets_gb_country_code():
     operator origin (HR) regardless of whether they were fiat or crypto denominated.
     Fiat rewards should use the fiat operator (GB) per the split-by-service-scope design.
     """
-    from tax_reporting.application.crypto_reporting import resolve_operator_origin
+    from tax_reporting.application.crypto.operator_origin import resolve_operator_origin
 
     # EUR reward should use "fiat_deposit" transaction type and get GB country
     fiat_origin = resolve_operator_origin("Wirex", transaction_type="fiat_deposit")
@@ -5774,7 +5780,7 @@ def _write_transaction_history(tmp_path, rows: list[str]) -> Path:
 
 def test_extract_loan_activity_with_settled_loan(tmp_path):
     """Loan receipt followed by matching repayment produces a settled balance."""
-    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+    from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
 
     path = _write_transaction_history(
         tmp_path,
@@ -5799,7 +5805,7 @@ def test_extract_loan_activity_with_settled_loan(tmp_path):
 
 def test_extract_loan_activity_multiple_assets(tmp_path):
     """Multiple assets produce separate entries sorted alphabetically."""
-    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+    from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
 
     path = _write_transaction_history(
         tmp_path,
@@ -5817,7 +5823,7 @@ def test_extract_loan_activity_multiple_assets(tmp_path):
 
 def test_extract_loan_activity_empty_when_no_loan_rows(tmp_path):
     """Non-loan transaction history rows produce no loan activity entries."""
-    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+    from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
 
     path = _write_transaction_history(
         tmp_path,
@@ -5834,14 +5840,14 @@ def test_extract_loan_activity_empty_when_no_loan_rows(tmp_path):
 
 
 def test_extract_loan_activity_returns_empty_when_path_none(tmp_path):
-    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+    from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
 
     assert _extract_loan_activity(None) == []
 
 
 def test_extract_loan_activity_returns_empty_when_path_not_found(tmp_path):
     """A non-existent path (not None) must return an empty list without error."""
-    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+    from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
 
     missing = tmp_path / "no_such_file.csv"
     assert _extract_loan_activity(missing) == []
@@ -5849,7 +5855,7 @@ def test_extract_loan_activity_returns_empty_when_path_not_found(tmp_path):
 
 def test_extract_loan_activity_open_loan_status(tmp_path):
     """More received than repaid produces 'Open loan' balance status."""
-    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+    from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
 
     path = _write_transaction_history(
         tmp_path,
@@ -5865,7 +5871,7 @@ def test_extract_loan_activity_open_loan_status(tmp_path):
 
 def test_extract_loan_activity_overpaid_status(tmp_path):
     """More repaid than received produces 'Overpaid' balance status."""
-    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+    from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
 
     path = _write_transaction_history(
         tmp_path,
@@ -5882,7 +5888,7 @@ def test_extract_loan_activity_overpaid_status(tmp_path):
 
 
     """An exchange row tagged 'Loan' must not be counted as a loan receipt."""
-    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+    from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
 
     path = _write_transaction_history(
         tmp_path,
@@ -5904,7 +5910,7 @@ def test_extract_loan_activity_overpaid_status(tmp_path):
 
 def test_extract_loan_activity_skips_blank_received_currency_with_warning(tmp_path, caplog):
     """A loan receipt row with blank Received Currency is skipped with a warning."""
-    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+    from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
 
     path = _write_transaction_history(
         tmp_path,
@@ -5925,7 +5931,7 @@ def test_extract_loan_activity_skips_blank_received_currency_with_warning(tmp_pa
 
 def test_extract_loan_activity_skips_blank_sent_currency_with_warning(tmp_path, caplog):
     """A loan repayment row with blank Sent Currency is skipped with a warning."""
-    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+    from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
 
     path = _write_transaction_history(
         tmp_path,
@@ -5943,7 +5949,7 @@ def test_extract_loan_activity_skips_blank_sent_currency_with_warning(tmp_path, 
 
 def test_extract_loan_activity_skips_unparseable_amount_with_warning(tmp_path, caplog):
     """A loan receipt row with non-numeric amount is skipped and valid rows are still processed."""
-    from tax_reporting.application.crypto_reporting import _extract_loan_activity
+    from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
 
     path = _write_transaction_history(
         tmp_path,
