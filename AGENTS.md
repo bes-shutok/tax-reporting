@@ -88,7 +88,7 @@ This file provides guidance to coding agents when working with code in this repo
 - Do not commit changes unless explicitly asked by the user.
 - Always use `uv run pytest`, not `uvx pytest`.
 - `valid_from` = audit-only; `service_start_date` = matching. See `development_lessons.md` #17.
-- Never write files to `docs/review/` (singular). The project convention is `docs/reviews/` (plural) for all code review and plan review output.
+- Never write files to `docs/review/` (singular). The project convention is `docs/reviews/` (plural) for all code review and plan review output. For path resolution fallback when doc-paths files don't exist, see `development_lessons.md` #95.
 - **Never introduce a hardcoded value (asset ticker, constant set, threshold, magic string, fixed ordering) without first flagging it to the user and asking whether they want it hardcoded or derived dynamically.** This applies to plans, implementation, and code review. If you notice an existing hardcoded value while working on related code, flag it immediately before proceeding.
 - When a plan investigates "is X handled correctly?", use verification-first task ordering: code inspection, test execution, and documentation review before implementation tasks. Skip implementation if verification shows correctness. See `development_lessons.md` #71.
 - **CRITICAL:** When investigating "is X handled correctly?", code inspection alone is INSUFFICIENT. You must perform data trace verification: trace the user's specific case from source CSV through to final output, verify output matches source classifications, and validate across ALL source reports (TH, CG, Other Gains). See `development_lessons.md` #72, #73.
@@ -202,6 +202,7 @@ The application generates professional Excel reports with:
 - **Auto-sizing**: Column widths automatically adjusted for content with `MAX_CELL_WIDTH=50` cap and `MIN_DATA_WIDTH=12` floor (see `excel_utils.py`)
 - **Conditional Formatting**: Priority-based fill ordering for validation issues. See `development_lessons.md` #81.
 - **Column Additions**: When adding columns, update all related constants. See `development_lessons.md` #82, #83.
+- **Multi-section Rendering**: When rendering multiple independent sections, avoid early returns in optional-data branches that would skip mandatory sections. Use if/else blocks instead. See `development_lessons.md` #93.
 
 ## Data Flow
 
@@ -251,7 +252,7 @@ uv run pytest --cov=src --cov-report=html  # Coverage
 
 **Test Value Assessment**: test meaningful business logic, real edge cases, avoid duplicating coverage. High-value: complex IB CSV formats, tax calculations, error handling. Low-value: zero amounts, trivial parsing, cases already covered.
 
-**Excel Output Tests**: When adding or modifying Excel report layouts, add visual structure tests to verify row placement, cell merging, blank rows, and header structure — not just data values. See development_lessons.md #69, #81 (conditional formatting priority), #82 (constant updates), #83 (blank/null handling). For structural changes (adding/removing columns), verify that absolute-position code (writes to specific column numbers) is still correct. See development_lessons.md #70.
+**Excel Output Tests**: When adding or modifying Excel report layouts, add visual structure tests to verify row placement, cell merging, blank rows, and header structure — not just data values. See development_lessons.md #69, #81 (conditional formatting priority), #82 (constant updates), #83 (blank/null handling). For structural changes (adding/removing columns), verify that absolute-position code (writes to specific column numbers) is still correct. See development_lessons.md #70. For Excel output tests that identify data items, use structural identification (column population, font attributes) rather than hardcoded value exclusions. See development_lessons.md #96.
 
 ## Development Best Practices
 

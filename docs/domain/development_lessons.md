@@ -1137,3 +1137,122 @@ When a branch is created for refactoring, any code review findings that result f
 **Rationale:** Refactoring branches improve code quality and maintainability. Leaving related findings (especially Medium/High severity) creates a "half-refactored" state where the new structure exists but old problems remain in the same files. This forces reviewers to track another follow-up ticket and risks the findings never being addressed.
 
 **Example from god class refactor:** The refactoring extracted `crypto_reporting.py` into 12 modules. Code review found Medium-severity issues in the extracted modules (validation complexity in `__post_init__`, missing edge case tests). These were in-scope because they touched files created by the refactoring and addressed test coverage gaps exposed by the extraction. All were fixed in the same branch.
+
+## 93. Early Returns Can Skip Mandatory Sections
+
+When a function renders multiple independent sections (e.g., Excel sheet writers with platform data + methodology documentation), an early return in an optional-data branch can skip mandatory sections that must always render.
+
+**Pattern to avoid:**
+```python
+if not optional_data:
+    render_no_data_message()
+    return  # ❌ Skips mandatory methodology section
+render_mandatory_section()
+```
+
+**Correct pattern:**
+```python
+if not optional_data:
+    render_no_data_message()
+    # Continue to mandatory section
+else:
+    render_optional_data()
+render_mandatory_section()  # Always executes
+```
+
+**Why this matters:** Early returns are easy to miss during refactoring. When a section is mandatory (e.g., legal documentation, audit trail), control flow must guarantee it renders regardless of upstream data availability. Use if/else blocks instead of early returns, and test with empty inputs to verify the mandatory section appears.
+
+**Example from assumptions_sheet.py:** The methodology section (legal documentation) must render even when crypto data is empty. Original code had `if not summaries: return` which skipped methodology entirely. Fixed by restructuring to if/else so methodology renders in both branches.
+
+---
+
+## 94. Verification Tests for Canonical Source Synchronization
+
+When a system has a canonical source of truth (decision points document, feature flags config, etc.) that must be reflected in derived output (Excel methodology, UI text, API responses), add a verification test that enforces synchronization between the source and the output.
+
+**Pattern:**
+1. Define the expected set of items from the canonical source (e.g., all decision point IDs from `decision_points/2025.md`)
+2. Scan the derived output for those items (e.g., regex search for DP-XXX patterns in Excel methodology descriptions)
+3. Assert two conditions: (a) no expected items are missing, (b) no unexpected items are present
+
+**Implementation example:**
+```python
+def test_all_decision_points_documented(self):
+    """All decision points from canonical doc are documented in output."""
+    expected = {"DP-001", "DP-002", ..., "DP-011"}  # From decision_points/2025.md
+    found = set()
+    for description in output_descriptions:
+        found.update(re.findall(r"DP-\d{3}", description))
+    missing = expected - found
+    assert not missing, f"Missing: {sorted(missing)}"
+    extra = found - expected
+    assert not extra, f"Unexpected: {sorted(extra)}"
+```
+
+**Why this matters:** Without verification tests, documentation drifts silently. A decision point added to the canonical document may never be added to the Excel output, or a removed decision point may remain as dead text. The test enforces consistency and catches drift immediately.
+
+**Example from Task 4:** The `test_all_decision_points_documented` test verifies that all 11 decision points (DP-001 through DP-011) from the canonical `decision_points/2025.md` are present in the Excel methodology section. If a decision point is added to the TOML but not to the methodology text, the test fails.
+
+**See also:** `docs/tax/decision_points/2025.md` (canonical source), `tests/unit/application/persisting/test_assumptions_sheet.py::TestMethodologyAssumptionsSection::test_all_decision_points_documented`
+
+---
+
+## 95. Use the resolve-vars Utility Skill for Path Discovery
+
+Skills that need project-specific paths (reviews, plans, tmp, etc.) should use the `resolve-vars` utility skill rather than implementing their own discovery logic or guessing from system context.
+
+**How resolve-vars works:**
+1. Reads project instructions to find `facts.md` location
+2. Returns cached value if already in `facts.md`
+3. Runs discovery using glob hints if not cached
+4. Persists discovered value to `facts.md` for future calls
+
+**Usage in other skills:**
+```python
+reviews_dir = resolve_var("reviews_dir", ["**/reviews/", "docs/history/reviews", "docs/reviews"])
+plans_dir = resolve_var("plans_dir", ["**/plans/", "docs/history/plans", "docs/plans"])
+tmp_dir = resolve_var("tmp_dir", ["**/tmp/", "docs/tmp"])
+```
+
+**What went wrong:** During code review, I saw a path in system context (`.../memory/docs/reviews/`) and used it without calling `resolve-vars`. The correct approach would have been to call `resolve_var("reviews_dir", ...)` which would have discovered the project's actual `docs/reviews/` folder by reading project instructions and running glob discovery.
+
+**Why this matters:** System context contains irrelevant paths from other sessions or tools. The `resolve-vars` utility exists to discover the correct path for the current project and persist it locally. Guessing from context leads to wrong output locations.
+
+---
+
+## 96. Structural Identification for Excel Output Tests
+
+When testing Excel output, identify data items by their structural properties (column population, font attributes) rather than hardcoded value exclusions. Tests using hardcoded values from test fixtures break when fixture defaults change.
+
+**Pattern to avoid:**
+```python
+exclusion_set = {
+    "Section Header 1",
+    "Section Header 2",
+    "Kraken",  # ❌ From test fixture default
+    "NO",      # ❌ From test fixture default
+}
+if cell_value not in exclusion_set:
+    items.append(cell_value)
+```
+
+**Correct pattern — identify by structure:**
+```python
+for row_idx in range(1, 200):
+    label = ws.cell(row_idx, 1).value
+    description = ws.cell(row_idx, 2).value
+    column_3 = ws.cell(row_idx, 3).value
+
+    # Methodology items: label + description present, column 3 empty
+    if label and description and not column_3:
+        items.append((label, description))
+```
+
+**Why this matters:** Hardcoded exclusions couple tests to implementation details of test fixtures (`_make_capital_entry(platform="Kraken")`). When fixture defaults change, tests fail despite the Excel structure being correct. Structural identification decouples tests from data values and verifies the actual output format.
+
+**Verification approach:** Before writing the test, inspect the actual Excel rendering to understand structural properties:
+- Which columns are populated for each row type?
+- Are labels bold or regular?
+- What distinguishes section headers from data rows?
+
+**Example from test_assumptions_sheet.py:** The original `test_methodology_items_have_legal_citations` excluded `"Kraken"` and `"NO"` (values from `_make_capital_entry` defaults). Fixed by checking that methodology items have column 1 (label) + column 2 (description) populated, with column 3 empty (platform data has multiple columns).

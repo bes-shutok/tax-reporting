@@ -4,6 +4,7 @@ from decimal import Decimal
 
 import openpyxl
 import pytest
+import re
 
 from tax_reporting.application.crypto_reporting import (
     CapitalGainPeriodStats,
@@ -318,7 +319,7 @@ class TestMethodologyAssumptionsSection:
 
         assert methodology_header_found, "Methodology Assumptions header not found"
 
-    def test_methodology_section_has_all_five_subsections(self):
+    def test_methodology_section_has_all_item_labels(self):
         """All five methodology subsections should be present."""
         wb = openpyxl.Workbook()
         entry = _make_capital_entry(platform="Kraken")
@@ -326,10 +327,11 @@ class TestMethodologyAssumptionsSection:
         write_assumptions_and_methodology_sheet(wb, capital_entries=report.capital_entries)
         ws = wb["Assumptions & Methodology"]
 
+        # Updated: 7 sections with new labels matching the grouped structure
         expected_labels = {
             "Aggregation Approach",
-            "FIFO Methodology",
-            "Holding Period Classification",
+            "Cost Basis Method: FIFO",
+            "365-Day Exemption",
             "Materiality Threshold",
             "Data Sources",
         }
@@ -369,15 +371,15 @@ class TestMethodologyAssumptionsSection:
         write_assumptions_and_methodology_sheet(wb, capital_entries=report.capital_entries)
         ws = wb["Assumptions & Methodology"]
 
-        # Find the FIFO Methodology row
+        # Find the FIFO Methodology row (updated label)
         for row_idx in range(1, 100):
-            if ws.cell(row_idx, 1).value == "FIFO Methodology":
+            if ws.cell(row_idx, 1).value == "Cost Basis Method: FIFO":
                 description = ws.cell(row_idx, 2).value
                 assert "CIRS art. 43" in description
                 assert "PT-C-008" in description
                 break
         else:
-            pytest.fail("FIFO Methodology row not found")
+            pytest.fail("Cost Basis Method: FIFO row not found")
 
     def test_holding_period_mentions_calendar_year_arithmetic(self):
         """Holding Period Classification should mention calendar-year arithmetic."""
@@ -387,16 +389,16 @@ class TestMethodologyAssumptionsSection:
         write_assumptions_and_methodology_sheet(wb, capital_entries=report.capital_entries)
         ws = wb["Assumptions & Methodology"]
 
-        # Find the Holding Period Classification row
+        # Find the Holding Period Classification row (updated label)
         for row_idx in range(1, 100):
-            if ws.cell(row_idx, 1).value == "Holding Period Classification":
+            if ws.cell(row_idx, 1).value == "365-Day Exemption":
                 description = ws.cell(row_idx, 2).value
                 assert "Calendar-year arithmetic" in description
                 assert "2024-02-29" in description
                 assert "PT-C-011" in description
                 break
         else:
-            pytest.fail("Holding Period Classification row not found")
+            pytest.fail("365-Day Exemption row not found")
 
     def test_materiality_threshold_mentions_sub_1_eur(self):
         """Materiality Threshold should mention |gain/loss| < 1 EUR."""
@@ -434,3 +436,343 @@ class TestMethodologyAssumptionsSection:
                 break
         else:
             pytest.fail("Data Sources row not found")
+
+    def test_methodology_renders_without_crypto_data(self):
+        """Methodology section must render even when crypto data is empty (Design Invariant #3)."""
+        wb = openpyxl.Workbook()
+        # Call with no entries (empty lists)
+        write_assumptions_and_methodology_sheet(wb, capital_entries=[], reward_entries=[])
+        ws = wb["Assumptions & Methodology"]
+
+        # Platform Assumptions section should show the "no data" message
+        no_data_message_found = False
+        for row_idx in range(1, 10):
+            cell_value = ws.cell(row_idx, 1).value
+            if "No platform data found" in str(cell_value):
+                no_data_message_found = True
+                break
+        assert no_data_message_found, "Expected 'No platform data found' message when crypto data is empty"
+
+        # Methodology section MUST still render with header and all content
+        methodology_header_found = False
+        for row_idx in range(1, 50):
+            cell_value = ws.cell(row_idx, 1).value
+            if cell_value == "Methodology Assumptions":
+                methodology_header_found = True
+                assert ws.cell(row_idx, 1).font.bold is True
+                break
+
+        assert methodology_header_found, "Methodology Assumptions header must render even without crypto data"
+
+        # Representative methodology items must be present in the rendered output
+        expected_labels = {
+            "Aggregation Approach",
+            "Cost Basis Method: FIFO",
+            "365-Day Exemption",
+            "Materiality Threshold",
+            "Data Sources",
+        }
+
+        found_labels = set()
+        for row_idx in range(1, 100):
+            cell_value = ws.cell(row_idx, 1).value
+            if cell_value in expected_labels:
+                found_labels.add(cell_value)
+
+        assert found_labels == expected_labels, f"Expected all methodology labels {expected_labels}, found {found_labels}"
+
+    def test_methodology_sections_render(self):
+        """Methodology section renders with grouped section headers in bold."""
+        wb = openpyxl.Workbook()
+        entry = _make_capital_entry(platform="Kraken")
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        write_assumptions_and_methodology_sheet(wb, capital_entries=report.capital_entries)
+        ws = wb["Assumptions & Methodology"]
+
+        # Expected 7 section headers in bold
+        expected_sections = {
+            "Taxable Events",
+            "Holding Period & Exemptions",
+            "Capital Gains Calculation",
+            "Losses",
+            "Tax Rates",
+            "Other Gains",
+            "Implementation",
+        }
+
+        found_sections = set()
+        for row_idx in range(1, 200):
+            cell_value = ws.cell(row_idx, 1).value
+            if cell_value in expected_sections:
+                found_sections.add(cell_value)
+                # Verify section header is bold
+                assert ws.cell(row_idx, 1).font.bold is True, f"Section '{cell_value}' must be bold"
+                # Verify blank row before section (except first section)
+                if row_idx > 10:  # Skip title rows
+                    prev_cell = ws.cell(row_idx - 1, 1).value
+                    assert prev_cell is None or prev_cell == "", f"Section '{cell_value}' must have blank row before it"
+
+        assert found_sections == expected_sections, f"Expected sections {expected_sections}, found {found_sections}"
+
+    def test_methodology_items_have_legal_citations(self):
+        """Each methodology item includes legal citation (CIRS, AT folheto, or PIV)."""
+        wb = openpyxl.Workbook()
+        entry = _make_capital_entry(platform="Kraken")
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        write_assumptions_and_methodology_sheet(wb, capital_entries=report.capital_entries)
+        ws = wb["Assumptions & Methodology"]
+
+        # Find all methodology item labels by structural properties:
+        # - Has a label in column 1 (non-empty)
+        # - Has a description in column 2 (non-empty, not a section header)
+        # - Exclude platform data headers
+        # - Start scanning from methodology section (row 11+)
+        methodology_labels = []
+        platform_data_headers = {
+            "Platform",
+            "Operator Entity",
+            "Country",
+            "Confidence",
+            "Review Required",
+            "Assumption / Verification Note",
+            "Transaction Count",
+        }
+        for row_idx in range(1, 200):
+            cell_value = ws.cell(row_idx, 1).value
+            description = ws.cell(row_idx, 2).value
+
+            if row_idx < 11:
+                continue
+            # Methodology items: label + description present, not a platform header
+            if cell_value and description and cell_value not in platform_data_headers:
+                methodology_labels.append((cell_value, row_idx))
+
+        # Should have at least 15 methodology items across all sections
+        assert len(methodology_labels) >= 15, f"Expected at least 15 methodology items, found {len(methodology_labels)}"
+
+        # Each description must include legal citation
+        legal_citation_patterns = [
+            "CIRS art.",
+            "AT folheto",
+            "Ofício Circulado",
+            "AT PIV",
+            "Lei n.",
+            "Implementation decision",
+            "Source:",
+        ]
+
+        for label, row_idx in methodology_labels:
+            description = ws.cell(row_idx, 2).value
+            assert description is not None, f"Item '{label}' at row {row_idx} must have description"
+
+            has_legal_citation = any(pattern in description for pattern in legal_citation_patterns)
+            assert has_legal_citation, f"Item '{label}' description must include legal citation (CIRS, AT folheto, PIV, or Implementation decision)"
+
+    def test_all_decision_points_documented(self):
+        """All decision points from decision_points/2025.md are documented in methodology.
+
+        Verifies completeness: each DP-001 through DP-011 from the decision points
+        document must have a corresponding methodology item with that DP reference.
+        This test ensures the methodology section stays in sync with the canonical
+        decision points list.
+        """
+        wb = openpyxl.Workbook()
+        entry = _make_capital_entry(platform="Kraken")
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        write_assumptions_and_methodology_sheet(wb, capital_entries=report.capital_entries)
+        ws = wb["Assumptions & Methodology"]
+
+        # Expected decision points from decision_points/2025.md
+        expected_decision_points = {
+            "DP-001",  # Loan Repayment Exclusion
+            "DP-002",  # Crypto-to-Crypto Deferral
+            "DP-003",  # Cost Basis Method: FIFO
+            "DP-004",  # Per-Wallet FIFO
+            "DP-005",  # Liquidity Provision
+            "DP-006",  # Transfer Fees
+            "DP-007",  # Fee Deductibility
+            "DP-008",  # Other Gains Classification
+            "DP-009",  # Cashback Treatment
+            "DP-010",  # Futures/Derivatives Losses
+            "DP-011",  # OGR Usage for Derivatives
+        }
+
+        # Collect all decision point references from methodology descriptions
+        found_decision_points = set()
+        for row_idx in range(1, 200):
+            description = ws.cell(row_idx, 2).value
+            if description and isinstance(description, str):
+                # Find all DP-XXX patterns in the description
+                dp_matches = re.findall(r"DP-\d{3}", description)
+                found_decision_points.update(dp_matches)
+
+        # Verify all expected decision points are documented
+        missing_decision_points = expected_decision_points - found_decision_points
+        assert (
+            not missing_decision_points
+        ), f"Missing decision points in methodology: {sorted(missing_decision_points)}"
+
+        # Verify we found exactly the expected set (no extra DPs)
+        extra_decision_points = found_decision_points - expected_decision_points
+        assert (
+            not extra_decision_points
+        ), f"Unexpected decision points in methodology: {sorted(extra_decision_points)}"
+
+    def test_platform_assumptions_section_unchanged(self):
+        """Platform Assumptions section structure unchanged after methodology refactor (Design Invariant #1)."""
+        wb = openpyxl.Workbook()
+        entry = _make_capital_entry(platform="Kraken")
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        write_assumptions_and_methodology_sheet(wb, capital_entries=report.capital_entries)
+        ws = wb["Assumptions & Methodology"]
+
+        # Headers row should be at row 5 (after title at row 1, description at row 2, blank rows 3-4)
+        # Or row 6 if "No platform data found" message is present (when no data)
+        # With data, headers are at row 5
+        headers_row = 5
+        expected_headers = [
+            "Platform",
+            "Operator Entity",
+            "Country",
+            "Confidence",
+            "Review Required",
+            "Assumption / Verification Note",
+            "Transaction Count",
+        ]
+
+        for col_idx, expected_header in enumerate(expected_headers, 1):
+            assert ws.cell(headers_row, col_idx).value == expected_header, f"Expected header '{expected_header}' at column {col_idx}"
+
+        # Verify column order with actual data
+        assert ws.cell(6, 1).value == "Kraken"
+        assert ws.cell(6, 2).value == "Kraken Entity"  # from _make_origin
+        assert ws.cell(6, 3).value == "US"
+        assert ws.cell(6, 4).value == "high"  # confidence value from make_operator_origin defaults
+        assert ws.cell(6, 5).value == "NO"
+        assert ws.cell(6, 6).value == ""
+        assert ws.cell(6, 7).value == 1
+
+        # Verify red-fill logic for review_required platforms
+        bybit_entry = _make_capital_entry(
+            platform="Bybit",
+            platform_review_required=True,
+            operator_assumption="verify region",
+        )
+        report2 = _make_crypto_tax_report(capital_entries=[bybit_entry])
+        wb2 = openpyxl.Workbook()
+        write_assumptions_and_methodology_sheet(wb2, capital_entries=report2.capital_entries)
+        ws2 = wb2["Assumptions & Methodology"]
+
+        # Bybit row should have red fill
+        from tax_reporting.application.persisting.excel_utils import REVIEW_ROW_FILL
+        assert ws2.cell(6, 1).fill == REVIEW_ROW_FILL
+        assert ws2.cell(6, 5).value == "YES"
+
+    def test_section_headers_bold(self):
+        """Methodology section headers have bold font."""
+        wb = openpyxl.Workbook()
+        entry = _make_capital_entry(platform="Kraken")
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        write_assumptions_and_methodology_sheet(wb, capital_entries=report.capital_entries)
+        ws = wb["Assumptions & Methodology"]
+
+        # Expected section headers
+        expected_sections = {
+            "Taxable Events",
+            "Holding Period & Exemptions",
+            "Capital Gains Calculation",
+            "Losses",
+            "Tax Rates",
+            "Other Gains",
+            "Implementation",
+        }
+
+        for row_idx in range(1, 200):
+            cell_value = ws.cell(row_idx, 1).value
+            if cell_value in expected_sections:
+                assert ws.cell(row_idx, 1).font.bold is True, f"Section '{cell_value}' header must be bold"
+
+    def test_section_spacing(self):
+        """Exactly one blank row between methodology sections."""
+        wb = openpyxl.Workbook()
+        entry = _make_capital_entry(platform="Kraken")
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        write_assumptions_and_methodology_sheet(wb, capital_entries=report.capital_entries)
+        ws = wb["Assumptions & Methodology"]
+
+        # Expected section headers in order
+        expected_sections = [
+            "Methodology Assumptions",  # First section header
+            "Taxable Events",
+            "Holding Period & Exemptions",
+            "Capital Gains Calculation",
+            "Losses",
+            "Tax Rates",
+            "Other Gains",
+            "Implementation",
+        ]
+
+        section_rows = {}
+        for row_idx in range(1, 200):
+            cell_value = ws.cell(row_idx, 1).value
+            if cell_value in expected_sections:
+                section_rows[cell_value] = row_idx
+
+        # Verify each section after the first has exactly one blank row before it
+        prev_row = None
+        for section in expected_sections:
+            if section not in section_rows:
+                continue
+            current_row = section_rows[section]
+            if prev_row is not None:
+                # Check the row immediately before the section header
+                blank_row = current_row - 1
+                assert (
+                    ws.cell(blank_row, 1).value is None or ws.cell(blank_row, 1).value == ""
+                ), f"Section '{section}' should have blank row at {blank_row}, found: {ws.cell(blank_row, 1).value}"
+            prev_row = current_row
+
+    def test_legal_citation_format(self):
+        """Legal citations follow expected format patterns."""
+        wb = openpyxl.Workbook()
+        entry = _make_capital_entry(platform="Kraken")
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        write_assumptions_and_methodology_sheet(wb, capital_entries=report.capital_entries)
+        ws = wb["Assumptions & Methodology"]
+
+        # Expected legal citation patterns (regex)
+        legal_citation_regexes = [
+            r"CIRS art\. \d+[\(\)\w\s,\.]*",  # CIRS art. X, with optional paragraphs
+            r"AT folheto \d{4}-\d{2}-\d{2}",  # AT folheto YYYY-MM-DD
+            r"AT PIV \d+",  # AT PIV XXXXX
+            r"Ofício Circulado \d+/\d{4}",  # Ofício Circulado N/YYYY
+            r"Lei n\.º [\d\-/]+",  # Lei n.º N
+            r"Implementation decision",  # Implementation decision
+            r"Source:",  # Source: prefix
+        ]
+
+        # Collect all methodology item descriptions by structural properties:
+        # - Has a label in column 1 (non-empty)
+        # - Has a description in column 2 (non-empty string, not a section header)
+        # - Column 3 is empty (platform data has multiple columns populated)
+        methodology_descriptions = []
+        for row_idx in range(1, 200):
+            cell_value = ws.cell(row_idx, 1).value
+            description = ws.cell(row_idx, 2).value
+            column_3_value = ws.cell(row_idx, 3).value
+
+            # Methodology items: label + description present, column 3 empty (not platform data)
+            if cell_value and description and isinstance(description, str) and not column_3_value:
+                methodology_descriptions.append((cell_value, description))
+
+        # Should have multiple methodology items
+        assert len(methodology_descriptions) >= 15, f"Expected at least 15 methodology items, found {len(methodology_descriptions)}"
+
+        # Each description must match at least one legal citation pattern
+        for label, description in methodology_descriptions:
+            matches_pattern = False
+            for pattern in legal_citation_regexes:
+                if re.search(pattern, description):
+                    matches_pattern = True
+                    break
+            assert matches_pattern, f"Item '{label}' description must include legal citation matching one of the expected patterns. Description: {description}"
