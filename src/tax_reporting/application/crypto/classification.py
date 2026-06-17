@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import json
 import logging
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 
 import pycountry
 
 from ...domain.exceptions import FileProcessingError
-from .entities import RewardTaxClassification
+from .entities import CryptoCapitalGainEntry, DerivativesClassification, ParsedOgrRow, RewardTaxClassification
 
 
 def _find_repository_root() -> Path:
@@ -433,3 +434,120 @@ def _is_valid_tabela_x_country(country: str) -> bool:
         True if the country code is in the official Tabela X list.
     """
     return country.upper() in _TABELA_X_COUNTRY_CODES
+
+
+# Matching tolerance for OGR-vs-CG disposal value comparison (Task 5 derivatives classifier).
+# 1 cent EUR — absorbs rounding differences between OGR Value (EUR) and CG proceeds_eur.
+# This is a MATCHING tolerance, not a classification threshold: it gates whether
+# an OGR Loss row's disposal proceeds (OGR "Value (EUR)" column) agrees with the
+# CG disposal proceeds (CryptoCapitalGainEntry.proceeds_eur). Comparing against
+# gain_loss_eur would be wrong because the OGR "Value (EUR)" column captures the
+# disposal value (proceeds), NOT the realized gain; the realized gain is a
+# different quantity (cost-subtracted). Verified against the Case 1 fixture:
+# OGR row 9 Value=4.17 matches CG line 19 proceeds_eur=4.17 (gain_loss_eur=2.44
+# there), so the match only succeeds against proceeds_eur. Per CLAUDE.md §4
+# (no hardcoded thresholds without flagging), this is the single numeric
+# threshold in the classifier and is documented here as the matching precision.
+_TOLERANCE_OGR_CG = Decimal("0.01")
+
+
+def classify_derivatives_event(  # noqa: PLR0911
+    ogr_row: ParsedOgrRow,
+    cg_matches: list[CryptoCapitalGainEntry],
+) -> DerivativesClassification:
+    """Classify a single OGR row as derivatives, spot, or ambiguous (Task 5).
+
+    The classifier uses two signals only: the OGR ``Type`` column and the
+    existence of a CG counterpart whose disposal proceeds match the OGR
+    magnitude within tolerance. No TH-label allowlist, no asset allowlist, no
+    amount threshold (per r1 Blocker 2 and Monitor #2 — these were proposed
+    in the investigation and rejected as fragile).
+
+    Classification matrix:
+
+    - ``Type=Profit`` → Derivatives (profits never have CG counterparts in
+      Koinly's model — realized derivatives P&L has no FIFO cost-basis trail).
+    - ``Type=Loss`` with no CG counterpart → Derivatives (no spot disposal to
+      anchor it).
+    - ``Type=Loss`` with one CG whose ``proceeds_eur`` matches within tolerance
+      → Spot (single-lot spot fee disposal).
+    - ``Type=Loss`` with multiple CG whose aggregate ``proceeds_eur`` matches
+      within tolerance → Spot (multi-lot spot fee disposal).
+    - ``Type=Loss`` with one CG whose ``proceeds_eur`` mismatches → Ambiguous
+      (single-CG suffix "manual review needed").
+    - ``Type=Loss`` with multiple CG whose aggregate ``proceeds_eur``
+      mismatches → Ambiguous (multi-CG suffix "aggregate-match check
+      required").
+
+    Args:
+        ogr_row: The parsed OGR row under classification. ``gain_loss`` carries
+            the OGR "Value (EUR)" column (disposal proceeds for Loss rows,
+            realized P&L for Profit rows). ``abs(gain_loss)`` is compared
+            against CG ``proceeds_eur``.
+        cg_matches: CG entries that share the same ``(date, asset, wallet)``
+            key as the OGR row. The caller (Task 7's ``_split_ogr_index``)
+            computes this list; the classifier only inspects it.
+
+    Returns:
+        Sealed ``DerivativesClassification`` with one of three variants:
+        ``Derivatives(reason)``, ``Spot(reason)``, or ``Ambiguous(reason)``.
+        The ``kind`` discriminator drives downstream routing per the sealed-
+        class sentinel pattern (Design Invariant 13).
+    """
+    if ogr_row.row_type == "Profit":
+        return DerivativesClassification.Derivatives(
+            reason="OGR Profit — derivatives P&L realization",
+        )
+
+    if ogr_row.row_type == "Loss":
+        ogr_magnitude = abs(ogr_row.gain_loss)
+        key_descriptor = f"({ogr_row.date}, {ogr_row.asset}, {ogr_row.wallet})"
+
+        if len(cg_matches) == 0:
+            return DerivativesClassification.Derivatives(
+                reason="OGR Loss with no CG counterpart — derivatives realization",
+            )
+
+        if len(cg_matches) == 1:
+            single_proceeds = cg_matches[0].proceeds_eur
+            if abs(single_proceeds - ogr_magnitude) <= _TOLERANCE_OGR_CG:
+                return DerivativesClassification.Spot(
+                    reason="OGR Loss matches CG disposal — spot fee",
+                )
+            return DerivativesClassification.Ambiguous(
+                reason=(
+                    f"OGR={ogr_row.gain_loss} vs CG={single_proceeds} "
+                    f"on {key_descriptor} — manual review needed"
+                ),
+            )
+
+        # Multiple CG lots: aggregate proceeds comparison.
+        aggregate_proceeds = sum(
+            (cg.proceeds_eur for cg in cg_matches),
+            start=Decimal("0"),
+        )
+        if abs(aggregate_proceeds - ogr_magnitude) <= _TOLERANCE_OGR_CG:
+            return DerivativesClassification.Spot(
+                reason=(
+                    f"OGR Loss aggregate-matches {len(cg_matches)} CG lots — spot fee disposals"
+                ),
+            )
+        return DerivativesClassification.Ambiguous(
+            reason=(
+                f"OGR={ogr_row.gain_loss} vs {len(cg_matches)} CG lots "
+                f"on {key_descriptor} — aggregate-match check required"
+            ),
+        )
+
+    # Unknown Type — defensive fallback. The plan's Monitor #2 requires that
+    # unrecognized OGR shapes route to derivatives with review. Emit Ambiguous
+    # with a specific reason rather than guessing. The current ByBit fixtures
+    # only ever produce "Profit" or "Loss", so this branch is unreachable in
+    # production data; it exists so future platforms with novel Type values
+    # are flagged rather than silently mis-routed.
+    return DerivativesClassification.Ambiguous(
+        reason=(
+            f"Unrecognized OGR Type='{ogr_row.row_type}' "
+            f"on ({ogr_row.date}, {ogr_row.asset}, {ogr_row.wallet}) — manual review needed"
+        ),
+    )

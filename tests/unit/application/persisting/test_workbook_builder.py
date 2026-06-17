@@ -204,13 +204,16 @@ class TestGenerateTaxReportHappyPath:
         assert result is True
         assert output.exists()
 
-        # Verify all expected sheets exist
+        # Verify all expected sheets exist (Derivatives P&L is gated on
+        # separate_derivatives_reporting, which is True in tests/config.ini
+        # and the 2025 decision points TOML for PT)
         from openpyxl import load_workbook
 
         wb = load_workbook(output)
         expected_sheets = {
             "Reporting",
             "Crypto Gains",
+            "Derivatives P&L",
             "Crypto Supplementary",
             "Crypto Reconciliation",
             "Loan Activity",
@@ -257,4 +260,68 @@ class TestGenerateTaxReportHappyPath:
 
         assert output.exists()
         assert output.stat().st_size > 0
+
+
+def _build_test_config(*, separate_derivatives_reporting: bool):
+    """Build a Config with the requested separate_derivatives_reporting flag."""
+    from tax_reporting.domain.jurisdiction import TaxJurisdictionConfig
+    from tax_reporting.infrastructure.config import Config
+    from tax_reporting.infrastructure.validation import SecurityConfig
+
+    tax_jurisdiction = TaxJurisdictionConfig(
+        country="PT",
+        fiscal_year=2025,
+        exclude_loan_repayment_gains=True,
+        zero_basis_review_threshold=Decimal("50"),
+        futures_derivatives_taxable=True,
+        use_other_gains_report=True,
+        separate_derivatives_reporting=separate_derivatives_reporting,
+    )
+    return Config(
+        base="EUR",
+        rates=[],
+        tax_jurisdiction=tax_jurisdiction,
+        security=SecurityConfig(),
+    )
+
+
+@pytest.mark.unit
+class TestDerivativesSheetRegistration:
+    """Verify the Derivatives P&L sheet is registered only when the flag is on."""
+
+    def test_tab_registered_when_flag_on(self, tmp_path):
+        from openpyxl import load_workbook
+
+        from tax_reporting.application.persisting.workbook_builder import generate_tax_report
+
+        output = tmp_path / "report.xlsx"
+        report = _make_valid_crypto_tax_report()
+
+        with patch(
+            "tax_reporting.application.persisting.workbook_builder.load_configuration_from_file",
+            return_value=_build_test_config(separate_derivatives_reporting=True),
+        ):
+            generate_tax_report(str(output), {}, crypto_tax_report=report)
+
+        wb = load_workbook(output)
+        assert "Derivatives P&L" in wb.sheetnames, "Derivatives P&L sheet must exist when flag is on"
+        wb.close()
+
+    def test_tab_skipped_when_flag_off(self, tmp_path):
+        from openpyxl import load_workbook
+
+        from tax_reporting.application.persisting.workbook_builder import generate_tax_report
+
+        output = tmp_path / "report.xlsx"
+        report = _make_valid_crypto_tax_report()
+
+        with patch(
+            "tax_reporting.application.persisting.workbook_builder.load_configuration_from_file",
+            return_value=_build_test_config(separate_derivatives_reporting=False),
+        ):
+            generate_tax_report(str(output), {}, crypto_tax_report=report)
+
+        wb = load_workbook(output)
+        assert "Derivatives P&L" not in wb.sheetnames, "Derivatives P&L sheet must NOT exist when flag is off"
+        wb.close()
 

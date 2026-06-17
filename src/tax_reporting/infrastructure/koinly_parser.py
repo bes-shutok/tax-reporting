@@ -14,6 +14,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Final
 
+from ..application.crypto.entities import ParsedOgrRow
 from ..domain.exceptions import FileProcessingError
 
 # File size limits for security (prevent DoS via large files)
@@ -314,14 +315,26 @@ def _extract_ogr_gain_loss(ogr_row: dict[str, str]) -> Decimal | None:
 
 def _parse_other_gains_row(
     ogr_row: dict[str, str],
-) -> tuple[datetime, str, Decimal, str, str] | None:
-    """Parse a single Other Gains Report row.
+) -> ParsedOgrRow | None:
+    """Parse a single Other Gains Report row into a typed ``ParsedOgrRow``.
+
+    All normalization happens here so downstream consumers (the derivatives
+    classifier and ``_build_ogr_index``) receive ready-to-use fields and never
+    re-parse the raw row:
+
+    - ``date`` is formatted to ISO ``YYYY-MM-DD`` via ``format_datetime``
+    - ``asset`` is normalized via ``normalize_asset_ticker``
+    - ``wallet`` is normalized via ``normalize_platform_name`` so platform
+      aliases like "ByBit (2)" collapse to "ByBit" at parse time
+    - ``gain_loss`` carries the signed EUR value (negative for ``Loss``,
+      positive for ``Profit``) from ``_extract_ogr_gain_loss``
 
     Args:
         ogr_row: Row dictionary from Other Gains Report CSV.
 
     Returns:
-        Tuple of (date, asset, amount_eur, type, wallet) or None if parsing fails.
+        ``ParsedOgrRow`` with normalized fields, or ``None`` if the row has a
+        zero/unknown value or cannot be parsed.
     """
     try:
         date_str = ogr_row.get("Date", "")
@@ -334,9 +347,18 @@ def _parse_other_gains_row(
             return None
 
         row_type = ogr_row.get("Type", "").strip()
-        wallet = ogr_row.get("Wallet Name", "").strip()
+        # Wallet normalization MUST happen here (not in _build_ogr_index) so the
+        # rewritten index builder can be a pure summing loop. Without this,
+        # "ByBit (2)" and "ByBit" would not collapse into the same key.
+        wallet = normalize_platform_name(ogr_row.get("Wallet Name", ""))
 
-        return (date, asset, gain_loss, row_type, wallet)
+        return ParsedOgrRow(
+            date=format_datetime(date),
+            asset=asset,
+            gain_loss=gain_loss,
+            row_type=row_type,
+            wallet=wallet,
+        )
     except ValueError:
         # Skip rows with parsing errors
         return None
@@ -359,14 +381,22 @@ def _find_report_path(koinly_dir: Path, marker: str, suffix: str) -> Path | None
 
 def _find_and_parse_other_gains_file(
     koinly_dir: Path,
-) -> dict[tuple[str, str, str], Decimal]:
+) -> list[ParsedOgrRow]:
     """Find and parse the Other Gains Report CSV file.
+
+    Each CSV row is parsed by ``_parse_other_gains_row`` into a typed
+    ``ParsedOgrRow`` carrying the normalized ``(date, asset, gain_loss,
+    row_type, wallet)`` fields. Summing duplicate keys is intentionally NOT
+    done here — that responsibility moved to ``_build_ogr_index`` so callers
+    that need per-row granularity (the derivatives classifier) can consume
+    the list directly.
 
     Args:
         koinly_dir: Directory containing Koinly export files.
 
     Returns:
-        Dictionary mapping (date, asset, wallet) -> gain_loss_eur.
+        List of ``ParsedOgrRow`` instances, one per non-skipped OGR row, in
+        source CSV order. Empty list if the OGR file is missing.
     """
     import logging
 
@@ -374,20 +404,16 @@ def _find_and_parse_other_gains_file(
 
     other_gains_file = _find_report_path(koinly_dir, "other_gains_report", ".csv")
     if other_gains_file is None:
-        return {}
+        return []
 
     logger.info("Parsing Other Gains Report: %s", other_gains_file)
     rows = read_koinly_rows(other_gains_file)
 
-    result: dict[tuple[str, str, str], Decimal] = {}
+    result: list[ParsedOgrRow] = []
     for row in rows:
         parsed = _parse_other_gains_row(row)
         if parsed is None:
             continue
-
-        date, asset, gain_loss, row_type, wallet = parsed
-        key = (format_datetime(date), asset, wallet)
-        # Sum values for duplicate keys (multiple fees/losses on same date)
-        result[key] = result.get(key, Decimal("0")) + gain_loss
+        result.append(parsed)
 
     return result

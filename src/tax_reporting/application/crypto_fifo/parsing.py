@@ -181,7 +181,9 @@ def _classify_rows_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
             net_value = parse_koinly_decimal(row.get("Net Value (EUR)", "0"))
             fee_amount = parse_koinly_decimal(row.get("Fee Amount", "0"))
             fee_value = parse_koinly_decimal(row.get("Fee Value (EUR)", "0"))
-            date_str = format_datetime(parse_koinly_datetime(date_raw))
+            parsed_dt = parse_koinly_datetime(date_raw)
+            date_str = format_datetime(parsed_dt)
+            timestamp_str = parsed_dt.strftime("%Y-%m-%d %H:%M")
         except ValueError as exc:
             logger.error(
                 "Row %d: unparseable value in TH row — skipping. "
@@ -229,6 +231,7 @@ def _classify_rows_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
                 received_affected=received_affected,
                 fee_affected=fee_affected,
                 loan_affected_assets=loan_affected_assets,
+                timestamp_str=timestamp_str,
             ),
             acquisitions=acquisitions,
             consumptions=consumptions,
@@ -412,6 +415,7 @@ def _classify_sell_row(
                 platform=normalize_platform_name(sell_wallet),
                 notes="",
                 review_required=False,
+                disposal_timestamp=parsed_row.timestamp_str,
             ),
             tx_key=parsed_row.tx_key,
             source_row_index=parsed_row.row_index,
@@ -430,6 +434,7 @@ def _classify_sell_row(
                     platform=normalize_platform_name(sell_wallet),
                     notes=f"Fee for sell of {parsed_row.sent_currency}",
                     review_required=False,
+                    disposal_timestamp=parsed_row.timestamp_str,
                 ),
                 tx_key=parsed_row.tx_key,
                 source_row_index=parsed_row.row_index,
@@ -478,6 +483,7 @@ def _classify_withdrawal_row(
                     "and not a self-custody transfer to a wallet not tracked in Koinly. "
                     "If non-taxable, re-label as 'Transfer' in Koinly and re-run."
                 ),
+                disposal_timestamp=parsed_row.timestamp_str,
             ),
             tx_key=parsed_row.tx_key,
             source_row_index=parsed_row.row_index,
@@ -496,6 +502,7 @@ def _classify_withdrawal_row(
                     platform=normalize_platform_name(withdrawal_wallet),
                     notes=f"Fee for withdrawal of {parsed_row.sent_currency}",
                     review_required=False,
+                    disposal_timestamp=parsed_row.timestamp_str,
                 ),
                 tx_key=parsed_row.tx_key,
                 source_row_index=parsed_row.row_index,
@@ -666,6 +673,7 @@ def _classify_unhandled_principal_row(
                     platform=normalize_platform_name(fee_wallet),
                     notes=f"Fee for unhandled {parsed_row.row_type}",
                     review_required=False,
+                    disposal_timestamp=parsed_row.timestamp_str,
                 ),
                 tx_key=parsed_row.tx_key,
                 source_row_index=parsed_row.row_index,
@@ -699,6 +707,7 @@ def _classify_fee_only_row(
                         f"({parsed_row.sent_currency}->{parsed_row.received_currency})"
                     ),
                     review_required=False,
+                    disposal_timestamp=parsed_row.timestamp_str,
                 ),
                 tx_key=parsed_row.tx_key,
                 source_row_index=parsed_row.row_index,

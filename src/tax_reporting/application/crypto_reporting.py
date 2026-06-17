@@ -22,6 +22,7 @@ from ..infrastructure.koinly_parser import (
     read_koinly_rows,
 )
 from .crypto.aggregation import (
+    aggregate_derivatives_entries,
     _aggregate_capital_entries,
     _filter_immaterial_entries,
 )
@@ -44,6 +45,7 @@ from .crypto.entities import (
     CryptoRewardIncomeEntry,
     CryptoSkippedZeroValueToken,
     CryptoTaxReport,
+    DerivativesPnLEntry,
     HoldingsSnapshot,
     LoanActivityEntry,
     OperatorOrigin,
@@ -58,6 +60,7 @@ from .crypto.ogr_handler import (
     _apply_ogr_direction_override,
     _apply_ogr_overrides,
     _build_ogr_index,
+    _split_ogr_index,
     _validate_capital_entries_have_valid_countries,
 )
 from .crypto.operator_origin import resolve_operator_origin
@@ -73,6 +76,7 @@ from .crypto.validation import (
     _parse_transaction_date,
 )
 from .crypto.constants import ZERO
+from .crypto.derivatives_dedup import apply_derivatives_dedup
 from .crypto_fifo import (
     discover_loan_affected_assets,
 )
@@ -196,19 +200,36 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
 
     capital_entries = _validate_capital_entries_have_valid_countries(capital_entries, jurisdiction)
 
-    # CRITICAL: OGR override must happen BEFORE _aggregate_capital_entries
+    # Derivatives CG dedup must run after validation and before OGR split so
+    # the classifier sees the filtered list (Design Invariant 2, 3).
+    capital_entries = apply_derivatives_dedup(
+        capital_entries=capital_entries,
+        jurisdiction=jurisdiction,
+        transaction_history_file=transaction_history_file,
+        year=year,
+    )
+
+    # CRITICAL: OGR split + override must happen BEFORE _aggregate_capital_entries
     # because CG rows are individual FIFO lots that get summed in aggregation.
     # OGR contains the correct total gain/loss for the disposal event.
     # Overriding after aggregation would lose the lot-level trail.
+    # The split runs post-FIFO/post-validation so the classifier sees rebuilt lots.
+    # derivatives_entries is initialized BEFORE the gate so it is in scope for the
+    # later aggregation step regardless of whether OGR processing ran.
+    derivatives_entries: list[DerivativesPnLEntry] = []
     if jurisdiction and jurisdiction.use_other_gains_report:
-        ogr_index = _find_and_parse_other_gains_file(koinly_dir)
-        if ogr_index:
-            logging.getLogger(__name__).info(
-                "Applying OGR directional authority: %d entries in OGR index",
-                len(ogr_index),
+        ogr_rows = _find_and_parse_other_gains_file(koinly_dir)
+        if ogr_rows:
+            spot_index, derivatives_entries = _split_ogr_index(
+                ogr_rows, capital_entries, jurisdiction
             )
+            if spot_index:
+                logging.getLogger(__name__).info(
+                    "Applying OGR directional authority: %d entries in spot_index",
+                    len(spot_index),
+                )
             capital_entries = _apply_ogr_direction_override(
-                capital_entries, ogr_index, jurisdiction
+                capital_entries, spot_index, jurisdiction
             )
 
     capital_entries = _aggregate_capital_entries(capital_entries)
@@ -221,6 +242,14 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
             dropped,
             len(capital_entries),
         )
+
+    # Derivatives aggregation runs AFTER capital aggregation: the two streams
+    # are independent (capital groups by (date, asset, platform, holding_period);
+    # derivatives group by (date, asset, platform, event_type)). Capital pipeline
+    # is the existing tested path; running derivatives after keeps it uninterrupted.
+    # Derivatives bypass _filter_immaterial_entries: art. 10(1)(e) has no
+    # materiality carve-out, every EUR of derivative P&L must be reported.
+    derivatives_entries = aggregate_derivatives_entries(derivatives_entries)
 
     opening = _parse_holdings_file(
         _find_report_file(koinly_dir, "beginning_of_year_holdings_report"),
@@ -305,6 +334,7 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
         loan_activity=loan_activity,
         fifo_rebuild_assets=loan_affected_assets,
         review_entries=review_entries,
+        derivatives_entries=derivatives_entries,
         zero_basis_review_threshold=(
             jurisdiction.zero_basis_review_threshold
             if jurisdiction
@@ -375,7 +405,9 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
             proceeds_eur = parse_koinly_decimal(row.get("Proceeds (EUR)", ""))
             gain_loss_eur = parse_koinly_decimal(row.get("Gain / loss", ""))
             amount = parse_koinly_decimal(row.get("Amount", ""))
-            disposal_date = format_datetime(parse_koinly_datetime(row.get("Date Sold", "")))
+            disposal_dt = parse_koinly_datetime(row.get("Date Sold", ""))
+            disposal_date = format_datetime(disposal_dt)
+            disposal_timestamp = disposal_dt.strftime("%Y-%m-%d %H:%M")
             acquisition_date = format_datetime(parse_koinly_datetime(row.get("Date Acquired", "")))
         except ValueError as exc:
             logger.warning("Skipping capital gains row %d for %r: ambiguous decimal value: %s", row_number, asset, exc)
@@ -470,6 +502,7 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
             notes=notes,
             token_swap_history=token_origin_str,
             multi_acquisition_dates=False,
+            disposal_timestamp=disposal_timestamp,
         )
 
         if is_loan_affected:

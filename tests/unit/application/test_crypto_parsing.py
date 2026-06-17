@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
+from tax_reporting.application.crypto.entities import ParsedOgrRow
+from tax_reporting.application.crypto.ogr_handler import _build_ogr_index
 from tax_reporting.application.crypto.parsing import (
+    _MAX_PDF_BYTES,
     _decode_pdf_hex_token,
     _extract_tax_year,
     _find_report_file,
     _find_report_path,
-    _MAX_PDF_BYTES,
+)
+from tax_reporting.infrastructure.koinly_parser import (
+    _find_and_parse_other_gains_file,
 )
 
 
@@ -249,3 +255,203 @@ class TestMaxPdfBytes:
         # Assert: 20 MB = 20 * 1024 * 1024 bytes
         expected = 20 * 1024 * 1024
         assert _MAX_PDF_BYTES == expected
+
+
+# =============================================================================
+# Tests for _find_and_parse_other_gains_file (Task 6: list[ParsedOgrRow] return)
+# =============================================================================
+
+_OTHER_GAINS_CSV_HEADER = "Date,Asset,Amount,Value (EUR),Type,Wallet Name\n"
+
+
+def _write_other_gains_csv(directory: Path, rows: list[dict[str, str]]) -> Path:
+    """Write a minimal Other Gains Report CSV into ``directory`` and return its path."""
+    import csv as _csv
+
+    path = directory / "koinly_2025_other_gains_report.csv"
+    fieldnames = ["Date", "Asset", "Amount", "Value (EUR)", "Type", "Wallet Name"]
+    with path.open("w", newline="") as fh:
+        writer = _csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+    return path
+
+
+class TestOtherGainsParse:
+    """Task 6 RED tests: _find_and_parse_other_gains_file returns list[ParsedOgrRow]."""
+
+    def test_returns_list_of_parsed_rows(self, tmp_path: Path) -> None:
+        """Given an OGR CSV with 3 rows, returns list[ParsedOgrRow] length 3.
+
+        Each row carries (date, asset, gain_loss, row_type, wallet). The parser
+        returns a list of typed rows, NOT a pre-summed dict.
+        """
+        _write_other_gains_csv(
+            tmp_path,
+            [
+                {
+                    "Date": "13/01/2025 13:01",
+                    "Asset": "USDT",
+                    "Amount": "-142,11",
+                    "Value (EUR)": "138,73",
+                    "Type": "Loss",
+                    "Wallet Name": "ByBit",
+                },
+                {
+                    "Date": "14/01/2025 10:30",
+                    "Asset": "BTC",
+                    "Amount": "0,5",
+                    "Value (EUR)": "500,00",
+                    "Type": "Profit",
+                    "Wallet Name": "Kraken",
+                },
+                {
+                    "Date": "15/01/2025 09:00",
+                    "Asset": "ETH",
+                    "Amount": "1,0",
+                    "Value (EUR)": "250,00",
+                    "Type": "Profit",
+                    "Wallet Name": "Gate.io",
+                },
+            ],
+        )
+
+        result = _find_and_parse_other_gains_file(tmp_path)
+
+        # The parser must return a list of ParsedOgrRow, NOT a pre-summed dict.
+        assert isinstance(result, list)
+        assert len(result) == 3
+        assert all(isinstance(row, ParsedOgrRow) for row in result)
+
+        # Each row carries the parsed fields.
+        by_key = {(r.date, r.asset, r.wallet): r for r in result}
+        assert ("2025-01-13", "USDT", "ByBit") in by_key
+        assert by_key[("2025-01-13", "USDT", "ByBit")].gain_loss == Decimal("-138.73")
+        assert by_key[("2025-01-13", "USDT", "ByBit")].row_type == "Loss"
+
+        assert ("2025-01-14", "BTC", "Kraken") in by_key
+        assert by_key[("2025-01-14", "BTC", "Kraken")].gain_loss == Decimal("500.00")
+        assert by_key[("2025-01-14", "BTC", "Kraken")].row_type == "Profit"
+
+        assert ("2025-01-15", "ETH", "Gate.io") in by_key
+        assert by_key[("2025-01-15", "ETH", "Gate.io")].gain_loss == Decimal("250.00")
+
+    def test_preserves_per_row_type(self, tmp_path: Path) -> None:
+        """Two OGR rows on the same key with different Type appear separately.
+
+        Rows share the same (date, asset, wallet) key but have different Type
+        (Profit and Loss). Both appear separately with original Type preserved,
+        no summing at parse time.
+        """
+        _write_other_gains_csv(
+            tmp_path,
+            [
+                {
+                    "Date": "13/01/2025 13:01",
+                    "Asset": "USDT",
+                    "Amount": "-4,17",
+                    "Value (EUR)": "4,17",
+                    "Type": "Loss",
+                    "Wallet Name": "ByBit",
+                },
+                {
+                    "Date": "13/01/2025 13:01",
+                    "Asset": "USDT",
+                    "Amount": "140,18",
+                    "Value (EUR)": "140,18",
+                    "Type": "Profit",
+                    "Wallet Name": "ByBit",
+                },
+            ],
+        )
+
+        result = _find_and_parse_other_gains_file(tmp_path)
+
+        # The parser must NOT pre-sum: both rows appear separately with original Type.
+        assert isinstance(result, list)
+        assert len(result) == 2
+
+        row_types = {r.row_type for r in result}
+        assert row_types == {"Loss", "Profit"}
+
+        losses = [r for r in result if r.row_type == "Loss"]
+        profits = [r for r in result if r.row_type == "Profit"]
+        assert len(losses) == 1
+        assert len(profits) == 1
+        assert losses[0].gain_loss == Decimal("-4.17")
+        assert profits[0].gain_loss == Decimal("140.18")
+
+
+class TestBuildOgrIndex:
+    """Task 6 RED tests: _build_ogr_index(rows: list[ParsedOgrRow]) sums into dict."""
+
+    def test_sums_into_dict(self) -> None:
+        """Given list[ParsedOgrRow] with duplicate keys, _build_ogr_index sums values.
+
+        Returns dict[(date, asset, wallet), Decimal] with values summed across
+        rows sharing the same key.
+        """
+        rows = [
+            ParsedOgrRow(
+                date="2025-01-13",
+                asset="USDT",
+                gain_loss=Decimal("-4.17"),
+                row_type="Loss",
+                wallet="ByBit",
+            ),
+            ParsedOgrRow(
+                date="2025-01-13",
+                asset="USDT",
+                gain_loss=Decimal("140.18"),
+                row_type="Profit",
+                wallet="ByBit",
+            ),
+        ]
+
+        index = _build_ogr_index(rows)
+
+        assert isinstance(index, dict)
+        # Duplicate keys are summed into a single Decimal value.
+        assert index[("2025-01-13", "USDT", "ByBit")] == Decimal("136.01")
+
+    def test_backward_compat_matches_old_behavior(self, tmp_path: Path) -> None:
+        """Composed pipeline produces the same dict the old single call produced.
+
+        Given ByBit Case 1 fixtures, _build_ogr_index(_find_and_parse_other_gains_file(
+        koinly_dir)) produces the same dict the old _find_and_parse_other_gains_file
+        produced. The old function returned dict[(date, asset, wallet), Decimal] with
+        summed values. The new pipeline is _find_and_parse_other_gains_file ->
+        list[ParsedOgrRow] followed by _build_ogr_index summing into the same dict.
+        This test guards backward compatibility: the composed output must equal the
+        old single-call output shape.
+        """
+        _write_other_gains_csv(
+            tmp_path,
+            [
+                {
+                    "Date": "13/01/2025 13:01",
+                    "Asset": "USDT",
+                    "Amount": "-4,17",
+                    "Value (EUR)": "4,17",
+                    "Type": "Loss",
+                    "Wallet Name": "ByBit",
+                },
+                {
+                    "Date": "13/01/2025 13:01",
+                    "Asset": "USDT",
+                    "Amount": "140,18",
+                    "Value (EUR)": "140,18",
+                    "Type": "Profit",
+                    "Wallet Name": "ByBit",
+                },
+            ],
+        )
+
+        rows = _find_and_parse_other_gains_file(tmp_path)
+        index = _build_ogr_index(rows)
+
+        # The composed pipeline must produce the old single-call shape.
+        assert isinstance(index, dict)
+        # Old behavior summed the two rows: -4.17 + 140.18 = 136.01
+        assert index[("2025-01-13", "USDT", "ByBit")] == Decimal("136.01")

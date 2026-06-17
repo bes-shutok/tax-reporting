@@ -189,6 +189,7 @@ def _build_taxable_realization(  # noqa: PLR0913
             filter(None, [epoch_reason, deferred_reason, con.con.review_reason, acq.acq.review_reason])
         )
         or None,
+        disposal_timestamp=con.con.disposal_timestamp,
     )
 
 
@@ -292,6 +293,7 @@ def _consume_against_pool_inplace(  # noqa: PLR0912, PLR0913, PLR0915
                     notes=con.con.notes,
                     review_required=True,
                     review_reason=review_reason,
+                    disposal_timestamp=con.con.disposal_timestamp,
                 )
             )
         else:

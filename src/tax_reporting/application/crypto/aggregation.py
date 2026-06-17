@@ -24,8 +24,15 @@ if TYPE_CHECKING:
     )
 
 else:
-    # Runtime import for AggregatedRewardIncomeEntry to avoid circular dependency
-    from tax_reporting.application.crypto.entities import AggregatedRewardIncomeEntry
+    # AggregatedRewardIncomeEntry needs a runtime import to avoid a circular
+    # dependency with entities.py. DerivativesEventType and DerivativesPnLEntry
+    # do not have that cycle (entities.py does not import aggregation.py) but
+    # ride along in the same else block to keep all entities imports co-located.
+    from tax_reporting.application.crypto.entities import (
+        AggregatedRewardIncomeEntry,
+        DerivativesEventType,
+        DerivativesPnLEntry,
+    )
 
 # Constants for decimal calculations
 _MATERIALITY_THRESHOLD: Final = Decimal("1")
@@ -309,3 +316,57 @@ def _filter_immaterial_entries(entries: list[CryptoCapitalGainEntry]) -> list[Cr
     The absolute-value test means small losses (between -1 and 0) are also excluded.
     """
     return [e for e in entries if abs(e.gain_loss_eur) >= _MATERIALITY_THRESHOLD]
+
+
+def aggregate_derivatives_entries(
+    entries: list[DerivativesPnLEntry],
+) -> list[DerivativesPnLEntry]:
+    """Aggregate derivatives P&L rows by (date, asset, platform, event_type).
+
+    Mirrors :func:`_aggregate_capital_entries`: builds a ``dict[group_key, list[entry]]``
+    and emits one aggregated entry per group with summed ``pnl_eur``.
+
+    The ``event_type`` is part of the aggregation key so that a realized profit and a
+    realized loss on the same day for the same asset/platform do not collapse into a
+    misleading net. Each variant represents a distinct economic event under
+    CIRS art. 10(1)(e).
+
+    Args:
+        entries: Raw derivatives P&L entries produced by the OGR classifier.
+
+    Returns:
+        Aggregated derivatives entries sorted by (date, asset, platform, event_type).
+    """
+    groups: dict[tuple[str, str, str, DerivativesEventType], list[DerivativesPnLEntry]] = {}
+    for entry in entries:
+        key = (entry.date, entry.asset, entry.platform, entry.event_type)
+        groups.setdefault(key, []).append(entry)
+
+    result = []
+    for group in groups.values():
+        first = group[0]
+        unique_refs = list(dict.fromkeys(e.source_ref for e in group if e.source_ref))
+        # Merge notes across group members with the same pattern as _aggregate_capital_entries
+        # (aggregation.py:283-287): join unique non-empty notes with "; ". Mirrors the
+        # established codebase pattern so non-first members' notes survive aggregation
+        # instead of being silently dropped (development_lessons.md #77, review r1 Medium 2).
+        merged_notes = "; ".join(dict.fromkeys(e.notes for e in group if e.notes)) or ""
+        result.append(
+            replace(
+                first,
+                pnl_eur=sum((e.pnl_eur for e in group), start=ZERO),
+                source_ref="; ".join(unique_refs),
+                review_required=any(e.review_required for e in group),
+                review_reason="; ".join(
+                    dict.fromkeys(e.review_reason for e in group if e.review_reason)
+                ),
+                event_count=len(group),
+                operator_entity=first.operator_entity,
+                operator_country=first.operator_country,
+                annex_hint=first.annex_hint,
+                operation_code=first.operation_code,
+                notes=merged_notes,
+            )
+        )
+    result.sort(key=lambda e: (e.date, e.asset, e.platform, e.event_type.value))
+    return result

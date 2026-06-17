@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 
@@ -17,7 +16,6 @@ from ...infrastructure.config import DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD
 
 # Local import for validation function (required to avoid circular import)
 from . import validation as _validation
-
 from .constants import ZERO
 
 
@@ -30,6 +28,146 @@ class RewardTaxClassification(Enum):
 
     TAXABLE_NOW = "taxable_now"
     DEFERRED_BY_LAW = "deferred_by_law"
+
+
+class DerivativesEventType(Enum):
+    """Event type for a derivatives P&L realization under CIRS art. 10(1)(e).
+
+    PROFIT: Realized gain from a derivatives contract (futures/perpetuals/options).
+    LOSS: Realized loss from a derivatives contract.
+
+    Note: ``FEE`` is deferred until a Koinly export produces an OGR row whose description
+    or TH counterpart explicitly identifies a futures fee distinct from realized P&L.
+    See the plan's Monitor section (item 1).
+    """
+
+    PROFIT = "profit"
+    LOSS = "loss"
+
+
+@dataclass(frozen=True)
+class ParsedOgrRow:
+    """Single normalized row from the Koinly Other Gains Report (OGR) CSV.
+
+    Produced by ``_parse_other_gains_row`` (Task 6) and consumed by
+    ``classify_derivatives_event`` (Task 5) and ``_build_ogr_index`` (Task 6).
+    The OGR CSV columns are ``Date,Asset,Amount,Value (EUR),Type,Wallet Name``;
+    this dataclass carries the parsed, normalized fields downstream consumers
+    need, so neither the classifier nor the index builder re-parse the raw row.
+
+    Attributes:
+        date: ISO-format realization date (``YYYY-MM-DD``), produced by
+            ``format_datetime`` at parse time so downstream consumers receive a
+            normalized string key directly.
+        asset: Normalized asset ticker (e.g., "USDT"), produced by
+            ``normalize_asset_ticker`` at parse time.
+        gain_loss: The OGR ``Value (EUR)`` column. For ``Loss`` rows this is the
+            disposal proceeds (a positive EUR value, but parsed with the sign
+            from the ``Amount`` column so it is typically negative for
+            disposals); for ``Profit`` rows this is the realized P&L (positive).
+            The classifier compares ``abs(gain_loss)`` against CG
+            ``proceeds_eur`` because both quantities describe the disposal
+            value, not the realized gain.
+        row_type: Literal ``"Profit"`` or ``"Loss"`` from the OGR ``Type``
+            column. Drives the classifier's primary branch.
+        wallet: Normalized platform/wallet name (e.g., "ByBit"), produced by
+            ``normalize_platform_name`` at parse time.
+    """
+
+    date: str
+    asset: str
+    gain_loss: Decimal
+    row_type: str
+    wallet: str
+
+
+@dataclass(frozen=True)
+class DerivativesClassification:
+    """Sealed classification result for a single OGR row.
+
+    Variants are produced via the class-method constructors ``Derivatives()``, ``Spot()``,
+    and ``Ambiguous()``. Each variant carries a ``kind`` discriminator and a human-readable
+    ``reason``. The classifier (``classify_derivatives_event``) returns one of these three
+    variants; downstream code routes by ``kind`` so spot and derivatives rows are never
+    conflated (sealed-class sentinel pattern).
+
+    Note: ``holding_period`` is intentionally absent because art. 10(1)(e) derivatives have
+    no 365-day exemption (unlike art. 10(1)(k) cryptoassets); all derivatives realizations
+    are taxed regardless of holding duration.
+    """
+
+    kind: str
+    reason: str
+
+    @classmethod
+    def Derivatives(cls, reason: str) -> DerivativesClassification:  # noqa: N802
+        """Construct the Derivatives variant: OGR row is a derivatives realization."""
+        return cls(kind="derivatives", reason=reason)
+
+    @classmethod
+    def Spot(cls, reason: str) -> DerivativesClassification:  # noqa: N802
+        """Construct the Spot variant: OGR row is a spot fee disposal with a CG counterpart."""
+        return cls(kind="spot", reason=reason)
+
+    @classmethod
+    def Ambiguous(cls, reason: str) -> DerivativesClassification:  # noqa: N802
+        """Construct the Ambiguous variant: OGR/CG mismatch, requires manual review."""
+        return cls(kind="ambiguous", reason=reason)
+
+
+@dataclass(frozen=True)
+class DerivativesPnLEntry:
+    """Single realized P&L row from a derivatives contract, reported under CIRS art. 10(1)(e).
+
+    Note: ``holding_period`` is intentionally absent because art. 10(1)(e) derivatives have
+    no 365-day exemption (unlike art. 10(1)(k) cryptoassets); all derivatives realizations
+    are taxed regardless of holding duration.
+
+    Attributes:
+        date: ISO-formatted realization date (YYYY-MM-DD).
+        asset: Normalized asset ticker (e.g., "USDT").
+        platform: Normalized platform/wallet name (e.g., "ByBit").
+        pnl_eur: Realized profit (positive) or loss (negative) in EUR.
+        event_type: PROFIT or LOSS, used as part of the aggregation key so a profit and a
+            fee on the same day do not collapse into a misleading net.
+        source_ref: Audit reference back to the source row (e.g., "OGR:2025-01-12:USDT").
+        legal_category: Legal basis citation; defaults to art. 10(1)(e).
+        review_required: True when classification was ambiguous; triggers "YES: <reason>".
+        review_reason: Specific actionable reason when review_required is True.
+        annex_hint: IRS Anexo G Quadro 13 routing; constant for derivatives
+            (no 365-day exemption), unlike crypto where it branches on holding period.
+        operation_code: Operation code from Tabela de Códigos; ``G51`` covers
+            "instrumentos financeiros derivados" (closed AT enum G51-G54).
+        operator_entity: Operator entity from ``resolve_operator_origin()``; empty until
+            the OGR handler populates it. Raw wallet name is used for unmapped platforms.
+        operator_country: Resolved counterparty country code (Tabela X); ``"UNKNOWN"`` for
+            unmapped platforms. Empty until the OGR handler populates it.
+        event_count: Number of underlying OGR rows aggregated into this entry; ``1`` for
+            non-aggregated entries. Summed during aggregation.
+        notes: Free-form user-annotation column (classification reason for ambiguous rows;
+            blank otherwise). The pipeline does NOT auto-populate notes.
+    """
+
+    date: str
+    asset: str
+    platform: str
+    pnl_eur: Decimal
+    event_type: DerivativesEventType
+    source_ref: str
+    legal_category: str = "CIRS art. 10(1)(e)"
+    review_required: bool = False
+    review_reason: str = ""
+    # IRS Anexo G Quadro 13 routing; constant for derivatives (no 365-day exemption).
+    annex_hint: str = "G/Q13"
+    # Operation code from Tabela de Códigos; G51 covers "instrumentos financeiros derivados".
+    operation_code: str = "G51"
+    # Operator entity/country from resolve_operator_origin(); empty until OGR handler populates.
+    operator_entity: str = ""
+    operator_country: str = ""
+    # Number of underlying OGR rows aggregated into this entry; 1 for non-aggregated.
+    event_count: int = 1
+    # Free-form notes (classification reason for ambiguous rows; blank otherwise).
+    notes: str = ""
 
 
 @dataclass(frozen=True)
@@ -214,6 +352,11 @@ class CryptoCapitalGainEntry:
     # OGR validation result, populated when OGR comparison is performed.
     # This field is independent of entry-level review_required/review_reason.
     ogr_validation: OgrValidationResult | None = None
+    # Minute-precision ISO timestamp (YYYY-MM-DD HH:MM) of the disposal event.
+    # Used by the derivatives CG/TH deduplication filter to match CG lots to TH
+    # events when multiple same-day disposals occur. Optional with default None
+    # for backward compatibility; day-level disposal_date is retained as-is.
+    disposal_timestamp: str | None = None
 
     def __post_init__(self) -> None:
         """Validate review_reason is provided when review_required is True."""
@@ -365,3 +508,4 @@ class CryptoTaxReport:
     zero_basis_review_threshold: Decimal = field(default_factory=lambda: DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD)
     pdf_summary: CryptoCompletePdfSummary | None = None
     review_entries: list[CryptoReviewEntry] = field(default_factory=list)
+    derivatives_entries: list[DerivativesPnLEntry] = field(default_factory=list)

@@ -163,7 +163,7 @@ main(Path('resources/source/example/ib_export.csv'), Path('resources/result/exam
 "
 ```
 
-This writes `resources/result/example/extract.xlsx` containing the Reporting sheet (capital gains, dividends) and, when Koinly data is available, five Crypto sheets: Crypto Gains, Crypto Supplementary, Crypto Reconciliation, Loan Activity, and Platform Assumptions. The `main()` function accepts a `source_file` parameter to override the default input path; see `src/tax_reporting/main.py` for the full API.
+This writes `resources/result/example/extract.xlsx` containing the Reporting sheet (capital gains, dividends) and, when Koinly data is available, six Crypto sheets: Crypto Gains, Derivatives P&L (when `separate_derivatives_reporting` is on, per DP-012), Crypto Supplementary, Crypto Reconciliation, Loan Activity, and Platform Assumptions. The `main()` function accepts a `source_file` parameter to override the default input path; see `src/tax_reporting/main.py` for the full API.
 
 **Token origin column:** The Crypto Gains sheet includes a `Token origin` column that shows the acquisition origin of disposed tokens where the resolver could correlate them to a transaction history event. Origins are resolved by implicit `(date, asset, wallet)` correlation between the capital gains report and the Koinly transaction history CSV. Each resolved origin shows the source asset, acquisition method (e.g., `swap_conversion`, `bridge_transfer`, `direct_purchase`, `airdrop`, `liquidity_withdrawal`, `liquidity_provision`), and a confidence level (`high` = on-chain hash present, `medium` = correlated only, `low` = ambiguous or missing cost basis). Rows where no match is found remain blank. LP operations without paired withdrawal records show `LP position` as the source asset. Origin values are best-effort correlation from Koinly export data and should be reviewed against source documents before filing.
 
@@ -171,8 +171,9 @@ This writes `resources/result/example/extract.xlsx` containing the Reporting she
 The tool generates comprehensive Excel reports with:
 - **Capital Gains Section**: Detailed buy/sell transaction matching with FIFO methodology
 - **Dividend Income Section** ("CAPITAL INVESTMENT INCOME"): Share dividends and other capital investment income (e.g., fiat-denominated lending or referral rewards from crypto platforms), with taxable fiat rewards aggregated by income code and source country under `OTHER CAPITAL INVESTMENT INCOME`, alongside complete IB dividend reporting with tax information and original currency amounts
-- **Crypto Sheets** (if Koinly data provided, five separate tabs):
+- **Crypto Sheets** (if Koinly data provided, six separate tabs):
   - **Crypto Gains**: Capital gains aggregated by sale event per holding period with sub-1-EUR immaterial entries filtered, plus statistics summary with per-holding-period breakdown (short-term, long-term, mixed, unknown) showing count, cost, proceeds, and gain/loss totals. When `exclude_loan_repayment_gains=True` (PT default), loan-affected assets are dynamically discovered from Koinly transaction history and their capital gains are rebuilt using a per-wallet FIFO engine per CIRS art. 43 n.9 rather than taken from Koinly's pre-computed capital gains report.
+  - **Derivatives P&L**: Realized P&L from crypto futures and perpetuals (financial derivatives under CIRS art. 10(1)(e)), including funding fees and futures fees, aggregated by (date, asset, platform, event_type). Rendered only when the `separate_derivatives_reporting` flag is on (decision point DP-012). Spot crypto capital gains remain on the Crypto Gains tab under CIRS art. 10(1)(k), including the 365-day holding-period exemption; derivatives have no such exemption. Losses on derivatives are deductible against other Category G gains and may be carried forward 5 years per PT-C-016.
   - **Crypto Supplementary**: Audit support data including Income Codes reference (Portuguese Tabela V codes), taxable-now reward detail rows (traces each aggregated line back to source Koinly rows), deferred-by-law reward detail, rewards classification reconciliation, and review-required entries (zero-value popular tokens, suspicious entries)
   - **Crypto Reconciliation**: Key-value reconciliation of capital/reward totals, opening/closing holdings, and skipped zero-value tokens
   - **Loan Activity**: Per-asset loan receipt and repayment summary with balance and status; overpaid balances (cross-year loan repayments) are highlighted with red fill for manual review
@@ -180,6 +181,15 @@ The tool generates comprehensive Excel reports with:
 - **Professional Formatting**: Currency display with 2 decimal places, proper Excel formulas, and auto-sized columns with intelligent width handling (formula-only columns receive minimum width, long text is capped to prevent excessive width)
 - **Multi-Currency Support**: Automatic currency conversion with exchange rate tables
 - **ISIN Integration**: Automatic country of source detection from financial instrument data
+
+### Derivatives P&L Section
+The Derivatives P&L tab separates realized derivatives results from spot crypto capital gains to match how Portuguese law characterizes each category:
+
+- **Legal basis**: financial derivatives (futures, perpetuals, options on crypto) are Category G income under **CIRS art. 10(1)(e)**. Spot cryptoasset disposals remain under **CIRS art. 10(1)(k)** on the Crypto Gains tab, including the 365-day holding-period exemption; derivatives have no such exemption.
+- **What it contains**: realized P&L from closed futures/perpetuals positions, funding fees, and futures (trading) fees, aggregated by `(disposal_date, asset, platform, event_type)` so each event type is reported on its own line.
+- **Controlling decision point**: DP-012 (`separate_derivatives_reporting`). When the flag is `True`, the report renders the Derivatives P&L tab and keeps derivatives out of the Crypto Gains tab. When `False`, derivatives stay folded into Crypto Gains under art. 10(1)(e) (no behavior change for prior tax years).
+- **Source values**: where Koinly produces an Other Gains Report (OGR), OGR values override Capital Gains Report values for derivatives (DP-011). OGR has explicit Type classification and better collateral flow handling.
+- **Loss treatment**: derivatives losses are Category G losses and are deductible against other Category G gains; they may be carried forward for 5 years under PT-C-016 when the taxpayer opts for `englobamento`.
 
 ## Project Walkthrough
 

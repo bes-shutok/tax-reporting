@@ -641,12 +641,12 @@ A leveraged futures position (e.g., SOL/USDT with USDT as collateral) creates a 
 - A leveraged futures position has the collateral (e.g., USDT) as the underlying asset
 - Liquidation is a forced closure where the exchange disposes of the collateral to cover the loss
 - For tax purposes, this is an **alienação onerosa** (onerous disposal) under CIRS art. 10(1)(e) — "instrumentos financeiros derivados"
-- The disposal amount (e.g., "280.36 USDT disposed") reflects the collateral being removed from the position
+- The disposal amount (e.g., "<COLLATERAL_USDT> USDT disposed") reflects the collateral being removed from the position
 - The **negative capital gain** (the loss) appears in the gain/loss column and is deductible per PT-C-016 (5-year carry-forward for short-term)
 
 **Key distinction:** A futures liquidation is NOT a withdrawal. A withdrawal (to your own wallet) is not a taxable event for the asset itself. A liquidation is a forced disposal by the exchange and IS taxable — the loss can offset future gains.
 
-**Concrete example:** ByBit SOL/USDT position `<POSITION_ID>` liquidated on 19 Jan 2025, 11:28:53 PM. Koinly reported -42.26 USD loss at 11:29:46 PM. The system correctly assessed disposal of 280.36 USDT (271.79 EUR) as the collateral disposition, with the loss appearing as negative gain/loss.
+**Concrete example:** ByBit SOL/USDT position `<POSITION_ID>` liquidated on 19 Jan 2025, 11:28:53 PM. Koinly reported <-USD_LOSS> USD loss at 11:29:46 PM. The system correctly assessed disposal of <COLLATERAL_USDT> USDT (<COLLATERAL_EUR> EUR) as the collateral disposition, with the loss appearing as negative gain/loss.
 
 **See also:** DP-010 in `docs/tax/decision_points/2025.md`, PT-C-031 and PT-C-032 in `docs/domain/crypto_rules.md`, lesson #73 (Cross-Report Validation), lesson #75 (OGR override timing)
 
@@ -741,7 +741,7 @@ When a plan investigates "is X handled correctly?" or "does the system correctly
 
 This pattern prevents unnecessary work when the current implementation is already correct. It applies to any "is this handled correctly?" question, regardless of domain.
 
-**Example:** The 2026-06-07 futures/derivatives loss treatment plan used Tasks 1, 3, 5, 7, 8 for verification (code inspection, source archiving, docs review, Koinly investigation, test execution) and skipped Tasks 2, 4, 6 (country-specific config, tests, guidance) because verification confirmed the existing implementation was correct. See `docs/tmp/futures_loss_treatment_summary.md` for the investigation record and `docs/plans/2026-06-07-futures-derivatives-loss-treatment.md` for the full plan.
+**Example:** The 2026-06-07 futures/derivatives loss treatment plan used Tasks 1, 3, 5, 7, 8 for verification (code inspection, source archiving, docs review, Koinly investigation, test execution) and skipped Tasks 2, 4, 6 (country-specific config, tests, guidance) because verification confirmed the existing implementation was correct. See the futures-loss investigation record (local) for the investigation record and `docs/plans/2026-06-07-futures-derivatives-loss-treatment.md` for the full plan.
 
 **See also:** plan_quality_guidelines.md for plan structure guidance on verification-before-implementation task ordering.
 
@@ -988,7 +988,7 @@ When adding a new feature controlled by a boolean flag (like `use_other_gains_re
 When validating aggregated data against an external source (OGR, statements, etc.), compute validation metrics from the **aggregated totals**, not from individual pre-aggregation rows.
 
 **Problem:** Comparing individual rows to aggregated totals produces misleading percentages:
-- Single lot CG: 1.72 EUR vs OGR total: 137.73 EUR → "differs by 5474%" ❌ (noise)
+- Single lot CG: <COST_BASIS_EUR> EUR vs OGR total: 137.73 EUR → "differs by 5474%" ❌ (noise)
 - Aggregated CG: ~137 EUR vs OGR: 137.73 EUR → "differs by ~0.5%" ✅ (signal)
 
 **Pattern:**
@@ -1256,3 +1256,534 @@ for row_idx in range(1, 200):
 - What distinguishes section headers from data rows?
 
 **Example from test_assumptions_sheet.py:** The original `test_methodology_items_have_legal_citations` excluded `"Kraken"` and `"NO"` (values from `_make_capital_entry` defaults). Fixed by checking that methodology items have column 1 (label) + column 2 (description) populated, with column 3 empty (platform data has multiple columns).
+
+## 97. Characterization Tests Can Reveal Plan-Assumption Errors Between Related Quantities
+
+When a characterization (golden-value) test captures the actual current behavior and the captured value disagrees with the plan's stated expected value, the disagreement is itself a finding. Investigate the root cause before any implementation task proceeds, because downstream tasks often depend on the incorrect assumed value.
+
+**Why this happens:** Plan authors writing expected values for characterization tests may conflate two related but distinct quantities when one is a downstream authoritative total and the other is the post-transformation output. The override/transformation in question may apply directional authority (sign) while preserving the other quantity's magnitude, so the expected value the author wrote (the authoritative total) is NOT the value the pipeline actually emits.
+
+**Required response when characterization disagrees with the plan:**
+1. Capture the REAL current output as the golden value (never the plan's assumed value) — the whole point of a characterization test is to lock in actual behavior.
+2. Trace WHY they differ using raw source inspection (read source CSVs directly, sum lots, identify which quantity the plan's number actually represents).
+3. Reconcile the plan narrative so downstream tasks and the user see the corrected value with rationale.
+4. Flag the discrepancy to the orchestrator/user so dependent tasks are aware.
+
+**Do NOT** weaken the characterization assertion to match the plan's incorrect value — that defeats the test's purpose and hides a real bug or real behavior.
+
+**Example:** The 2026-06-13 derivatives-separation plan (Task 1) stated the Case 2 expected Crypto Gains output was `<-OGR_NET_EUR> EUR` (the Other Gains Report total for that disposal), but the actual override output is `-<CG_LOTS_EUR> EUR`. The `_apply_ogr_direction_override` function uses OGR for DIRECTION only and preserves CG MAGNITUDE: the 109 CG lots sum to `+<CG_LOTS_EUR>` pre-override, and flipping the sign of each yields `-<CG_LOTS_EUR>` post-override. The `<-OGR_NET_EUR>` is the OGR-row total, a different quantity from the post-override aggregated output. The characterization test captured `-<CG_LOTS_EUR>` and the plan narrative was reconciled. See the characterization golden fixture (local) and lesson #78 (OGR directional authority runtime semantics).
+
+**See also:** Lesson #71 (validation-first investigation), Lesson #72 (data trace verification), Lesson #78 (OGR directional authority semantics), `docs/domain/plan_quality_guidelines.md`.
+
+---
+
+## 98. Probe the Canonical URL Before Assuming an Official Source Is Unavailable
+
+When a plan or task assumes an authoritative document (statute amendment, binding ruling, official circular) is "not publicly indexed", "request-specific", or otherwise unreachable, do NOT treat that assumption as ground truth. Probe the issuing authority's canonical URL pattern directly (HTTP HEAD or ranged GET) before falling back to secondary sources or skipping archival.
+
+**Why this matters:** Plans encode assumptions about source availability that may be outdated or simply wrong. The cost of a probe is one HTTP request; the cost of skipping archival is a weakened source corpus where the authoritative document is absent and downstream analysis leans on secondary sources that paraphrase it. Several issuing authorities publish binding rulings and circulars in public indexes even when they are nominally request-specific.
+
+**Required behavior:**
+1. Construct the canonical URL from the issuing authority's documented naming convention (e.g. AT vinculativa rulings follow `info.portaldasfinancas.gov.pt/.../informacoes_vinculativas/.../Documents/PIV_<numero>.pdf`).
+2. Issue a HEAD request (or a small ranged GET) to check status, content-type, and content-length.
+3. On HTTP 200 with the expected media type, download and archive the document to `docs/tax/.../official/` and add the provenance entry to `sources.md`.
+4. Only when the probe definitively fails (404, 403, or a login redirect) should you fall back to secondary sources or document the source as unavailable.
+5. Record the probe outcome (success or the specific failure) in the implement log so the assumption-vs-reality gap is visible.
+
+**Anti-pattern:** Reading a plan task that says "the ruling is request-specific, so we will rely on the secondary advisory page" and proceeding straight to secondary-source archival without probing the primary URL.
+
+**Example:** The 2026-06-13 derivatives-separation plan (Task 2) stated AT binding ruling PIV 28298/2025 was expected to be request-specific and not in the public vinculativa index. A HEAD probe of the canonical `Documents/PIV_28298.pdf` URL returned HTTP 200, `application/pdf`, 64,788 bytes. The ruling IS published in the public CIRS vinculativa list and was downloaded directly to `docs/tax/laws/pt/crypto-tax/official/at_piv_28298_2025.pdf`, making the secondary-source-only fallback unnecessary. The ruling body also yielded the precise filing targets (Anexo G Quadro 13 code G51 for resident-source derivatives gains; Anexo J Quadro 9.2.B code G30 for non-resident) that no secondary source stated as explicitly.
+
+**See also:** `docs/project-guidelines.md` #1 (external source archive provenance and freshness), CLAUDE.md source-archival rules, Lesson #94 (verification for canonical source synchronization).
+
+---
+
+## 99. Trace the Fixture When Plan Pseudocode Compares Same-Unit Fields by Name
+
+When plan pseudocode compares two fields by name and those fields share a unit (EUR, count, timestamp) but live on different domain objects or different fields of the same dataclass, do not translate the pseudocode literally. Trace the fixture first to confirm the two fields represent the same economic quantity. Field names like `gain_loss_eur` suggest "the EUR value" but the field's actual semantic may be a derived quantity (realized gain = proceeds − cost) that is structurally different from another EUR field (disposal proceeds) even though both live on the same dataclass.
+
+**Why this happens:** Plan authors writing pseudocode for a comparison operation may pick the field whose name sounds closest to the intent ("gain_loss_eur" sounds like the EUR magnitude), without checking whether the field's actual semantic matches the quantity the comparison requires. When multiple EUR-denominated fields coexist on the same dataclass with distinct economic meanings (proceeds, cost, realized gain, fee), the field-name conflation is invisible until the comparison runs against real numbers.
+
+**Required behavior:**
+1. When the pseudocode references a field by name on a domain object, especially for a magnitude or equality comparison, identify which other same-unit fields exist on that dataclass.
+2. For each candidate field, trace the fixture to confirm what economic quantity the field actually carries (read the dataclass docstring; verify against a real source row).
+3. Construct the RED-phase test fixture so that the candidate fields are set to DIFFERENT but realistic values, not the same value — this forces the test to discriminate between them. If the fixture sets `proceeds_eur=<FEE_PROCEEDS_EUR>` and `gain_loss_eur=<FEE_GAIN_EUR>`, a pseudocode comparison against `gain_loss_eur` will fail visibly (|<FEE_PROCEEDS_EUR> − <FEE_GAIN_EUR>| = <TOLERANCE_DELTA_EUR> > tolerance), exposing the field-name error before production code ships.
+4. If the fixture trace shows the pseudocode field is wrong, correct the pseudocode field reference in the plan, document the correction as a DESIGN CORRECTION note, and update the constant's comment to prevent a future maintainer from reintroducing the bug.
+
+**Distinguishing from #97:** Lesson #97 covers characterization tests that capture a value disagreeing with the plan's stated expected value (magnitude vs direction conflation in captured output). This lesson covers plan pseudocode referencing the wrong field by name; the comparison never runs against production data until RED-phase fixture construction exposes the field-name error. Both are verification rules but they have distinct triggers (golden-value disagreement vs fixture-driven field selection) and distinct fixes (reconcile narrative vs rewrite pseudocode field reference).
+
+**Anti-pattern:** Reading pseudocode that says `abs(cg_matches[0].gain_loss_eur - abs(ogr_row.gain_loss)) <= TOLERANCE` and implementing it verbatim, without checking whether `gain_loss_eur` (realized gain) and `ogr_row.gain_loss` (disposal proceeds) describe the same economic quantity. The comparison would silently classify correct cases as `Ambiguous` and break the entire downstream pipeline.
+
+**Example:** The 2026-06-13 derivatives-separation plan (Task 5) pseudocode compared OGR `Value (EUR)` (disposal proceeds for Loss rows) against CG `gain_loss_eur` (realized gain, cost-subtracted). These are different quantities: OGR `Value (EUR)` is disposal proceeds and the correct CG counterpart is `proceeds_eur`. The Case 1 fixture sets `proceeds_eur=<FEE_PROCEEDS_EUR>, gain_loss_eur=<FEE_GAIN_EUR>` against OGR=<FEE_PROCEEDS_EUR>, so the comparison only succeeds against `proceeds_eur` (|<FEE_PROCEEDS_EUR> − <FEE_PROCEEDS_EUR>| = 0 ≤ tolerance); comparing against `gain_loss_eur` gives |<FEE_GAIN_EUR> − <FEE_PROCEEDS_EUR>| = <TOLERANCE_DELTA_EUR> > tolerance and would wrongly route the row to `Ambiguous`. The fixture-driven trace exposed the field-name error during RED phase, and the constant's comment (`_TOLERANCE_OGR_CG` in `classification.py`) plus the `ParsedOgrRow` dataclass docstring document the correct field so a future maintainer cannot reintroduce the bug. See the implementation log (local).
+
+**See also:** Lesson #97 (characterization tests revealing magnitude-vs-direction conflation), Lesson #72 (data trace verification), Lesson #89 (read implementation before writing edge-case tests), CLAUDE.md §4 Agent Workflow Rules (verification-first task ordering).
+
+## 100. Verify Plan-Time Claims About Production Code Before Writing Tasks
+
+When a plan task, design invariant, or gist example makes a claim about production code (field semantics, file paths, line numbers, function behavior, return shape), the plan author must verify the claim against the actual source BEFORE writing plan tasks that depend on it. A single Read call per claim eliminates an entire class of plan-review Blockers.
+
+**Why this matters:** Plan review sub-agents will catch these defects, but every Blocker found in review is a defect the author could have caught with one Read call. Each Blocker forces a revision cycle (re-write the plan, re-launch review, re-verify), costing more rounds than the original verification would have. Plans that ship with N unverifiable claims typically absorb N+ Blockers across the first two review rounds.
+
+**Required behavior:**
+1. Before writing any plan task that references a production-code fact (field name, line number, file path, function signature, return type), open the source file and confirm the fact.
+2. Field-semantics claims are the highest-risk category: a plan that says "field X carries minute-precision timestamp" must be verified by reading the parser that populates field X. If the parser strips the time component, the claim is wrong and downstream matching logic built on it will fail.
+3. Line-number claims drift as the file evolves; cite line numbers only after reading the file at plan time, and prefer function-name anchors over line numbers when the surrounding code is stable.
+4. When a user-facing design preference (e.g., "match by timestamp + asset + wallet + amount") implies a code capability (timestamp precision on a domain field), verify the capability exists before accepting the preference. If it does not, surface the trade-off explicitly in the plan's Monitor section rather than silently substituting an alternative.
+
+**Distinguishing from #71 / #72:** Lesson #71 covers investigation tasks ("is X handled correctly?") and mandates verification-first task ordering. Lesson #72 extends that to data trace verification. This lesson covers **plan-time claims** about code structure (what a field carries, what a function returns, what line N does) and mandates source verification during plan authoring, before any task is written. The trigger is the author writing a code-reality claim, not the author investigating an existing behavior.
+
+**Anti-pattern:** Writing "the match key is (timestamp, asset, wallet, amount) with minute-precision timestamp" in a plan without checking whether `CryptoCapitalGainEntry.disposal_date` actually carries minute precision. The field is day-level (`format_datetime` at `koinly_parser.py:123-132` strips the time), so the entire matching strategy must be reworked in revision, costing a full review round.
+
+**Example:** The 2026-06-14 derivatives-th-label-cg-dedup plan claimed minute-precision timestamp matching in its Gist, Design Invariant 6, Task 4 test names, and Task 4 implementation note. The r1 plan review caught the field-shape error as Blocker 1 across 4 plan locations. The revision dropped timestamp from the match key and adopted (date, asset, wallet, amount) with strict-equality at 6-decimal rounding, but the cost was one full review round. A single Read of `koinly_parser.py:123-132` during plan authoring would have prevented the Blocker entirely.
+
+**See also:** Lesson #71 (verification-first task ordering), Lesson #72 (data trace verification), Lesson #99 (trace fixture when comparing same-unit fields by name), CLAUDE.md §4 Agent Workflow Rules.
+
+## 101. Trace Each Affected OGR Row to Its Originating TH Type Before Designing a Type-Filtered Scanner
+
+When designing a scanner that filters TH rows by Type (e.g., `crypto_withdrawal` only), trace each OGR row on the affected date back to its originating TH source row and confirm which Type that TH row carries. OGR rows on the same date, same asset, same wallet may originate from different TH Types; only the OGR rows sourced from matching TH Types are affected by the scanner.
+
+**Why this happens:** Koinly emits one OGR row per disposal event but the disposal may be sourced from either a `crypto_deposit` (e.g., realized gain paid out) or a `crypto_withdrawal` (e.g., fee deducted). When the plan's narrative groups OGR rows by date, the author may assume all rows on that date share the same behavior change, but the scanner's Type filter means only some rows are actually affected. The unfiltered rows keep their original routing; only the filtered rows reclassify.
+
+**Required behavior:**
+1. When the plan describes a behavior change for "OGR rows on date D," identify each individual OGR row on D and trace it to its source TH row (match by timestamp, asset, wallet, amount).
+2. For each traced OGR row, record the TH Type. Mark the OGR row as affected (Type matches the scanner filter) or unaffected (Type does not match).
+3. Write test expectations that distinguish the two: affected rows reclassify, unaffected rows keep their routing. Do not write a single test name like `test_ogr_routes_to_derivatives` that implies all OGR rows on the date behave the same way.
+4. Update existing tests that assert the OLD routing of now-affected rows; do not just add new tests for the new routing.
+
+**Anti-pattern:** Reading an OGR file that shows "Profit +<PROFIT_EUR>, Loss <-FEE_PROCEEDS_EUR>" on 2025-01-12 and writing a plan that says "the +<PROFIT_EUR> Profit OGR row routes to derivatives_entries after the dedup" when the +<PROFIT_EUR> Profit row is sourced from a `crypto_deposit` (filtered out by the scanner) and is therefore unaffected. The <-FEE_PROCEEDS_EUR> Loss row, sourced from a `crypto_withdrawal` with Label=Futures fee, is the one that actually reclassifies. The plan ships with a misleading test name and a missing assertion; a follow-on plan review round is needed to catch the confusion.
+
+**Example:** The 2026-06-14 derivatives-th-label-cg-dedup plan's Task 6 described Case 1 (2025-01-12) as "the +<PROFIT_EUR> Profit OGR row still routes to derivatives_entries" with test name `test_profit_ogr_routes_to_derivatives`. The r2 plan review caught the confusion: TH line 204 (`crypto_deposit` Realized gain 143.752 USDT) sources the +<PROFIT_EUR> Profit OGR row and is filtered out by the scanner's `crypto_withdrawal` filter; TH line 205 (`crypto_withdrawal` Futures fee <FEE_PROCEEDS_USDT> USDT) sources the <-FEE_PROCEEDS_EUR> Loss OGR row and is the row that actually reclassifies. The revision rewrote Task 6 to distinguish the two rows and added `test_fee_disposal_reclassifies_to_derivatives` for the actual behavior change. See the th-label-cg-dedup plan review r2 (local) Blocker 1.
+
+**See also:** Lesson #72 (data trace verification), Lesson #99 (trace fixture when comparing same-unit fields by name), CLAUDE.md §3 Repository Constraints (derivatives separation).
+
+## 102. Add a Count-Matched-Items-Per-Event Safety Check When Matching by Non-Unique Keys
+
+When a dedup or matching algorithm uses a key tuple that does not include a globally unique identifier (e.g., `(date, asset, wallet, amount)` without a transaction hash or row ID), add a count-matched-target-items-per-source-event safety check that logs a warning when one source event matches more than one target item. The warning surfaces two distinct cases for review: legitimate FIFO splits (one disposal split into N lots, all expected to match) and coincidental amount collisions (two unrelated events on the same date with the same amount, an over-removal risk).
+
+**Why this matters:** Without a unique identifier, the matcher cannot distinguish "N target items are FIFO splits of one source event" from "N target items are unrelated events that happen to share the key." The first case is correct (remove all N); the second is a silent over-removal that corrupts downstream aggregates. The warning does not block removal (the FIFO-split case is more common in practice) but it makes the coincidental-collision case observable in logs so the user can audit.
+
+**Required behavior:**
+1. After the matching pass, group removed target items by their originating source event.
+2. For each source event with `matched_count > 1`, log a warning naming the source event (date, label, amount) and the matched count.
+3. Phrase the warning to surface both interpretations: "possible FIFO split or coincidental amount collision."
+4. Add a unit test that constructs the coincidental-collision case (two target items with the same amount as one source event but unrelated to it) and asserts the warning fires.
+
+**Distinguishing from a strict matcher:** A strict matcher (match at most one target per source event, warn on overflow) is tempting but wrong for FIFO-split cases: a single disposal may legitimately produce 50+ target lots, all of which should be removed. The count-based warning preserves correct behavior for the common case while making the rare over-removal case visible.
+
+**Anti-pattern:** Matching by (date, asset, wallet, amount) with no post-pass check, assuming amount disambiguation is sufficient. On a fixture with 108 target lots at one timestamp (FIFO splits of one disposal) plus 2 unrelated derivatives events with amounts that coincidentally match 2 of the 108 lots, the matcher silently removes those 2 unrelated lots along with the legitimate matches, corrupting the aggregate. The user sees an unexpected Crypto Gains total with no warning to explain it.
+
+**Example:** The 2026-06-14 derivatives-th-label-cg-dedup plan's Task 4 added `warns_when_one_th_event_matches_multiple_cg_lots` after the r2 review flagged the silent-overremoval risk. The implementation builds a `dict[derivatives_event_key, list[matched_cg_lots]]`, removes all matched lots, and logs a WARNING per source event whose matched count > 1. The 2025-01-13 fixture has 108 CG lots at the 13:01 timestamp; if any lot's amount coincidentally matches the Futures fee TH event (<FUTURES_FEE_USDT> USDT), the warning surfaces the collision for review. See the th-label-cg-dedup plan review r2 (local) Medium 2.
+
+**See also:** CLAUDE.md §3 Repository Constraints (no silent drops), CLAUDE.md §1 Instruction Rules (data-loss at warning+).
+
+## 103. Audit for Shared Identifiers Across Reports When Separating a Previously-Merged Tax Category
+
+When introducing a separation between two tax categories that previously shared a single pipeline (e.g., splitting a unified crypto-gains flow into spot vs derivatives), audit whether the same disposal event appears in **both** source reports that feed the separated paths. Without an explicit deduplication step removing the now-derivatives-classified items from the spot path, those items are double-counted: once in the new derivatives aggregate, once in the legacy spot aggregate. The trigger for the audit is the **introduction of the separation itself** — not a later data-quality or cross-report validation check.
+
+**Why this happens:** Koinly (and similar exporters) emit one row per disposal event in each report that references it. A derivatives Futures-fee disposal appears both as an OGR `Loss` row (because it has no cost basis, so Koinly routes it to Other Gains) and as a CG lot (because Koinly also records it as a disposal of the fee asset against its acquisition lot). Before the separation, only the CG path was read, so the duplication was invisible. The moment a plan introduces a derivatives path that reads OGR, both paths light up for the same disposal, and the spot CG total silently inflates.
+
+**Required behavior:**
+1. When a plan introduces a new classification path that consumes a previously-unused source report (OGR, rewards, etc.), enumerate every other report the existing pipeline already reads (CG, TH).
+2. For each disposal event in the new report, check whether the same `(date, asset, wallet, amount)` (or whatever identity tuple applies) also appears in the existing reports.
+3. If overlap exists, write an explicit dedup step in the plan that removes the overlapping items from the legacy path. Do not rely on the new path's downstream classifier to "handle" the overlap; the legacy path aggregates independently.
+4. Add a reconciliation test that asserts the union of (spot aggregate, derivatives aggregate) matches the pre-separation total. A drift in this union after the separation is the symptom of a missing dedup step.
+
+**Distinguishing from #73 (Cross-Report Validation):** Lesson #73 catches **data corruption** where one report contradicts another (e.g., OGR says Loss while CG says Gain on the same disposal). This lesson catches **structural double-counting** where both reports agree and are individually correct, but the pipeline reads both without dedup. The failure mode for #73 is wrong totals; the failure mode here is inflated totals with no inconsistency between reports.
+
+**Anti-pattern:** A separation plan that says "OGR rows of Type Loss route to `derivatives_entries`; CG rows remain in spot" without checking whether the same disposal is present in both. The spot CG total silently includes the derivatives-classified lots, the derivatives total includes the OGR Loss, and the sum is greater than the pre-separation total. The error surfaces only at tax-filing time when the IRS-ready total is too high.
+
+**Example:** The 2026-06-13 derivatives-separation plan split OGR into derivatives_entries vs spot but did not dedup the corresponding CG lots from the spot table. ByBit USDT Futures-fee and Funding-fee disposals on 2025-01-13 and 2025-01-24 appeared in both: as OGR Loss rows (routed to derivatives) and as CG lots (left in spot). The fix required the entire 2026-06-14 derivatives-th-label-cg-dedup follow-up plan to scan TH for `crypto_withdrawal` events labeled Funding fee / Futures fee / Realized gain, match them against CG lots by `(date, asset, wallet, amount)`, and remove the matched lots from the spot index before the spot/derivatives classifier runs. A 5-minute audit at 2026-06-13 plan time ("does any disposal appear in both OGR and CG?") would have caught the gap and avoided the follow-up plan entirely. See `docs/plans/2026-06-14-derivatives-th-label-cg-dedup.md`.
+
+**See also:** Lesson #45 (deduplication key identity), Lesson #73 (cross-report validation), Lesson #101 (trace OGR→TH source Type), CLAUDE.md §3 Repository Constraints (derivatives separation), PT-C-034 in `docs/domain/crypto_rules.md`.
+
+## 104. Trace ALL Branches of a Multi-Branch Conditional When Implementing a Tiered Rule
+
+When a plan modifies a multi-branch conditional (e.g., an `if cost == 0: ... if proceeds == 0: ...` block) to implement a new tiered rule, the plan author MUST trace every input combination through ALL branches before finalizing the implementation steps. A common failure mode: changing one branch's condition to suppress an input, while leaving the sibling branch unchanged, which still fires on that same input and contradicts the stated design invariant.
+
+**Why this happens:** When reading a conditional like `if cost == 0: flag_A()` followed by `if proceeds == 0: flag_B()`, the author focuses on the branch they intend to modify (the cost branch) and overlooks that the sibling branch (proceeds branch) has no guard against the same input. For the input `cost=0, proceeds=0`, both branches evaluate True and both fire. The plan's design invariant ("zero-zero never flags") is then unachievable as written.
+
+**Required behavior:**
+1. Enumerate the full input domain (all combinations of the branching variables).
+2. For each combination, trace through EVERY branch in order, not just the branch being modified.
+3. If any combination produces an outcome that contradicts a stated design invariant, the plan MUST modify every branch that contributes to that outcome, not just the "obvious" one.
+4. Include a trace table in the plan showing input -> expected branch outcomes -> expected final result. The trace is part of the plan, not just a verification step for review.
+
+**Example:** The 2026-06-15 zero-basis-review-materiality plan (r1) proposed gating only the cost branch (`if cost == 0 and proceeds >= min_proceeds:`) while leaving the proceeds branch (`if proceeds == 0:`) unchanged. The design invariant stated "zero-zero entries never flag". But for input `cost=0, proceeds=0`: the cost branch evaluates `0 >= 10` = False (correctly suppressed); the unchanged proceeds branch evaluates `0 == 0` = True (INCORRECTLY fires). The 779 FEE-token entries the plan intended to suppress would still flag. r1 Blocker 1 caught this; the fix required adding `and cost > 0` to the proceeds branch so zero-zero inputs fail both conditions.
+
+**Distinguishing from #100 (verify claims against source):** Lesson #100 verifies that file paths, line numbers, and function signatures match reality. This lesson verifies that the proposed CODE CHANGE produces the stated BEHAVIOR across the full input domain. A plan can have perfectly accurate citations and still specify a code change that contradicts its own design invariants.
+
+**Anti-pattern:** A plan that says "modify branch X to handle case Z; leave branch Y unchanged" without tracing case Z through branch Y. The trace must be explicit: "for input Z, branch X evaluates to <result>, branch Y evaluates to <result>, combined outcome is <result>, which matches/falsifies the design invariant."
+
+**See also:** Lesson #100 (verify plan claims against source), CLAUDE.md §4 Agent Workflow Rules (TDD approach), the r1 Blocker 1 trace in the zero-basis plan review r1 (local).
+
+## 105. Calibrate Exception Handling Strategy to the Cost of Silent Failure When Reusing a Helper Pattern
+
+When reusing a security/validation pattern from another module (symlink rejection, size limit, JSON parsing), do NOT blindly inherit the source module's exception-handling strategy. The right behavior for malformed input depends on the cost of silent failure at the NEW call site, not at the source. A non-critical feature may gracefully degrade (return empty on malformed input); a correctness-critical feature MUST raise.
+
+**Why this happens:** When a plan says "reuse the security patterns from `classification._load_popular_crypto_tokens`," the implementer reads the source function and copies both the validation guards AND the exception handling. The validation guards (symlink rejection, size cap) are universally correct. The exception handling (`except json.JSONDecodeError: return frozenset()`) is a per-feature decision based on what "empty" means downstream. Copying it without checking the new feature's failure cost produces a silent-correctness-bug class.
+
+**Required behavior:**
+1. Distinguish "validation guards" (security, format) from "exception handling strategy" (degrade vs raise) when reading the source pattern. Only the guards are universally reusable.
+2. For the new call site, ask: what happens downstream if this function returns empty on malformed input?
+   - If empty means "skip a non-critical enrichment" (e.g., popular-token detection, cosmetic annotation) -> graceful degradation with WARNING log is correct.
+   - If empty means "skip a correctness-critical step" (e.g., deduplication, required validation, aggregation) -> raising `FileProcessingError` is mandatory. Silent empty leaves wrong data in the output.
+3. Only the MISSING-file case is uniformly safe to degrade (Design Invariant 8 pattern); malformed-content (bad JSON, wrong shape, wrong types) must raise when correctness is at stake.
+
+**Example:** `classification._load_popular_crypto_tokens` swallows `json.JSONDecodeError` and returns `frozenset()` because popular-token detection is a non-critical enrichment, and an empty set means "no extra annotation," which is harmless. The 2026-06-14 derivatives-th-label-cg-dedup plan's Task 2 reused the symlink rejection and size limit from that function but intentionally DIVERGED on exception handling: `_load_derivatives_labels_config` raises `FileProcessingError` on malformed JSON, missing `derivatives_th_labels` key, or wrong value type. Silently returning `frozenset()` would skip derivatives CG deduplication, leaving the spot capital-gains total inflated by the double-counted derivatives lots (the exact bug the plan exists to fix). Only the missing-file branch degrades (WARNING plus empty set), per Design Invariant 8.
+
+**Distinguishing from #61 (logging for silent handlers):** Lesson #61 says "if you DO degrade, log it." This lesson says "decide whether to degrade or raise in the first place, based on downstream cost." A correctly logged silent degradation is still wrong if the feature is correctness-critical.
+
+**Anti-pattern:** A plan that says "mirror the error handling of `<source function>`" without checking whether the source function's degrade-vs-raise choice fits the new call site. The implementer copies `except JSONDecodeError: return frozenset()`, the new feature silently no-ops on malformed config, and the user sees a wrong tax total with no error to explain it.
+
+**See also:** Lesson #61 (log silent exception handlers), Lesson #51 (all-or-nothing validation for file sets), CLAUDE.md §1 Instruction Rules (data-loss at warning+, fail clearly), CLAUDE.md §3 Repository Constraints (no silent drops).
+
+## 106. Reuse the Parsed Value Inside the Existing Try Block When Extracting a Second Derived Value
+
+When a plan asks you to compute a second derived value from an input that is already parsed inside a `try ... except ValueError` block (for example, adding a minute-precision `timestamp_str` alongside an existing day-level `date_str`, both derived from the same source date string), reuse the already-parsed object inside the SAME try block. Do NOT re-invoke the parser outside the block to compute the second value.
+
+**Why:** The existing try block exists because the parser (`parse_koinly_datetime`, `parse_koinly_decimal`, etc.) raises `ValueError` on malformed input, and the surrounding code expects that exception to be caught and handled (typically: warn and skip the row, or log an error and continue). Re-invoking the parser outside the block produces an UNCAUGHT `ValueError` that aborts the entire batch, contradicting the row-level error-handling contract (CLAUDE.md §1: catch row-level parse errors per row).
+
+**Required behavior:**
+1. Identify the value already being parsed inside the try block (`parsed_dt = parse_koinly_datetime(date_raw)`).
+2. Compute both derived strings from that one parsed object, inside the same block:
+   ```python
+   parsed_dt = parse_koinly_datetime(date_raw)
+   date_str = format_datetime(parsed_dt)            # existing day-level string
+   timestamp_str = parsed_dt.strftime("%Y-%m-%d %H:%M")  # new minute-precision string
+   ```
+3. Do NOT write `timestamp_str = parse_koinly_datetime(date_raw).strftime(...)` as a separate statement outside the block. A malformed `date_raw` raises `ValueError` that nothing catches.
+
+**General form:** Whenever N derived values must be computed from one fallible parse, parse once inside the error-handling scope and derive all N from the parsed object. This holds for any parser-with-exceptions pattern, not just datetime parsing.
+
+**Distinguishing from #56 (try/finally resource-cleanup scope):** Lesson #56 is about ensuring all raising operations are inside a try/finally so cleanup runs. This lesson is about not re-invoking a fallible operation outside a try/except that was set up to catch its first invocation. Both are error-scope guards but address different failure modes: #56 prevents leaked resources; this one prevents uncaught exceptions that bypass row-level error handling.
+
+**Example:** Task 3 of the 2026-06-14 derivatives-th-label-cg-dedup plan added `timestamp_str` to `ParsedTxRow` and `disposal_timestamp` to `CryptoCapitalGainEntry`. Both `_classify_rows_for_loan_affected_assets` (parsing.py) and `_parse_capital_gains_file` (crypto_reporting.py) already parsed the date inside a try block to compute `date_str`/`disposal_date`. The implementation captured `parsed_dt`/`disposal_dt` first, then derived both strings from it inside the same block, rather than re-calling `parse_koinly_datetime` outside. See the implementation log (local).
+
+## 107. Use an Ordered Queue Per Non-Unique Key When Multiple Source Events May Share a Key With Multiple Target Items
+
+When a matching algorithm pairs N source events against M target items by a key tuple that is NOT globally unique (e.g., `(timestamp, asset, wallet, amount)` without a transaction hash or row ID), and multiple source events can share the same key with multiple target items, build a `dict[key] -> deque[target_items]` (or any FIFO queue) and pop exactly one item per source event. Do NOT use `dict[key] = item` assignment, which silently overwrites earlier items when two targets share a key, and do NOT use `dict[key] = item` followed by `del dict[key]`, which loses the second target if a second event arrives for the same key.
+
+**Why this matters:** Without a queue per key, a same-key collision is no longer deterministic. With a dict-of-scalars, the second target item overwrites the first and the first source event matches nothing. With a dict-of-lists plus naive indexing, the matching order depends on iteration order, which is not the acquisition order the algorithm intends. A per-key deque (a) preserves target order (the order items were appended, typically acquisition-date-sorted), (b) ensures each source event consumes exactly one target, and (c) makes "items left over after all events consumed" observable as a separate surplus signal.
+
+**Required behavior:**
+1. Sort target items by their intended match order (typically `(key, acquisition_date, row_index)`) before building the index, so the deque order is deterministic.
+2. Build `dict[key] -> deque()` and append each target item to its key's deque.
+3. For each source event (in source-sorted order), pop one target from the head of its key's deque. If the deque is empty, the event falls through to the next matching phase (or is recorded as unmatched).
+4. After all source events are processed, any non-empty deque holds surplus target items that no source event claimed. Surface these in a single summary WARNING (not per-item) so the user can audit whether the surplus is a missed FIFO split, a stale lot from a prior year, or a coincidental key collision.
+
+**Distinguishing from #102 (count-matched-items-per-event warning):** Lesson #102 addresses the one-source-event-to-many-targets case (one derivatives disposal split into N FIFO lots). This lesson addresses the many-source-events-to-many-targets case (multiple derivatives events on the same timestamp with the same amount). Both can occur in the same matcher; #102's per-event count check and this lesson's per-key queue are complementary guards against different silent-loss modes.
+
+**Distinguishing from #45 (deduplication key identity):** Lesson #45 is about CHOOSING the right key tuple (which fields uniquely identify an item). This lesson assumes the key is already chosen and is non-unique by design (because no globally unique identifier is available in the source data), and prescribes the data structure that prevents silent loss under that constraint.
+
+**Anti-pattern:** Building `matched = {key: target for target in targets}` and then `for event in events: matched.pop(key(event), None)`. When two targets share a key, the second assignment overwrites the first; the first source event finds the second target and removes it; the second source event finds nothing. The first target is silently retained in the output (the opposite of the intended dedup), and no warning fires because the per-key deque length was never observed.
+
+**Example:** Task 5 of the 2026-06-14 derivatives-th-label-cg-dedup plan implemented `remove_derivatives_flagged_lots` phase 1 (exact match) with `dict[tuple[str, str, str, Decimal], deque[_IndexedLot]]`. Each derivatives event pops one lot from the head of its key's deque; if the deque is empty, the event falls through to phase 2 (contiguous-range fallback). After both phases, `_collect_surplus_lots(deques, matched_indices)` walks the non-empty deques to report leftover lots in the summary WARNING. The 2025-01-13 fixture has 108 CG lots at the 13:01 timestamp; if two derivatives events on that timestamp have the same amount as two of those lots, the deque ensures each event consumes its own lot rather than the second event finding an empty bucket. See the implementation log (local).
+
+**See also:** Lesson #45 (deduplication key identity), Lesson #102 (count-matched-items-per-event warning), CLAUDE.md §3 Repository Constraints (no silent drops).
+
+## 108. Recompute Window-Relative Tolerance After Every Shrink Step in a Two-Pointer Sliding-Window Matcher
+
+When implementing a two-pointer sliding-window matcher that finds a contiguous range of items whose summed amount equals a target within tolerance, and the tolerance scales with the window size (`tolerance = scale * range_size`), recompute the tolerance after every shrink step. Use `left < right` (not `left <= right`) as the shrink-loop bound so the single-item window is preserved as a candidate match.
+
+**Why this matters:** Two correctness traps hide in this algorithm:
+
+1. **Stale tolerance after shrink.** If the tolerance is computed once before the shrink loop, the shrink condition `running_sum > target + tolerance` uses the tolerance for the ORIGINAL window size, not the shrunken window. After shrinking, `range_size` is smaller and the tolerance should be tighter; using the stale (larger) tolerance admits windows that should have been rejected, and the matching condition `abs(running_sum - target) <= tolerance` then accepts a sum that is outside the correct tolerance for the current window. The fix is to recompute `range_size` and `tolerance` inside the shrink loop after each `left += 1`.
+
+2. **Single-element window collapse.** If the shrink condition uses `left <= right`, the loop shrinks past the single-element window (`left == right + 1`), leaving an empty window. The single-element window is the ONLY candidate when `range_size == 1`, and it may match the target within tolerance. Collapsing it discards that candidate. The fix is `left < right`: the loop stops when `left == right`, preserving the one-element window for the matching check.
+
+**Required behavior (canonical two-pointer form):**
+```python
+left = 0
+running_sum = ZERO
+for right in range(n):
+    running_sum += items[right].amount
+    range_size = right - left + 1
+    tolerance = scale * range_size
+    while running_sum > target + tolerance and left < right:
+        running_sum -= items[left].amount
+        left += 1
+        range_size = right - left + 1
+        tolerance = scale * range_size   # recompute after shrink
+    if abs(running_sum - target) <= tolerance:
+        return items[left:right + 1]
+return None
+```
+
+**Why `left < right` and not `left <= right`:** The shrink loop's purpose is to discard items from the left while the sum is too large. When `left == right`, the window is the single item at index `right`; shrinking further would empty the window. The single item may itself match the target within tolerance (the `range_size == 1` case), so it must be tested by the matching condition below the shrink loop, not discarded by the shrink loop.
+
+**Why the tolerance must scale with window size:** When items are FIFO lots whose individual amounts carry rounding error from upstream currency conversion, the cumulative rounding error grows with the number of lots summed. A fixed tolerance is too tight for large windows (rejecting valid 50-lot sums) and too loose for small windows (admitting invalid 2-lot sums). Scaling tolerance by `range_size` keeps the acceptance probability approximately constant across window sizes.
+
+**Performance:** This is O(N) per event (each item enters the window once and leaves at most once). For N events against the same candidate list, pre-sort the candidates once and re-scan per event; the total is O(N * M) worst case but typically much faster because most events fail fast.
+
+**Distinguishing from #107 (per-key deques):** Lesson #107 addresses exact one-to-one matching with non-unique keys. This lesson addresses the FALLBACK phase that runs when no exact match exists: the source event's amount must equal the SUM of a contiguous range of target items. The two phases are complementary: exact match first (cheap, deterministic), contiguous-range fallback second (handles the FIFO-split case where one event's amount is split across N adjacent lots).
+
+**Anti-pattern:** Computing `tolerance = scale * n` once before the for-loop, then using that constant tolerance inside the shrink loop and the matching check. For a 500-item candidate list with `scale = 0.00001`, the constant tolerance is `0.005`. After shrinking to a 3-item window, the correct tolerance is `0.00003`; the stale `0.005` admits sums up to `target + 0.005`, a 166x loosening. A window summing to `target + 0.004` is accepted when it should be rejected, silently removing 3 lots that did not actually correspond to the source event.
+
+**Example:** Task 5 of the 2026-06-14 derivatives-th-label-cg-dedup plan implemented `_find_contiguous_range(candidates, target)` with `_RANGE_TOLERANCE_SCALE = Decimal("0.00001")`. The shrink loop recomputes `range_size` and `tolerance` after every `left += 1`. The shrink bound is `left < right`. The 10,000-lot performance test completes in about 30 ms (well under the 2 s budget); the 500-lot worst case completes in under 1 ms. See the implementation log (local).
+
+**See also:** Lesson #107 (per-key deques for exact match), Lesson #102 (count-matched-items-per-event warning), CLAUDE.md §3 Repository Constraints (no silent drops).
+
+## 109. Re-Read RED Test Assertions Against Revised Design Invariants Before Flipping to GREEN
+
+When an implementation plan is revised between the RED phase (writing the failing test) and the GREEN phase (implementing the fix), the RED test may still assert the pre-revision contract. Flipping it GREEN without re-reading it against the current design invariants lets a stale assertion pass against the wrong implementation, or forces the implement sub-agent to patch the test silently during the GREEN flip without flagging that the contract changed.
+
+**Failure mode:** The RED test was written when Design Invariant N specified "per-lot WARNING logs". A plan revision (r1 → r2) changed the invariant to "per-lot INFO plus one aggregate WARNING". The GREEN implementation follows the new invariant, but the RED test still asserts the old one. The implement sub-agent must either update the test (silently changing what was supposed to be a characterization of correctness) or leave it asserting the wrong contract and watch it fail for the wrong reason.
+
+**Required behavior at GREEN flip:**
+
+1. Before running the GREEN validation command, re-read every RED test that this task is supposed to flip, against the **current** design invariants in the revised plan.
+2. If the RED test asserts a contract that the revision changed, update the test to assert the new contract as part of the GREEN flip. Do not leave the stale assertion in place.
+3. Call out in the implement log that the RED test was updated at GREEN-flip time, citing the design invariant number and the revision that changed it. This makes the contract change auditable rather than a silent edit.
+
+**Why this matters:** A RED test is supposed to characterize the desired behavior. When the plan is revised, the characterization must be revised too. An implement sub-agent that silently rewrites a RED test to match its GREEN implementation (without citing the revision) destroys the characterization value and hides a contract change from reviewers.
+
+**Distinguishing from #76 (TDD RED-then-GREEN):** Lesson #76 requires creating a failing test before implementing the fix. This lesson addresses the case where the plan was revised AFTER the RED test was written, so the RED test's assertions may no longer match the revised contract. Lesson #76 is about process ordering; this lesson is about keeping the test characterization in sync with a revised spec.
+
+**Example:** Task 1 of the 2026-06-14 derivatives-th-label-cg-dedup plan wrote `TestByBitCase3Trace#test_removal_logged` as a RED test asserting 3 per-lot WARNING logs. The r2 revision introduced Design Invariant 15 requiring per-lot INFO plus a single aggregate WARNING. Task 6's GREEN flip had to update the test's `caplog.at_level` from WARNING to INFO and change the assertion from "3 WARNINGs" to "3 INFOs + 1 WARNING mentioning `removed` and `lots`". The implement log records the contract change against Design Invariant 15. See the implementation log (local).
+
+**See also:** Lesson #76 (TDD RED-then-GREEN ordering), Lesson #100 (verify plan-time claims before writing tasks — the plan-authoring counterpart).
+
+## 110. Re-Run Phase-N Feasibility Scans on the Post-Phase-(N-1) State, Not the Original Input Set
+
+When a multi-phase matching (or removal) algorithm runs phase 1 (e.g., exact-match consumption) before phase 2 (e.g., contiguous-range fallback), any brute-force feasibility scan the plan author runs to predict phase-2 behavior MUST run against the POST-phase-1 input set, not the original full input set. Phase 1 consumes target items, which changes both the candidate count and the candidate sum seen by phase 2. A "no contiguous range sums to X" claim derived from the full set does not survive phase-1 consumption and will be falsified by the implementation.
+
+**Why this matters:** Plan authors routinely run brute-force scans (in a REPL, a gist, or a throwaway script) to justify design claims like "phase 2 will only remove 2 lots, not 108." Those scans are cheap and persuasive, which is exactly why they are dangerous when run against the wrong input set. The scan produces a true statement about the full set ("no subset sums to X") that is silently false about the post-phase-1 state. The plan ships with a prediction the implementation cannot match, forcing a revision cycle (re-trace, re-write test expectations, re-explain the divergence to reviewers).
+
+**Failure mode:** Phase 1 removes N target items via exact match. The remaining M items have a sum that is within tolerance of a phase-2 target (often BECAUSE the removed items carried the excess). Phase 2's contiguous-range scan then matches the ENTIRE remaining M-item set as a single contiguous range. The plan, having scanned the full N+M set and found no match, predicted phase 2 would remove 0 or 2 items; the implementation removes all M.
+
+**Required behavior:**
+1. Before writing a plan claim that depends on phase-N behavior ("phase 2 matches k items"), identify every prior phase that consumes or filters the input set.
+2. Replay the prior phases' consumption on the actual fixture (or a representative sample) to derive the post-phase-(N-1) input set.
+3. Run the feasibility scan against THAT set, not the original full set.
+4. If the prior phases' consumption is data-dependent (depends on which items match exactly), run the scan for each plausible consumption branch and record which branch the prediction assumes.
+5. When the consumption is too complex to replay by hand, instrument the actual implementation (a debug print of the post-phase-1 candidate list) and run the scan against that output. Do not substitute a hand-wave for the replay.
+
+**General form:** Whenever a multi-stage algorithm's stage N feasibility depends on the output of stage N-1 (consumption, filtering, transformation), predictions about stage N must be grounded in the stage-(N-1) output, not the stage-1 input. This holds for matchers, aggregators, pipeline stages, and any sequential transformation where an early stage alters the input seen by a later stage.
+
+**Distinguishing from #100 (verify plan-time claims against source):** Lesson #100 verifies STATIC facts about production code (field semantics, line numbers, return shapes). This lesson verifies DYNAMIC algorithm state transitions: the input set a later phase sees after an earlier phase has consumed items. A plan can have perfectly accurate code citations and still produce a wrong phase-N prediction because the feasibility scan ran against the wrong input set.
+
+**Distinguishing from #108 (sliding-window tolerance recomputation):** Lesson #108 addresses correctness of the sliding-window mechanic itself (recompute tolerance per shrink step). This lesson addresses correctness of the PLAN-TIME prediction of what the sliding window will match: the candidate list fed to the window is not the original full list when an earlier phase has consumed items.
+
+**Anti-pattern:** A plan author runs `brute_force_sum_scan(full_lot_list, target=<REALIZED_GAIN_USDT>)` in a REPL, observes "no contiguous range sums to <REALIZED_GAIN_USDT>," and writes in the plan: "phase 2 matches at most 2 lots." The implementation runs phase 1 first, which removes the Futures fee lot (<FUTURES_FEE_USDT>), leaving 107 lots whose sum is <REALIZED_GAIN_USDT> within tolerance. Phase 2 matches all 107. The implementer must either patch the test to assert 109 removals (silently contradicting the plan) or flag the divergence and request a revision.
+
+**Example:** Task 7 of the 2026-06-14 derivatives-th-label-cg-dedup plan updated Case 2 (2025-01-13 USDT ByBit) expectations. The plan predicted 2 CG lots removed (1 Funding fee exact + 1 Futures fee exact) and ~106 remaining. The actual pipeline removed all 109 lots: phase 1 removed the 2 exact-match lots (Funding fee <FUNDING_FEE_USDT> + Futures fee <FUTURES_FEE_USDT>), then phase 2's contiguous-range scan ran against the remaining 107 lots whose sum (<TOTAL_USDT> - <FUTURES_FEE_USDT> = <REALIZED_GAIN_USDT>) was within tolerance of the Realized gain TH event (<REALIZED_GAIN_USDT>). Phase 2 matched the entire 107-lot set as a single contiguous range. The plan's brute-force scan had correctly found "no contiguous range in the FULL 108-lot set sums to <REALIZED_GAIN_USDT>," but that scan did not account for phase-1 removing the Futures fee lot first. The test asserts the ACTUAL output (109 removed, 0 remaining) with a docstring explaining the divergence. See the implementation log (local).
+
+**See also:** Lesson #100 (verify plan-time claims about production code), Lesson #108 (sliding-window tolerance recomputation), Lesson #109 (re-read RED tests against revised invariants), CLAUDE.md §4 Agent Workflow Rules.
+
+## 111. Grep Across ALL Test Files for Stale Assertions When a Task Changes Data Flow Semantics
+
+When a task changes data flow semantics (adds a filter that removes items, adds a dedup step, changes a transformation output, splits one pipeline into two), assertions on the affected data may exist in multiple test files at different test tiers (unit, integration, e2e). Each task's "update affected tests" scope must include a grep across ALL test files for assertions that reference the changed data, not just the tests the task author listed as in-scope. A stale assertion in a sibling test file survives a focused update of the task's listed files and only surfaces during full regression — by which point the implement sub-agent has already moved on, forcing a cleanup commit.
+
+**Why this happens:** A feature is initially implemented with tests in both the unit tier (testing the integration point with real fixtures) and the e2e tier (testing the final Excel output). When a follow-on plan changes the data flow, the plan author typically lists only the tests they remember writing or the tests in the file they are editing. The sibling test in a different tier that also references the same data is forgotten. The focused test run passes because it runs only the listed files; the failure only appears when the full `uv run pytest` is run at the end of the plan, often by a later validation task rather than the task that introduced the change.
+
+**Required behavior:**
+1. Before marking a task that changes data flow as complete, identify the identity tuple of the affected data (e.g., `(date, asset, platform)` for a capital-gains entry, or `(field_name, expected_value)` for a transformation output).
+2. Grep across the ENTIRE test tree (`tests/`) for assertions referencing that identity: `grep -rn "<date>.*<asset>.*<platform>" tests/`, `grep -rn "<field_name>" tests/`, or `grep -rn "<expected_value>" tests/`.
+3. For each hit, re-read the assertion against the new contract. If the assertion encodes the old behavior, update it as part of THIS task — do not defer to a later validation task.
+4. When a plan describes "update test expectations for the new behavior," the plan's task list should explicitly include "grep all test files for assertions on the affected identity tuple and update stale ones" as a sub-step, not just "update tests/test_X.py".
+
+**Distinguishing from #109 (re-read RED tests against revised invariants):** Lesson #109 addresses stale assertions in the RED test that THIS task is supposed to flip — the test is in scope but its assertions were written against a superseded invariant. This lesson addresses stale assertions in tests OUTSIDE this task's listed scope — the tests are in sibling files the task author forgot to grep. The failure mode for #109 is caught at GREEN-flip time (the implement sub-agent sees the test fail and patches it); the failure mode here is caught only at full-regression time (the focused run never executed the sibling test).
+
+**Distinguishing from #92 (fix in-scope findings in the same branch):** Lesson #92 addresses refactoring findings in files the task touched. This lesson addresses test-staleness that crosses file boundaries: the task touched `derivatives_dedup.py` and updated `test_derivatives_dedup.py`, but a stale assertion in `test_crypto_reporting.py::TestPipelineIntegration` (a different file the task never opened) encodes the old contract.
+
+**Anti-pattern:** A task implements a dedup step that removes a CG lot for `(2025-01-12, USDT, ByBit)` from `capital_entries`. The task updates the e2e test that asserts the lot is absent from the Excel output (`test_no_fee_disposal_lot_in_capital_entries`) but does not grep `tests/` for other references. A unit test in a different file (`TestPipelineIntegration::test_capital_entries_excludes_derivatives_when_flag_on`) still asserts the OLD contract (`len(case1_matches) == 1` with `gain == -<FEE_GAIN_EUR> EUR`). The focused test run passes; the full regression at task 9 fails. The cleanup commit then has to explain why a stale test survived three task boundaries.
+
+**Example:** Task 7 of the 2026-06-14 derivatives-th-label-cg-dedup plan updated Case 1 and Case 2 e2e expectations in `tests/end_to_end/test_crypto_derivatives_separation.py`. The plan did not list `tests/unit/application/test_crypto_reporting.py::TestPipelineIntegration::test_capital_entries_excludes_derivatives_when_flag_on`, which had been written in an earlier task (the initial derivatives separation) and still asserted `-<FEE_GAIN_EUR> EUR` for the 2025-01-12 USDT ByBit Futures fee lot. The dedup correctly removed that lot (TH line 205 carries Label="Futures fee"), so the unit test failed at task 9's full regression. A grep for `2025-01-12.*USDT.*ByBit` or `case1_matches` across `tests/` at task 7 time would have surfaced the stale assertion and let task 7 update it in the same commit as the e2e expectations. See the implementation log (local).
+
+**See also:** Lesson #92 (fix in-scope refactoring findings in the same branch), Lesson #109 (re-read RED tests against revised invariants), CLAUDE.md §4 Agent Workflow Rules.
+
+## 112. Test Method Names Must Reflect Their Actual Coverage Scope
+
+When a test method's name implies coverage of N pathways (e.g., `test_*_propagate_timestamp` for a function with 5 emitter sites, or `test_all_branches_handle_*` for a 4-branch conditional) but the body exercises only 1, reviewers reading the test list will assume the implied coverage exists. A later refactor that breaks an unexercised pathway will pass the existing test suite because the suite never tested that pathway; the misleading name delayed the discovery.
+
+**Why this matters:** Test method names are a discovery surface during code review and refactor risk-assessment. A reviewer deciding whether a change is safe to merge will scan test names to estimate coverage; a name that overstates coverage produces a false-confidence green light. The test passes for the wrong reason — not because the contract holds across all pathways, but because only one pathway was ever asserted.
+
+**Required behavior:**
+1. When writing a test for a function with multiple dispatch pathways (multiple emitter sites, multiple branches, multiple subclasses, multiple strategies), either:
+   - Name the test after the SPECIFIC pathway it covers (e.g., `test_cross_asset_exchange_emitter_propagates_timestamp`), OR
+   - Parameterize the test across ALL pathways and keep the general name (e.g., `@pytest.mark.parametrize("emitter", ALL_EMITTERS)`).
+2. Never use a general name like `test_emitters_propagate_timestamp` for a test that covers only one emitter, hoping to add the rest later. The hope rarely survives the next refactor.
+3. When inheriting or reviewing a test with a general name and a narrow body, either rename the test to reflect its scope or expand the body (or parameterize) to cover what the name claims. Do not leave the gap.
+
+**General form:** A test's name is a contract with future readers about what the test verifies. If the name claims a category, the body must verify the category. If the body verifies a single instance, the name must name the instance.
+
+**Distinguishing from #91 (helper functions need direct unit test coverage):** Lesson #91 requires direct unit tests for extracted helpers (versus only indirect integration coverage). This lesson addresses the narrower problem of a test that DOES exist but whose name overstates the scope of what it verifies. Lesson #91 is "the test does not exist at the right level"; this lesson is "the test exists but its name lies about what it covers."
+
+**Distinguishing from #111 (grep all test files for stale assertions):** Lesson #111 addresses stale assertions across multiple test files when data flow changes. This lesson addresses the gap between a test's name and its body WITHIN a single test file, regardless of whether data flow changed.
+
+**Anti-pattern:** A function `_emit_cross_asset_exchange` is one of 9 emitter sites that should all propagate `disposal_timestamp`. The implementer writes `test_fifo_emitters_propagate_timestamp` (plural noun suggesting all emitters) that constructs a single cross-asset exchange context and asserts the timestamp is set. The other 8 emitters are never exercised. A later change to `_emit_intra_asset_transfer` drops the timestamp assignment; the test suite stays green because that emitter was never covered. The misleading name hid the gap from the reviewer who approved the change.
+
+**Example:** The 2026-06-14 derivatives-th-label-cg-dedup plan's Task 3 added `disposal_timestamp` propagation to 15 constructor sites across `parsing.py`, `_emitters.py`, `matching.py`, `fifo_helpers.py`, and `crypto_reporting.py`. The unit test `test_fifo_emitters_propagate_timestamp` in `tests/unit/application/test_crypto_fifo_emitters.py` constructs one cross-asset exchange AcquisitionContext and ConsumptionContext and asserts the timestamp is forwarded. The other 8 emitter sites (cross-asset transfer, fee, intra-asset exchange, intra-asset transfer, etc.) are not parameterized into the test. A later refactor that drops the timestamp from `_emit_fee_acquisition` would pass the test suite. See the implementation log (local) Finding 3.
+
+**See also:** Lesson #91 (helpers need direct unit tests), Lesson #111 (grep all test files for stale assertions), CLAUDE.md §4 Agent Workflow Rules.
+
+## 113. Internal Placeholder Sentinels From Resolution Functions Must Not Leak to User-Facing Output Fields
+
+When a resolution/lookup function (operator-origin resolver, ISIN resolver, country resolver) returns an internal placeholder sentinel as one of its fields (e.g., `operator_entity="UNKNOWN_OPERATOR_REVIEW_REQUIRED"`, indicating "data could not be resolved automatically"), callers must NOT propagate that sentinel value directly into user-facing output fields (Excel cells, report columns, API responses). The sentinel is a programmatic "data missing, review required" marker intended for internal branching and review-flag logic, not for display. Propagating it verbatim produces output like `UNKNOWN_OPERATOR_REVIEW_REQUIRED` in a taxpayer-facing Excel cell — confusing, unactionable, and indistinguishable from a real operator name to a non-technical reviewer.
+
+**Why this matters:** User-facing output must use self-explanatory terminology (see `coding_guidelines.md` #6). Internal sentinels are terse programmatic identifiers designed for code-side `if` checks, not for humans. The two concerns — "signal missing data to the code" and "display something useful to the human" — require different values at the same call site. Reusing the internal sentinel for display collapses them into one bad value.
+
+**Distinguishing from user-visible sentinels (`MISSING_ISIN_REQUIRES_ATTENTION`, `UNKNOWN_COUNTRY`):** Those sentinels ARE designed for user display — their terse, ALL_CAPS form is intentional and the project convention is that they should appear in Excel cells with highlighting to draw the reviewer's attention. This lesson addresses the opposite case: a sentinel like `UNKNOWN_OPERATOR_REVIEW_REQUIRED` whose name reads as an instruction to the developer ("review required"), not as a value the user should see. When in doubt, check whether the sentinel's name reads as a value (OK to display) or as an instruction/status (must NOT display).
+
+**Required behavior:**
+1. When consuming a resolution function's result, identify which fields may carry an internal placeholder (typically: the field the resolver returns when it cannot resolve, often paired with `review_required=True`).
+2. For user-facing output, substitute the original raw input value (e.g., `row.wallet` — the raw wallet name the user provided) rather than the resolver's placeholder. The raw input is what the user entered and what they will recognize when reviewing.
+3. Keep the `review_required` flag and a specific actionable `review_reason` (citing the resolver function name) so the missing data is still surfaced for review — just not via leaking the sentinel into a data cell.
+4. Test the unmapped/unknown case explicitly: assert the user-facing field equals the raw input, NOT the internal sentinel.
+
+**General form:** Any time a downstream field is populated from a resolver/lookup result, audit whether that result carries an internal placeholder for the unresolved case. If it does, the user-facing output must use the original input value, not the placeholder. The placeholder is for code logic; the raw input is for display.
+
+**Example:** Task 2 of the 2026-06-15 derivatives-pnl-columns plan populated `operator_entity` on `DerivativesPnLEntry` rows built from OGR data. `resolve_operator_origin()` returns `OperatorOrigin(operator_entity="UNKNOWN_OPERATOR_REVIEW_REQUIRED", review_required=True)` for unmapped platforms. Using `operator_origin.operator_entity` directly would leak `UNKNOWN_OPERATOR_REVIEW_REQUIRED` into the Excel cell. The implementation uses `operator_entity=row.wallet` (the raw wallet name the user provided) and synthesizes an actionable `review_reason` citing `resolve_operator_origin()` instead. See the implementation log (local).
+
+**See also:** `coding_guidelines.md` #6 (user-facing labels use self-explanatory terminology), CRG-016 (review flag conflation), CLAUDE.md "Data Handling" (visible sentinels vs internal placeholders).
+
+## 114. Default-Empty Excel Cell Assertions Must Accept Both None and Empty String
+
+When a test asserts that an Excel cell is "empty by default" (e.g., an optional field like `notes` that was never set on the entry, written via `safe_cell_value(entry.notes)` where `entry.notes` resolves to `""`), the read-back value from openpyxl may be EITHER `None` OR `""`. openpyxl normalizes empty-string writes to `None` in some code paths and preserves the empty string in others, depending on whether the cell had prior content, the write went through `Worksheet.cell()` vs direct attribute assignment, and the version of openpyxl in use.
+
+**Why this matters:** A brittle assertion like `assert cell.value == ""` or `assert cell.value is None` will pass on one openpyxl version and fail on another, or pass for one field and fail for its sibling field written the same way. The test then appears flaky and gets disabled, or the implementer papers over the failure with a hack that masks a real bug.
+
+**Required behavior:**
+1. For default-empty cell assertions, accept BOTH representations: `assert cell.value in (None, "")` (or `assert cell.value is None or cell.value == ""`).
+2. Do NOT assert a single value unless the production code under test GUARANTEES that value (e.g., the field is always initialized to a non-empty sentinel).
+3. When the production write uses `safe_cell_value(x)` where `x` may be `None`, the empty-state assertion must accept `None`, `""`, or both — never assert one exclusively.
+
+**Distinguishing from lesson at section "When adding columns that can be blank/None" (around line 957):** That rule says to ADD a dedicated test for the blank/None state and verify the cells are `None` (not empty string, not zero, not default value) — its concern is detecting leftover data from prior rows. This lesson #114 addresses the opposite problem: when the expected state IS empty and the write went through `safe_cell_value("")`, the read-back may normalize to `None`. The two rules compose: add a dedicated empty-state test (per the earlier rule), and in that test accept both `None` and `""` (per this lesson #114).
+
+**General form:** Any Excel cell assertion about an empty/default value must account for openpyxl's dual representation of "empty". The set `{None, ""}` is the correct expected-empty set for cells written via `safe_cell_value()`.
+
+**Example:** Task 4 of the 2026-06-15 derivatives-pnl-columns plan added `test_row_writes_notes_default_empty` for the new `Notes` column (column 12) on the Derivatives P&L sheet. The entry was constructed without `notes`, so `entry.notes` defaulted to `""`. The production write is `worksheet.cell(row, 12, safe_cell_value(entry.notes))`. The test asserts `cell.value in (None, "")` because openpyxl may read back either value. A brittle `== ""` assertion would fail when openpyxl normalizes the empty string to `None`. See the implementation log (local) Decision 3.
+
+**See also:** Lesson around line 957 (add dedicated blank/None tests), `coding_guidelines.md` #4 (type-safe sentinels for absent optional fields), CLAUDE.md "Data Handling".
+
+## 115. Reuse the Production Validator When a Test Asserts Against a Domain-Validity Predicate
+
+When a test asserts that an output value satisfies a domain-validity predicate (a fixed enumeration of valid codes, a country list, a regex pattern, or any "is this value one of the allowed values?" check) where the valid set is defined in production code, the test MUST import and reuse the production validator rather than duplicate the valid-set list inline in the test.
+
+**Why this matters:** A duplicated valid-set list in the test silently desyncs from production when the production list changes. Example failure mode: production adds a new country code to its Tabela X list (say, after a CIRS amendment), the test still asserts against the old list, and a row carrying the new valid code fails the test even though the pipeline correctly emits it. The test then appears to "discover" a regression that is actually a stale test, and a maintainer may "fix" the pipeline to match the stale test.
+
+**Pattern to avoid:**
+```python
+VALID_TABELA_X_CODES = {"PT", "US", "AE", "DE", "FR", ...}  # stale copy
+assert country in VALID_TABELA_X_CODES or country == "UNKNOWN"
+```
+
+**Correct pattern — reuse the production validator:**
+```python
+from tax_reporting.application.crypto.classification import _is_valid_tabela_x_country
+assert country == "UNKNOWN" or _is_valid_tabela_x_country(country)
+```
+
+**Qualification gate (when to apply this rule):**
+- The predicate is defined in production code (a function, a module-level constant, or a dataclass field).
+- The valid set is non-trivial (a list of dozens of country codes, a regex, an enum) such that manual duplication is error-prone.
+- The test's intent is to verify the value is "valid per the domain", NOT to verify the production list itself contains a specific entry (in which case the test legitimately pins specific entries).
+
+**When NOT to apply:** Tests that pin the production list's membership ("Tabela X must include Portugal") should NOT delegate to the production validator — that would be tautological. Those tests hold their own inline list as a contract anchor.
+
+**Distinguishing from #96 (Structural Identification for Excel Output Tests):** Lesson #96 is about identifying which cells to inspect via structural properties (column population, font) rather than hardcoded value exclusions — it concerns test data selection, not validity predicates. This lesson #115 concerns the validity check applied to the values once selected: even when a test correctly identifies rows structurally, it may still duplicate a domain list to validate the cell's value, which is the drift risk this rule addresses. The two compose: identify rows structurally (per #96), then validate values by reusing the production predicate (per #115).
+
+**General form:** Whenever the test could be written as `value in SOME_SET_DEFINED_IN_PRODUCTION` or `value matches PRODUCTION_REGEX`, replace the inline duplicate with an import of the production function/constant. The test asserts the contract ("value is valid per the domain"), and the production code is the single source of truth for what "valid" means.
+
+**Example:** Task 5 of the 2026-06-15 derivatives-pnl-columns plan added `test_derivatives_rows_operator_country_is_valid_or_unknown`, which asserts every derivatives row's `operator_country` is either a valid Tabela X country code or the literal `"UNKNOWN"` sentinel. The test imports `_is_valid_tabela_x_country` from `tax_reporting.application.crypto.classification` — the same validator the pipeline uses to validate reportable country codes — rather than re-listing the ISO 3166-1 alpha-2 codes inline. A future CIRS amendment that adds a country to the production list propagates to the test automatically. See the implementation log (local) Decision 3.
+
+**See also:** Lesson #96 (structural identification for test data selection), CLAUDE.md "Code Quality" (no duplicated constants), `coding_guidelines.md` (single source of truth for domain predicates).
+
+## 116. Check Prior Same-Session Commits Before Reporting a Verification-Time Scope Violation
+
+When a verification-only task (e.g., a regression sweep, a "diff scope" check, a Phase 2 final validation) asserts that the cumulative diff should contain a specific file but `git diff <base>..HEAD -- <file>` shows the file is NOT in the diff, first check whether a prior same-session commit already applied the planned change to that file before reporting a scope violation.
+
+**Why this matters:** Execute-plan sessions commit after each completed task. When a plan lists a source file as expected-modified and an earlier task's commit already included the edit (because the edit was naturally bundled with that task's primary change), the file will NOT appear in a later task's incremental diff even though the work was done. Reporting this as a "scope violation" or "missing change" is a false positive — the change exists in the cumulative history, just not in the latest task's incremental slice.
+
+**Required behavior:**
+1. When a verification task's "expected files in diff" list does not match `git diff --name-only <base>..HEAD`, run `git log --oneline <base>..HEAD -- <missing-file>` to check whether an earlier commit in the session already touched it.
+2. If yes, confirm the change matches the plan's intent by reading the file at HEAD (`git show HEAD:<file>` or Read tool), then mark the verification item as satisfied — the work landed earlier, just not in the most recent task's commit.
+3. Only report a scope violation when the file is absent from the entire `<base>..HEAD` range AND the planned change is genuinely missing from the working tree.
+
+**Distinguishing from #100 (plan-time claims):** Lesson #100 covers verifying claims about production code at plan-authoring time. This lesson covers verifying scope at verification/commit time, when the diff inspection happens after multiple commits. The trigger is a mismatch between an expected-files list and an observed cumulative diff, not a plan-authoring claim.
+
+**General form:** Verification tasks that inspect `git diff <base>..HEAD` must interpret "file X is missing from the diff" as "file X was not touched in this session" — which requires checking the per-commit history, not just the aggregate diff stat. A file absent from the cumulative diff is genuinely missing; a file absent from the latest task's incremental commit may simply have landed earlier.
+
+**Example:** Task 6 of the 2026-06-15 derivatives-pnl-columns plan listed `docs/domain/crypto_rules.md` as an expected file in the diff scope check. The diff `d2eda71..HEAD` did not show `crypto_rules.md`. Investigation showed the prior same-session commit `6083cf1 docs(crypto): extend PT-C-031 with Anexo G Quadro 13 filing routing for derivatives` had already extended PT-C-031 with the Anexo G Quadro 13 routing the plan depended on, so no further `crypto_rules.md` edit was required by this plan. The verification item was satisfied by the earlier commit, not violated. See the implementation log (local) Decision: crypto_rules.md.
+
+**See also:** Lesson #100 (verify plan-time claims about production code), `execute-plan` skill (Phase 2 final validation), CLAUDE.md §4 Agent Workflow Rules.
+
+## 117. Branch on the Discriminator When Synthesising a Reason for a Multi-Cause Flag
+
+When a downstream consumer observes a boolean flag (e.g., `review_required=True`) that MULTIPLE distinct upstream cases can set, and the consumer synthesises a single human-facing reason/message from that flag, the consumer MUST branch on the discriminator (a sentinel, enum, category field, or secondary attribute) the upstream sets to distinguish which case fired, rather than collapsing all cases into one message.
+
+**Why this matters:** A flag with multiple upstream causes carries no information about WHICH cause fired. Collapsing all causes into one synthesised message produces output that is misleading for the cases that did NOT fire. The reviewer reads "Unknown platform" when the platform IS mapped but the transaction date predates the service window; the reviewer then chases the wrong fix path. The discriminator the upstream sets exists precisely to disambiguate; ignoring it throws away the disambiguation the upstream already paid for.
+
+**Qualification gate (when this rule applies):**
+- The observed flag can be set True by two or more distinct upstream code paths (e.g., unknown-platform default path AND temporal-validity failure path both set `review_required=True`).
+- The consumer synthesises a message FROM the flag (not from the upstream's own reason field).
+- The upstream provides a discriminator (a sentinel value on a sibling field, a distinct enum/category, or a non-empty `review_reason` for at least one case) that lets the consumer tell the cases apart.
+
+**Required behavior:**
+1. Before synthesising a message from a multi-cause flag, enumerate the upstream cases that set the flag True.
+2. For each case, identify what field/value the upstream uses to signal it (sentinel string, enum variant, presence of a specific `reason` text).
+3. Branch on that discriminator in the consumer and emit a case-specific message. Surface the upstream's own `reason` verbatim when it carries specific diagnostic detail (dates, parsed values, identifiers) rather than a generic instruction.
+4. Provide a final fallback string only for the theoretical case where `flag=True` with no discriminator and no reason.
+5. The RED-phase test must exercise EACH distinct upstream case (not just one) and assert the case-specific message appears while the OTHER case's message does NOT.
+
+**Distinguishing from #113 (sentinel leak into display fields):** Lesson #113 is about the VALUE of a field that reaches the display (an internal placeholder must not appear in a user-facing cell). This lesson #117 is about WHICH MESSAGE a consumer synthesises when the same flag has multiple causes — the value is always user-facing by design (a reason string), but the message content must match the actual cause. #113 says "do not display the sentinel"; #117 says "do not collapse multiple causes into one message; branch on the discriminator".
+
+**General form:** Any time a consumer turns a multi-cause boolean into prose, the prose must be selected per-cause using the discriminator the upstream sets. The boolean tells you THAT review is needed; the discriminator tells you WHY; the WHY is what the reviewer needs to read.
+
+**Example:** Finding #1 (Medium) of the 2026-06-16 derivatives-pnl-columns code review r1 found that `_split_ogr_index` in `src/tax_reporting/application/crypto/ogr_handler.py` synthesised an "Unknown platform" message (with wording like `add this platform to resolve_operator_origin() before filing`) whenever `operator_origin.review_required` was True. But `resolve_operator_origin()` sets `review_required=True` for TWO distinct cases: (a) truly-unknown platform (sets `operator_entity="UNKNOWN_OPERATOR_REVIEW_REQUIRED"`), and (b) temporal-validity failure, a known platform whose `service_start_date` postdates the transaction (keeps the real mapped `operator_entity` and sets a specific `review_reason` mentioning the date and service period). The synthesised message misled reviewers for case (b): the platform IS mapped, but the message told them to add it. The fix branches on the `UNKNOWN_OPERATOR_REVIEW_REQUIRED` sentinel: for the truly-unknown case it synthesises the actionable fix-path message; for the temporal-validity case it surfaces `operator_origin.review_reason` verbatim (which carries the specific date and "service period" wording the reviewer needs). The new RED test `test_derivatives_entry_for_known_platform_outside_service_period_carries_temporal_reason` exercises case (b) explicitly and asserts the temporal reason is present while the "Unknown platform" message is absent. See the derivatives-pnl-columns code review r1 (local) Finding #1 and the implementation log (local).
+
+**See also:** Lesson #113 (internal sentinels must not leak to display fields), Lesson #112 (test names must reflect their coverage scope — the missing temporal-validity test is a #112 instance), CLAUDE.md §1 "Partial or uncertain results must carry an explicit indicator" and "Review flags must include specific actionable explanations, not bare booleans".
+
+## 118. Guard "Take From First Entry" Fields Against Silent Heterogeneity
+
+Lesson #80 documents the "lookup value fields - take from first entry" aggregation strategy, premised on the assumption that all entries in the group share an identical value for the field. That assumption is a design invariant, not a guaranteed runtime property. When the assumption silently fails (e.g., a future code path lets two group members carry different `annex_hint` / `operation_code` / `legal_category` values for the same disposal group), the renderer or aggregator that takes `entries[0]` will silently pick one value and discard the others, with no log or warning to flag the drift. The output looks correct (it has a value) but is wrong (it has the wrong value).
+
+**Required behavior:**
+1. Whenever an aggregator, renderer, or detail-line builder takes `entries[0]` (or `first`) for a field that is ASSUMED constant across the group, add a programmatic heterogeneity guard that emits a `logger.warning` when the assumption is violated.
+2. The guard should build the set of distinct values (or distinct tuples, for multi-field constants like `(annex_hint, operation_code, legal_category)`) and warn when `len(distinct) > 1`. Include the count, the distinct values, and which row was actually rendered so a future maintainer can audit.
+3. Do NOT raise — the first entry's value is still the best available. The warning makes the drift observable so a reviewer can decide whether the assumption needs strengthening or the data needs correcting.
+4. Pair the guard with a RED test that constructs a group with heterogeneous values and asserts the warning fires, plus a negative control asserting no warning fires when values agree.
+
+**Qualification gate (when this rule applies):**
+- The field is read from `entries[0]` / `first` rather than aggregated (summed, OR-ed, joined).
+- The field's correctness depends on all group members sharing the same value (a design invariant, not enforced by upstream).
+- A silent violation would produce user-facing output that looks valid but is wrong.
+
+**Distinguishing from #80 (aggregation strategy per field type):** Lesson #80 catalogs WHICH strategy to use per field type ("lookup value → take first"). This lesson #118 catalogs the GUARD that must accompany the "take first" strategy when the "all members share the value" assumption is a design invariant that could silently fail. #80 says "use this strategy"; #118 says "when you use the 'take first' strategy for an assumed-constant field, add a heterogeneity guard".
+
+**General form:** Any time production code reads from the first element of a group for a field whose group-wide constancy is an assumption rather than a guarantee, the assumption must be checked at runtime and a warning emitted on violation. Silent assumption drift is worse than a logged warning because the output looks correct.
+
+**Example:** Finding #1 (Medium) of the 2026-06-16 derivatives-pnl-columns code review r1 found that the derivatives-sheet detail-line renderer took `entries[0].annex_hint`, `entries[0].operation_code`, and `entries[0].legal_category` without verifying the other group members agreed. The current fixture set is homogeneous by construction (every group comes from a single disposal event), so the bug is latent. The fix added a guard in `derivatives_sheet.py` that builds `distinct_constant_tuples = {(e.annex_hint, e.operation_code, e.legal_category) for e in entries}` and emits `logger.warning("Derivatives P&L detail-line fields are heterogeneous ...", ...)` when `len(distinct_constant_tuples) > 1`. The RED tests `test_detail_line_warns_when_entries_disagree_on_constant_fields` and `test_detail_line_no_warning_when_entries_agree_on_constant_fields` exercise both branches. See the derivatives-pnl-columns branch review r1 (local) Finding #1 and the implementation log (local) Medium 1.
+
+**See also:** Lesson #80 (field aggregation strategy per field type), Lesson #117 (branch on discriminator for multi-cause flags), CLAUDE.md §1 "Partial or uncertain results must carry an explicit indicator" and "Data-loss conditions (unmatched items, dropped records) must be logged at warning+".
+
+## 119. Mirror Byte-Identical Aggregation Patterns Across Aggregators in the Same Module
+
+When two aggregation functions in the same module perform the same conceptual operation on different domain types (e.g., `aggregate_capital_entries` and `aggregate_derivatives_entries` both merging per-group narrative text fields), they MUST use byte-identical merge patterns. Diverging patterns (one takes `first.notes`, the other joins unique notes with `"; "`) silently drops data in the diverging aggregator: notes that should have been preserved across group members disappear from the output with no error or warning.
+
+**Why this matters:** Aggregators in the same module are read together by reviewers comparing behavior. A divergence between them is invisible at the diff level (both look like reasonable implementations) but produces inconsistent output for the same kind of operation. The capital-entries aggregator preserves all notes; the derivatives-entries aggregator that takes only `first.notes` discards every other member's notes. The bug surfaces only when a fixture has two group members with distinct notes AND the reviewer notices the discrepancy.
+
+**Required behavior:**
+1. When adding a new aggregator that performs an operation already implemented by a sibling aggregator in the same module (merge narrative fields, OR booleans, sum numerics, take-first for lookup values), copy the sibling's pattern byte-for-byte. Do not paraphrase, simplify, or "improve" it.
+2. If you cannot copy byte-for-byte because the domain types differ, factor the shared pattern into a helper and call it from both aggregators.
+3. The RED test must drive the new aggregator with multiple group members carrying distinct values for the merged field, and assert all values survive (deduped and order-preserved when the pattern dedupes).
+4. Add a negative control asserting empty input produces the pattern's empty sentinel (e.g., `""` for the notes-merge pattern).
+
+**Qualification gate (when this rule applies):**
+- Two or more functions in the same module perform the same conceptual aggregation (join-and-dedupe, sum, OR, take-first, max).
+- The implementations diverge in a way that produces different output for the same input shape.
+- A reviewer would reasonably expect the implementations to agree.
+
+**Pattern (notes merge, byte-identical reference):**
+```python
+merged_notes = "; ".join(dict.fromkeys(e.notes for e in group if e.notes)) or ""
+```
+The `dict.fromkeys(...)` preserves insertion order while deduping; the `if e.notes` filters empty/None; the `or ""` ensures empty input yields an empty string rather than `None`.
+
+**Distinguishing from #80 (aggregation strategy per field type):** Lesson #80 catalogs WHICH strategy to use per field type ("narrative text fields - join unique values with delimiter and deduplicate"). This lesson #119 says: when that strategy is implemented in two aggregators in the same module, the implementations must agree byte-for-byte. #80 says "use the join-dedupe strategy"; #119 says "use the SAME join-dedupe implementation as the sibling aggregator".
+
+**General form:** Sibling aggregators that perform the same operation must use the same implementation. Diverging implementations silently produce inconsistent output. The fix is byte-identical mirroring or extraction to a shared helper.
+
+**Example:** Finding #2 (Medium) of the 2026-06-16 derivatives-pnl-columns code review r1 found that `aggregate_derivatives_entries` in `src/tax_reporting/application/crypto/aggregation.py` set `notes=first.notes` while the sibling `aggregate_capital_entries` (same module, lines 283-287) used the `"; ".join(dict.fromkeys(...)) or ""` pattern. For a group with two members carrying notes "manual annotation A" and "manual annotation B", the derivatives aggregator silently dropped "manual annotation B". The fix replaced `first.notes` with `merged_notes = "; ".join(dict.fromkeys(e.notes for e in group if e.notes)) or ""` (byte-identical to the capital-entries pattern). The RED tests `test_aggregate_derivatives_merges_notes_across_group_members`, `test_aggregate_derivatives_notes_empty_when_no_member_has_notes`, and `test_aggregate_derivatives_notes_deduped_and_order_preserved` exercise the merge, empty-input, and dedupe+ordering cases. See the derivatives-pnl-columns branch review r1 (local) Finding #2 and the implementation log (local) Medium 2.
+
+**See also:** Lesson #80 (field aggregation strategy per field type), Lesson #77 (handle duplicate keys by summing, not silent overwrite), CLAUDE.md §1 "Data-loss conditions must be logged at warning+, never debug".

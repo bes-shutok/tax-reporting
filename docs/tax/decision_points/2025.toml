@@ -25,5 +25,12 @@ futures_derivatives_taxable = true
 # When OGR overrides CG: futures/derivatives with Type="Loss" or Type="Profit"
 use_other_gains_report = true
 
+# DP-012: Separate derivatives P&L from spot crypto in the report.
+# Legal basis: CIRS art. 10(1)(e) covers "instrumentos financeiros derivados"
+# (no 365-day exemption) vs art. 10(1)(k) for other crypto-assets (365-day
+# exemption under art. 10(19)). AT binding ruling 28298/2025 confirms derivatives
+# are reported under art. 10(1)(e); spot retains art. 10(1)(k).
+separate_derivatives_reporting = true
+
 [countries.US]
 exclude_loan_repayment_gains = false

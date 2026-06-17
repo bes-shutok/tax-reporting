@@ -25,6 +25,7 @@ from .assumptions_sheet import write_assumptions_and_methodology_sheet
 from .crypto_gains_sheet import write_crypto_gains_sheet
 from .crypto_reconciliation_sheet import write_crypto_reconciliation_sheet
 from .crypto_supplementary_sheet import write_crypto_supplementary_sheet
+from .derivatives_sheet import write_derivatives_sheet
 from .ib_sheet import write_ib_reporting_sheet
 from .loan_activity_sheet import write_loan_activity_sheet
 
@@ -157,6 +158,8 @@ def generate_tax_report(  # noqa: PLR0912, PLR0915
         if crypto_tax_report:
             try:
                 write_crypto_gains_sheet(workbook, crypto_tax_report)
+                if config.tax_jurisdiction.separate_derivatives_reporting:
+                    write_derivatives_sheet(workbook, crypto_tax_report)
                 write_crypto_supplementary_sheet(workbook, crypto_tax_report)
                 write_crypto_reconciliation_sheet(workbook, crypto_tax_report)
                 write_loan_activity_sheet(workbook, crypto_tax_report)
@@ -170,6 +173,7 @@ def generate_tax_report(  # noqa: PLR0912, PLR0915
                 logger.error("Failed to generate crypto sheets: %s", e)
                 for name in (
                     "Crypto Gains",
+                    "Derivatives P&L",
                     "Crypto Supplementary",
                     "Crypto Reconciliation",
                     "Loan Activity",

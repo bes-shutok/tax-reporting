@@ -6,9 +6,7 @@ Tests are written first to verify the expected behavior after extraction.
 
 from __future__ import annotations
 
-from functools import lru_cache
-
-import pytest
+from decimal import Decimal
 
 
 class TestClassifyRewardTaxStatus:
@@ -184,3 +182,231 @@ class TestPopularCryptoTokens:
         else:
             # Empty popular tokens - should return False
             assert _contains_popular_token("BTC") is False
+
+
+class TestDerivativesClassifier:
+    """Tests for classify_derivatives_event (Task 5 of derivatives separation plan).
+
+    The classifier takes a single ParsedOgrRow and the list of CG entries that
+    share the same (date, asset, wallet) key, and returns a sealed
+    DerivativesClassification with variants Derivatives, Spot, or Ambiguous.
+
+    Two design corrections from the plan pseudocode are encoded in these tests:
+    - Correction 1: comparison is against CG ``proceeds_eur`` (the disposal
+      value), NOT ``gain_loss_eur`` (the realized gain). OGR ``Value (EUR)`` is
+      disposal proceeds; CG gain is a different quantity. Verified against the
+      Case 1 fixture: OGR row 9 Value=4.17 matches CG line 19 proceeds_eur=4.17
+      (gain_loss_eur there is 2.44, which would not match).
+    - Correction 2: the Ambiguous branch splits into two distinct reason
+      suffixes — "manual review needed" for single-CG mismatch, and
+      "aggregate-match check required" for multi-CG mismatch.
+    """
+
+    def _make_capital_entry(  # noqa: PLR0913
+        self,
+        *,
+        disposal_date: str = "2025-01-12",
+        asset: str = "USDT",
+        wallet: str = "ByBit",
+        proceeds_eur: str = "4.17",
+        cost_eur: str = "1.72",
+        gain_loss_eur: str = "2.44",
+    ):
+        """Construct a CryptoCapitalGainEntry fixture with defaults from Case 1."""
+        from tax_reporting.application.crypto.entities import (
+            CryptoCapitalGainEntry,
+            OperatorOrigin,
+        )
+
+        origin = OperatorOrigin(
+            platform=wallet,
+            service_scope="crypto",
+            operator_entity="Test Entity",
+            operator_country="US",
+            source_url="https://example.com",
+            source_checked_on="2026-01-01",
+            confidence="high",
+            review_required=False,
+        )
+        return CryptoCapitalGainEntry(
+            disposal_date=disposal_date,
+            acquisition_date="2024-12-16",
+            asset=asset,
+            amount=Decimal("4.27"),
+            cost_eur=Decimal(cost_eur),
+            proceeds_eur=Decimal(proceeds_eur),
+            gain_loss_eur=Decimal(gain_loss_eur),
+            holding_period="Short term",
+            wallet=wallet,
+            platform=wallet,
+            chain="unknown",
+            operator_origin=origin,
+            annex_hint="",
+            review_required=False,
+            notes="",
+        )
+
+    def _make_ogr_row(
+        self,
+        *,
+        date: str = "2025-01-12",
+        asset: str = "USDT",
+        gain_loss: str = "-4.17",
+        row_type: str = "Loss",
+        wallet: str = "ByBit",
+    ):
+        """Construct a ParsedOgrRow fixture."""
+        from tax_reporting.application.crypto.entities import ParsedOgrRow
+
+        return ParsedOgrRow(
+            date=date,
+            asset=asset,
+            gain_loss=Decimal(gain_loss),
+            row_type=row_type,
+            wallet=wallet,
+        )
+
+    def test_ogr_profit_no_cg_counterpart(self):
+        """Given an OGR Profit row, expects Derivatives variant.
+
+        Profit rows never have CG counterparts in Koinly's model (realized
+        derivatives P&L has no FIFO cost-basis trail), so a Profit row is
+        unconditionally derivatives. Mirrors Case 1 OGR row 8 (140.18 EUR
+        ByBit USDT Profit).
+        """
+        from tax_reporting.application.crypto.classification import classify_derivatives_event
+        from tax_reporting.application.crypto.entities import DerivativesClassification
+
+        ogr_row = self._make_ogr_row(
+            gain_loss="140.18",
+            row_type="Profit",
+        )
+        cg_matches: list = []
+
+        result = classify_derivatives_event(ogr_row, cg_matches)
+
+        assert isinstance(result, DerivativesClassification)
+        assert result.kind == "derivatives"
+        assert result.reason == "OGR Profit — derivatives P&L realization"
+
+    def test_ogr_loss_exact_cg_match(self):
+        """Given an OGR Loss row with one CG whose proceeds match, expects Spot.
+
+        Mirrors Case 1 OGR row 9 (Value=-4.17, Loss) against CG line 19
+        (proceeds_eur=4.17). The match is on ``proceeds_eur`` (disposal
+        value), not ``gain_loss_eur`` (realized gain = 2.44). Comparing
+        |4.17| against gain_loss_eur=2.44 would give 1.73 > tolerance and
+        wrongly classify as Ambiguous, breaking the plan's Example.
+        """
+        from tax_reporting.application.crypto.classification import classify_derivatives_event
+        from tax_reporting.application.crypto.entities import DerivativesClassification
+
+        ogr_row = self._make_ogr_row(gain_loss="-4.17", row_type="Loss")
+        cg_matches = [self._make_capital_entry(proceeds_eur="4.17", gain_loss_eur="2.44")]
+
+        result = classify_derivatives_event(ogr_row, cg_matches)
+
+        assert isinstance(result, DerivativesClassification)
+        assert result.kind == "spot"
+        assert result.reason == "OGR Loss matches CG disposal — spot fee"
+
+    def test_ogr_loss_no_cg_counterpart(self):
+        """Given an OGR Loss row with no CG counterpart, expects Derivatives.
+
+        A Loss row with no matching CG entry has no FIFO cost-basis trail,
+        so it is a derivatives realization (no spot disposal to anchor it).
+        """
+        from tax_reporting.application.crypto.classification import classify_derivatives_event
+        from tax_reporting.application.crypto.entities import DerivativesClassification
+
+        ogr_row = self._make_ogr_row(gain_loss="-100.00", row_type="Loss")
+        cg_matches: list = []
+
+        result = classify_derivatives_event(ogr_row, cg_matches)
+
+        assert isinstance(result, DerivativesClassification)
+        assert result.kind == "derivatives"
+        assert result.reason == "OGR Loss with no CG counterpart — derivatives realization"
+
+    def test_ogr_loss_value_mismatch_ambiguous(self):
+        """Given an OGR Loss row with one CG whose proceeds differ, expects Ambiguous.
+
+        The CG ``proceeds_eur`` differs from |OGR gain_loss| by more than the
+        0.01 tolerance. Reason cites the mismatch with single-CG suffix
+        "manual review needed".
+        """
+        from tax_reporting.application.crypto.classification import classify_derivatives_event
+        from tax_reporting.application.crypto.entities import DerivativesClassification
+
+        ogr_row = self._make_ogr_row(
+            gain_loss="-8.31",
+            row_type="Loss",
+            date="2025-01-13",
+        )
+        # proceeds_eur=5.00, |OGR|=8.31 → diff 3.31 > 0.01 tolerance
+        cg_matches = [self._make_capital_entry(proceeds_eur="5.00", disposal_date="2025-01-13")]
+
+        result = classify_derivatives_event(ogr_row, cg_matches)
+
+        assert isinstance(result, DerivativesClassification)
+        assert result.kind == "ambiguous"
+        assert result.reason == (
+            "OGR=-8.31 vs CG=5.00 on (2025-01-13, USDT, ByBit) — manual review needed"
+        )
+
+    def test_ogr_loss_multiple_cg_entries_ambiguous(self):
+        """Given an OGR Loss row with many CG entries whose aggregate differs, expects Ambiguous.
+
+        Mirrors Case 2 shape: 109 CG lots on the same (date, asset, wallet)
+        key with small individual gains. The aggregate proceeds does not
+        match |OGR|, so the row is ambiguous. Reason uses the multi-CG
+        suffix "aggregate-match check required".
+        """
+        from tax_reporting.application.crypto.classification import classify_derivatives_event
+        from tax_reporting.application.crypto.entities import DerivativesClassification
+
+        ogr_row = self._make_ogr_row(
+            gain_loss="-138.73",
+            row_type="Loss",
+            date="2025-01-13",
+        )
+        # Build 109 CG lots whose proceeds sum to something far from 138.73.
+        cg_matches = [
+            self._make_capital_entry(
+                proceeds_eur="0.10",
+                disposal_date="2025-01-13",
+            )
+            for _ in range(109)
+        ]
+
+        result = classify_derivatives_event(ogr_row, cg_matches)
+
+        assert isinstance(result, DerivativesClassification)
+        assert result.kind == "ambiguous"
+        assert result.reason == (
+            "OGR=-138.73 vs 109 CG lots on (2025-01-13, USDT, ByBit) — aggregate-match check required"
+        )
+
+    def test_ogr_loss_multiple_cg_entries_aggregate_match(self):
+        """Given an OGR Loss row with many CG entries whose aggregate matches, expects Spot.
+
+        Multiple CG lots whose summed ``proceeds_eur`` matches |OGR gain_loss|
+        within tolerance are collectively a spot fee disposal split across
+        lots. Reason names the lot count.
+        """
+        from tax_reporting.application.crypto.classification import classify_derivatives_event
+        from tax_reporting.application.crypto.entities import DerivativesClassification
+
+        # OGR magnitude 12.00, split across 3 CG lots summing to 12.00.
+        ogr_row = self._make_ogr_row(gain_loss="-12.00", row_type="Loss")
+        cg_matches = [
+            self._make_capital_entry(proceeds_eur="4.00"),
+            self._make_capital_entry(proceeds_eur="5.00"),
+            self._make_capital_entry(proceeds_eur="3.00"),
+        ]
+
+        result = classify_derivatives_event(ogr_row, cg_matches)
+
+        assert isinstance(result, DerivativesClassification)
+        assert result.kind == "spot"
+        assert result.reason == "OGR Loss aggregate-matches 3 CG lots — spot fee disposals"

@@ -296,7 +296,18 @@ def write_assumptions_and_methodology_sheet(
                 ),
             ],
         ),
-        # Section 7: Implementation
+        # Section 7: Derivatives & Crypto Gains Classification
+        (
+            "Derivatives & Crypto Gains Classification",
+            [
+                (
+                    "Derivatives P&L Tab Legal Basis",
+                    "DP-012",
+                    "The Derivatives P&L tab reports realized P&L, funding fees, and futures fees from futures and perpetuals as Category G income under CIRS art. 10(1)(e) (instrumentos financeiros derivados). The tab is rendered only when the separate_derivatives_reporting flag is set; entries are aggregated by (date, asset, platform, event_type). The Crypto Gains tab continues to report cryptoasset capital gains under CIRS art. 10(1)(k), including the 365-day holding-period exemption. Losses on derivatives are deductible against other Category G gains and carry forward 5 years under PT-C-016. Source: CIRS art. 10(1)(e), art. 10(1)(k); AT folheto 2026-01-12.",
+                ),
+            ],
+        ),
+        # Section 8: Implementation
         (
             "Implementation",
             [

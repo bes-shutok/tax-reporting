@@ -142,8 +142,19 @@ Futures and derivatives (including perpetual swaps, options, and other derivativ
 are classified as "instrumentos financeiros derivados" under CIRS art. 10(1)(e).
 Disposals of derivative positions, including liquidations, are treated as alienação onerosa
 and are taxable events. A liquidation is a forced disposal event, not a withdrawal.
+
+**IRS filing routing (Quadro 13):** Derivatives realizations are declared in **Anexo G, Quadro 13**
+("INSTRUMENTOS FINANCEIROS DERIVADOS, WARRANTS AUTÓNOMOS E CERTIFICADOS"), lines 1301-1306, with
+income code **G51** ("Operações relativas a instrumentos financeiros derivados"). Each line carries
+four mandatory fields: Código da operação, Titular, Rendimento líquido (the EUR P&L), and País da
+contraparte (counterparty country = operator entity country). Cryptoasset disposals under alínea k)
+go to Quadro 18 instead; derivatives and cryptoassets are reported in different Quadros.
+Englobamento option for Quadro 13 derivatives is signalled in Quadro 15 of the same annex.
 > Source: CIRS art. 10(1)(e) - "Operações relativas a instrumentos financeiros derivados";
 > confirmed via official AT portal rendering in `cirs_art10_portal_2026-04-01.html`.
+> Filing routing: `docs/tax/laws/pt/crypto-tax/official/modelo3_anexo_g_2026.pdf` page 4
+> (Quadro 13 structure, verified 2026-06-13 via pdftotext extraction); AT PIV 28298/2025 paragraph 22
+> (Quadro 15 englobamento signal).
 
 > **Example:** ByBit SOL/USDT position `<POSITION_ID>` liquidated on 19 Jan 2025,
 > 11:28:53 PM. Koinly reported -42.26 USD loss at 11:29:46 PM. The system assessed disposal
@@ -161,6 +172,12 @@ The text states: "São excluídos os ganhos obtidos, bem como as perdas incorrid
 > Source: CIRS art. 10(19); official AT portal rendering in `cirs_art10_portal_2026-04-01.html`.
 
 **PT-C-033** `[OFFICIAL | 2026-01-12 | CIRS art. 10(1)(e) | AT folheto 2026-01-12]`
+
+**Scope (flag-conditional):** PT-C-033 applies ONLY when `separate_derivatives_reporting=False`
+(DP-012). When True, PT-C-034 governs: OGR values route to the Derivatives P&L tab instead of
+overriding spot CG entries, and PT-C-033 is inert for derivatives rows. Spot disposals
+continue to use the CG report as authoritative regardless of flag. Cross-reference: PT-C-034.
+
 For futures and derivatives reporting, use the Koinly Other Gains Report (OGR) values
 when available, rather than Capital Gains Report values. The OGR provides:
 - Explicit Type classification ("Loss" or "Profit") for better tax treatment
@@ -174,6 +191,21 @@ with proper classification and collateral flow handling per Portuguese law.
 > Source: CIRS art. 10(1)(e) "Operações relativas a instrumentos financeiros derivados";
 > AT folheto "Criptoativos — Conceito fiscal e tributação", published 2026-01-12;
 > official AT portal rendering in `cirs_art10_portal_2026-04-01.html`.
+
+**PT-C-034** `[OFFICIAL | 2026-06-13 | CIRS art. 10(1)(e) and (k) | AT binding ruling Processo 28298/2025]`
+When `separate_derivatives_reporting=True` (DP-012), derivatives P&L is reported separately
+from spot crypto under CIRS art. 10(1)(e); spot retains art. 10(1)(k) with 365-day exemption.
+Mixing the two produces incorrect tax treatment.
+
+The split is performed by the classifier in `src/tax_reporting/application/crypto/classification.py`
+using two signals only: the OGR row `Type` (Profit/Loss) and CG-counterpart existence. OGR/CG
+counterpart matching uses a 1-cent (`Decimal("0.01")`) EUR tolerance to absorb rounding; this is
+the single numeric threshold in the classifier and is documented here as the matching precision,
+not a tax-law parameter.
+> Source: AT binding ruling Processo 28298/2025 (archived at
+> `docs/tax/laws/pt/crypto-tax/official/at_piv_28298_2025.pdf`); CIRS art. 10(1)(e) and (k).
+> Cross-reference: PT-C-033 (governs the flag-off path), PT-C-030 (review-flag specificity),
+> PT-C-016 (loss carry-forward for derivatives losses).
 
 ---
 

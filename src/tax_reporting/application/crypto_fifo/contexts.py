@@ -87,3 +87,8 @@ class ParsedTxRow:
     received_affected: bool
     fee_affected: bool
     loan_affected_assets: frozenset[str]
+    # Minute-precision ISO timestamp (YYYY-MM-DD HH:MM) parsed from the TH Date.
+    # Carries through to CryptoConsumption.disposal_timestamp for FIFO-derived
+    # CG entries so the derivatives CG/TH deduplication filter can match same-day
+    # disposals at minute precision. Seconds are truncated.
+    timestamp_str: str | None = None

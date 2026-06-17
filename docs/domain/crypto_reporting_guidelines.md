@@ -138,6 +138,43 @@ The Other Gains Report (OGR) provides authoritative DIRECTION for crypto disposa
 
 **See also:** Lesson #78 in development_lessons.md, plan `docs/plans/2026-06-10-ogr-validation-design.md`
 
+## Derivatives P&L Tab (art. 10(1)(e))
+
+**CRG-018**
+The Derivatives P&L tab is the filing surface for realized derivatives P&L when derivatives
+are separated from spot crypto per DP-012 (`separate_derivatives_reporting=True`).
+
+**(a) When the tab renders.** The tab is created in the workbook only when the jurisdiction
+flag `separate_derivatives_reporting` is `True` (DP-012). When `False`, the tab is not created
+and derivatives rows are folded into Crypto Gains via the legacy PT-C-033 override path; output
+is byte-identical to the pre-change behavior.
+
+**(b) Aggregation key.** Derivatives entries are aggregated by
+`(date, asset, platform, event_type)` mirroring `_aggregate_capital_entries` structure, but with
+`event_type` (`DerivativesEventType.PROFIT` / `LOSS`) replacing `holding_period`. A Profit and a
+Loss on the same `(date, asset, platform)` must NOT collapse into a single net; they stay separate
+rows so the user can trace each realized event.
+
+**(c) Legal category citation in the header.** The worksheet header cites "CIRS art. 10(1)(e)"
+explicitly so a reader cannot mistake the category for cryptoasset treatment under art. 10(1)(k).
+This is an auditability requirement (per Plan Evaluation Criteria), not cosmetic.
+
+**(d) Interaction with the Crypto Gains tab.** When the flag is on, the Crypto Gains tab contains
+ONLY spot crypto disposals (art. 10(1)(k), 365-day exemption applies). Derivatives P&L never mixes
+into Crypto Gains. Spot-classified OGR rows (e.g. an OGR `Type=Loss` whose EUR value matches a CG
+lot's `proceeds_eur` within `Decimal("0.01")` tolerance) stay in the spot_index and continue through
+the PT-C-033 direction-override path. Derivatives-classified OGR rows route to `derivatives_entries`
+and never enter `_apply_ogr_direction_override`, so spot CG lot signs cannot be flipped by
+derivatives OGR rows (Design Invariant 6). Cross-reference: PT-C-034.
+
+**(e) Loss-deductibility footnote.** The tab includes a footnote reading "Losses are deductible
+against other Category G gains; carry-forward 5 years per PT-C-016" whenever any derivatives entry
+has `event_type=LOSS`. The footnote is omitted only when no loss entry exists, to avoid implying
+deductibility that the user's data does not exercise.
+
+**See also:** PT-C-034 (derivatives separation rule), PT-C-033 (flag-off legacy path),
+plan `docs/plans/2026-06-13-derivatives-separation.md`.
+
 ## Token Origin Resolution
 
 **CRG-015**

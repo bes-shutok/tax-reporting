@@ -21,6 +21,9 @@ class TaxJurisdictionConfig:
             treated as taxable disposals (e.g., True for PT per CIRS art. 10(1)(e)).
         use_other_gains_report: Whether the jurisdiction uses Koinly Other Gains Report
             classifications (e.g., True for certain futures/derivatives treatments).
+        separate_derivatives_reporting: Whether derivatives P&L is reported separately
+            from spot crypto (e.g., True for PT per DP-012; CIRS art. 10(1)(e) covers
+            derivatives with no 365-day exemption, while spot retains art. 10(1)(k)).
     """
 
     country: str
@@ -29,3 +32,4 @@ class TaxJurisdictionConfig:
     zero_basis_review_threshold: Decimal
     futures_derivatives_taxable: bool = False
     use_other_gains_report: bool = False
+    separate_derivatives_reporting: bool = False

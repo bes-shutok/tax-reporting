@@ -2,8 +2,8 @@
 
 Related decision point: DP-010 (futures/derivatives losses are taxable disposals, not withdrawals)
 References: `docs/plans/completed/2026-06-07-futures-derivatives-loss-treatment.md` (prior incomplete investigation)
-Plan review r1: docs/reviews/2026-06-09-plan-review-multi-jurisdiction-futures-derivatives-loss-treatment.md
-Plan review r2: docs/reviews/2026-06-09-plan-review-multi-jurisdiction-futures-derivatives-loss-treatment-r2.md
+Plan review r1: the multi-jurisdiction plan review r1 (local)
+Plan review r2: the multi-jurisdiction plan review r2 (local)
 
 ## Terms
 
@@ -67,9 +67,9 @@ Any finding about a file not in this list must be rejected as out of scope.
 
 ## Review Findings
 
-**Round 1:** `docs/reviews/2026-06-09-plan-review-multi-jurisdiction-futures-derivatives-loss-treatment.md` - CONDITIONAL PASS (4 blockers identified)
+**Round 1:** the multi-jurisdiction plan review r1 (local) - CONDITIONAL PASS (4 blockers identified)
 
-**Round 2:** `docs/reviews/2026-06-09-plan-review-multi-jurisdiction-futures-derivatives-loss-treatment-r2.md` - ✅ PASS (zero blockers, all fixes verified)
+**Round 2:** the multi-jurisdiction plan review r2 (local) - ✅ PASS (zero blockers, all fixes verified)
 
 **Status:** READY FOR IMPLEMENTATION - All blockers fixed, zero blockers in round 2.
 
@@ -105,7 +105,7 @@ Files:
 - [x] `grep "<OGR timestamp>.*USDT.*ByBit" koinly_2025_capital_gains_report_<ACCOUNT_TOKEN>.csv` — given CG file, expects matching row with positive gain
 - [x] Open `extract.xlsx` Crypto Gains tab — given the matching USDT disposal, expects Gain/Loss value shown
 - [x] Compare values — given OGR shows a Type="Loss" with larger magnitude and CG shows a smaller positive gain, expects Excel shows positive gain (current bug) not negative loss
-- [x] Document findings in `docs/tmp/data_trace_verification_ogr_override.md` — confirm the bug and which entries are affected
+- [x] Document findings in the OGR data-trace verification (local) — confirm the bug and which entries are affected
 
 **🔴 BLOCKER FIX 2.1:** Must create verification document before proceeding to Task 2. The document must include:
 1. Actual OGR row showing the bug: `<OGR timestamp>,USDT,"-<proceeds>","<loss magnitude>",Loss,ByBit`
@@ -315,4 +315,4 @@ Run full test suite and verify the fix with actual data.
 - [x] Run all crypto tests — given implementation complete, expects `uv run pytest tests/unit/application/test_crypto_reporting.py -v` passes
 - [x] Run full test suite — given all changes, expects `uv run pytest` passes
 - [x] Manual verification with real data — given Koinly exports with futures losses, expects Excel shows losses as negative values for PT
-- [x] Document final verification in `docs/tmp/futures_loss_fix_verification.md` — confirm the bug is fixed
+- [x] Document final verification in the futures-loss fix verification (local) — confirm the bug is fixed

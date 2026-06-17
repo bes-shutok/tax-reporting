@@ -950,6 +950,355 @@ def test_suspicious_flag_formatting(self):
 
 **Why**: Excel rendering is UI surface. Conditional formatting and new sections are user-visible and should have test coverage equivalent to unit tests for business logic.
 
+## Derivatives Separation Lessons
+
+Lessons from the 2026-06-13 derivatives separation plan. Each lesson records the WHAT, WHY,
+and CONSEQUENCE of a design decision that future contributors must not undo without re-deriving
+the rationale. Cross-reference: plan `docs/plans/2026-06-13-derivatives-separation.md`,
+rules PT-C-033 / PT-C-034, guideline CRG-018.
+
+### Why amount thresholds are rejected as a derivatives detection signal
+
+The original classifier design considered using OGR amount thresholds (e.g. `>100 EUR` equals
+derivatives) to distinguish futures rows from spot rows. This was rejected in r1 Blocker 2 and
+Monitor #2 because spot disposals can also produce large values and the threshold is arbitrary;
+any chosen cutoff would over-classify legitimate large spot trades and under-classify small
+futures fees. The classifier in `src/tax_reporting/application/crypto/classification.py` instead
+uses only two signals: the OGR row `Type` (Profit/Loss) and CG-counterpart existence within a
+`Decimal("0.01")` EUR tolerance. The consequence is that no asset ticker, platform, or amount
+allowlist may be reintroduced without re-opening this decision; doing so silently re-broadens the
+classifier and reintroduces the silent over-classification risk.
+
+### Why the OGR parser returns a row list, not a pre-summed dict
+
+The OGR parser originally returned `dict[(date, asset, wallet), Decimal]` with values pre-summed.
+This collapsed per-row `Type` information (Profit vs Loss) that the derivatives classifier needs
+to distinguish a realized-P&L row from a fee row (r1 Blocker 7). The parser
+`_find_and_parse_other_gains_file` in `src/tax_reporting/infrastructure/koinly_parser.py` now
+returns `list[ParsedOgrRow]`, preserving per-row type and description. A separate
+`_build_ogr_index()` function provides the summed dict for backward-compatible callers. The
+consequence is that any future "optimization" that re-sums inside the parser breaks the classifier
+and the Derivatives P&L tab silently; the parser must stay row-preserving.
+
+### Why spot CG signs must be protected from derivatives OGR override
+
+When `separate_derivatives_reporting=True`, derivatives OGR rows route to `derivatives_entries`
+and never enter `_apply_ogr_direction_override` in
+`src/tax_reporting/application/crypto/ogr_handler.py` (Design Invariant 6). This protection exists
+because directional authority semantics (CRG-017) were designed for same-category disagreements:
+when an OGR row and a CG row describe the same disposal, OGR wins on direction. If a derivatives
+OGR loss were allowed to flip spot CG lot signs, a spot gain under art. 10(1)(k) could be
+incorrectly converted into a loss, producing wrong tax treatment and silently bypassing the
+365-day exemption logic. The consequence is that the override path must remain split by category;
+merging the two override paths back together is a regression of this invariant.
+
+### Why the split must run post-FIFO rebuild and pre-aggregation
+
+The `_split_ogr_index` call in `src/tax_reporting/application/crypto_reporting.py` happens AFTER
+the FIFO rebuild (which adds lots for loan-affected assets) and AFTER country validation, but
+BEFORE `_aggregate_capital_entries` (Design Invariant 2). This ordering is load-bearing: the
+classifier matches OGR rows against CG lots, and FIFO rebuild can add CG lots that did not exist
+in the raw CG CSV (loan-affected assets are rebuilt from Transaction History). If the split ran
+before FIFO rebuild, an OGR row whose only CG counterpart was added by rebuild would be
+misclassified as derivatives (no CG counterpart found), routing spot activity to the wrong tab.
+Running it before aggregation would lose the lot-level trail that PT-C-033 direction override
+relies on (per CLAUDE.md repository constraint: OGR overrides before aggregation). The consequence
+is that the split's position in the pipeline must not be moved; reordering it relative to FIFO
+rebuild or aggregation breaks classification correctness for loan-affected assets.
+
+### Why derivatives-flagged CG lots use a two-phase matcher (exact-then-contiguous-range)
+
+The dedup step that removes derivatives-flagged CG lots from the spot aggregate
+(`remove_derivatives_flagged_lots` in
+`src/tax_reporting/application/crypto/derivatives_dedup.py`) runs TWO matching phases rather
+than a single key-equality pass:
+
+1. **Phase 1 (exact match)** pairs one derivatives TH event to one CG lot per
+   `(timestamp, asset, wallet, amount_6dp)` key via per-key `deque`s. The deque
+   (not a dict-of-scalars) is mandatory: when two derivatives events share a
+   timestamp and amount with two CG lots, a dict-of-scalars would silently
+   overwrite one lot, leaving it in the spot aggregate and removing the wrong
+   lot for one of the events. See `development_lessons.md` #107.
+
+2. **Phase 2 (contiguous-range fallback)** runs only for events that did not
+   find an exact match. It uses a two-pointer sliding window over the
+   unmatched lots at the same `(timestamp, asset, wallet)` to find a
+   CONTIGUOUS range summing to the event amount within tolerance
+   `Decimal("0.00001") * range_size`. Contiguity is required because FIFO
+   acquisition order determines which lots may be grouped as one disposal's
+   split; a non-contiguous subset of lots at the same timestamp cannot be a
+   FIFO split and must not match. The tolerance must be recomputed after
+   every shrink step and the shrink bound must be `left < right` (not
+   `left <= right`) so the single-lot window survives as a candidate. See
+   `development_lessons.md` #108.
+
+The two-phase design exists because a derivatives disposal may appear in CG
+either as one lot with the exact same amount as the TH event (phase 1 hits)
+or as N adjacent lots whose amounts sum to the TH event amount within
+conversion-rounding tolerance (phase 2 hits). A single-phase exact matcher
+misses the second case; a single-phase fuzzy matcher admits non-contiguous
+coincidental collisions. The consequence is that the two phases are
+complementary and both must remain in this order; collapsing them into one
+phase or reordering them breaks either correctness (silent over-removal) or
+recall (silent under-removal).
+
+After both phases, `_collect_surplus_lots` walks the non-empty phase-1
+deques and emits a single summary WARNING naming the leftover lots. This
+warning is the user's only audit signal for missed FIFO splits, stale lots
+from a prior year, or coincidental key collisions; removing it makes
+under-removal invisible.
+
+## Derivatives CG Dedup via TH Labels
+
+This section documents the TH-label-driven capital-gains dedup that ships
+in `src/tax_reporting/application/crypto/derivatives_dedup.py`. It is an
+implementation guideline only; the legal classification of derivatives
+disposals is governed elsewhere. This section is self-contained and does
+not cross-reference other rule or plan documents.
+
+### Why TH labels are needed in addition to the OGR classifier
+
+Koinly emits a single derivatives disposal in TWO reports at once:
+
+1. The Other Gains Report (OGR), as a realized-PnL row (`Type=Profit` or
+   `Type=Loss`, with the EUR value and date).
+2. The Capital Gains Report (CG), as a FIFO lot disposal (with the full
+   cost-basis trail: acquisition date, cost, proceeds, gain).
+
+The derivatives classifier in `src/tax_reporting/application/crypto/classification.py`
+operates per OGR row and decides whether each row represents a
+derivatives event or a spot fee disposal by looking at the OGR `Type` and
+the existence of a CG counterpart within a `Decimal("0.01")` EUR
+tolerance. When the same disposal surfaces in both OGR and CG, the
+classifier sees a CG counterpart for the OGR row, fails to disambiguate
+the multi-row aggregate-match, and routes the OGR row to the
+`derivatives_entries` collection with `review_required=True`. Meanwhile
+the CG lots stay untouched in `capital_entries`. The result is
+double-counting: the same disposal is taxed once as a positive Crypto
+Gains entry and once as a negative Derivatives PnL entry.
+
+The OGR-classifier signal is insufficient for this case because the
+decision to remove a CG lot is per-lot, not per-OGR-row. The Koinly
+Transaction History (TH) report carries a richer signal: the `Tag` column
+on `crypto_withdrawal` rows (values like `Funding fee`, `Futures fee`,
+`Realized gain`) directly identifies which asset movements are
+derivatives events. The dedup uses TH labels as the CG-side filter,
+running BEFORE the OGR classifier, so the classifier then sees the
+matching OGR rows with no CG counterpart and routes them to
+`derivatives_entries` cleanly (no `review_required` flag, no Ambiguous
+classification).
+
+### Per-provider-per-year config convention
+
+The derivatives label set is provider-specific and year-specific: Koinly
+may change the `Tag` vocabulary across years, and a future data source
+(different tax-year provider for 2026+) may use entirely different
+terminology. Per the repo's no-hardcoded-constant-sets rule, the labels
+are stored as JSON under `docs/tax/derivatives_labels/<provider>_<year>.json`:
+
+```json
+{
+  "derivatives_th_labels": ["Funding fee", "Futures fee", "Realized gain"]
+}
+```
+
+The provider is currently always `koinly` (the only supported source);
+the year is the integer returned by `_extract_tax_year`. Adding a new
+provider or year requires only a new JSON file under
+`docs/tax/derivatives_labels/`; no code change is needed.
+
+The loader `_load_derivatives_labels_config(provider, year)` resolves the
+path as `_REPOSITORY_ROOT / "docs" / "tax" / "derivatives_labels" /
+f"{provider}_{year}.json"` and reuses two security patterns from
+`classification._load_popular_crypto_tokens`: symlink rejection and a
+file size limit of 1 MiB (`_MAX_LABELS_FILE_SIZE`). A malformed config
+file (invalid JSON, missing `derivatives_th_labels` key, wrong value
+type) raises `FileProcessingError` at startup; only a missing file
+degrades gracefully.
+
+### Match key and two-phase matching
+
+The match key is `(timestamp, asset, wallet, amount)`:
+
+- **Timestamp** is minute precision (`%Y-%m-%d %H:%M` UTC). The CG
+  `Date Sold` column is minute precision (`DD/MM/YYYY HH:MM`); TH `Date`
+  is second precision (`YYYY-MM-DD HH:MM:SS UTC`) and is truncated to
+  minute for matching. Both normalize to `%Y-%m-%d %H:%M` via
+  `parse_koinly_datetime` (which adds UTC when no tzinfo is present)
+  then `strftime("%Y-%m-%d %H:%M")`.
+- **Asset** is normalized via `normalize_asset_ticker`.
+- **Wallet** is normalized via `normalize_platform_name` (ByBit-specific:
+  collapses `ByBit (2)` to `ByBit`; Kraken and Binance keep numbered
+  suffixes).
+- **Amount** is quantized to 6 decimals via
+  `Decimal.quantize(Decimal("0.000001"))` for the exact-match phase.
+
+Matching runs in two phases inside `remove_derivatives_flagged_lots()`:
+
+1. **Phase 1 (exact match)** pairs one derivatives TH event to one CG
+   lot per `(timestamp, asset, wallet, amount_6dp)` key via per-key
+   `deque` objects (not a dict-of-scalars). The deque is mandatory:
+   when two derivatives events share a timestamp and amount with two CG
+   lots, a dict-of-scalars would silently overwrite one lot, leaving it
+   in the spot aggregate and removing the wrong lot for one of the
+   events.
+
+2. **Phase 2 (contiguous-range fallback)** runs only for events that
+   did not find an exact match. It uses a two-pointer sliding window
+   over the unmatched lots at the same `(timestamp, asset, wallet)` to
+   find a CONTIGUOUS range summing to the event amount within tolerance
+   `Decimal("0.00001") * range_size`. The sliding-window logic lives in
+   `_find_contiguous_range()`; the tolerance is recomputed after every
+   shrink step and the shrink bound is `left < right` (not
+   `left <= right`) so the single-lot window survives as a candidate.
+
+For determinism, CG lots are sorted by
+`(timestamp, asset, wallet, acquisition_date, row_index)` and TH events
+by `(timestamp, asset, wallet, amount)` before matching. The same input
+always produces the same output; no reliance on dict iteration order.
+
+### Rounding and tolerance
+
+- **Exact match**: both CG and TH amounts are quantized to 6 decimals via
+  `_quantize_amount_6dp()` (constant `_EXACT_AMOUNT_QUANTUM =
+  Decimal("0.000001")`, ROUND_HALF_EVEN). This absorbs Koinly rounding
+  differences (TH amounts are raw chain amounts; CG amounts are
+  FIFO-resolved and may differ in the last decimal) without introducing
+  a fuzzy tolerance window for single-lot matching.
+- **Contiguous-range match**: tolerance is
+  `_RANGE_TOLERANCE_SCALE * range_size` where
+  `_RANGE_TOLERANCE_SCALE = Decimal("0.00001")` and `range_size` equals
+  the current sliding-window length. This is 10x the per-lot rounding
+  error, absorbing accumulation when summing N independently-rounded
+  lots (each lot is independently rounded to 6 decimals; summing N lots
+  can drift by up to N times 0.0000005).
+
+### Why contiguous-range, not subset-sum
+
+FIFO consumption is inherently contiguous: a single disposal consumes the
+oldest available acquisition tranches, which form a contiguous block when
+lots are sorted by `acquisition_date`. Matching this semantics directly
+(sliding window over sorted lots) is O(N) per event. General subset-sum
+would be NP-hard and would risk false positives: with 108 CG lots at one
+timestamp, coincidental non-contiguous subsets summing to any target are
+virtually guaranteed, leading to silent over-removal. The contiguous
+constraint eliminates this risk while correctly handling the realistic
+FIFO-split case.
+
+When no contiguous range matches, the event is marked unmatched and
+falls through to the existing Ambiguous classifier on the OGR row. This
+covers the rare case of non-contiguous consumption (e.g., cross-asset
+transfer interleaving), which is not a FIFO pattern and warrants manual
+review.
+
+### Logging approach
+
+Per the repo's data-loss-at-warning rule, removing a derivatives-flagged
+CG lot is intentional correction (the lot belongs in Derivatives PnL,
+not Crypto Gains), not unintentional data loss. At scale (thousands of
+removals per year), per-lot WARNING lines would flood the log and drown
+genuine warnings. The dedup therefore logs each removal at INFO level
+(audit-traceable in debug logs) and emits exactly ONE WARNING summary at
+the end per pipeline run, inside `_format_summary_warning()`. The
+summary covers all three signal types in a single aggregate line:
+
+- **Removals**: total count, breakdown by match type
+  (`exact=N, range=M`), aggregate proceeds EUR, aggregate gain EUR
+  removed.
+- **Surplus lots**: count, total amount, sample of up to 3
+  `(timestamp, asset, wallet, amount)` tuples. Surplus lots are leftover
+  lots at any exact-match key after all events consumed theirs; they may
+  indicate a missed FIFO split, a stale lot from a prior year, or a
+  coincidental key collision.
+- **Malformed-input lots**: count, sample of up to 3
+  `(timestamp, asset, amount)` tuples. Malformed-input lots have
+  non-positive amounts (zero or negative); they are skipped from
+  matching because they would stall the sliding-window shrink condition.
+
+NO per-lot WARNING emissions exist. Per-lot data-quality WARNINGs would
+flood the log at scale and train the user to ignore the warning level
+entirely, defeating the data-loss-at-warning rule. The summary is the
+authoritative data-loss audit signal.
+
+### Graceful degradation when config is missing
+
+If the config file `docs/tax/derivatives_labels/<provider>_<year>.json`
+does not exist, `_load_derivatives_labels_config_from_path()` logs a
+single `logger.warning` naming the missing file and returns an empty
+frozenset. The caller `apply_derivatives_dedup()` then logs a second
+WARNING ("Derivatives TH-label config missing for koinly year N; CG
+dedup skipped. Add docs/tax/derivatives_labels/koinly_N.json to
+enable.") and returns the input unchanged. The pipeline degrades to the
+pre-dedup behavior (the double-counting risk the dedup was designed to
+fix) but the warning surfaces the misconfiguration.
+
+This is the only graceful-degradation path. A malformed config file
+(invalid JSON, missing `derivatives_th_labels` key, wrong value type,
+symlink, oversized file) raises `FileProcessingError` at startup; the
+user sees the problem immediately rather than discovering silent
+double-counting at audit time.
+
+### Orchestration thinness rule
+
+`crypto_reporting.py` is already well over the ~500-line orchestration
+threshold. To avoid absorbing more orchestration logic into it, the
+dedup wiring lives entirely in `derivatives_dedup.py`. The pipeline call
+site in `load_koinly_crypto_report` is a single-line invocation:
+
+```python
+capital_entries = apply_derivatives_dedup(
+    capital_entries=capital_entries,
+    jurisdiction=jurisdiction,
+    transaction_history_file=transaction_history_file,
+    year=year,
+)
+```
+
+The `apply_derivatives_dedup()` function encapsulates the full
+gate-check-config-scan-filter sequence: (1) gate on
+`jurisdiction.separate_derivatives_reporting` AND
+`jurisdiction.use_other_gains_report` AND `transaction_history_file`;
+(2) load labels via `_load_derivatives_labels_config(provider="koinly",
+year=year)`; (3) scan TH via `find_derivatives_th_events()`; (4) filter
+CG lots via `remove_derivatives_flagged_lots()`. The dedup runs AFTER
+`_validate_capital_entries_have_valid_countries` and BEFORE
+`_split_ogr_index`, so the OGR classifier sees the filtered
+`capital_entries` list.
+
+### Legal characterization (inline)
+
+Under Portuguese CIRS, derivatives dispose under article 10(1)(e)
+(ganhos e perdas relativos a apertos a termo e outros instrumentos
+financeiros derivados); cryptoassets dispose under article 10(1)(k)
+(ganhos e perdas decorrentes da alienação onerosa de criptoativos,
+unidades de conta ou tokens virtuais não qualificados como títulos,
+direitos ou valores mobiliários). The two articles define different
+taxation regimes; the same disposal cannot be taxed under both.
+
+The dedup exists to prevent the same disposal from being taxed under
+both articles. When Koinly reports a derivatives disposal in BOTH the
+CG report (where it would flow into Crypto Gains, taxable under
+art. 10(1)(k)) AND the OGR report (where it would flow into Derivatives
+PnL, taxable under art. 10(1)(e)), the dedup removes the CG lots so the
+disposal surfaces only in Derivatives PnL under art. 10(1)(e). This
+matches the economic characterization: a derivatives disposal is a
+derivative, not a cryptoasset disposal, regardless of whether the
+underlying collateral is a cryptoasset.
+
+### Summary of design invariants
+
+| Invariant | Why |
+|-----------|-----|
+| Filter runs after FIFO rebuild and country validation | Sees rebuilt lots and validated country codes |
+| Filter runs before `_split_ogr_index` | Classifier sees filtered list, routes OGR rows cleanly |
+| Gated on `jurisdiction is not None` AND `separate_derivatives_reporting` AND `use_other_gains_report` AND `transaction_history_file` | Defensive None guard plus functional gates: without OGR there is no Derivatives PnL surface for removed lots; without TH there is no derivatives Label signal |
+| Two-phase matching (exact then contiguous-range) | Phase 1 handles same-amount events; phase 2 handles FIFO-split lots |
+| Per-key `deque` for exact match | Prevents silent overwrite on same-key collisions |
+| Contiguous constraint on range match | Matches FIFO semantics; avoids NP-hard subset-sum false positives |
+| Per-lot INFO, single aggregate WARNING | Data-loss signal at WARNING; no noise flood at scale |
+| Graceful degradation only for missing config | Malformed config is a correctness hazard; raises immediately |
+| Orchestration in `derivatives_dedup.py`, not `crypto_reporting.py` | Keeps the orchestrator thin |
+
 ## References
 
 - Plan: `docs/plans/aggregate-crypto-rewards-income.md`

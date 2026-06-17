@@ -51,6 +51,10 @@ class CryptoConsumption:
     notes: str
     review_required: bool
     review_reason: str | None = None
+    # Minute-precision ISO timestamp (YYYY-MM-DD HH:MM) of the disposal event.
+    # Propagated through CryptoFifoRealization into CryptoCapitalGainEntry so the
+    # derivatives CG/TH deduplication filter can match same-day disposals.
+    disposal_timestamp: str | None = None
 
     def __post_init__(self) -> None:
         """Enforce review_reason invariant."""
@@ -78,6 +82,10 @@ class CryptoFifoRealization:
     notes: str
     review_required: bool
     review_reason: str | None = None
+    # Minute-precision ISO timestamp (YYYY-MM-DD HH:MM) of the disposal event,
+    # propagated from the originating CryptoConsumption. Used by the derivatives
+    # CG/TH deduplication filter for same-day disposal matching.
+    disposal_timestamp: str | None = None
 
     def __post_init__(self) -> None:
         """Enforce review_reason invariant."""

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -26,7 +25,7 @@ class TestKoinlyParser:
         """Test parsing a standard Other Gains Report row.
 
         Given OGR row with Date,Asset,Amount,Value (EUR),Type,Wallet,
-        expects parsed tuple with (date, asset, amount_eur, type, wallet).
+        expects parsed ParsedOgrRow with date, asset, gain_loss, row_type, wallet.
         """
         row = {
             "Date": "15/01/2025 12:30",
@@ -38,12 +37,11 @@ class TestKoinlyParser:
         }
         result = _parse_other_gains_row(row)
         assert result is not None
-        date, asset, amount_eur, row_type, wallet = result
-        assert date == datetime(2025, 1, 15, 12, 30, tzinfo=UTC)
-        assert asset == "BTC"
-        assert amount_eur == Decimal("25000.00")
-        assert row_type == "Profit"
-        assert wallet == "Binance"
+        assert result.date == "2025-01-15"
+        assert result.asset == "BTC"
+        assert result.gain_loss == Decimal("25000.00")
+        assert result.row_type == "Profit"
+        assert result.wallet == "Binance"
 
     def test_parse_other_gains_loss_type(self) -> None:
         """Test parsing OGR row with Loss type.
@@ -60,10 +58,8 @@ class TestKoinlyParser:
         }
         result = _parse_other_gains_row(row)
         assert result is not None
-        date, asset, amount_eur, row_type, wallet = result
-        assert row_type == "Loss"
-        # Loss should return negative value
-        assert amount_eur == Decimal("-2000.00")
+        assert result.row_type == "Loss"
+        assert result.gain_loss == Decimal("-2000.00")
 
     def test_parse_other_gains_profit_type(self) -> None:
         """Test parsing OGR row with Profit type.
@@ -80,10 +76,8 @@ class TestKoinlyParser:
         }
         result = _parse_other_gains_row(row)
         assert result is not None
-        date, asset, amount_eur, row_type, wallet = result
-        assert row_type == "Profit"
-        # Profit should return positive value
-        assert amount_eur == Decimal("1500.00")
+        assert result.row_type == "Profit"
+        assert result.gain_loss == Decimal("1500.00")
 
     def test_parse_other_gains_skips_fee_tokens(self) -> None:
         """Test that rows with zero Value are skipped.
@@ -157,11 +151,12 @@ class TestKoinlyParser:
         assert result is None
 
     def test_ogr_index_sums_duplicate_keys(self, tmp_path) -> None:
-        """Test that OGR index sums values for duplicate (date, asset, wallet) keys.
+        """Test that the OGR pipeline sums values for duplicate (date, asset, wallet) keys.
 
         Given multiple OGR rows with the same date, asset, and wallet (e.g., funding fee,
         futures fee, and realized P&L for a derivatives position on the same day),
-        the index should sum all values instead of storing only the last one.
+        the composed pipeline (_find_and_parse_other_gains_file -> _build_ogr_index)
+        should sum all values instead of storing only the last one.
 
         This is a regression test for a bug where duplicate keys would overwrite
         previous values, causing incorrect tax calculations when multiple CG entries
@@ -172,6 +167,8 @@ class TestKoinlyParser:
         not just store the last value of -138.73 EUR.
         """
         import csv
+
+        from tax_reporting.application.crypto.ogr_handler import _build_ogr_index
 
         # Create a mock OGR file with multiple entries for the same key
         ogr_file = tmp_path / "test_other_gains_report.csv"
@@ -185,16 +182,21 @@ class TestKoinlyParser:
             # One different entry (different date)
             writer.writerow(["14/01/2025 10:00", "USDT", "-10,00", "10,00", "Loss", "ByBit"])
 
-        # Parse the OGR file
-        result = _find_and_parse_other_gains_file(tmp_path)
+        # Step 1: parse returns one ParsedOgrRow per source row (no summing yet).
+        rows = _find_and_parse_other_gains_file(tmp_path)
+        assert isinstance(rows, list)
+        assert len(rows) == 4
+
+        # Step 2: summing happens in _build_ogr_index.
+        index = _build_ogr_index(rows)
 
         # Verify that duplicate keys are summed
         key_2025_01_13 = ("2025-01-13", "USDT", "ByBit")
-        assert key_2025_01_13 in result
+        assert key_2025_01_13 in index
 
         # The three entries should sum to: -0.15 + -8.31 + -138.73 = -147.19 EUR
         expected_sum = Decimal("-147.19")
-        actual_value = result[key_2025_01_13]
+        actual_value = index[key_2025_01_13]
         assert actual_value == expected_sum, (
             f"Expected OGR index to sum duplicate keys to {expected_sum} EUR, "
             f"but got {actual_value} EUR. "
@@ -203,5 +205,5 @@ class TestKoinlyParser:
 
         # Verify the different entry is stored correctly
         key_2025_01_14 = ("2025-01-14", "USDT", "ByBit")
-        assert key_2025_01_14 in result
-        assert result[key_2025_01_14] == Decimal("-10.00")
+        assert key_2025_01_14 in index
+        assert index[key_2025_01_14] == Decimal("-10.00")

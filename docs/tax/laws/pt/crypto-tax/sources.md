@@ -113,6 +113,53 @@ Retrieved on: 2026-04-01
 - Purpose: Current AT portal rendering of CIRS article 43 archived to preserve the exact wording of the FIFO and per-institution cost-tracking rules.
 - Relevant provisions consulted: CIRS art. 43(8)(g) — crypto FIFO rule (Aditada pela Lei n.º 24-D/2022; renumbered from n.6 by Lei n.º 31/2024); art. 43(9) — per-institution FIFO rule (renumbered from n.7 by Lei n.º 31/2024). Note: the portal page includes the renumbering annotation "(Redação da Lei n.º 31/2024, de 28 de junho; anterior n.º 6/7.)".
 
+14. `official/at_piv_28298_2025.pdf`
+- URL: https://info.portaldasfinancas.gov.pt/pt/informacao_fiscal/informacoes_vinculativas/rendimento/cirs/Documents/PIV_28298.pdf
+- Issuing date: 2025-10-31 (despacho do Subdiretor-Geral da Área de Gestão Tributária - IR)
+- Effective: 2025-10-31
+- Superseded: -
+- Purpose: Official AT binding ruling used to confirm that gains from trading of futures with crypto-assets are classified as financial derivatives under CIRS art. 10(1)(e), not as crypto-asset disposals under art. 10(1)(k). Confirms the derivatives-vs-crypto split used by the derivatives-separation work.
+- Relevant provisions consulted: CIRS art. 10(1)(e) (derivatives), art. 10(1)(k) (crypto-asset alienation), art. 10(4)(a) and (c) (gain computation), art. 10(19) (365-day exclusion), art. 10(20) (crypto-to-crypto deferral). Ruling paragraphs 13, 16, 18, 21, 22, 23 establish: (i) futures on crypto are derivatives under alínea e); (ii) taxation moment is only at conversion to fiat; (iii) resident-source gains report on Anexo G Quadro 13 with code G51, englobamento option in Quadro 15; (iv) non-resident-source gains report on Anexo J Quadro 9.2.B with code G30, englobamento option in Quadro 9.2.C.
+
+15. `cryptotaxesportugal_futures_faq_2026-06-13.md` (parent directory; NOT under `official/`)
+- URL: https://cryptotaxesportugal.com/faq
+- Issuing date: undated advisory page retrieved on 2026-06-13
+- Effective: n/a (secondary)
+- Superseded: -
+- Purpose: SECONDARY SOURCE. Commercial advisory FAQ whose "Crypto Futures and Financial Derivatives (Processo 28298/2025)" section summarises AT binding ruling Processo 28298/2025 in plain English. Retained because it documents the practical reading that crypto-futures gains are derivatives under CIRS art. 10(1)(e) and are "always taxed, but only once realised, meaning sold for fiat or spent". The underlying AT ruling is now archived locally at `official/at_piv_28298_2025.pdf` (entry 14 above) and the consolidated CIRS article 10 is at `official/cirs_art10_portal_2026-04-01.html` (entry 12); cite those for legal claims, not this FAQ.
+- Relevant provisions consulted: FAQ section titled "Crypto Futures and Financial Derivatives (Processo 28298/2025)".
+
+## cirs_art10 paragraphs (e) and (k) verification (2026-06-13)
+
+Verification of `official/cirs_art10_portal_2026-04-01.html` (entry 12) against the derivatives-separation requirement, performed on 2026-06-13.
+
+Paragraph (e) verbatim from the archived HTML:
+
+  "e) Operações relativas a instrumentos financeiros derivados, com exceção dos ganhos previstos na alínea q) do n.º 2 do artigo 5.º;"
+
+Paragraph (k) verbatim from the archived HTML:
+
+  "k) Alienação onerosa de criptoativos que não constituam valores mobiliários."
+
+Additional CIRS art. 10 provisions consulted for the derivatives split: n.º 19 (365-day exclusion), n.º 20 (crypto-to-crypto deferral when counterparty qualifies), n.º 22 (deemed disposal on loss of Portuguese tax residency). The AT PIV 28298/2025 (entry 14) quotes paragraph (e) and the n.º 19 / n.º 20 references verbatim in its own paragraphs 13, 16, and 18.
+
+## modelo3_anexo_g Quadro 13 derivatives-field verification (2026-06-13)
+
+Verification of `official/modelo3_anexo_g_2026.pdf` (entry 10), performed on 2026-06-13 via `pdftotext -layout` extraction.
+
+The Anexo G form contains a dedicated derivatives reporting field:
+
+- Quadro 13 - INSTRUMENTOS FINANCEIROS DERIVADOS, WARRANTS AUTÓNOMOS E CERTIFICADO [art.º 10.º, n.º 1, als. e) a g), do CIRS]
+- Income code G51 - "Operações relativas a instrumentos financeiros derivados."
+
+This is the field a taxpayer uses to report crypto-futures gains classified under CIRS art. 10(1)(e) per AT PIV 28298/2025. The Anexo G form is structured so that crypto-asset disposals under alínea k) go to Quadro 18 / 18A / 18B ("ALIENAÇÃO ONEROSA DE CRIPTOATIVOS QUE NÃO CONSTITUAM VALORES MOBILIÁRIOS"), while derivatives under alínea e) go to Quadro 13. Englobamento option for Quadro 13 derivatives is signalled in Quadro 15 of the same annex (per PIV 28298/2025 paragraph 22).
+
+## Ofício circulado derivatives search outcome (2026-06-13)
+
+Searched AT administrative-instruction index for a derivatives-specific ofício circulado on 2026-06-13. No dedicated ofício circulado on crypto-asset derivatives or crypto-futures classification was found. The Ofício Circulado 20278/2025 (entry 3 above) remains the operative filing instruction for Modelo 3 / Anexo G / Anexo J; it does not separately address derivatives, but the Quadro 13 / G51 field structure is stable from the Anexo G form itself. The classification of crypto-futures gains as derivatives rests on AT PIV 28298/2025 (entry 14) plus the statutory text of CIRS art. 10(1)(e), not on an ofício circulado.
+
+Related ofícios circulados on derivatives (consulted but NOT specific to crypto and NOT re-archived): n.º 20271/2024 (IRC Modelo 22 corrections for derivative financial instruments, art. 49 - corporate, not individual), n.º 25021/2024 (autonomous taxation and derivatives), n.º 20249/2023 (off-balance-sheet derivatives). None address individual-IRS treatment of crypto-asset derivatives.
+
 ## Related local origin archive
 
 - `../../../crypto-origin/sources.md`

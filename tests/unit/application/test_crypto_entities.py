@@ -2,24 +2,29 @@
 
 from __future__ import annotations
 
-import pytest
+from dataclasses import FrozenInstanceError, fields
 from decimal import Decimal
 
+import pytest
+
 from tax_reporting.application.crypto.entities import (
-    RewardTaxClassification,
-    OperatorOrigin,
-    CapitalGainPeriodStats,
-    CryptoCapitalGainStats,
-    CryptoCapitalGainEntry,
-    LoanActivityEntry,
-    CryptoRewardIncomeEntry,
     AggregatedRewardIncomeEntry,
-    HoldingsSnapshot,
-    CryptoReconciliationSummary,
-    CryptoSkippedZeroValueToken,
+    CapitalGainPeriodStats,
+    CryptoCapitalGainEntry,
+    CryptoCapitalGainStats,
     CryptoCompletePdfSummary,
+    CryptoReconciliationSummary,
     CryptoReviewEntry,
+    CryptoRewardIncomeEntry,
+    CryptoSkippedZeroValueToken,
     CryptoTaxReport,
+    DerivativesClassification,
+    DerivativesEventType,
+    DerivativesPnLEntry,
+    HoldingsSnapshot,
+    LoanActivityEntry,
+    OperatorOrigin,
+    RewardTaxClassification,
 )
 
 
@@ -439,3 +444,176 @@ class TestRewardIncomeEntryValidation:
                 review_reason=None,
                 description="Staking reward",
             )
+
+
+class TestDerivativesEventType:
+    """Verify DerivativesEventType enum has exactly PROFIT and LOSS members."""
+
+    def test_enum_values(self) -> None:
+        """DerivativesEventType should have exactly PROFIT and LOSS members (FEE deferred)."""
+        members = {member.name for member in DerivativesEventType}
+        assert members == {"PROFIT", "LOSS"}
+        assert DerivativesEventType.PROFIT is not None
+        assert DerivativesEventType.LOSS is not None
+        assert not hasattr(DerivativesEventType, "FEE")
+
+
+class TestDerivativesPnLEntry:
+    """Verify DerivativesPnLEntry frozen dataclass fields and behavior."""
+
+    def test_construction(self) -> None:
+        """DerivativesPnLEntry should construct with required fields plus source_ref and defaults."""
+        entry = DerivativesPnLEntry(
+            date="2025-01-12",
+            asset="USDT",
+            platform="ByBit",
+            pnl_eur=Decimal("140.18"),
+            event_type=DerivativesEventType.PROFIT,
+            source_ref="OGR:2025-01-12:USDT",
+        )
+        assert entry.date == "2025-01-12"
+        assert entry.asset == "USDT"
+        assert entry.platform == "ByBit"
+        assert entry.pnl_eur == Decimal("140.18")
+        assert entry.event_type == DerivativesEventType.PROFIT
+        assert entry.source_ref == "OGR:2025-01-12:USDT"
+        assert entry.legal_category == "CIRS art. 10(1)(e)"
+        assert entry.review_required is False
+        assert entry.review_reason == ""
+
+    def test_frozen(self) -> None:
+        """DerivativesPnLEntry should be immutable; mutation raises FrozenInstanceError."""
+        entry = DerivativesPnLEntry(
+            date="2025-01-12",
+            asset="USDT",
+            platform="ByBit",
+            pnl_eur=Decimal("140.18"),
+            event_type=DerivativesEventType.PROFIT,
+            source_ref="OGR:2025-01-12:USDT",
+        )
+        with pytest.raises(FrozenInstanceError):
+            entry.pnl_eur = Decimal("0")  # type: ignore[misc]
+
+    def test_no_holding_period_field(self) -> None:
+        """DerivativesPnLEntry should not have a holding_period field (art. 10(1)(e) has no exemption)."""
+        field_names = {f.name for f in fields(DerivativesPnLEntry)}
+        assert "holding_period" not in field_names
+
+    def test_default_annex_hint_is_g_q13(self) -> None:
+        """DerivativesPnLEntry constructed without annex_hint should default to 'G/Q13' (Anexo G, Quadro 13)."""
+        entry = DerivativesPnLEntry(
+            date="2025-01-12",
+            asset="USDT",
+            platform="ByBit",
+            pnl_eur=Decimal("140.18"),
+            event_type=DerivativesEventType.PROFIT,
+            source_ref="OGR:2025-01-12:USDT",
+        )
+        assert entry.annex_hint == "G/Q13"
+
+    def test_default_operation_code_is_g51(self) -> None:
+        """DerivativesPnLEntry constructed without operation_code should default to 'G51' (derivatives)."""
+        entry = DerivativesPnLEntry(
+            date="2025-01-12",
+            asset="USDT",
+            platform="ByBit",
+            pnl_eur=Decimal("140.18"),
+            event_type=DerivativesEventType.PROFIT,
+            source_ref="OGR:2025-01-12:USDT",
+        )
+        assert entry.operation_code == "G51"
+
+    def test_default_event_count_is_one(self) -> None:
+        """DerivativesPnLEntry constructed without event_count should default to 1 (non-aggregated)."""
+        entry = DerivativesPnLEntry(
+            date="2025-01-12",
+            asset="USDT",
+            platform="ByBit",
+            pnl_eur=Decimal("140.18"),
+            event_type=DerivativesEventType.PROFIT,
+            source_ref="OGR:2025-01-12:USDT",
+        )
+        assert entry.event_count == 1
+
+    def test_operator_fields_default_to_empty(self) -> None:
+        """DerivativesPnLEntry constructed without operator_entity/operator_country should default both to ''."""
+        entry = DerivativesPnLEntry(
+            date="2025-01-12",
+            asset="USDT",
+            platform="ByBit",
+            pnl_eur=Decimal("140.18"),
+            event_type=DerivativesEventType.PROFIT,
+            source_ref="OGR:2025-01-12:USDT",
+        )
+        assert entry.operator_entity == ""
+        assert entry.operator_country == ""
+
+
+class TestDerivativesClassification:
+    """Verify DerivativesClassification sealed result has three distinct variants."""
+
+    def test_sealed_variants(self) -> None:
+        """DerivativesClassification should expose three distinct variants each carrying a reason."""
+        derivatives = DerivativesClassification.Derivatives(reason="no CG counterpart")
+        spot = DerivativesClassification.Spot(reason="matches CG disposal")
+        ambiguous = DerivativesClassification.Ambiguous(reason="value mismatch")
+
+        # Three distinct variant instances
+        assert derivatives is not spot
+        assert derivatives is not ambiguous
+        assert spot is not ambiguous
+
+        # Each carries its reason
+        assert derivatives.reason == "no CG counterpart"
+        assert spot.reason == "matches CG disposal"
+        assert ambiguous.reason == "value mismatch"
+
+        # Each has a distinct kind discriminator
+        assert len({derivatives.kind, spot.kind, ambiguous.kind}) == 3
+
+
+class TestCryptoTaxReportDerivativesEntries:
+    """Verify CryptoTaxReport.derivatives_entries defaults to an empty list."""
+
+    def test_derivatives_entries_default_empty(self) -> None:
+        """CryptoTaxReport constructed without derivatives_entries should default to []."""
+        st = CapitalGainPeriodStats(
+            count=0,
+            cost_total_eur=Decimal("0"),
+            proceeds_total_eur=Decimal("0"),
+            gain_loss_total_eur=Decimal("0"),
+        )
+        stats = CryptoCapitalGainStats(
+            short_term=st,
+            long_term=st,
+            mixed=st,
+            unknown=st,
+            grand_total=st,
+        )
+        snapshot = HoldingsSnapshot(
+            asset_rows=0,
+            total_cost_eur=Decimal("0"),
+            total_value_eur=Decimal("0"),
+        )
+        reconciliation = CryptoReconciliationSummary(
+            capital_rows=0,
+            reward_rows=0,
+            short_term_rows=0,
+            long_term_rows=0,
+            mixed_rows=0,
+            unknown_rows=0,
+            capital_cost_total_eur=Decimal("0"),
+            capital_proceeds_total_eur=Decimal("0"),
+            capital_gain_total_eur=Decimal("0"),
+            reward_total_eur=Decimal("0"),
+            opening_holdings=snapshot,
+            closing_holdings=snapshot,
+        )
+        report = CryptoTaxReport(
+            tax_year=2025,
+            capital_entries=[],
+            reward_entries=[],
+            reconciliation=reconciliation,
+            capital_gain_stats=stats,
+        )
+        assert report.derivatives_entries == []

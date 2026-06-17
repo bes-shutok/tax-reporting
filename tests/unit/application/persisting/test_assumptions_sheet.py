@@ -595,6 +595,7 @@ class TestMethodologyAssumptionsSection:
             "DP-009",  # Cashback Treatment
             "DP-010",  # Futures/Derivatives Losses
             "DP-011",  # OGR Usage for Derivatives
+            "DP-012",  # Separate Derivatives Reporting
         }
 
         # Collect all decision point references from methodology descriptions
@@ -731,6 +732,38 @@ class TestMethodologyAssumptionsSection:
                     ws.cell(blank_row, 1).value is None or ws.cell(blank_row, 1).value == ""
                 ), f"Section '{section}' should have blank row at {blank_row}, found: {ws.cell(blank_row, 1).value}"
             prev_row = current_row
+
+    def test_methodology_includes_derivatives_legal_basis(self):
+        """Methodology must cite art. 10(1)(e) for the Derivatives P&L tab and art. 10(1)(k) for the Crypto Gains tab.
+
+        Structural identification (#96): scan rendered cells for the citation
+        strings rather than asserting on absolute row positions.
+        """
+        wb = openpyxl.Workbook()
+        entry = _make_capital_entry(platform="Kraken")
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        write_assumptions_and_methodology_sheet(wb, capital_entries=report.capital_entries)
+        ws = wb["Assumptions & Methodology"]
+
+        derivatives_citation_seen = False
+        crypto_gains_citation_seen = False
+        for row_idx in range(1, 200):
+            description = ws.cell(row_idx, 2).value
+            if not description or not isinstance(description, str):
+                continue
+            if "CIRS art. 10(1)(e)" in description and "Derivatives" in description:
+                derivatives_citation_seen = True
+            if "CIRS art. 10(1)(k)" in description and (
+                "Crypto Gains" in description or "crypto" in description.lower()
+            ):
+                crypto_gains_citation_seen = True
+
+        assert derivatives_citation_seen, (
+            "Methodology must include an item citing CIRS art. 10(1)(e) for the Derivatives P&L tab"
+        )
+        assert crypto_gains_citation_seen, (
+            "Methodology must include an item citing CIRS art. 10(1)(k) for the Crypto Gains tab"
+        )
 
     def test_legal_citation_format(self):
         """Legal citations follow expected format patterns."""

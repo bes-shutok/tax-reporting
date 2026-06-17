@@ -344,6 +344,7 @@ def _rebuild_fifo_for_loan_affected_assets(
                 review_reason=combined_review_reason,
                 token_swap_history=str(origin),
                 multi_acquisition_dates=False,
+                disposal_timestamp=r.disposal_timestamp,
             )
         )
 
