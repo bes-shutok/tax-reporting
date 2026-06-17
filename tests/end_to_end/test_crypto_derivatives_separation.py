@@ -58,9 +58,39 @@ from tax_reporting.infrastructure.config import TaxJurisdictionConfig
 pytestmark = pytest.mark.e2e
 
 _FIXTURE_DIR = Path("resources/source/koinly2025")
-_OGR_FILENAME = "koinly_2025_other_gains_report_<ACCOUNT_TOKEN>.csv"
-_CG_FILENAME = "koinly_2025_capital_gains_report_<ACCOUNT_TOKEN>.csv"
-_TH_FILENAME = "koinly_2025_transaction_history_<ACCOUNT_TOKEN>.csv"
+
+
+def _find_fixture(pattern: str) -> Path | None:
+    """Find a Koinly fixture CSV by glob pattern.
+
+    The koinly2025 directory contains real exports with account-specific tokens
+    in their filenames. Discovery via glob keeps those tokens out of tracked
+    test code.
+    """
+    matches = sorted(_FIXTURE_DIR.glob(pattern))
+    return matches[0] if matches else None
+
+
+def _ogr_path() -> Path:
+    path = _find_fixture("koinly_2025_other_gains_report_*.csv")
+    if path is None:
+        pytest.skip("koinly_2025_other_gains_report_*.csv not available")
+    return path
+
+
+def _cg_path() -> Path:
+    path = _find_fixture("koinly_2025_capital_gains_report_*.csv")
+    if path is None:
+        pytest.skip("koinly_2025_capital_gains_report_*.csv not available")
+    return path
+
+
+def _th_path() -> Path:
+    path = _find_fixture("koinly_2025_transaction_history_*.csv")
+    if path is None:
+        pytest.skip("koinly_2025_transaction_history_*.csv not available")
+    return path
+
 
 _CASE1_DATE = "2025-01-12"
 _CASE2_DATE = "2025-01-13"
@@ -119,18 +149,6 @@ def _assert_csv_contains_value(csv_path: Path, needle: str) -> None:
         f"Expected source value {needle!r} not found in {csv_path.name}. "
         "The fixture has changed; update the data-trace assertion to match."
     )
-
-
-def _ogr_path() -> Path:
-    return _FIXTURE_DIR / _OGR_FILENAME
-
-
-def _cg_path() -> Path:
-    return _FIXTURE_DIR / _CG_FILENAME
-
-
-def _th_path() -> Path:
-    return _FIXTURE_DIR / _TH_FILENAME
 
 
 class TestByBitCase1Trace:
