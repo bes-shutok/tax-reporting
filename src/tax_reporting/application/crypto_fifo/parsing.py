@@ -159,7 +159,7 @@ def _classify_rows_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
         date_raw = row.get("Date", "").strip()
         if not date_raw:
             logger.error(
-                "Row %d: mandatory Date field is blank — skipping row to prevent epoch-date "
+                "Row %d: mandatory Date field is blank: skipping row to prevent epoch-date "
                 "misclassification (TH export may be incomplete or contain a malformed row)",
                 row_index,
             )
@@ -186,7 +186,7 @@ def _classify_rows_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
             timestamp_str = parsed_dt.strftime("%Y-%m-%d %H:%M")
         except ValueError as exc:
             logger.error(
-                "Row %d: unparseable value in TH row — skipping. "
+                "Row %d: unparseable value in TH row: skipping. "
                 "Check Date, Sent Amount/Currency, Received Amount/Currency fields: %s",
                 row_index,
                 exc,
@@ -395,7 +395,7 @@ def _classify_sell_row(
     if parsed_row.received_affected:
         logger.warning(
             "Row %d: sell with both sides loan-affected (%s/%s); "
-            "received side %s not tracked — expected exchange type in Koinly",
+            "received side %s not tracked: expected exchange type in Koinly",
             parsed_row.row_index,
             parsed_row.sent_currency,
             parsed_row.received_currency,
@@ -527,7 +527,7 @@ def _classify_buy_row(
     if parsed_row.sent_affected:
         logger.warning(
             "Row %d: buy with both sides loan-affected (%s/%s); "
-            "sent side %s not tracked — expected exchange type in Koinly",
+            "sent side %s not tracked: expected exchange type in Koinly",
             parsed_row.row_index,
             parsed_row.sent_currency,
             parsed_row.received_currency,
@@ -585,7 +585,7 @@ def _classify_deposit_row(
     if parsed_row.net_value == ZERO:
         logger.warning(
             "Row %d: crypto_deposit of %s has zero Net Value (EUR); "
-            "cost basis may be missing in Koinly — marking for review",
+            "cost basis may be missing in Koinly: marking for review",
             parsed_row.row_index,
             parsed_row.received_currency,
         )
@@ -593,7 +593,7 @@ def _classify_deposit_row(
         deposit_review_reason = (
             f"crypto_deposit of {parsed_row.received_currency} "
             f"(row {parsed_row.row_index}) has zero Net Value; "
-            "cost basis may be missing in Koinly — verify and correct manually"
+            "cost basis may be missing in Koinly: verify and correct manually"
         )
     _acq = AcquisitionContext(
             acq=CryptoAcquisition(
@@ -650,7 +650,7 @@ def _classify_unhandled_principal_row(
         parse_failures_by_asset.setdefault(parsed_row.received_currency, []).append(parsed_row.row_index)
     logger.warning(
         "Row %d: unhandled row type %r for loan-affected asset %s (%s side); "
-        "row skipped — verify no FIFO pool gap introduced",
+        "row skipped: verify no FIFO pool gap introduced",
         parsed_row.row_index,
         parsed_row.row_type,
         affected_asset,

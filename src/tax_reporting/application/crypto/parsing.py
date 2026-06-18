@@ -12,8 +12,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
-from .entities import CryptoCompletePdfSummary
 from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+
+from .entities import CryptoCompletePdfSummary
 
 # PDF parsing size limit: 20 MB (increased from 10 MB due to growing Koinly report sizes)
 _MAX_PDF_BYTES: Final = 20 * 1024 * 1024
@@ -115,7 +116,7 @@ def _parse_complete_tax_report_pdf(path: Path) -> CryptoCompletePdfSummary | Non
     """
     if path.is_symlink():
         logging.getLogger(__name__).warning(
-            "PDF file %s is a symlink — skipping metadata extraction for security",
+            "PDF file %s is a symlink; skipping metadata extraction for security",
             path.name,
         )
         return None
@@ -124,7 +125,7 @@ def _parse_complete_tax_report_pdf(path: Path) -> CryptoCompletePdfSummary | Non
         file_size = path.stat().st_size
     except OSError as exc:
         logging.getLogger(__name__).warning(
-            "Could not stat PDF file %s: %s — skipping metadata extraction",
+            "Could not stat PDF file %s: %s; skipping metadata extraction",
             path.name,
             exc,
         )
@@ -143,7 +144,7 @@ def _parse_complete_tax_report_pdf(path: Path) -> CryptoCompletePdfSummary | Non
         content = path.read_bytes()
     except OSError as exc:
         logging.getLogger(__name__).warning(
-            "Could not read PDF file %s: %s — skipping metadata extraction",
+            "Could not read PDF file %s: %s; skipping metadata extraction",
             path.name,
             exc,
         )

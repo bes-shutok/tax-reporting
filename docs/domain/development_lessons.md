@@ -1,4 +1,4 @@
-# Development Lessons — Common Issues and Prevention Strategies
+# Development Lessons: Common Issues and Prevention Strategies
 
 Canonical reference for recurring patterns observed during code fixes in this codebase.
 Agents should read this alongside the main instruction rules in CLAUDE.md.
@@ -86,7 +86,7 @@ error_message = (
 - When tests need special handling, first try to make tests reflect real usage before adding complexity to production code.
 
 ## 13. Test Path and Fixture Management
-- Never use `Path(__file__).parent.parent` in tests — breaks when files move.
+- Never use `Path(__file__).parent.parent` in tests; it breaks when files move.
 - Always use pytest fixtures (`tmp_path`, `tmp_path_factory`) for file operations:
 
 ```python
@@ -105,13 +105,13 @@ def test_file(tmp_path: Path) -> Path:
 ## 15. Excel/openpyxl Column Width
 - openpyxl stores formulas as strings; `cell.value` returns the raw formula (e.g., `"=USD EUR*(1234.56)"`), not the computed result.
 - Auto-width logic must skip formula cells (`cell.data_type == "f"`) and size columns from headers + non-formula values only.
-- The crypto sheet auto-width block has a missing `default=0` in `max()` that raises `ValueError` on empty columns — always provide `default=0` when calling `max()` on a generator.
+- The crypto sheet auto-width block has a missing `default=0` in `max()` that raises `ValueError` on empty columns; always provide `default=0` when calling `max()` on a generator.
 
 ## 16. Test Real Behavior, Not Implementation Details
 - Verify that a feature works end-to-end, not just that it returns a certain value.
 - Use realistic test data; check that integrated components produce correct outputs.
 
-## 17. Test CSV Data Construction — Column Alignment
+## 17. Test CSV Data Construction: Column Alignment
 
 See `~/Projects/.ai-playbook/python_guidelines.md` #1 for full prevention rules.
 Repo context: Koinly `_TH_HEADER` has 20 columns; hand-counting commas is the biggest source of wasted debug iterations.
@@ -121,10 +121,10 @@ Repo context: Koinly `_TH_HEADER` has 20 columns; hand-counting commas is the bi
 See `~/Projects/.ai-playbook/python_guidelines.md` #2 for full cleanup procedure.
 Repo context: past extractions (crypto_reporting.py → token_origin.py + koinly_parser.py) left unused imports and dead code.
 
-## 16. Aggregation Logic — Test Both Directions
+## 16. Aggregation Logic: Test Both Directions
 
 See `~/Projects/.ai-playbook/agent_workflow_guidelines.md` #1.
-Repo context: LP liquidity operations — fixing "in" direction broke "out" because liquidity out produces multiple outputs from one input.
+Repo context: LP liquidity operations; fixing "in" direction broke "out" because liquidity out produces multiple outputs from one input.
 
 ## 17. Operator Mapping Field Semantics (`service_start_date` / `valid_from`)
 
@@ -162,18 +162,18 @@ Before discussing, proposing, or implementing any crypto tax treatment (cost-bas
 
 ## 25. Integration Test Fixture Consistency for Computed Fields
 
-When adding a computed field to a data class used in integration tests, update ALL construction sites to compute the field from actual test data—not from a zero-valued or empty placeholder. Using `CryptoCapitalGainStats.from_entries([])` while `capital_entries` has real data produces inconsistent output (statistics section shows all zeros next to non-zero capital gains). Search for all construction sites with `grep -n "DataClass("` before committing; each site must derive the new field from its own test data.
+When adding a computed field to a data class used in integration tests, update ALL construction sites to compute the field from actual test data, not from a zero-valued or empty placeholder. Using `CryptoCapitalGainStats.from_entries([])` while `capital_entries` has real data produces inconsistent output (statistics section shows all zeros next to non-zero capital gains). Search for all construction sites with `grep -n "DataClass("` before committing; each site must derive the new field from its own test data.
 
-## 26. Atomic File Replacement — No Pre-Deletion
+## 26. Atomic File Replacement: No Pre-Deletion
 
 Never call `safe_remove_file(target)` before `temp_path.replace(target)`. On POSIX, `Path.replace()` atomically replaces the target file. The "remove then replace" sequence breaks atomicity: if `replace()` fails after the removal, the old report is permanently lost and the new file is stranded in `.tmp`. Correct pattern:
 
 ```python
-# ✅ CORRECT — atomic on POSIX
+# ✅ CORRECT: atomic on POSIX
 workbook.save(temp_path)
 temp_path.replace(target)  # replaces atomically; no pre-deletion needed
 
-# ❌ WRONG — data loss window between these two lines
+# ❌ WRONG: data loss window between these two lines
 safe_remove_file(target)
 temp_path.replace(target)
 ```
@@ -183,11 +183,11 @@ temp_path.replace(target)
 Always apply defaults to source variables before computing derived values from them. Anti-pattern:
 
 ```python
-# ❌ WRONG — log_file computed from None even when output_dir has a default
+# ❌ WRONG: log_file computed from None even when output_dir has a default
 log_file = output_dir / "report.log" if output_dir else None
 output_dir = output_dir or DEFAULT_OUTPUT_DIR
 
-# ✅ CORRECT — apply default first, then compute derived values
+# ✅ CORRECT: apply default first, then compute derived values
 output_dir = output_dir or DEFAULT_OUTPUT_DIR
 log_file = output_dir / "report.log"
 ```
@@ -201,7 +201,7 @@ Constants prefixed with `_` are module-private by convention. When a constant is
 ## 29. AT Guidance May Cite Pre-Amendment Paragraph Numbers
 
 See `docs/project-guidelines.md` #3 for the full rule.
-Concrete instance: AT folheto 2026-01-12 (published after Lei n.º 31/2024) still cited CIRS art. 43 as "(n.º 6)(g)" and "(n.º 7)" — the old numbers before the June 2024 amendment renumbered them to n.8(g) and n.9 respectively. The stale numbers had silently propagated into `sources.md` and `platform-divergences.md`. The discrepancy was only caught by cross-checking the folheto against the consolidated CIRS PDF (which shows inline annotations like `(Anterior n.º 7 - Lei n.º 31/2024)`).
+Concrete instance: AT folheto 2026-01-12 (published after Lei n.º 31/2024) still cited CIRS art. 43 as "(n.º 6)(g)" and "(n.º 7)"; the old numbers before the June 2024 amendment renumbered them to n.8(g) and n.9 respectively. The stale numbers had silently propagated into `sources.md` and `platform-divergences.md`. The discrepancy was only caught by cross-checking the folheto against the consolidated CIRS PDF (which shows inline annotations like `(Anterior n.º 7 - Lei n.º 31/2024)`).
 
 Prevention: whenever consulting AT guidance that cites a CIRS paragraph number, search for that legal text in the consolidated CIRS PDF and confirm the current paragraph number before recording citations.
 
@@ -209,9 +209,9 @@ Prevention: whenever consulting AT guidance that cites a CIRS paragraph number, 
 
 ## 33. Plan Edge Case Behavior Must Be Traced to Correctness Outcome
 
-When writing a plan's Gist & Examples section, trace every described "edge case" or "behavior change" outcome to its user-facing result and verify it satisfies the project's correctness requirements — not just that it differs from the previous behavior.
+When writing a plan's Gist & Examples section, trace every described "edge case" or "behavior change" outcome to its user-facing result and verify it satisfies the project's correctness requirements, not just that it differs from the previous behavior.
 
-A common failure mode: comparing the new behavior to the old one ("better than X") without verifying the new behavior is itself correct. Example from this project: "TH absent → `frozenset()` → contaminated Koinly CG passes through" was initially described as an improvement over "TH absent → CG silently dropped". Both behaviors produce wrong tax figures. The correct behavior is to raise `FileProcessingError` immediately — the improvement is the explicit failure, not acceptance of contaminated data.
+A common failure mode: comparing the new behavior to the old one ("better than X") without verifying the new behavior is itself correct. Example from this project: "TH absent → `frozenset()` → contaminated Koinly CG passes through" was initially described as an improvement over "TH absent → CG silently dropped". Both behaviors produce wrong tax figures. The correct behavior is to raise `FileProcessingError` immediately; the improvement is the explicit failure, not acceptance of contaminated data.
 
 **Test:** For every edge case in a plan, ask "what does the user see in the output?" and verify that output is either correct, or flagged as requiring review with a specific reason. Contaminated financial data presented without a flag is never acceptable.
 
@@ -229,7 +229,7 @@ Claiming "implementation is already complete" for an untested path without first
 
 ## 31. Read Full Dataclass Definition Before Describing Fields in a Plan
 
-When a plan task describes the fields of a dataclass (e.g., listing fields to be moved or created), always read the actual class definition in source code to obtain the complete, current field list — including fields with default values that are easy to miss.
+When a plan task describes the fields of a dataclass (e.g., listing fields to be moved or created), always read the actual class definition in source code to obtain the complete, current field list, including fields with default values that are easy to miss.
 
 Omitting a field from a plan that is then used downstream (e.g., `partial_carryover_tx_keys` consumed by `resolve_cross_asset_exchanges`) silently changes behaviour and is not caught until runtime.
 
@@ -253,12 +253,12 @@ Repo context: `AcquisitionContext`/`ConsumptionContext` wrappers were introduced
 ## 37. Monkeypatch Module-Level Path Constants in Unit Tests
 
 See `~/Projects/.ai-playbook/python_guidelines.md` #4 for the canonical rule.
-Repo context: `_DECISION_POINTS_DIR = _REPO_ROOT / "docs/tax/decision_points"` in `config.py` is resolved at import time. Tests in `TestLoadTaxJurisdictionConfig` that called `_load_tax_jurisdiction_config()` without patching this constant silently read the real `2025.toml` from the working tree. They passed because the real file existed and had PT=True — any rename, move, or fiscal-year change would cause a cryptic `FileNotFoundError` rather than a meaningful test failure.
+Repo context: `_DECISION_POINTS_DIR = _REPO_ROOT / "docs/tax/decision_points"` in `config.py` is resolved at import time. Tests in `TestLoadTaxJurisdictionConfig` that called `_load_tax_jurisdiction_config()` without patching this constant silently read the real `2025.toml` from the working tree. They passed because the real file existed and had PT=True; any rename, move, or fiscal-year change would cause a cryptic `FileNotFoundError` rather than a meaningful test failure.
 Fix: monkeypatch `_DECISION_POINTS_DIR` to a `tmp_path`-based directory with a minimal TOML fixture, identical to the pattern in `TestLoadDecisionPointsFlags`.
 
 ## 38. Decision Points TOML Missing Must Raise `ConfigurationError`, Not Bare `FileNotFoundError`
 
-`_load_decision_points_flags()` must convert `FileNotFoundError` (missing TOML for the configured fiscal year) to `ConfigurationError` before it reaches `main.py`. The `main.py` exception handler has a separate `(FileNotFoundError, OSError)` branch for a missing `config.ini`, which logs "Config file not found; crypto pipeline will run without jurisdiction filters" and continues. If the TOML-not-found error reaches that branch, the pipeline silently proceeds with `exclude_loan_repayment_gains=False` — loan repayment disposals are incorrectly included in capital gains with no error raised.
+`_load_decision_points_flags()` must convert `FileNotFoundError` (missing TOML for the configured fiscal year) to `ConfigurationError` before it reaches `main.py`. The `main.py` exception handler has a separate `(FileNotFoundError, OSError)` branch for a missing `config.ini`, which logs "Config file not found; crypto pipeline will run without jurisdiction filters" and continues. If the TOML-not-found error reaches that branch, the pipeline silently proceeds with `exclude_loan_repayment_gains=False`; loan repayment disposals are incorrectly included in capital gains with no error raised.
 
 Fix pattern in `_load_tax_jurisdiction_config`:
 ```python
@@ -278,11 +278,11 @@ Repo context: `workbook_builder.py` set `workbook_closed = True` unconditionally
 
 ## 40. Defensive Warnings Must Also Record Items in the Failure-Tracking Structure
 
-When a defensive branch fires because a row cannot be fully processed (e.g. "both sides loan-affected"), always append the untracked item to `parse_failures_by_asset` — do not rely on a `logger.warning` alone. A logged warning is invisible to the workbook consumer; only items recorded in the failure-tracking structure surface as `review_required` flags in the output.
+When a defensive branch fires because a row cannot be fully processed (e.g. "both sides loan-affected"), always append the untracked item to `parse_failures_by_asset`; do not rely on a `logger.warning` alone. A logged warning is invisible to the workbook consumer; only items recorded in the failure-tracking structure surface as `review_required` flags in the output.
 
 Example: in `_classify_th_row`, when both the sent and received currencies are loan-affected, the non-principal side was silently ignored. Fix: `parse_failures_by_asset.setdefault(untracked_currency, []).append(row_index)` in all four affected branches (sell, crypto_withdrawal, buy, crypto_deposit).
 
-General principle: "Unmatched items must never be silently discarded" (see CLAUDE.md §1) applies to defensive-path items too — logging is necessary but insufficient when a failure-tracking collection exists.
+General principle: "Unmatched items must never be silently discarded" (see CLAUDE.md §1) applies to defensive-path items too; logging is necessary but insufficient when a failure-tracking collection exists.
 
 ## 41. Extracted Helpers Need Direct Unit Tests for Key Invariants
 
@@ -292,7 +292,7 @@ Example: extracting `_consume_against_pool_inplace` from the FIFO orchestrator p
 
 ## 42. Failing Tests: Distinguish Stale Expectation from Production Bug
 
-When a test fails, first determine whether the test expectation became stale (design changed) or whether production code regressed. Changing production code to make a stale test pass is the wrong fix — it re-introduces the removed behavior.
+When a test fails, first determine whether the test expectation became stale (design changed) or whether production code regressed. Changing production code to make a stale test pass is the wrong fix; it re-introduces the removed behavior.
 
 Indicator: the test reads live state from the system under test (e.g. `review_required=bybit_origin.review_required`) instead of an explicit hardcoded fixture value. If the underlying mapping changed for valid reasons, the test silently tracks the wrong behavior.
 
@@ -317,7 +317,7 @@ identifies each *distinct event*, not just each distinct source row. A single ex
 can legitimately produce multiple events with the same primary key.
 
 Example: a Koinly transfer row emits both a `fee_disposal` and a `transfer_out`
-consumption — both share the same TxHash / `tx_key`. Deduplicating on `tx_key` alone drops
+consumption; both share the same TxHash / `tx_key`. Deduplicating on `tx_key` alone drops
 one of them. Correct granularity: `(tx_key, event_type)` for consumptions,
 `(tx_key, source_type)` for acquisitions.
 
@@ -327,7 +327,7 @@ distinct consumption events are produced before assuming single-field dedup is s
 ## 46. Fiscal Year Filter in FIFO Pipeline Must Apply to Disposals Only, Post-FIFO
 
 When filtering FIFO pipeline output to the reporting fiscal year, filter *only disposal /
-realization records* — never the acquisition records. Prior-year acquisitions must remain
+realization records*, never the acquisition records. Prior-year acquisitions must remain
 in the FIFO pool so cost-basis carry-over is correct; filtering them by year would produce
 incorrect zero-cost gains for multi-year holds.
 
@@ -339,17 +339,17 @@ them, before converting to `CryptoCapitalGainEntry`. Do not pre-filter `acquisit
 
 When writing CSV test fixture rows for multi-column formats (e.g. Koinly TH rows), verify each value is at the correct column index by counting quoted fields as single units (quoted content containing commas counts as one field).
 
-A misaligned column can make a test pass even with the bug it is designed to detect. Example: a test asserting `cost_basis_eur == 0` when `Sent Cost Basis` is empty will still pass if `Net Value (EUR)` is also empty — because an FMV-fallback bug would also produce 0. Place a non-zero value in `Net Value (EUR)` (col 14) to make the bug detectable.
+A misaligned column can make a test pass even with the bug it is designed to detect. Example: a test asserting `cost_basis_eur == 0` when `Sent Cost Basis` is empty will still pass if `Net Value (EUR)` is also empty, because an FMV-fallback bug would also produce 0. Place a non-zero value in `Net Value (EUR)` (col 14) to make the bug detectable.
 
 Use `csv.DictReader([TH_HEADER, row])` or the test helper `_parse_row()` to verify field-to-column mapping before relying on a fixture row as a correctness check.
 
 ---
 
-2. `uv run ruff check . --fix` — auto-fix linting
-3. `uv run basedpyright src/ tests/` — type checking
-4. `uv run ruff check . --select=E501` — line length
+2. `uv run ruff check . --fix`: auto-fix linting
+3. `uv run basedpyright src/ tests/`: type checking
+4. `uv run ruff check . --select=E501`: line length
 5. Confirm all imports have matching dependencies
-6. `grep -r "Path(__file__)" tests/` — no fragile test paths
+6. `grep -r "Path(__file__)" tests/`: no fragile test paths
 7. Review new parameters: are any always constant? (remove them)
 8. Do tests verify actual functionality or just return values?
 9. Remove temporary files or scripts
@@ -370,7 +370,7 @@ When inlining a helper that switches internal state from `{}` to `defaultdict(li
 
 ## 50. Run-Determining Parameters Belong in the Output Artifact, Not in Logs
 
-When a pipeline run produces different results depending on dynamically-discovered inputs (e.g. which assets are loan-affected, which platforms are active, which years are in scope), expose those inputs in the output report itself — as a dedicated worksheet section, a named range, or a metadata tab — rather than relegating them to log lines or ephemeral sidecar files.
+When a pipeline run produces different results depending on dynamically-discovered inputs (e.g. which assets are loan-affected, which platforms are active, which years are in scope), expose those inputs in the output report itself, as a dedicated worksheet section, a named range, or a metadata tab, rather than relegating them to log lines or ephemeral sidecar files.
 
 Logs are consumed during a run and discarded; a sibling file adds surface area and may not be opened. The workbook is the primary artifact reviewed by the user. Embedding the run scope there lets the reviewer verify assumptions without cross-referencing external files, and makes the report self-documenting for future audits.
 
@@ -380,7 +380,7 @@ Example: `CryptoTaxReport.fifo_rebuild_assets` (which assets were rebuilt from T
 
 When a subsystem requires a complete set of N files from an external tool export (e.g. Koinly's capital gains, income, and transaction history), validate with all-or-nothing semantics:
 
-- **None present** → skip gracefully (no-op mode — the external data source is simply not configured for this run).
+- **None present** → skip gracefully (no-op mode; the external data source is simply not configured for this run).
 - **Partial set present (1 of N or 2 of N)** → raise `FileProcessingError` with an explicit list of missing files and export instructions. Partial presence is worse than none: it silently produces an incomplete report that looks valid (e.g. rewards disappear but no error is raised).
 - **All N present** → proceed normally.
 
@@ -419,7 +419,7 @@ Asset tickers that use non-Latin script characters (Cyrillic, Greek, etc.) are s
 
 ## 54. Substring Matching for Token Variants
 
-Koinly uses prefixes/suffixes for tracked or staked tokens (e.g., **TSTON**, **TSUSDE**) — these don't match exact popular token names but contain the base token as a substring.
+Koinly uses prefixes/suffixes for tracked or staked tokens (e.g., **TSTON**, **TSUSDE**); these don't match exact popular token names but contain the base token as a substring.
 
 **Implementation**: `_contains_popular_token()` checks if any popular token exists as a substring (case-insensitive) within the asset ticker.
 
@@ -430,7 +430,7 @@ Koinly uses prefixes/suffixes for tracked or staked tokens (e.g., **TSTON**, **T
 
 ## 55. Verify Staged Diff Matches Implementation Before Finalizing
 
-When finalizing work for code review or commit, the staged diff (`git diff master...HEAD`) must match the actual implementation in the working directory. Untracked files that are part of the implementation create a discrepancy — reviewers evaluate stale code while the working directory has different logic.
+When finalizing work for code review or commit, the staged diff (`git diff master...HEAD`) must match the actual implementation in the working directory. Untracked files that are part of the implementation create a discrepancy; reviewers evaluate stale code while the working directory has different logic.
 
 **Check before finalizing**: Run `git status` and verify no files that are part of the implementation appear as untracked (`??`). If a new source file or test exists in the working directory but is not staged, add it with `git add <file>` before considering the work ready for review.
 
@@ -456,7 +456,7 @@ When restructuring code (changing sheet layouts, renaming components, merging or
 
 **Scope**: Check README.md, any walkthrough or presentation docs, and any architectural decision documents that mention the changed components.
 
-## 59. Hardcoded Set Maintenance — Check Across All Sections for Duplicates
+## 59. Hardcoded Set Maintenance: Check Across All Sections for Duplicates
 
 When maintaining multi-section hardcoded collections (like `_POPULAR_CRYPTO_TOKENS`, `_INCOME_CODE_DESCRIPTIONS`), items can legitimately belong to multiple categories. Before adding an item to one section, grep across all sections to verify it doesn't already exist elsewhere in the same collection.
 
@@ -464,7 +464,7 @@ When maintaining multi-section hardcoded collections (like `_POPULAR_CRYPTO_TOKE
 
 **Check pattern**: `grep -n '"ITEM_NAME"' src/tax_reporting/application/crypto_reporting.py` before adding a new token.
 
-**Example**: "ARB", "OP", "MATIC" appeared in both "Layer 1 / Major chains" and "Layer 2 / Scaling" sections — keep each token in its most appropriate category only.
+**Example**: "ARB", "OP", "MATIC" appeared in both "Layer 1 / Major chains" and "Layer 2 / Scaling" sections; keep each token in its most appropriate category only.
 
 ## 60. Document Tradeoffs for Fuzzy Matching in Docstrings
 
@@ -486,14 +486,14 @@ When using `except Exception: continue` or similar graceful degradation patterns
 
 **Pattern**:
 ```python
-# ❌ WRONG — silent failure hides the problem
+# ❌ WRONG: silent failure hides the problem
 try:
     rows = read_koinly_rows(file_path)
     # ... process rows ...
 except Exception:
     continue  # No visibility into what failed
 
-# ✅ CORRECT — observable degradation
+# ✅ CORRECT: observable degradation
 try:
     rows = read_koinly_rows(file_path)
     # ... process rows ...
@@ -640,11 +640,11 @@ A leveraged futures position (e.g., SOL/USDT with USDT as collateral) creates a 
 **Why this happens:**
 - A leveraged futures position has the collateral (e.g., USDT) as the underlying asset
 - Liquidation is a forced closure where the exchange disposes of the collateral to cover the loss
-- For tax purposes, this is an **alienação onerosa** (onerous disposal) under CIRS art. 10(1)(e) — "instrumentos financeiros derivados"
+- For tax purposes, this is an **alienação onerosa** (onerous disposal) under CIRS art. 10(1)(e): "instrumentos financeiros derivados"
 - The disposal amount (e.g., "<COLLATERAL_USDT> USDT disposed") reflects the collateral being removed from the position
 - The **negative capital gain** (the loss) appears in the gain/loss column and is deductible per PT-C-016 (5-year carry-forward for short-term)
 
-**Key distinction:** A futures liquidation is NOT a withdrawal. A withdrawal (to your own wallet) is not a taxable event for the asset itself. A liquidation is a forced disposal by the exchange and IS taxable — the loss can offset future gains.
+**Key distinction:** A futures liquidation is NOT a withdrawal. A withdrawal (to your own wallet) is not a taxable event for the asset itself. A liquidation is a forced disposal by the exchange and IS taxable; the loss can offset future gains.
 
 **Concrete example:** ByBit SOL/USDT position `<POSITION_ID>` liquidated on 19 Jan 2025, 11:28:53 PM. Koinly reported <-USD_LOSS> USD loss at 11:29:46 PM. The system correctly assessed disposal of <COLLATERAL_USDT> USDT (<COLLATERAL_EUR> EUR) as the collateral disposition, with the loss appearing as negative gain/loss.
 
@@ -663,7 +663,7 @@ validation fails with "Unknown decision points flag" error and all config-depend
 **Pattern:**
 1. Add bool field to `TaxJurisdictionConfig` (e.g., `futures_derivatives_taxable: bool = False`)
 2. Add flag to `docs/tax/decision_points/<year>.toml` under `[countries.<CC>]` section
-3. Run tests — config validation now recognizes the flag
+3. Run tests; config validation now recognizes the flag
 
 **Example:** The `futures_derivatives_taxable` flag was added to `2025.toml` but the field was
 missing from `TaxJurisdictionConfig`. This caused all integration tests to fail with config
@@ -675,7 +675,7 @@ validation error until the field was added to the domain model.
 
 ## 69. Excel Output Visual Structure Tests
 
-When adding or modifying Excel report layouts, add visual structure tests to verify row placement, cell merging, blank rows, and header structure — not just data values. This prevents regressions where structural changes accidentally modify layout.
+When adding or modifying Excel report layouts, add visual structure tests to verify row placement, cell merging, blank rows, and header structure, not just data values. This prevents regressions where structural changes accidentally modify layout.
 
 **What to test:**
 - **Row placement**: Section title row, blank row count (exactly one vs double), header row positions, data start row
@@ -709,8 +709,8 @@ def test_sale_header_merged_across_4_columns(self, sheet):
 
 When modifying table structures (adding/removing columns), verify that all downstream code using those positions is correct. Distinguish between:
 
-- **Absolute-position code** (writes to specific column numbers) — needs manual verification after structural changes
-- **Offset-based code** (uses `start_column + N`) — may auto-adjust but still needs verification
+- **Absolute-position code** (writes to specific column numbers): needs manual verification after structural changes
+- **Offset-based code** (uses `start_column + N`): may auto-adjust but still needs verification
 
 **Pattern:** After removing/adding columns, grep for all code that writes to specific column indices and verify correctness. For the IB sheet, the country pass writes to absolute positions (col 1 and col 10) and was unaffected by Beneficiary removal because it uses direct column indices rather than offsets from `start_column`.
 
@@ -754,7 +754,7 @@ When a plan investigates "is X handled correctly?" or "does the system correctly
 3. **Command pattern:** `grep "specific_value" source.csv` → compare with actual Excel output cell value
 4. **Failure consequence:** An investigation that concludes "no code changes needed" without performing data trace verification is INCOMPLETE and must be redone.
 
-**Example:** The 2026-06-07 futures/derivatives loss treatment investigation concluded "no code changes needed" based on code inspection alone. However, data trace verification revealed that Koinly's Other Gains Report classified entries as "Loss" while the Excel output showed them as "Gain" — a clear discrepancy that code inspection missed.
+**Example:** The 2026-06-07 futures/derivatives loss treatment investigation concluded "no code changes needed" based on code inspection alone. However, data trace verification revealed that Koinly's Other Gains Report classified entries as "Loss" while the Excel output showed them as "Gain", a clear discrepancy that code inspection missed.
 
 ## 73. Cross-Report Validation for Multi-Report Systems
 
@@ -784,10 +784,10 @@ When applying overrides from an authoritative source (e.g., OGR) to calculated d
 **Why this matters:** CG rows are individual FIFO lots that get summed in aggregation. The authoritative source (OGR) contains the correct total gain/loss for the disposal event. Overriding after aggregation would lose the lot-level trail and make reconciliation impossible.
 
 **Pattern:**
-1. Parse calculated source (CG) — produces individual lot entries
-2. Parse authoritative source (OGR) — produces event-level totals
+1. Parse calculated source (CG): produces individual lot entries
+2. Parse authoritative source (OGR): produces event-level totals
 3. Match and override lot entries with authoritative values
-4. Aggregate overridden lots — preserves lot-level trail in output
+4. Aggregate overridden lots: preserves lot-level trail in output
 
 **Example:** In `crypto_reporting.py`, `_apply_ogr_overrides()` is called after `_parse_capital_gains_file` but BEFORE `_aggregate_capital_entries()`. This ensures that when OGR reports an authoritative per-disposal loss, each individual FIFO lot for that disposal is overridden with that authoritative value before being summed. If aggregation happened first, the lot-level detail would be lost and the override could not be traced back to specific lots.
 
@@ -837,7 +837,7 @@ result[key] = result.get(key, ZERO) + value  # All values summed
 
 ## 78. OGR Directional Authority vs Wholesale Replacement (Completed)
 
-**Status:** Completed — see `docs/plans/2026-06-10-ogr-validation-design.md`
+**Status:** Completed; see `docs/plans/2026-06-10-ogr-validation-design.md`
 
 The OGR (Other Gains Report) feature uses **directional authority semantics**, not wholesale replacement. OGR provides authoritative DIRECTION (gain vs loss) while CG (Capital Gains) provides MAGNITUDE via standard FIFO calculation.
 
@@ -860,13 +860,13 @@ The OGR (Other Gains Report) feature uses **directional authority semantics**, n
 ## 79. Independent Validation Fields vs Entry-Level Review Flags
 
 When adding validation-related fields to a dataclass that already has `review_required`/`review_reason` fields, distinguish between:
-- **Entry-level review flags** — domain-specific validations that apply to the entry itself
-- **Independent validation results** — cross-report or cross-system validations that have their own review criteria
+- **Entry-level review flags**: domain-specific validations that apply to the entry itself
+- **Independent validation results**: cross-report or cross-system validations that have their own review criteria
 
 **Pattern:**
 - Add validation results as optional nested dataclass fields (e.g., `ogr_validation: OgrValidationResult | None = None`)
 - Do NOT integrate validation-result `review_required` into entry-level `__post_init__` validation
-- Keep the two review mechanisms independent — validation result carries its own `review_required`/`review_reason`
+- Keep the two review mechanisms independent; validation result carries its own `review_required`/`review_reason`
 - Tests that verify "YES:"/"NO" rendering must set the nested field explicitly, not delegate to origin fields
 
 **Why:** Entry-level validation enforces that `review_reason` is set when `review_required=True`. Independent validations have their own lifecycle and should not trigger entry-level validation. Tests must verify independence explicitly.
@@ -877,18 +877,18 @@ When adding validation-related fields to a dataclass that already has `review_re
 
 ## 80. Field Aggregation Strategy Depends on Semantics
 
-When aggregating grouped entries (e.g., FIFO lots into sale events), field aggregation strategy depends on field semantics — not all fields should be summed.
+When aggregating grouped entries (e.g., FIFO lots into sale events), field aggregation strategy depends on field semantics, not all fields should be summed.
 
 **Pattern:** For each field in the aggregated result, choose the strategy based on what the field represents:
-- **Lookup value fields** — Take from first entry (all entries in group share the same lookup key, so the value is identical across entries). Example: `ogr_gain_loss` from OGR lookup by (date, asset, wallet)
-- **Per-lot contribution fields** — Sum across all entries. Example: `calculated_gain_loss` where each lot contributes to the total
-- **Boolean flags** — Use OR logic (True if ANY entry has True). Example: `direction_conflict`, `review_required`
-- **Severity indicator fields** — Use maximum value. Example: `magnitude_diff_percent` to show worst deviation
-- **Narrative text fields** — Join unique values with delimiter and deduplicate. Example: `review_reason` joined with "; "
+- **Lookup value fields**: Take from first entry (all entries in group share the same lookup key, so the value is identical across entries). Example: `ogr_gain_loss` from OGR lookup by (date, asset, wallet)
+- **Per-lot contribution fields**: Sum across all entries. Example: `calculated_gain_loss` where each lot contributes to the total
+- **Boolean flags**: Use OR logic (True if ANY entry has True). Example: `direction_conflict`, `review_required`
+- **Severity indicator fields**: Use maximum value. Example: `magnitude_diff_percent` to show worst deviation
+- **Narrative text fields**: Join unique values with delimiter and deduplicate. Example: `review_reason` joined with "; "
 
 **Implementation:** `_aggregate_ogr_validation()` in Task 3 of OGR validation design demonstrates all five patterns.
 
-**Why:** Assuming "sum" for all numeric fields is incorrect — some numeric fields represent a shared lookup value that must NOT be summed, while others represent independent contributions that must be summed. Mixing these semantics produces incorrect results (e.g., summing `ogr_gain_loss` would multiply the OGR value by the number of lots, which is wrong).
+**Why:** Assuming "sum" for all numeric fields is incorrect; some numeric fields represent a shared lookup value that must NOT be summed, while others represent independent contributions that must be summed. Mixing these semantics produces incorrect results (e.g., summing `ogr_gain_loss` would multiply the OGR value by the number of lots, which is wrong).
 
 **Example:** In crypto capital gains aggregation, `ogr_gain_loss` comes from the first entry because all FIFO lots for the same disposal share the same OGR lookup value. But `calculated_gain_loss` is summed because each lot contributes its own gain/loss to the total.
 
@@ -938,7 +938,7 @@ When adding new columns to an Excel sheet output, update all related constants a
 - Misaligned headers vs data columns
 - Conditional formatting not covering new columns
 
-**Why:** These constants are coupled — they all represent "how many columns exist." Missing one causes bugs that only appear at runtime or in specific test scenarios.
+**Why:** These constants are coupled; they all represent "how many columns exist." Missing one causes bugs that only appear at runtime or in specific test scenarios.
 
 **Example:** In Task 4 of the OGR validation design, three new OGR validation columns were added (18, 19, 20). The implementation updated:
 - `_CAPITAL_GAINS_NUM_COLS` from 17 to 20
@@ -969,7 +969,7 @@ When adding columns that can be blank/None (e.g., when validation data is absent
 
 ## 84. Backward Compatibility Testing for Flag-Controlled Features
 
-When adding a new feature controlled by a boolean flag (like `use_other_gains_report`), create dedicated backward compatibility tests that verify the "disabled" state preserves existing behavior — not just that the "enabled" state works correctly.
+When adding a new feature controlled by a boolean flag (like `use_other_gains_report`), create dedicated backward compatibility tests that verify the "disabled" state preserves existing behavior, not just that the "enabled" state works correctly.
 
 **Pattern:**
 1. Create a dedicated test class for backward compatibility (e.g., `TestOgrDisabledBackwardCompatibility`)
@@ -998,7 +998,7 @@ When validating aggregated data against an external source (OGR, statements, etc
    - `magnitude_diff_percent` = |(agr_OGR - agr_CG) / agr_CG| × 100
    - `review_required` = based on aggregated thresholds
    - `review_reason` = built from aggregated state
-3. Don't inherit/OR individual lot flags — they reflect pre-aggregation noise
+3. Don't inherit/OR individual lot flags; they reflect pre-aggregation noise
 
 **Why:** Pre-aggregation rows are accounting artifacts, not the reportable event. The tax return reports the aggregated sale, so only aggregated-level validation is meaningful to the reviewer.
 
@@ -1236,7 +1236,7 @@ if cell_value not in exclusion_set:
     items.append(cell_value)
 ```
 
-**Correct pattern — identify by structure:**
+**Correct pattern, identify by structure:**
 ```python
 for row_idx in range(1, 200):
     label = ws.cell(row_idx, 1).value
@@ -1264,12 +1264,12 @@ When a characterization (golden-value) test captures the actual current behavior
 **Why this happens:** Plan authors writing expected values for characterization tests may conflate two related but distinct quantities when one is a downstream authoritative total and the other is the post-transformation output. The override/transformation in question may apply directional authority (sign) while preserving the other quantity's magnitude, so the expected value the author wrote (the authoritative total) is NOT the value the pipeline actually emits.
 
 **Required response when characterization disagrees with the plan:**
-1. Capture the REAL current output as the golden value (never the plan's assumed value) — the whole point of a characterization test is to lock in actual behavior.
+1. Capture the REAL current output as the golden value (never the plan's assumed value); the whole point of a characterization test is to lock in actual behavior.
 2. Trace WHY they differ using raw source inspection (read source CSVs directly, sum lots, identify which quantity the plan's number actually represents).
 3. Reconcile the plan narrative so downstream tasks and the user see the corrected value with rationale.
 4. Flag the discrepancy to the orchestrator/user so dependent tasks are aware.
 
-**Do NOT** weaken the characterization assertion to match the plan's incorrect value — that defeats the test's purpose and hides a real bug or real behavior.
+**Do NOT** weaken the characterization assertion to match the plan's incorrect value; that defeats the test's purpose and hides a real bug or real behavior.
 
 **Example:** The 2026-06-13 derivatives-separation plan (Task 1) stated the Case 2 expected Crypto Gains output was `<-OGR_NET_EUR> EUR` (the Other Gains Report total for that disposal), but the actual override output is `-<CG_LOTS_EUR> EUR`. The `_apply_ogr_direction_override` function uses OGR for DIRECTION only and preserves CG MAGNITUDE: the 109 CG lots sum to `+<CG_LOTS_EUR>` pre-override, and flipping the sign of each yields `-<CG_LOTS_EUR>` post-override. The `<-OGR_NET_EUR>` is the OGR-row total, a different quantity from the post-override aggregated output. The characterization test captured `-<CG_LOTS_EUR>` and the plan narrative was reconciled. See the characterization golden fixture (local) and lesson #78 (OGR directional authority runtime semantics).
 
@@ -1307,7 +1307,7 @@ When plan pseudocode compares two fields by name and those fields share a unit (
 **Required behavior:**
 1. When the pseudocode references a field by name on a domain object, especially for a magnitude or equality comparison, identify which other same-unit fields exist on that dataclass.
 2. For each candidate field, trace the fixture to confirm what economic quantity the field actually carries (read the dataclass docstring; verify against a real source row).
-3. Construct the RED-phase test fixture so that the candidate fields are set to DIFFERENT but realistic values, not the same value — this forces the test to discriminate between them. If the fixture sets `proceeds_eur=<FEE_PROCEEDS_EUR>` and `gain_loss_eur=<FEE_GAIN_EUR>`, a pseudocode comparison against `gain_loss_eur` will fail visibly (|<FEE_PROCEEDS_EUR> − <FEE_GAIN_EUR>| = <TOLERANCE_DELTA_EUR> > tolerance), exposing the field-name error before production code ships.
+3. Construct the RED-phase test fixture so that the candidate fields are set to DIFFERENT but realistic values, not the same value; this forces the test to discriminate between them. If the fixture sets `proceeds_eur=<FEE_PROCEEDS_EUR>` and `gain_loss_eur=<FEE_GAIN_EUR>`, a pseudocode comparison against `gain_loss_eur` will fail visibly (|<FEE_PROCEEDS_EUR> − <FEE_GAIN_EUR>| = <TOLERANCE_DELTA_EUR> > tolerance), exposing the field-name error before production code ships.
 4. If the fixture trace shows the pseudocode field is wrong, correct the pseudocode field reference in the plan, document the correction as a DESIGN CORRECTION note, and update the constant's comment to prevent a future maintainer from reintroducing the bug.
 
 **Distinguishing from #97:** Lesson #97 covers characterization tests that capture a value disagreeing with the plan's stated expected value (magnitude vs direction conflation in captured output). This lesson covers plan pseudocode referencing the wrong field by name; the comparison never runs against production data until RED-phase fixture construction exposes the field-name error. Both are verification rules but they have distinct triggers (golden-value disagreement vs fixture-driven field selection) and distinct fixes (reconcile narrative vs rewrite pseudocode field reference).
@@ -1378,7 +1378,7 @@ When a dedup or matching algorithm uses a key tuple that does not include a glob
 
 ## 103. Audit for Shared Identifiers Across Reports When Separating a Previously-Merged Tax Category
 
-When introducing a separation between two tax categories that previously shared a single pipeline (e.g., splitting a unified crypto-gains flow into spot vs derivatives), audit whether the same disposal event appears in **both** source reports that feed the separated paths. Without an explicit deduplication step removing the now-derivatives-classified items from the spot path, those items are double-counted: once in the new derivatives aggregate, once in the legacy spot aggregate. The trigger for the audit is the **introduction of the separation itself** — not a later data-quality or cross-report validation check.
+When introducing a separation between two tax categories that previously shared a single pipeline (e.g., splitting a unified crypto-gains flow into spot vs derivatives), audit whether the same disposal event appears in **both** source reports that feed the separated paths. Without an explicit deduplication step removing the now-derivatives-classified items from the spot path, those items are double-counted: once in the new derivatives aggregate, once in the legacy spot aggregate. The trigger for the audit is the **introduction of the separation itself**, not a later data-quality or cross-report validation check.
 
 **Why this happens:** Koinly (and similar exporters) emit one row per disposal event in each report that references it. A derivatives Futures-fee disposal appears both as an OGR `Loss` row (because it has no cost basis, so Koinly routes it to Other Gains) and as a CG lot (because Koinly also records it as a disposal of the fee asset against its acquisition lot). Before the separation, only the CG path was read, so the duplication was invisible. The moment a plan introduces a derivatives path that reads OGR, both paths light up for the same disposal, and the spot CG total silently inflates.
 
@@ -1541,7 +1541,7 @@ When an implementation plan is revised between the RED phase (writing the failin
 
 **Example:** Task 1 of the 2026-06-14 derivatives-th-label-cg-dedup plan wrote `TestByBitCase3Trace#test_removal_logged` as a RED test asserting 3 per-lot WARNING logs. The r2 revision introduced Design Invariant 15 requiring per-lot INFO plus a single aggregate WARNING. Task 6's GREEN flip had to update the test's `caplog.at_level` from WARNING to INFO and change the assertion from "3 WARNINGs" to "3 INFOs + 1 WARNING mentioning `removed` and `lots`". The implement log records the contract change against Design Invariant 15. See the implementation log (local).
 
-**See also:** Lesson #76 (TDD RED-then-GREEN ordering), Lesson #100 (verify plan-time claims before writing tasks — the plan-authoring counterpart).
+**See also:** Lesson #76 (TDD RED-then-GREEN ordering), Lesson #100 (verify plan-time claims before writing tasks, the plan-authoring counterpart), Lesson #120 (reconcile plan pseudocode against tests and design invariants before GREEN).
 
 ## 110. Re-Run Phase-N Feasibility Scans on the Post-Phase-(N-1) State, Not the Original Input Set
 
@@ -1572,17 +1572,17 @@ When a multi-phase matching (or removal) algorithm runs phase 1 (e.g., exact-mat
 
 ## 111. Grep Across ALL Test Files for Stale Assertions When a Task Changes Data Flow Semantics
 
-When a task changes data flow semantics (adds a filter that removes items, adds a dedup step, changes a transformation output, splits one pipeline into two), assertions on the affected data may exist in multiple test files at different test tiers (unit, integration, e2e). Each task's "update affected tests" scope must include a grep across ALL test files for assertions that reference the changed data, not just the tests the task author listed as in-scope. A stale assertion in a sibling test file survives a focused update of the task's listed files and only surfaces during full regression — by which point the implement sub-agent has already moved on, forcing a cleanup commit.
+When a task changes data flow semantics (adds a filter that removes items, adds a dedup step, changes a transformation output, splits one pipeline into two), assertions on the affected data may exist in multiple test files at different test tiers (unit, integration, e2e). Each task's "update affected tests" scope must include a grep across ALL test files for assertions that reference the changed data, not just the tests the task author listed as in-scope. A stale assertion in a sibling test file survives a focused update of the task's listed files and only surfaces during full regression, by which point the implement sub-agent has already moved on, forcing a cleanup commit.
 
 **Why this happens:** A feature is initially implemented with tests in both the unit tier (testing the integration point with real fixtures) and the e2e tier (testing the final Excel output). When a follow-on plan changes the data flow, the plan author typically lists only the tests they remember writing or the tests in the file they are editing. The sibling test in a different tier that also references the same data is forgotten. The focused test run passes because it runs only the listed files; the failure only appears when the full `uv run pytest` is run at the end of the plan, often by a later validation task rather than the task that introduced the change.
 
 **Required behavior:**
 1. Before marking a task that changes data flow as complete, identify the identity tuple of the affected data (e.g., `(date, asset, platform)` for a capital-gains entry, or `(field_name, expected_value)` for a transformation output).
 2. Grep across the ENTIRE test tree (`tests/`) for assertions referencing that identity: `grep -rn "<date>.*<asset>.*<platform>" tests/`, `grep -rn "<field_name>" tests/`, or `grep -rn "<expected_value>" tests/`.
-3. For each hit, re-read the assertion against the new contract. If the assertion encodes the old behavior, update it as part of THIS task — do not defer to a later validation task.
+3. For each hit, re-read the assertion against the new contract. If the assertion encodes the old behavior, update it as part of THIS task; do not defer to a later validation task.
 4. When a plan describes "update test expectations for the new behavior," the plan's task list should explicitly include "grep all test files for assertions on the affected identity tuple and update stale ones" as a sub-step, not just "update tests/test_X.py".
 
-**Distinguishing from #109 (re-read RED tests against revised invariants):** Lesson #109 addresses stale assertions in the RED test that THIS task is supposed to flip — the test is in scope but its assertions were written against a superseded invariant. This lesson addresses stale assertions in tests OUTSIDE this task's listed scope — the tests are in sibling files the task author forgot to grep. The failure mode for #109 is caught at GREEN-flip time (the implement sub-agent sees the test fail and patches it); the failure mode here is caught only at full-regression time (the focused run never executed the sibling test).
+**Distinguishing from #109 (re-read RED tests against revised invariants):** Lesson #109 addresses stale assertions in the RED test that THIS task is supposed to flip; the test is in scope but its assertions were written against a superseded invariant. This lesson addresses stale assertions in tests OUTSIDE this task's listed scope; the tests are in sibling files the task author forgot to grep. The failure mode for #109 is caught at GREEN-flip time (the implement sub-agent sees the test fail and patches it); the failure mode here is caught only at full-regression time (the focused run never executed the sibling test).
 
 **Distinguishing from #92 (fix in-scope findings in the same branch):** Lesson #92 addresses refactoring findings in files the task touched. This lesson addresses test-staleness that crosses file boundaries: the task touched `derivatives_dedup.py` and updated `test_derivatives_dedup.py`, but a stale assertion in `test_crypto_reporting.py::TestPipelineIntegration` (a different file the task never opened) encodes the old contract.
 
@@ -1596,7 +1596,7 @@ When a task changes data flow semantics (adds a filter that removes items, adds 
 
 When a test method's name implies coverage of N pathways (e.g., `test_*_propagate_timestamp` for a function with 5 emitter sites, or `test_all_branches_handle_*` for a 4-branch conditional) but the body exercises only 1, reviewers reading the test list will assume the implied coverage exists. A later refactor that breaks an unexercised pathway will pass the existing test suite because the suite never tested that pathway; the misleading name delayed the discovery.
 
-**Why this matters:** Test method names are a discovery surface during code review and refactor risk-assessment. A reviewer deciding whether a change is safe to merge will scan test names to estimate coverage; a name that overstates coverage produces a false-confidence green light. The test passes for the wrong reason — not because the contract holds across all pathways, but because only one pathway was ever asserted.
+**Why this matters:** Test method names are a discovery surface during code review and refactor risk-assessment. A reviewer deciding whether a change is safe to merge will scan test names to estimate coverage; a name that overstates coverage produces a false-confidence green light. The test passes for the wrong reason, not because the contract holds across all pathways, but because only one pathway was ever asserted.
 
 **Required behavior:**
 1. When writing a test for a function with multiple dispatch pathways (multiple emitter sites, multiple branches, multiple subclasses, multiple strategies), either:
@@ -1619,16 +1619,16 @@ When a test method's name implies coverage of N pathways (e.g., `test_*_propagat
 
 ## 113. Internal Placeholder Sentinels From Resolution Functions Must Not Leak to User-Facing Output Fields
 
-When a resolution/lookup function (operator-origin resolver, ISIN resolver, country resolver) returns an internal placeholder sentinel as one of its fields (e.g., `operator_entity="UNKNOWN_OPERATOR_REVIEW_REQUIRED"`, indicating "data could not be resolved automatically"), callers must NOT propagate that sentinel value directly into user-facing output fields (Excel cells, report columns, API responses). The sentinel is a programmatic "data missing, review required" marker intended for internal branching and review-flag logic, not for display. Propagating it verbatim produces output like `UNKNOWN_OPERATOR_REVIEW_REQUIRED` in a taxpayer-facing Excel cell — confusing, unactionable, and indistinguishable from a real operator name to a non-technical reviewer.
+When a resolution/lookup function (operator-origin resolver, ISIN resolver, country resolver) returns an internal placeholder sentinel as one of its fields (e.g., `operator_entity="UNKNOWN_OPERATOR_REVIEW_REQUIRED"`, indicating "data could not be resolved automatically"), callers must NOT propagate that sentinel value directly into user-facing output fields (Excel cells, report columns, API responses). The sentinel is a programmatic "data missing, review required" marker intended for internal branching and review-flag logic, not for display. Propagating it verbatim produces output like `UNKNOWN_OPERATOR_REVIEW_REQUIRED` in a taxpayer-facing Excel cell, confusing, unactionable, and indistinguishable from a real operator name to a non-technical reviewer.
 
-**Why this matters:** User-facing output must use self-explanatory terminology (see `coding_guidelines.md` #6). Internal sentinels are terse programmatic identifiers designed for code-side `if` checks, not for humans. The two concerns — "signal missing data to the code" and "display something useful to the human" — require different values at the same call site. Reusing the internal sentinel for display collapses them into one bad value.
+**Why this matters:** User-facing output must use self-explanatory terminology (see `coding_guidelines.md` #6). Internal sentinels are terse programmatic identifiers designed for code-side `if` checks, not for humans. The two concerns, "signal missing data to the code" and "display something useful to the human", require different values at the same call site. Reusing the internal sentinel for display collapses them into one bad value.
 
-**Distinguishing from user-visible sentinels (`MISSING_ISIN_REQUIRES_ATTENTION`, `UNKNOWN_COUNTRY`):** Those sentinels ARE designed for user display — their terse, ALL_CAPS form is intentional and the project convention is that they should appear in Excel cells with highlighting to draw the reviewer's attention. This lesson addresses the opposite case: a sentinel like `UNKNOWN_OPERATOR_REVIEW_REQUIRED` whose name reads as an instruction to the developer ("review required"), not as a value the user should see. When in doubt, check whether the sentinel's name reads as a value (OK to display) or as an instruction/status (must NOT display).
+**Distinguishing from user-visible sentinels (`MISSING_ISIN_REQUIRES_ATTENTION`, `UNKNOWN_COUNTRY`):** Those sentinels ARE designed for user display; their terse, ALL_CAPS form is intentional and the project convention is that they should appear in Excel cells with highlighting to draw the reviewer's attention. This lesson addresses the opposite case: a sentinel like `UNKNOWN_OPERATOR_REVIEW_REQUIRED` whose name reads as an instruction to the developer ("review required"), not as a value the user should see. When in doubt, check whether the sentinel's name reads as a value (OK to display) or as an instruction/status (must NOT display).
 
 **Required behavior:**
 1. When consuming a resolution function's result, identify which fields may carry an internal placeholder (typically: the field the resolver returns when it cannot resolve, often paired with `review_required=True`).
-2. For user-facing output, substitute the original raw input value (e.g., `row.wallet` — the raw wallet name the user provided) rather than the resolver's placeholder. The raw input is what the user entered and what they will recognize when reviewing.
-3. Keep the `review_required` flag and a specific actionable `review_reason` (citing the resolver function name) so the missing data is still surfaced for review — just not via leaking the sentinel into a data cell.
+2. For user-facing output, substitute the original raw input value (e.g., `row.wallet`, the raw wallet name the user provided) rather than the resolver's placeholder. The raw input is what the user entered and what they will recognize when reviewing.
+3. Keep the `review_required` flag and a specific actionable `review_reason` (citing the resolver function name) so the missing data is still surfaced for review, just not via leaking the sentinel into a data cell.
 4. Test the unmapped/unknown case explicitly: assert the user-facing field equals the raw input, NOT the internal sentinel.
 
 **General form:** Any time a downstream field is populated from a resolver/lookup result, audit whether that result carries an internal placeholder for the unresolved case. If it does, the user-facing output must use the original input value, not the placeholder. The placeholder is for code logic; the raw input is for display.
@@ -1646,9 +1646,9 @@ When a test asserts that an Excel cell is "empty by default" (e.g., an optional 
 **Required behavior:**
 1. For default-empty cell assertions, accept BOTH representations: `assert cell.value in (None, "")` (or `assert cell.value is None or cell.value == ""`).
 2. Do NOT assert a single value unless the production code under test GUARANTEES that value (e.g., the field is always initialized to a non-empty sentinel).
-3. When the production write uses `safe_cell_value(x)` where `x` may be `None`, the empty-state assertion must accept `None`, `""`, or both — never assert one exclusively.
+3. When the production write uses `safe_cell_value(x)` where `x` may be `None`, the empty-state assertion must accept `None`, `""`, or both; never assert one exclusively.
 
-**Distinguishing from lesson at section "When adding columns that can be blank/None" (around line 957):** That rule says to ADD a dedicated test for the blank/None state and verify the cells are `None` (not empty string, not zero, not default value) — its concern is detecting leftover data from prior rows. This lesson #114 addresses the opposite problem: when the expected state IS empty and the write went through `safe_cell_value("")`, the read-back may normalize to `None`. The two rules compose: add a dedicated empty-state test (per the earlier rule), and in that test accept both `None` and `""` (per this lesson #114).
+**Distinguishing from lesson at section "When adding columns that can be blank/None" (around line 957):** That rule says to ADD a dedicated test for the blank/None state and verify the cells are `None` (not empty string, not zero, not default value); its concern is detecting leftover data from prior rows. This lesson #114 addresses the opposite problem: when the expected state IS empty and the write went through `safe_cell_value("")`, the read-back may normalize to `None`. The two rules compose: add a dedicated empty-state test (per the earlier rule), and in that test accept both `None` and `""` (per this lesson #114).
 
 **General form:** Any Excel cell assertion about an empty/default value must account for openpyxl's dual representation of "empty". The set `{None, ""}` is the correct expected-empty set for cells written via `safe_cell_value()`.
 
@@ -1668,7 +1668,7 @@ VALID_TABELA_X_CODES = {"PT", "US", "AE", "DE", "FR", ...}  # stale copy
 assert country in VALID_TABELA_X_CODES or country == "UNKNOWN"
 ```
 
-**Correct pattern — reuse the production validator:**
+**Correct pattern: reuse the production validator:**
 ```python
 from tax_reporting.application.crypto.classification import _is_valid_tabela_x_country
 assert country == "UNKNOWN" or _is_valid_tabela_x_country(country)
@@ -1679,13 +1679,13 @@ assert country == "UNKNOWN" or _is_valid_tabela_x_country(country)
 - The valid set is non-trivial (a list of dozens of country codes, a regex, an enum) such that manual duplication is error-prone.
 - The test's intent is to verify the value is "valid per the domain", NOT to verify the production list itself contains a specific entry (in which case the test legitimately pins specific entries).
 
-**When NOT to apply:** Tests that pin the production list's membership ("Tabela X must include Portugal") should NOT delegate to the production validator — that would be tautological. Those tests hold their own inline list as a contract anchor.
+**When NOT to apply:** Tests that pin the production list's membership ("Tabela X must include Portugal") should NOT delegate to the production validator; that would be tautological. Those tests hold their own inline list as a contract anchor.
 
-**Distinguishing from #96 (Structural Identification for Excel Output Tests):** Lesson #96 is about identifying which cells to inspect via structural properties (column population, font) rather than hardcoded value exclusions — it concerns test data selection, not validity predicates. This lesson #115 concerns the validity check applied to the values once selected: even when a test correctly identifies rows structurally, it may still duplicate a domain list to validate the cell's value, which is the drift risk this rule addresses. The two compose: identify rows structurally (per #96), then validate values by reusing the production predicate (per #115).
+**Distinguishing from #96 (Structural Identification for Excel Output Tests):** Lesson #96 is about identifying which cells to inspect via structural properties (column population, font) rather than hardcoded value exclusions; it concerns test data selection, not validity predicates. This lesson #115 concerns the validity check applied to the values once selected: even when a test correctly identifies rows structurally, it may still duplicate a domain list to validate the cell's value, which is the drift risk this rule addresses. The two compose: identify rows structurally (per #96), then validate values by reusing the production predicate (per #115).
 
 **General form:** Whenever the test could be written as `value in SOME_SET_DEFINED_IN_PRODUCTION` or `value matches PRODUCTION_REGEX`, replace the inline duplicate with an import of the production function/constant. The test asserts the contract ("value is valid per the domain"), and the production code is the single source of truth for what "valid" means.
 
-**Example:** Task 5 of the 2026-06-15 derivatives-pnl-columns plan added `test_derivatives_rows_operator_country_is_valid_or_unknown`, which asserts every derivatives row's `operator_country` is either a valid Tabela X country code or the literal `"UNKNOWN"` sentinel. The test imports `_is_valid_tabela_x_country` from `tax_reporting.application.crypto.classification` — the same validator the pipeline uses to validate reportable country codes — rather than re-listing the ISO 3166-1 alpha-2 codes inline. A future CIRS amendment that adds a country to the production list propagates to the test automatically. See the implementation log (local) Decision 3.
+**Example:** Task 5 of the 2026-06-15 derivatives-pnl-columns plan added `test_derivatives_rows_operator_country_is_valid_or_unknown`, which asserts every derivatives row's `operator_country` is either a valid Tabela X country code or the literal `"UNKNOWN"` sentinel. The test imports `_is_valid_tabela_x_country` from `tax_reporting.application.crypto.classification`, the same validator the pipeline uses to validate reportable country codes, rather than re-listing the ISO 3166-1 alpha-2 codes inline. A future CIRS amendment that adds a country to the production list propagates to the test automatically. See the implementation log (local) Decision 3.
 
 **See also:** Lesson #96 (structural identification for test data selection), CLAUDE.md "Code Quality" (no duplicated constants), `coding_guidelines.md` (single source of truth for domain predicates).
 
@@ -1693,16 +1693,16 @@ assert country == "UNKNOWN" or _is_valid_tabela_x_country(country)
 
 When a verification-only task (e.g., a regression sweep, a "diff scope" check, a Phase 2 final validation) asserts that the cumulative diff should contain a specific file but `git diff <base>..HEAD -- <file>` shows the file is NOT in the diff, first check whether a prior same-session commit already applied the planned change to that file before reporting a scope violation.
 
-**Why this matters:** Execute-plan sessions commit after each completed task. When a plan lists a source file as expected-modified and an earlier task's commit already included the edit (because the edit was naturally bundled with that task's primary change), the file will NOT appear in a later task's incremental diff even though the work was done. Reporting this as a "scope violation" or "missing change" is a false positive — the change exists in the cumulative history, just not in the latest task's incremental slice.
+**Why this matters:** Execute-plan sessions commit after each completed task. When a plan lists a source file as expected-modified and an earlier task's commit already included the edit (because the edit was naturally bundled with that task's primary change), the file will NOT appear in a later task's incremental diff even though the work was done. Reporting this as a "scope violation" or "missing change" is a false positive; the change exists in the cumulative history, just not in the latest task's incremental slice.
 
 **Required behavior:**
 1. When a verification task's "expected files in diff" list does not match `git diff --name-only <base>..HEAD`, run `git log --oneline <base>..HEAD -- <missing-file>` to check whether an earlier commit in the session already touched it.
-2. If yes, confirm the change matches the plan's intent by reading the file at HEAD (`git show HEAD:<file>` or Read tool), then mark the verification item as satisfied — the work landed earlier, just not in the most recent task's commit.
+2. If yes, confirm the change matches the plan's intent by reading the file at HEAD (`git show HEAD:<file>` or Read tool), then mark the verification item as satisfied; the work landed earlier, just not in the most recent task's commit.
 3. Only report a scope violation when the file is absent from the entire `<base>..HEAD` range AND the planned change is genuinely missing from the working tree.
 
 **Distinguishing from #100 (plan-time claims):** Lesson #100 covers verifying claims about production code at plan-authoring time. This lesson covers verifying scope at verification/commit time, when the diff inspection happens after multiple commits. The trigger is a mismatch between an expected-files list and an observed cumulative diff, not a plan-authoring claim.
 
-**General form:** Verification tasks that inspect `git diff <base>..HEAD` must interpret "file X is missing from the diff" as "file X was not touched in this session" — which requires checking the per-commit history, not just the aggregate diff stat. A file absent from the cumulative diff is genuinely missing; a file absent from the latest task's incremental commit may simply have landed earlier.
+**General form:** Verification tasks that inspect `git diff <base>..HEAD` must interpret "file X is missing from the diff" as "file X was not touched in this session", which requires checking the per-commit history, not just the aggregate diff stat. A file absent from the cumulative diff is genuinely missing; a file absent from the latest task's incremental commit may simply have landed earlier.
 
 **Example:** Task 6 of the 2026-06-15 derivatives-pnl-columns plan listed `docs/domain/crypto_rules.md` as an expected file in the diff scope check. The diff `d2eda71..HEAD` did not show `crypto_rules.md`. Investigation showed the prior same-session commit `6083cf1 docs(crypto): extend PT-C-031 with Anexo G Quadro 13 filing routing for derivatives` had already extended PT-C-031 with the Anexo G Quadro 13 routing the plan depended on, so no further `crypto_rules.md` edit was required by this plan. The verification item was satisfied by the earlier commit, not violated. See the implementation log (local) Decision: crypto_rules.md.
 
@@ -1726,13 +1726,13 @@ When a downstream consumer observes a boolean flag (e.g., `review_required=True`
 4. Provide a final fallback string only for the theoretical case where `flag=True` with no discriminator and no reason.
 5. The RED-phase test must exercise EACH distinct upstream case (not just one) and assert the case-specific message appears while the OTHER case's message does NOT.
 
-**Distinguishing from #113 (sentinel leak into display fields):** Lesson #113 is about the VALUE of a field that reaches the display (an internal placeholder must not appear in a user-facing cell). This lesson #117 is about WHICH MESSAGE a consumer synthesises when the same flag has multiple causes — the value is always user-facing by design (a reason string), but the message content must match the actual cause. #113 says "do not display the sentinel"; #117 says "do not collapse multiple causes into one message; branch on the discriminator".
+**Distinguishing from #113 (sentinel leak into display fields):** Lesson #113 is about the VALUE of a field that reaches the display (an internal placeholder must not appear in a user-facing cell). This lesson #117 is about WHICH MESSAGE a consumer synthesises when the same flag has multiple causes; the value is always user-facing by design (a reason string), but the message content must match the actual cause. #113 says "do not display the sentinel"; #117 says "do not collapse multiple causes into one message; branch on the discriminator".
 
 **General form:** Any time a consumer turns a multi-cause boolean into prose, the prose must be selected per-cause using the discriminator the upstream sets. The boolean tells you THAT review is needed; the discriminator tells you WHY; the WHY is what the reviewer needs to read.
 
 **Example:** Finding #1 (Medium) of the 2026-06-16 derivatives-pnl-columns code review r1 found that `_split_ogr_index` in `src/tax_reporting/application/crypto/ogr_handler.py` synthesised an "Unknown platform" message (with wording like `add this platform to resolve_operator_origin() before filing`) whenever `operator_origin.review_required` was True. But `resolve_operator_origin()` sets `review_required=True` for TWO distinct cases: (a) truly-unknown platform (sets `operator_entity="UNKNOWN_OPERATOR_REVIEW_REQUIRED"`), and (b) temporal-validity failure, a known platform whose `service_start_date` postdates the transaction (keeps the real mapped `operator_entity` and sets a specific `review_reason` mentioning the date and service period). The synthesised message misled reviewers for case (b): the platform IS mapped, but the message told them to add it. The fix branches on the `UNKNOWN_OPERATOR_REVIEW_REQUIRED` sentinel: for the truly-unknown case it synthesises the actionable fix-path message; for the temporal-validity case it surfaces `operator_origin.review_reason` verbatim (which carries the specific date and "service period" wording the reviewer needs). The new RED test `test_derivatives_entry_for_known_platform_outside_service_period_carries_temporal_reason` exercises case (b) explicitly and asserts the temporal reason is present while the "Unknown platform" message is absent. See the derivatives-pnl-columns code review r1 (local) Finding #1 and the implementation log (local).
 
-**See also:** Lesson #113 (internal sentinels must not leak to display fields), Lesson #112 (test names must reflect their coverage scope — the missing temporal-validity test is a #112 instance), CLAUDE.md §1 "Partial or uncertain results must carry an explicit indicator" and "Review flags must include specific actionable explanations, not bare booleans".
+**See also:** Lesson #113 (internal sentinels must not leak to display fields), Lesson #112 (test names must reflect their coverage scope; the missing temporal-validity test is a #112 instance), CLAUDE.md §1 "Partial or uncertain results must carry an explicit indicator" and "Review flags must include specific actionable explanations, not bare booleans".
 
 ## 118. Guard "Take From First Entry" Fields Against Silent Heterogeneity
 
@@ -1741,7 +1741,7 @@ Lesson #80 documents the "lookup value fields - take from first entry" aggregati
 **Required behavior:**
 1. Whenever an aggregator, renderer, or detail-line builder takes `entries[0]` (or `first`) for a field that is ASSUMED constant across the group, add a programmatic heterogeneity guard that emits a `logger.warning` when the assumption is violated.
 2. The guard should build the set of distinct values (or distinct tuples, for multi-field constants like `(annex_hint, operation_code, legal_category)`) and warn when `len(distinct) > 1`. Include the count, the distinct values, and which row was actually rendered so a future maintainer can audit.
-3. Do NOT raise — the first entry's value is still the best available. The warning makes the drift observable so a reviewer can decide whether the assumption needs strengthening or the data needs correcting.
+3. Do NOT raise; the first entry's value is still the best available. The warning makes the drift observable so a reviewer can decide whether the assumption needs strengthening or the data needs correcting.
 4. Pair the guard with a RED test that constructs a group with heterogeneous values and asserts the warning fires, plus a negative control asserting no warning fires when values agree.
 
 **Qualification gate (when this rule applies):**
@@ -1787,3 +1787,75 @@ The `dict.fromkeys(...)` preserves insertion order while deduping; the `if e.not
 **Example:** Finding #2 (Medium) of the 2026-06-16 derivatives-pnl-columns code review r1 found that `aggregate_derivatives_entries` in `src/tax_reporting/application/crypto/aggregation.py` set `notes=first.notes` while the sibling `aggregate_capital_entries` (same module, lines 283-287) used the `"; ".join(dict.fromkeys(...)) or ""` pattern. For a group with two members carrying notes "manual annotation A" and "manual annotation B", the derivatives aggregator silently dropped "manual annotation B". The fix replaced `first.notes` with `merged_notes = "; ".join(dict.fromkeys(e.notes for e in group if e.notes)) or ""` (byte-identical to the capital-entries pattern). The RED tests `test_aggregate_derivatives_merges_notes_across_group_members`, `test_aggregate_derivatives_notes_empty_when_no_member_has_notes`, and `test_aggregate_derivatives_notes_deduped_and_order_preserved` exercise the merge, empty-input, and dedupe+ordering cases. See the derivatives-pnl-columns branch review r1 (local) Finding #2 and the implementation log (local) Medium 2.
 
 **See also:** Lesson #80 (field aggregation strategy per field type), Lesson #77 (handle duplicate keys by summing, not silent overwrite), CLAUDE.md §1 "Data-loss conditions must be logged at warning+, never debug".
+
+## 120. Reconcile Plan Pseudocode Against Plan Tests and Design Invariants Before GREEN
+
+When a plan body contains both executable pseudocode AND RED-test expectations that purport to verify that pseudocode, the author must trace each pseudocode branch against the test inputs and the design invariants BEFORE handing the plan to the implementer. The pseudocode and the tests must agree on every input combination. If they disagree, the implementer will either (a) follow the pseudocode and fail a RED test that encodes the invariant, or (b) silently extend the logic beyond the pseudocode to satisfy the tests, producing a defensible but undocumented deviation.
+
+**Why this matters:** Lesson #100 covers verifying plan-time CLAIMS ABOUT PRODUCTION CODE (field semantics, line numbers, return shapes) by reading the source. This lesson covers verifying the plan's INTERNAL CONSISTENCY (pseudocode vs tests vs invariants) by reading the plan itself. The two failure modes share a symptom (the implementer hits a contradiction) but have different triggers: #100 fires when the author makes a claim about reality; this lesson fires when the author's own deliverable is self-contradictory. A self-consistency trace before GREEN eliminates the "implementer added an undocumented third branch to satisfy the invariant" outcome, which is defensible but obscures the actual rule.
+
+**Required behavior:**
+1. Before declaring the plan ready for implementation, build the full decision table from the pseudocode (every branch condition -> every input combination -> expected flag/output).
+2. For each RED test, look up its inputs in the decision table and confirm the pseudocode-predicted output matches the test-asserted output. Any mismatch is a plan defect; fix the pseudocode (or the test, or the invariant) before implementation.
+3. Pay special attention to backward-compat invariants (e.g., "threshold=0 preserves prior flag-everything behavior"); these are easy to violate with two-branch "guard the new case" logic that inadvertently suppresses the old case.
+4. If the implementer reports adding a branch not in the pseudocode to satisfy a test/invariant, treat it as a plan-authoring defect (the pseudocode was incomplete), not just an implementer deviation. Capture the missing branch in the plan's implementation note so the rule is discoverable.
+
+**Anti-pattern:** Writing two-branch pseudocode ("if A then X; if B then Y") when a third input combination (A=false, B=false, threshold=0) must also fire per the backward-compat invariant. The implementer correctly adds a third branch (`A=false AND B=false AND threshold=0 -> fire`) to satisfy the RED test, but the branch is undocumented in the plan body, leaving the rule discoverable only by reading the implementation.
+
+**Example:** The 2026-06-15 zero-basis-review-materiality plan Task 2 specified two-branch pseudocode for `_build_zero_basis_review_reason`:
+- tier 3: `cost_eur == 0 AND proceeds_eur > 0 AND proceeds_eur >= min_proceeds`
+- tier 4: `proceeds_eur == 0 AND cost_eur > 0`
+
+Design Invariant 4 required "when min_proceeds=0, prior flag-everything behavior is preserved", and a RED test `test_min_proceeds_zero_flags_all_zero_cost` asserted `cost=0, proceeds=0, min_proceeds=0 -> review_required=True`. Neither branch matches that input (tier 3 requires `proceeds_eur > 0`; tier 4 requires `cost_eur > 0`), so the implementer added a third branch (`cost_eur == 0 AND proceeds_eur == 0 AND min_proceeds == 0 -> fire`) to satisfy the invariant. The deviation is correct; the plan pseudocode was simply incomplete. A pre-GREEN decision-table trace would have caught the gap and folded the third branch into the plan body.
+
+**See also:** Lesson #100 (verify plan-time claims about production code), Lesson #109 (re-read RED tests against revised invariants after plan revision), CLAUDE.md §4 Agent Workflow Rules.
+
+## 121. Do Not Run `ruff check --fix` on Modules That Re-Export for Backward Compat
+
+When a module deliberately re-exports symbols (via plain `from X import Y` without `__all__` gating, or via an `__all__` that `ruff` cannot fully see) for backward-compat consumers, including tests that import from the re-export module rather than the canonical source; do not run `ruff check --fix` on the whole module. The unused-import heuristic (`F401`) frequently flags and removes re-exported names, silently breaking downstream imports. Apply targeted manual edits to the import block instead.
+
+**Why this matters:** `ruff check --fix` is the default cleanup command in this repo, and on a normal module it is safe and expected. On a re-export module (typically `application/<feature>_reporting.py` or a package `__init__.py`), the same command silently deletes public API surface that tests rely on. The failure surfaces as `ImportError` during test collection, but only after the agent has already moved on to the next command. Recovery is straightforward (`git checkout`), but the time cost compounds when the agent re-runs the fix to "clean up" the next round.
+
+**Required behavior:**
+1. Before running `ruff check --fix` on a module, check whether it re-exports symbols consumed elsewhere. Signals: a long `from X import Y, Z, ...` block at the top of the file where some names are not referenced in the file body; an `__all__` declaration; module docstrings describing "re-exports for backward compat".
+2. For re-export modules, prefer targeted manual edits to the import block (add or remove specific names explicitly). Do not run `--fix` on the whole file.
+3. If you must run `--fix`, restrict the rule set to exclude `F401` (e.g., `ruff check --fix --select=E,F-minus-F401` is not directly supported; instead run `ruff check --select=<specific-rules>` without `--fix`, review the diagnostics, and apply only the safe ones manually).
+4. After any ruff run on a re-export module, run the test suite for that module's consumers before declaring the cleanup complete. `ImportError` at collection is the failure signal.
+
+**Anti-pattern:** Running `uv run ruff check --fix src/tax_reporting/application/crypto_reporting.py` after adding a new import, then discovering the auto-fix removed `OperatorOrigin`, `AggregatedRewardIncomeEntry`, `CapitalGainPeriodStats`, `CryptoCompletePdfSummary`, `LoanActivityEntry`, `_load_popular_crypto_tokens`, `apply_derivatives_dedup`, etc., which tests import from this module. The fix is `git checkout` of the file and a targeted manual edit adding only the new name, but the cycle costs a full ruff+test iteration.
+
+**Example:** The 2026-06-15 zero-basis-review-materiality plan Task 2 implementation added `DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS` to an import block in `crypto_reporting.py`. An initial `ruff check --fix` run aggressively removed re-exported names that `tests/unit/application/test_crypto_reporting.py` imports from this module. The implementer reverted via `git checkout` and applied only the targeted one-line edit. Lesson #4 already documents that backward-compat re-exports live in such modules; this lesson extends it to "do not auto-fix the import block".
+
+**See also:** Lesson #4 (backward-compat via `__init__.py` re-exports), CLAUDE.md "Code Quality" (Ruff primary linter/formatter).
+
+## 122. Do Not `git stash` for Baseline Comparisons in the docs-branch State
+
+This repo carries a docs/orphan-branch workflow (`docs-branch` skill) and at times a working tree with staged deletions (files marked `D` in the index but still present on disk). In that combined state, using `git stash` to get a transient clean tree for a baseline tool comparison is unsafe: the stash records the staged deletions and the subsequent `git stash pop` did not restore the on-disk content, leaving all affected tracked files missing from the working tree.
+
+**What happened (2026-06-17):** During the zero-basis-review-materiality review-fix session, three `git stash` / `git stash pop` cycles were used to compare `ruff` diagnostics on the edited tree versus the committed baseline. The working tree had 10 tracked files staged as deletions (`D`) but present on disk. The stash cycles dropped all 10 files from the working tree. Recovery was via `git fsck --lost-found` to locate the dangling commit from the last dropped stash, then `git checkout <sha> -- <files>` and `git reset HEAD -- <files>` to unstage. All edits were recovered intact because the stash had captured them before being dropped.
+
+**Required behavior:**
+1. For any "compare tool output against the committed baseline" task in this repo, read the committed blob non-destructively: `git show HEAD:<path> | uv run ruff check -` per file. Do NOT stash.
+2. If a fully clean checkout is genuinely required, use `git worktree add <tmp> <base>` into a temporary path and remove it afterward. Never `git stash`.
+3. Before any `git stash` in this repo, audit `git status` for staged deletions (`D`) and gitignored paths overlapping tracked files; if present, do not stash.
+
+**Related (shell recovery):** The recovery command `git checkout <sha> -- $FILES` failed under zsh because zsh does not word-split unquoted variables (the whole string was treated as one pathspec, "pathspec did not match"). Multi-path git operations must use a quoted array: `files=(...); git checkout <sha> -- "${files[@]}"`.
+
+**General form:** See shared `agent_workflow_guidelines.md` #55 (Non-Destructive Baseline Comparisons). The repo-specific aggravator is the docs-branch orphan-branch workflow combined with staged deletions, which makes the stash/pop failure mode both more likely and more damaging here than in a plain repo.
+
+**See also:** `docs-branch` skill, shared `agent_workflow_guidelines.md` #55, CLAUDE.md/AGENTS.md git-safety bullets.
+
+## 123. Decision-Point Doc Prose Enumerations Must Match Implemented Code Branches
+
+When a decision-point record (or any spec doc) describes a rule as an enumerated list, "N-tier rule", "N-step", or cases (1)-(N), every enumerated item must map to a code branch and every code branch must appear in the enumeration. Count mismatches and missing cases survive code review because each individual bullet reads plausibly in isolation; only a branch-by-branch cross-check catches the drift.
+
+**What happened (2026-06-17):** `DP-013` in `docs/tax/decision_points/2025.md` described the zero-basis review gate as a "Three-tier rule" and stated `cost=0 AND proceeds=0` "never flags" unconditionally. But `_build_zero_basis_review_reason` in `src/tax_reporting/application/crypto/fifo_helpers.py` implements four flagging branches, including a `cost=0 AND proceeds < 0` always-flag tier (independent of the threshold), and flags the zero-zero case when the threshold is 0. The fourth tier and the escape-hatch qualifier were both absent from the doc. The omission was found by the documentation review sub-agent, not by the implementer, the plan, or the earlier review rounds.
+
+**Required behavior:**
+1. When adding or changing a conditional branch in a rule that a decision-point doc enumerates, update the doc's enumeration (both the count and the cases) in the same change.
+2. When reviewing such a change, cross-check each doc bullet against a code branch and each code branch against a doc bullet. Do not trust a "three-tier"/"four-tier" heading or a per-bullet read; count the branches.
+3. Apply the same check to test class docstrings that summarize a gated rule (the `TestBuildZeroBasisReviewReason` summary had the same stale "three-tier" wording).
+
+**Why this is distinct from #68:** #68 covers field/flag sync (a TOML boolean needs a dataclass field). This lesson covers prose-enumeration accuracy (the `.md` rule description must list every implemented branch). Both can hold simultaneously: the `.md` and `.toml` sidecars were in sync with the dataclass, yet the `.md` prose was still wrong about the branch count.
+
+**See also:** CLAUDE.md/AGENTS.md decision_points rule (`development_lessons.md` #68), `docs/tax/decision_points/2025.md` DP-013.

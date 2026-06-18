@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -108,9 +107,9 @@ class TestGenerateTaxReportErrorPaths:
 def _make_valid_crypto_tax_report() -> CryptoTaxReport:
     """Build a valid CryptoTaxReport for happy path testing."""
     from tax_reporting.application.crypto_reporting import (
+        CryptoCapitalGainEntry,
         CryptoCapitalGainStats,
         CryptoReconciliationSummary,
-        CryptoCapitalGainEntry,
         CryptoRewardIncomeEntry,
         HoldingsSnapshot,
         OperatorOrigin,

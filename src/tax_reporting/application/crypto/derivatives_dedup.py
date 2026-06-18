@@ -161,7 +161,7 @@ class DerivativesThEvent:
 
     Each event corresponds to one TH ``crypto_withdrawal`` row whose Label
     is in the configured derivatives-labels set. The matcher pairs events
-    with CG lots by ``(timestamp, asset, wallet, amount)`` — minute
+    with CG lots by ``(timestamp, asset, wallet, amount)``. Minute
     precision is required because CG rows on the same day may originate
     from different TH events.
 

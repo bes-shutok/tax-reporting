@@ -16,14 +16,15 @@ from tax_reporting.application.crypto.aggregation import (
     aggregate_derivatives_entries,
     aggregate_taxable_rewards,
 )
+from tax_reporting.application.crypto.entities import DerivativesEventType, DerivativesPnLEntry, ParsedOgrRow
 from tax_reporting.application.crypto_reporting import (
     CapitalGainsParsingContext,
     CryptoCapitalGainEntry,
     CryptoSkippedZeroValueToken,
     OperatorOrigin,
     RewardTaxClassification,
-    _apply_ogr_overrides,
     _apply_ogr_direction_override,
+    _apply_ogr_overrides,
     _build_ogr_index,
     _classify_reward_tax_status,
     _collect_known_asset_tickers,
@@ -37,7 +38,6 @@ from tax_reporting.application.crypto_reporting import (
     load_koinly_crypto_report,
     resolve_operator_origin,
 )
-from tax_reporting.application.crypto.entities import DerivativesEventType, DerivativesPnLEntry, ParsedOgrRow
 from tax_reporting.application.token_origin import TokenOriginResolver
 from tax_reporting.domain.token_origin import (
     AcquisitionMethod,
@@ -494,6 +494,109 @@ def test_load_koinly_crypto_report_skips_zero_value_rows_and_tracks_assets(tmp_p
     assert aaa_entry.suspicious is False, "AAA is a regular asset and should not be flagged as suspicious"
 
 
+def test_load_koinly_crypto_report_flags_zero_cost_above_min_proceeds(tmp_path):
+    """Zero-cost CG entry with proceeds >= min_proceeds is flagged end-to-end via the parsing path.
+
+    Synthetic-fixture coverage for the ``cost=0 AND proceeds >= min_proceeds -> flag`` branch
+    of the zero-basis materiality gate. The real ``koinly2025`` fixtures have no zero-cost
+    entry with proceeds >= 10 EUR (the largest is BTC at 9.52 EUR), so the e2e suite cannot
+    exercise this branch. This unit-tier integration test builds a synthetic koinly directory
+    in tmp_path with a zero-cost BTC disposal at 15 EUR proceeds and asserts the review flag
+    fires under ``min_proceeds=10`` and is suppressed under ``min_proceeds=20``.
+    """
+    from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+
+    def _build_dir(out_dir: Path) -> Path:
+        out_dir.mkdir()
+        (out_dir / "koinly_2025_capital_gains_report_test.csv").write_text(
+            "\n".join(
+                [
+                    "Capital gains report 2025",
+                    "",
+                    _CG_HEADER,
+                    ",".join(
+                        [
+                            "15/01/2025 10:00",
+                            "01/01/2024 00:00",
+                            "BTC",
+                            '"0,10000000"',
+                            '"0,00"',
+                            '"15,00"',
+                            '"15,00"',
+                            "",
+                            "Kraken",
+                            "Long term",
+                        ]
+                    ),
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (out_dir / "koinly_2025_income_report_test.csv").write_text(
+            "\n".join(
+                ["Income report 2025", "", _INCOME_HEADER]
+            ),
+            encoding="utf-8",
+        )
+        _write_minimal_transaction_history(out_dir)
+        return out_dir
+
+    default_dir = _build_dir(tmp_path / "koinly_default")
+    high_dir = _build_dir(tmp_path / "koinly_high")
+
+    base_kwargs = {
+        "country": "PT",
+        "fiscal_year": 2025,
+        "exclude_loan_repayment_gains": False,
+        "zero_basis_review_threshold": Decimal("50"),
+        "futures_derivatives_taxable": False,
+        "use_other_gains_report": False,
+        "separate_derivatives_reporting": False,
+    }
+
+    # Above-threshold: min_proceeds=10, proceeds=15 → flags with zero-cost reason.
+    report_default = load_koinly_crypto_report(
+        default_dir,
+        jurisdiction=TaxJurisdictionConfig(
+            zero_basis_review_min_proceeds=Decimal("10"),
+            **base_kwargs,
+        ),
+    )
+    assert report_default is not None
+    flagged_default = [
+        e for e in report_default.capital_entries
+        if e.asset == "BTC"
+        and e.cost_eur == Decimal("0")
+        and e.review_required
+        and e.review_reason
+        and "Zero acquisition cost" in e.review_reason
+    ]
+    assert flagged_default, (
+        "Zero-cost BTC with proceeds=15 EUR must be flagged under min_proceeds=10. "
+        f"Entries: "
+        f"{[(e.asset, e.proceeds_eur, e.review_required, e.review_reason) for e in report_default.capital_entries]}"
+    )
+
+    # Below-threshold: min_proceeds=20, proceeds=15 → zero-cost reason suppressed.
+    report_high = load_koinly_crypto_report(
+        high_dir,
+        jurisdiction=TaxJurisdictionConfig(
+            zero_basis_review_min_proceeds=Decimal("20"),
+            **base_kwargs,
+        ),
+    )
+    assert report_high is not None
+    suppressed = [
+        e for e in report_high.capital_entries
+        if e.asset == "BTC" and e.review_reason and "Zero acquisition cost" in e.review_reason
+    ]
+    assert not suppressed, (
+        "Zero-cost BTC with proceeds=15 EUR must NOT carry the zero-cost reason under min_proceeds=20. "
+        f"Offending entries: "
+        f"{[(e.asset, e.proceeds_eur, e.review_required, e.review_reason) for e in report_high.capital_entries]}"
+    )
+
+
 def test_load_koinly_crypto_report_parses_complete_pdf_summary(tmp_path):
     koinly_dir = tmp_path / "koinly2025"
     koinly_dir.mkdir()
@@ -942,7 +1045,10 @@ def test_aggregate_different_wallet_aliases_with_different_dates_stay_separate()
 
 
 def test_aggregate_multi_date_acquisition_adds_note_and_flag():
-    """Given multiple lots with different acquisition dates, expects note with all dates and multi_acquisition_dates=True."""
+    """Multiple lots with different acquisition dates.
+
+    Expects a note listing all dates and the multi_acquisition_dates flag set.
+    """
     entries = [
         _make_entry(
             disposal_date="2025-06-14",
@@ -1060,7 +1166,9 @@ def test_aggregate_multi_date_with_existing_notes_merges():
     aggregated = result[0]
     assert aggregated.multi_acquisition_dates is True
     # Multi-date note first, then existing notes de-duplicated and joined (order preserved from first occurrence)
-    assert aggregated.notes == "Acquired: 2024-04-13, 2024-04-19 (2 lots); Existing note about fee; Another existing note"
+    assert aggregated.notes == (
+        "Acquired: 2024-04-13, 2024-04-19 (2 lots); Existing note about fee; Another existing note"
+    )
 
 
 def test_aggregate_multi_date_three_lots_shows_all_dates():
@@ -1116,7 +1224,10 @@ def test_aggregate_multi_date_three_lots_shows_all_dates():
 
 
 def test_aggregate_multi_date_with_review_required_preserves_review_flag():
-    """Given multi-date entry with review_required=True, expects review_required preserved in aggregation (rendering tested separately in Task 6)."""
+    """Multi-date entry with review_required=True preserves the flag through aggregation.
+
+    Rendering is tested separately in Task 6.
+    """
     entries = [
         _make_entry(
             disposal_date="2025-06-14",
@@ -2603,7 +2714,7 @@ def test_normalize_asset_ticker_cyrillic_to_latin():
     indicate homoglyph scam tokens. These are detected separately via
     contains_non_latin_characters() for scam token flagging.
     """
-    from tax_reporting.infrastructure.koinly_parser import normalize_asset_ticker, contains_non_latin_characters
+    from tax_reporting.infrastructure.koinly_parser import contains_non_latin_characters, normalize_asset_ticker
 
     # Cyrillic characters are preserved (NOT converted to Latin)
     assert normalize_asset_ticker("WBТC") == "WBТC"  # Cyrillic Т preserved
@@ -3886,85 +3997,184 @@ def test_bybit_review_reason_propagates_through_capital_gains_csv(tmp_path):
     assert "account-region" in entry.operator_origin.platform_assumption
 
 
-def test_build_zero_basis_review_reason_zero_cost():
-    """Zero cost triggers review with correct reason."""
-    from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
+class TestBuildZeroBasisReviewReason:
+    """Gating of the zero-basis review flag per the materiality rule.
 
-    review_required, review_reason = _build_zero_basis_review_reason(
-        cost_eur=Decimal("0"),
-        proceeds_eur=Decimal("100"),
-        review_required=False,
-        review_reason="",
-    )
+    - cost=0 AND proceeds=0 (FEE token case): not flagged when min_proceeds > 0;
+      flagged with both zero-cost and zero-proceeds reasons when min_proceeds = 0
+      (legacy flag-everything escape hatch).
+    - cost=0 AND 0 < proceeds < min_proceeds (small reward): no flag.
+    - cost=0 AND proceeds >= min_proceeds: flag with zero-cost reason.
+    - cost=0 AND proceeds < 0: always flag with the negative-proceeds reason,
+      independent of min_proceeds (fee-heavy liquidation or data anomaly).
+    - cost>0 AND proceeds=0: flag with zero-proceeds reason (threshold does not apply).
+    """
 
-    assert review_required is True
-    assert "Zero acquisition cost" in review_reason
-    assert "verify basis" in review_reason
+    def test_zero_cost_zero_proceeds_never_flags(self):
+        from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
 
+        review_required, review_reason = _build_zero_basis_review_reason(
+            cost_eur=Decimal("0"),
+            proceeds_eur=Decimal("0"),
+            review_required=False,
+            review_reason="",
+            min_proceeds=Decimal("10"),
+        )
 
-def test_build_zero_basis_review_reason_zero_proceeds():
-    """Zero proceeds triggers review with correct reason."""
-    from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
+        assert review_required is False
+        assert review_reason == ""
 
-    review_required, review_reason = _build_zero_basis_review_reason(
-        cost_eur=Decimal("100"),
-        proceeds_eur=Decimal("0"),
-        review_required=False,
-        review_reason="",
-    )
+    def test_zero_cost_small_proceeds_does_not_flag(self):
+        from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
 
-    assert review_required is True
-    assert "Zero disposal proceeds" in review_reason
-    assert "verify sale data" in review_reason
+        review_required, review_reason = _build_zero_basis_review_reason(
+            cost_eur=Decimal("0"),
+            proceeds_eur=Decimal("5"),
+            review_required=False,
+            review_reason="",
+            min_proceeds=Decimal("10"),
+        )
 
+        assert review_required is False
+        assert review_reason == ""
 
-def test_build_zero_basis_review_reason_both_zero():
-    """When both cost and proceeds are zero, both reasons are included."""
-    from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
+    def test_zero_cost_at_threshold_flags(self):
+        from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
 
-    review_required, review_reason = _build_zero_basis_review_reason(
-        cost_eur=Decimal("0"),
-        proceeds_eur=Decimal("0"),
-        review_required=False,
-        review_reason="",
-    )
+        review_required, review_reason = _build_zero_basis_review_reason(
+            cost_eur=Decimal("0"),
+            proceeds_eur=Decimal("10"),
+            review_required=False,
+            review_reason="",
+            min_proceeds=Decimal("10"),
+        )
 
-    assert review_required is True
-    assert "Zero acquisition cost" in review_reason
-    assert "Zero disposal proceeds" in review_reason
-    # Check both reasons are separated by semicolon
-    assert "; " in review_reason
+        assert review_required is True
+        assert "Zero acquisition cost" in review_reason
 
+    def test_zero_cost_above_threshold_flags(self):
+        from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
 
-def test_build_zero_basis_review_reason_appends_to_existing_reason():
-    """Review reasons are correctly appended when existing reasons exist."""
-    from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
+        review_required, review_reason = _build_zero_basis_review_reason(
+            cost_eur=Decimal("0"),
+            proceeds_eur=Decimal("30"),
+            review_required=False,
+            review_reason="",
+            min_proceeds=Decimal("10"),
+        )
 
-    review_required, review_reason = _build_zero_basis_review_reason(
-        cost_eur=Decimal("0"),
-        proceeds_eur=Decimal("100"),
-        review_required=True,
-        review_reason="Existing review reason",
-    )
+        assert review_required is True
+        assert "Zero acquisition cost" in review_reason
+        assert "verify basis" in review_reason
 
-    assert review_required is True
-    assert review_reason.startswith("Existing review reason;")
-    assert "Zero acquisition cost" in review_reason
+    def test_zero_proceeds_with_nonzero_cost_always_flags(self):
+        from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
 
+        review_required, review_reason = _build_zero_basis_review_reason(
+            cost_eur=Decimal("50"),
+            proceeds_eur=Decimal("0"),
+            review_required=False,
+            review_reason="",
+            min_proceeds=Decimal("10"),
+        )
 
-def test_build_zero_basis_review_reason_no_trigger_when_both_nonzero():
-    """When both cost and proceeds are non-zero, review flag and reason remain unchanged."""
-    from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
+        assert review_required is True
+        assert "Zero disposal proceeds" in review_reason
+        assert "verify sale data" in review_reason
 
-    review_required, review_reason = _build_zero_basis_review_reason(
-        cost_eur=Decimal("100"),
-        proceeds_eur=Decimal("200"),
-        review_required=False,
-        review_reason="",
-    )
+    def test_min_proceeds_zero_flags_all_zero_cost(self):
+        from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
 
-    assert review_required is False
-    assert review_reason == ""
+        review_required, review_reason = _build_zero_basis_review_reason(
+            cost_eur=Decimal("0"),
+            proceeds_eur=Decimal("0"),
+            review_required=False,
+            review_reason="",
+            min_proceeds=Decimal("0"),
+        )
+
+        assert review_required is True
+        assert "Zero acquisition cost" in review_reason
+        assert "Zero disposal proceeds" in review_reason
+
+    def test_min_proceeds_zero_flags_zero_cost_with_proceeds(self):
+        from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
+
+        review_required, review_reason = _build_zero_basis_review_reason(
+            cost_eur=Decimal("0"),
+            proceeds_eur=Decimal("100"),
+            review_required=False,
+            review_reason="",
+            min_proceeds=Decimal("0"),
+        )
+
+        assert review_required is True
+
+    def test_preserves_existing_review_reason(self):
+        from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
+
+        review_required, review_reason = _build_zero_basis_review_reason(
+            cost_eur=Decimal("0"),
+            proceeds_eur=Decimal("30"),
+            review_required=True,
+            review_reason="Existing review reason",
+            min_proceeds=Decimal("10"),
+        )
+
+        assert review_required is True
+        assert review_reason.startswith("Existing review reason;")
+        assert "Zero acquisition cost" in review_reason
+
+    def test_zero_cost_negative_proceeds_always_flags(self):
+        """Zero cost with negative proceeds is always a data anomaly and must flag.
+
+        Master flagged any entry with cost=0 regardless of proceeds sign. The
+        materiality gate must not silently drop the flag for negative proceeds,
+        which represents a fee-heavy liquidation or data quality issue worth
+        surfacing regardless of magnitude.
+        """
+        from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
+
+        review_required, review_reason = _build_zero_basis_review_reason(
+            cost_eur=Decimal("0"),
+            proceeds_eur=Decimal("-50"),
+            review_required=False,
+            review_reason="",
+            min_proceeds=Decimal("10"),
+        )
+
+        assert review_required is True
+        assert "Zero acquisition cost" in review_reason
+        assert "negative" in review_reason.lower()
+
+    def test_zero_cost_negative_proceeds_flags_even_when_min_proceeds_zero(self):
+        """Negative proceeds flags under the backward-compat escape hatch too."""
+        from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
+
+        review_required, _ = _build_zero_basis_review_reason(
+            cost_eur=Decimal("0"),
+            proceeds_eur=Decimal("-1"),
+            review_required=False,
+            review_reason="",
+            min_proceeds=Decimal("0"),
+        )
+
+        assert review_required is True
+
+    def test_both_nonzero_does_not_flag(self):
+        """When both cost and proceeds are non-zero, no flag fires."""
+        from tax_reporting.application.crypto_reporting import _build_zero_basis_review_reason
+
+        review_required, review_reason = _build_zero_basis_review_reason(
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("200"),
+            review_required=False,
+            review_reason="",
+            min_proceeds=Decimal("10"),
+        )
+
+        assert review_required is False
+        assert review_reason == ""
 
 
 def test_platforms_without_service_start_date_allow_old_transactions():
@@ -4582,7 +4792,10 @@ class TestAggregateOgrValidation:
     """Test OGR validation result aggregation across FIFO lots."""
 
     def test_aggregate_ogr_validation_no_conflicts_uses_first_ogr_gain_loss(self):
-        """Given 3 entries with validation results (no conflicts), expects aggregated entry with ogr_gain_loss from first entry (NOT summed), no direction_conflict."""
+        """3 entries with validation results (no conflicts).
+
+        Expects aggregated entry with ogr_gain_loss from first entry (NOT summed), no direction_conflict.
+        """
         from tax_reporting.domain.entities import OgrValidationResult
 
         entries = [
@@ -4655,7 +4868,7 @@ class TestAggregateOgrValidation:
         assert agg.gain_loss_eur == Decimal("45")
 
     def test_aggregate_ogr_validation_direction_conflict_propagates(self):
-        """Given 2 entries where one has direction_conflict=True, expects aggregated entry with direction_conflict=True."""
+        """2 entries where one has direction_conflict=True yield an aggregated entry with direction_conflict=True."""
         from tax_reporting.domain.entities import OgrValidationResult
 
         entries = [
@@ -4708,7 +4921,10 @@ class TestAggregateOgrValidation:
         assert "OGR direction override" in agg.ogr_validation.review_reason
 
     def test_aggregate_ogr_validation_uses_max_magnitude_diff_percent(self):
-        """Given 3 entries with different magnitude_diff_percent values, expects aggregated entry with max magnitude_diff_percent."""
+        """3 entries with different magnitude_diff_percent values.
+
+        Expects aggregated entry with max magnitude_diff_percent.
+        """
         from tax_reporting.domain.entities import OgrValidationResult
 
         entries = [
@@ -4775,7 +4991,10 @@ class TestAggregateOgrValidation:
         assert "OGR direction override" in agg.ogr_validation.review_reason
 
     def test_aggregate_ogr_validation_joins_review_reasons(self):
-        """Given 2 entries with review_reasons, expects aggregated entry with review_reason built from aggregated state."""
+        """2 entries with review_reasons.
+
+        Expects aggregated entry with review_reason built from aggregated state.
+        """
         from tax_reporting.domain.entities import OgrValidationResult
 
         entries = [
@@ -4922,7 +5141,9 @@ class TestAggregateOgrValidation:
         assert agg.gain_loss_eur == Decimal("45")
 
     def test_aggregate_ogr_validation_skips_none_entries(self):
-        """Given 3 entries where one has ogr_validation=None, expects aggregated entry with validation from non-None entries."""
+        """
+Given 3 entries where one has ogr_validation=None, expects aggregated entry with validation from non-None entries.
+        """
         from tax_reporting.domain.entities import OgrValidationResult
 
         entries = [
@@ -6191,7 +6412,7 @@ _WBTC_SELL_TH_ROW = ",".join(
     ]
 )
 
-# Loan-tagged row for WBTC — used to trigger dynamic discovery (discover_loan_affected_assets
+# Loan-tagged row for WBTC: used to trigger dynamic discovery (discover_loan_affected_assets
 # returns {"WBTC"} when this row is in the TH). The loan row itself is excluded from FIFO.
 # Only Received Currency=WBTC (no fiat Sent Currency) to avoid EUR being added to the discovered set.
 _WBTC_LOAN_TH_ROW = ",".join(
@@ -6791,6 +7012,81 @@ def test_apply_phantom_flags_only_for_unresolved_transfers(tmp_path):
             )
 
 
+def test_rebuild_fifo_threads_zero_basis_min_proceeds_into_review_flag(tmp_path):
+    """The ``zero_basis_review_min_proceeds`` parameter threads through FIFO rebuild to the helper.
+
+    Builds a TH fixture where WBTC is acquired at zero cost (empty Sent Cost Basis)
+    then sold for 15 EUR proceeds. Under ``min_proceeds=10`` the zero-cost disposal
+    is flagged with the zero-cost reason; under ``min_proceeds=20`` it is not. This
+    is the only unit test that exercises the wiring between the new config field
+    and the FIFO rebuild path end-to-end inside ``_rebuild_fifo_for_loan_affected_assets``.
+    """
+    from tax_reporting.application.crypto_reporting import _rebuild_fifo_for_loan_affected_assets
+    from tax_reporting.application.token_origin import TokenOriginResolver
+
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+
+    loan_row = ",".join([
+        "2025-01-01 09:00:00 UTC", "exchange", "loan", "", "", "", "",
+        "ByBit", "0.01", "WBTC", "400", "", "", "", "400", "", "", "", "tx_loan", "",
+    ])
+    # Zero-cost WBTC acquisition: empty Sent Cost Basis → cost_basis_eur=0 (reward/airdrop-like).
+    zero_cost_buy_row = ",".join([
+        "2025-01-10 10:00:00 UTC", "exchange", "", "", "", "ETH", "",
+        "ByBit", "0.1", "WBTC", "", "", "", "", "0", "", "", "", "tx_zero_buy", "",
+    ])
+    # Sell 0.1 WBTC for 15 EUR, above the 10 EUR default threshold, below a 20 EUR threshold.
+    sell_row = ",".join([
+        "2025-06-15 10:00:00 UTC", "sell", "", "ByBit", "0.1", "WBTC", "",
+        "", "", "", "", "", "", "", "15", "", "", "", "tx_sell", "",
+    ])
+
+    th_content = "\n".join([
+        "Transaction report 2025", "", _FIFO_TH_HEADER,
+        loan_row, zero_cost_buy_row, sell_row,
+    ])
+    th_path = koinly_dir / "koinly_2025_transaction_history.csv"
+    th_path.write_text(th_content, encoding="utf-8")
+
+    resolver = TokenOriginResolver(th_path)
+    loan_affected = frozenset({"WBTC"})
+
+    # Above-threshold case: min_proceeds=10, proceeds=15 → flags with zero-cost reason.
+    entries_default, _ = _rebuild_fifo_for_loan_affected_assets(
+        th_path, resolver, loan_affected, zero_basis_review_min_proceeds=Decimal("10")
+    )
+    wbtc_default = [e for e in entries_default if e.asset == "WBTC"]
+    assert wbtc_default, "Expected WBTC entries from FIFO rebuild"
+    for entry in wbtc_default:
+        assert entry.cost_eur == Decimal("0"), (
+            f"Expected zero cost basis, got {entry.cost_eur}"
+        )
+        assert entry.review_required is True, (
+            f"Zero-cost disposal with proceeds >= min_proceeds must be flagged. "
+            f"Got review_required={entry.review_required}, reason={entry.review_reason!r}"
+        )
+        assert entry.review_reason is not None
+        assert "Zero acquisition cost" in entry.review_reason, (
+            f"Expected zero-cost reason in review_reason, got: {entry.review_reason!r}"
+        )
+
+    # Below-threshold case: min_proceeds=20, proceeds=15 → zero-cost reason suppressed.
+    entries_high, _ = _rebuild_fifo_for_loan_affected_assets(
+        th_path, resolver, loan_affected, zero_basis_review_min_proceeds=Decimal("20")
+    )
+    wbtc_high = [e for e in entries_high if e.asset == "WBTC"]
+    assert wbtc_high, "Expected WBTC entries from FIFO rebuild at higher threshold"
+    for entry in wbtc_high:
+        zero_cost_marker_present = (
+            entry.review_reason is not None and "Zero acquisition cost" in entry.review_reason
+        )
+        assert not zero_cost_marker_present, (
+            f"Zero-cost reason must be suppressed when proceeds < min_proceeds. "
+            f"Got review_reason={entry.review_reason!r}"
+        )
+
+
 @pytest.mark.unit
 def test_collect_known_asset_tickers_raises_when_all_files_fail_to_parse(tmp_path):
     """Fail-fast: FileProcessingError raised when all provided files fail to parse."""
@@ -6985,7 +7281,10 @@ def test_parse_income_file_zero_value_with_popular_token_matching(tmp_path):
     skipped_assets: dict[tuple[str, str], dict] = {}
 
     # Mock _get_popular_crypto_tokens to include TON and USDE for substring matching
-    with patch("tax_reporting.application.crypto_reporting._get_popular_crypto_tokens", return_value=frozenset(["BTC", "ETH", "TON", "USDE"])):
+    with patch(
+        "tax_reporting.application.crypto_reporting._get_popular_crypto_tokens",
+        return_value=frozenset(["BTC", "ETH", "TON", "USDE"]),
+    ):
         entries = _parse_income_file(income_file, skipped_assets, known_assets=frozenset(["TON", "USDE"]))
 
     # TSTON (contains TON) and TSUSDE (contains USDE) should be flagged for review
@@ -7047,9 +7346,6 @@ def test_load_popular_crypto_tokens_caches_result():
     # Mock the file operations to count how many times the file is read
     read_count = 0
 
-    original_exists = Path.exists
-    original_open = open
-
     def mock_exists(self):
         # Always return False to simulate file not found (graceful degradation)
         return False
@@ -7059,21 +7355,22 @@ def test_load_popular_crypto_tokens_caches_result():
         read_count += 1
         raise FileNotFoundError("Mocked file not found")
 
-    with patch.object(Path, "exists", mock_exists):
-        with patch("builtins.open", side_effect=mock_open):
-            # Clear the cache before the test
-            _load_popular_crypto_tokens.cache_clear()
+    with patch.object(Path, "exists", mock_exists), patch(
+        "builtins.open", side_effect=mock_open
+    ):
+        # Clear the cache before the test
+        _load_popular_crypto_tokens.cache_clear()
 
-            # First call - should read from file (and fail gracefully)
-            result1 = _load_popular_crypto_tokens()
-            assert result1 == frozenset()
+        # First call - should read from file (and fail gracefully)
+        result1 = _load_popular_crypto_tokens()
+        assert result1 == frozenset()
 
-            # Second call - should use cached result, not attempt to read file again
-            result2 = _load_popular_crypto_tokens()
-            assert result2 == frozenset()
+        # Second call - should use cached result, not attempt to read file again
+        result2 = _load_popular_crypto_tokens()
+        assert result2 == frozenset()
 
-            # Both results should be identical (same cached object)
-            assert result1 is result2
+        # Both results should be identical (same cached object)
+        assert result1 is result2
 
 
 @pytest.mark.unit
@@ -7104,7 +7401,6 @@ def test_load_popular_crypto_tokens_cache_clear_on_manual_invalidation():
 def test_skipped_zero_value_tokens_suspicious_flag_for_non_latin_assets(tmp_path):
     """Verify that assets with non-Latin characters are flagged with suspicious=True."""
     from tax_reporting.application.crypto_reporting import load_koinly_crypto_report
-    from tax_reporting.infrastructure.koinly_parser import format_datetime, parse_koinly_decimal
 
     koinly_dir = tmp_path / "koinly2025"
     koinly_dir.mkdir()
@@ -7220,12 +7516,10 @@ def test_skipped_zero_value_tokens_normal_assets_not_suspicious(tmp_path):
 def test_skipped_zero_value_tokens_suspicious_field_populated_in_report():
     """Verify that suspicious field is correctly populated in CryptoTaxReport."""
     from tax_reporting.application.crypto_reporting import (
-        CryptoSkippedZeroValueToken,
-        CryptoTaxReport,
-        CryptoReconciliationSummary,
         CryptoCapitalGainStats,
+        CryptoReconciliationSummary,
+        CryptoTaxReport,
     )
-    from tax_reporting.domain.exceptions import FileProcessingError
 
     # Create a report with skipped tokens that include suspicious assets
     skipped_tokens = [
@@ -7278,8 +7572,10 @@ def test_skipped_zero_value_tokens_suspicious_field_populated_in_report():
 @pytest.mark.unit
 def test_parse_capital_gains_file_creates_review_entry_for_zero_value_known_assets(tmp_path):
     """Verify that CryptoReviewEntry is created when a known asset has all-zero values."""
-    from tax_reporting.application.crypto_reporting import _parse_capital_gains_file, CapitalGainsParsingContext
-    from tax_reporting.application.crypto_reporting import CryptoReviewEntry
+    from tax_reporting.application.crypto_reporting import (
+        CapitalGainsParsingContext,
+        _parse_capital_gains_file,
+    )
 
     koinly_dir = tmp_path / "koinly2025"
     koinly_dir.mkdir()
@@ -7296,6 +7592,7 @@ def test_parse_capital_gains_file_creates_review_entry_for_zero_value_known_asse
     capital_file.write_text(capital_content, encoding="utf-8")
 
     from unittest.mock import MagicMock
+
     from tax_reporting.application.token_origin import TokenOriginResolver
 
     # Create mock origin resolver
@@ -7336,8 +7633,9 @@ def test_parse_capital_gains_file_creates_review_entry_for_zero_value_known_asse
 @pytest.mark.unit
 def test_parse_capital_gains_file_review_reason_includes_suspicious_flag(tmp_path):
     """Verify that review_reason includes suspicious flag for non-Latin assets."""
-    from tax_reporting.application.crypto_reporting import _parse_capital_gains_file, CapitalGainsParsingContext
     from unittest.mock import MagicMock
+
+    from tax_reporting.application.crypto_reporting import CapitalGainsParsingContext, _parse_capital_gains_file
     from tax_reporting.application.token_origin import TokenOriginResolver
 
     koinly_dir = tmp_path / "koinly2025"
@@ -7383,10 +7681,10 @@ def test_parse_capital_gains_file_review_reason_includes_suspicious_flag(tmp_pat
 def test_crypto_tax_report_review_entries_field_populated():
     """Verify that review_entries in CryptoTaxReport contains the expected entries."""
     from tax_reporting.application.crypto_reporting import (
-        CryptoTaxReport,
-        CryptoReviewEntry,
-        CryptoReconciliationSummary,
         CryptoCapitalGainStats,
+        CryptoReconciliationSummary,
+        CryptoReviewEntry,
+        CryptoTaxReport,
     )
 
     # Create a report with review entries
@@ -7647,7 +7945,10 @@ def test_ogr_index_skips_unknown_types():
 
 
 def test_ogr_loss_override_applied():
-    """Given CG entry with gain=+22.71 EUR and OGR index with Type="Loss", value=-138.73 EUR, expects entry gain/loss set to -138.73 EUR."""
+    """CG entry with gain=+22.71 EUR and OGR index Type="Loss", value=-138.73 EUR.
+
+    Expects entry gain/loss set to -138.73 EUR.
+    """
     from tax_reporting.infrastructure.config import TaxJurisdictionConfig
 
     # Create a jurisdiction with use_other_gains_report enabled
@@ -7707,7 +8008,9 @@ def test_ogr_loss_override_applied():
 
 
 def test_ogr_profit_override_applied():
-    """Given CG entry with gain=+100 EUR and OGR index with Type="Profit", value=+80 EUR, expects entry gain/loss set to +80 EUR."""
+    """Given CG entry with gain=+100 EUR and OGR index with Type="Profit", value=+80 EUR, expects entry gain/loss set to
+    +80 EUR.
+    """
     from tax_reporting.infrastructure.config import TaxJurisdictionConfig
 
     jurisdiction = TaxJurisdictionConfig(
@@ -7914,7 +8217,9 @@ class TestOgrValidation:
     """Test OGR validation result domain type."""
 
     def test_ogr_validation_small_magnitude_diff(self):
-        """Given OGR=-100, CG=-90, expects direction_conflict=False, magnitude_diff_percent≈11.1%, review_required=True."""
+        """
+Given OGR=-100, CG=-90, expects direction_conflict=False, magnitude_diff_percent≈11.1%, review_required=True.
+        """
         from tax_reporting.domain.entities import OgrValidationResult
 
         result = OgrValidationResult(
@@ -7934,7 +8239,9 @@ class TestOgrValidation:
         assert result.review_reason == "Magnitude difference exceeds 10% threshold"
 
     def test_ogr_validation_direction_conflict(self):
-        """Given OGR=-100, CG=+50, expects direction_conflict=True, magnitude_diff_percent≈300%, review_required=True."""
+        """
+Given OGR=-100, CG=+50, expects direction_conflict=True, magnitude_diff_percent≈300%, review_required=True.
+        """
         from tax_reporting.domain.entities import OgrValidationResult
 
         result = OgrValidationResult(
@@ -7954,7 +8261,9 @@ class TestOgrValidation:
         assert result.review_reason == "Direction conflict: OGR shows loss but CG shows gain"
 
     def test_ogr_validation_within_threshold(self):
-        """Given OGR=-100, CG=-98, expects direction_conflict=False, magnitude_diff_percent≈2%, review_required=False."""
+        """
+Given OGR=-100, CG=-98, expects direction_conflict=False, magnitude_diff_percent≈2%, review_required=False.
+        """
         from tax_reporting.domain.entities import OgrValidationResult
 
         result = OgrValidationResult(
@@ -8045,9 +8354,10 @@ class TestApplyOgrDirectionOverride:
     """Test OGR directional authority override behavior."""
 
     def test_ogr_direction_conflict_cg_gain_ogr_loss(self):
-        """Given CG entry with gain=+100 and OGR=-100, expects final_gain_loss=-100 (CG magnitude with OGR direction), review_reason='OGR direction override: CG indicated gain'."""
+        """Given CG entry with gain=+100 and OGR=-100, expects final_gain_loss=-100 (CG magnitude with OGR direction),
+        review_reason='OGR direction override: CG indicated gain'.
+        """
         from tax_reporting.infrastructure.config import TaxJurisdictionConfig
-        from tax_reporting.domain.entities import OgrValidationResult
 
         jurisdiction = TaxJurisdictionConfig(
             country="TEST",
@@ -8104,9 +8414,10 @@ class TestApplyOgrDirectionOverride:
         assert "OGR direction override: CG indicated gain" in result[0].ogr_validation.review_reason
 
     def test_ogr_direction_agree_small_magnitude_diff(self):
-        """Given CG entry with gain=-100 and OGR=-105, expects final_gain_loss=-105 (directions agree, use OGR magnitude), review_required=False (diff < 5%)."""
+        """Given CG entry with gain=-100 and OGR=-105, expects final_gain_loss=-105 (directions agree, use OGR
+        magnitude), review_required=False (diff < 5%).
+        """
         from tax_reporting.infrastructure.config import TaxJurisdictionConfig
-        from tax_reporting.domain.entities import OgrValidationResult
 
         jurisdiction = TaxJurisdictionConfig(
             country="TEST",
@@ -8163,9 +8474,10 @@ class TestApplyOgrDirectionOverride:
         assert result[0].ogr_validation.review_reason is None
 
     def test_ogr_direction_agree_large_magnitude_diff(self):
-        """Given CG entry with gain=-100 and OGR=-106, expects final_gain_loss=-106, review_required=True (diff > 5%), review_reason mentions magnitude diff."""
+        """Given CG entry with gain=-100 and OGR=-106, expects final_gain_loss=-106, review_required=True (diff > 5%),
+        review_reason mentions magnitude diff.
+        """
         from tax_reporting.infrastructure.config import TaxJurisdictionConfig
-        from tax_reporting.domain.entities import OgrValidationResult
 
         jurisdiction = TaxJurisdictionConfig(
             country="TEST",
@@ -8218,7 +8530,9 @@ class TestApplyOgrDirectionOverride:
         assert "6.0%" in result[0].ogr_validation.review_reason
 
     def test_ogr_no_ogr_match(self):
-        """Given CG entry with gain=-100 and no OGR match, expects final_gain_loss=-100 (unchanged), ogr_validation=None."""
+        """
+Given CG entry with gain=-100 and no OGR match, expects final_gain_loss=-100 (unchanged), ogr_validation=None.
+        """
         from tax_reporting.infrastructure.config import TaxJurisdictionConfig
 
         jurisdiction = TaxJurisdictionConfig(
@@ -8271,9 +8585,10 @@ class TestApplyOgrDirectionOverride:
         assert result[0].ogr_validation is None
 
     def test_ogr_direction_conflict_small_absolute_diff(self):
-        """Given CG entry with gain=0.01 and OGR=-1.01, expects direction_conflict=True but review_required=False (absolute diff 1 EUR not exceeded)."""
+        """Given CG entry with gain=0.01 and OGR=-1.01, expects direction_conflict=True but review_required=False
+        (absolute diff 1 EUR not exceeded).
+        """
         from tax_reporting.infrastructure.config import TaxJurisdictionConfig
-        from tax_reporting.domain.entities import OgrValidationResult
 
         jurisdiction = TaxJurisdictionConfig(
             country="TEST",
@@ -8325,9 +8640,11 @@ class TestApplyOgrDirectionOverride:
         assert result[0].ogr_validation.review_reason is None
 
     def test_ogr_multiple_lots_same_disposal(self):
-        """Given 109 CG lots for same (date, asset, wallet) with total gain=+500 and OGR=-147.19, expects each lot gets ogr_validation with ogr_gain_loss=-147.19, directions corrected, and after aggregation produces single entry with corrected totals."""
+        """Given 109 CG lots for same (date, asset, wallet) with total gain=+500 and OGR=-147.19, expects each lot gets
+        ogr_validation with ogr_gain_loss=-147.19, directions corrected, and after aggregation produces single entry
+        with corrected totals.
+        """
         from tax_reporting.infrastructure.config import TaxJurisdictionConfig
-        from tax_reporting.domain.entities import OgrValidationResult
 
         jurisdiction = TaxJurisdictionConfig(
             country="TEST",
@@ -8348,7 +8665,7 @@ class TestApplyOgrDirectionOverride:
         per_lot_cost = Decimal("100")
         per_lot_proceeds = per_lot_cost + per_lot_gain
 
-        for i in range(109):
+        for _ in range(109):
             lot = CryptoCapitalGainEntry(
                 disposal_date="2025-01-13",
                 acquisition_date="2025-01-10",
@@ -8400,7 +8717,10 @@ class TestOgrDisabledBackwardCompatibility:
     """Test backward compatibility when OGR is disabled."""
 
     def test_ogr_disabled_entries_have_no_ogr_validation(self):
-        """Given jurisdiction with use_other_gains_report=False, expects ogr_validation=None on all entries and gain/loss values unchanged from original CG."""
+        """Jurisdiction with use_other_gains_report=False.
+
+        Expects ogr_validation=None on all entries and gain/loss values unchanged from original CG.
+        """
         from tax_reporting.infrastructure.config import TaxJurisdictionConfig
 
         jurisdiction = TaxJurisdictionConfig(
@@ -8455,7 +8775,9 @@ class TestOgrDisabledBackwardCompatibility:
         assert result[0].cost_eur == Decimal("100")
 
     def test_ogr_disabled_multiple_entries_all_unaffected(self):
-        """Given multiple CG entries and jurisdiction with use_other_gains_report=False, expects all entries unchanged with no OGR validation."""
+        """Given multiple CG entries and jurisdiction with use_other_gains_report=False, expects all entries unchanged
+        with no OGR validation.
+        """
         from tax_reporting.infrastructure.config import TaxJurisdictionConfig
 
         jurisdiction = TaxJurisdictionConfig(
@@ -8539,7 +8861,7 @@ class TestOgrDisabledBackwardCompatibility:
 
 # =============================================================================
 # Characterization tests for OGR override (golden values captured BEFORE
-# derivatives separation — see docs/plans/2026-06-13-derivatives-separation.md
+# derivatives separation, see docs/plans/2026-06-13-derivatives-separation.md
 # Task 1). These tests capture TODAY's pipeline behavior so that Tasks 2-14 can
 # verify the separate_derivatives_reporting=False path remains byte-identical.
 # =============================================================================
@@ -8558,7 +8880,7 @@ def _load_golden_snapshot() -> dict[str, str]:
     """Load the Task 1 golden-values JSON snapshot.
 
     Returns the parsed JSON as a dict. Fails the calling test if the file is
-    missing or malformed — the snapshot must exist for the characterization
+    missing or malformed. The snapshot must exist for the characterization
     contract to hold.
     """
     import json
@@ -8651,7 +8973,7 @@ class TestOgrCharacterizationGolden:
         with the OGR Loss row (-4.17 EUR futures fee) into a single summed key
         (140.18 + -4.17 = 136.01 EUR) and applies the direction override to the
         single CG fee-disposal lot. The aggregated Crypto Gains entry therefore
-        reports 136.01 EUR — the mixed value this test captures.
+        reports 136.01 EUR, the mixed value this test captures.
         """
         report = load_koinly_crypto_report(
             Path("resources/source/koinly2025"),
@@ -9021,7 +9343,7 @@ class TestOgrSplit:
             rows, capital_entries, _ogr_split_jurisdiction(separate=True)
         )
 
-        # Profit type is always derivatives — row still routed
+        # Profit type is always derivatives, so the row is still routed
         assert len(derivatives_entries) == 1
         assert derivatives_entries[0].pnl_eur == Decimal("140.18")
         assert spot_index == {}
@@ -9032,7 +9354,9 @@ class TestOgrSplit:
         ), f"Expected safety-net warning; got messages: {[r.message for r in caplog.records]}"
 
     def test_derivatives_entry_carries_operator_entity_and_country(self):
-        """Given an OGR row for ByBit routed to derivatives, expects operator_entity and operator_country from resolve_operator_origin."""
+        """Given an OGR row for ByBit routed to derivatives, expects operator_entity and operator_country from
+        resolve_operator_origin.
+        """
         from tax_reporting.application.crypto.ogr_handler import _split_ogr_index
 
         rows = [
@@ -9058,7 +9382,9 @@ class TestOgrSplit:
         assert entry.operator_country == "AE"
 
     def test_derivatives_entry_for_unknown_platform_renders_wallet_name_and_unknown_country(self):
-        """Given an OGR row for an unmapped platform, expects raw wallet name, UNKNOWN country, and review flag with platform-missing reason."""
+        """Given an OGR row for an unmapped platform, expects raw wallet name, UNKNOWN country, and review flag with
+        platform-missing reason.
+        """
         from tax_reporting.application.crypto.ogr_handler import _split_ogr_index
 
         rows = [
@@ -9120,7 +9446,9 @@ class TestOgrSplit:
         assert not entry.review_reason.startswith("Unknown platform")
 
     def test_review_reason_concatenation_order_is_platform_first(self):
-        """Given an OGR row that is BOTH classification-ambiguous AND from an unmapped platform, expects platform reason first, '; ', then classification reason."""
+        """Given an OGR row that is BOTH classification-ambiguous AND from an unmapped platform, expects platform reason
+        first, '; ', then classification reason.
+        """
         from tax_reporting.application.crypto.ogr_handler import _split_ogr_index
 
         rows = [
@@ -9192,8 +9520,12 @@ class TestOgrSplit:
         assert derivatives_entries == []
         assert spot_index == {("2025-01-12", "USDT", "ByBit"): Decimal("-4.17")}
 
-    def test_separate_derivatives_disabled_produces_no_derivatives_entries_and_no_operator_resolution(self, monkeypatch):
-        """Given separate_derivatives_reporting=False, expects no derivatives entries and resolve_operator_origin NOT called (byte-identical to pre-Task-7 pipeline)."""
+    def test_separate_derivatives_disabled_produces_no_derivatives_entries_and_no_operator_resolution(
+        self, monkeypatch
+    ):
+        """Given separate_derivatives_reporting=False, expects no derivatives entries and resolve_operator_origin NOT
+        called (byte-identical to pre-Task-7 pipeline).
+        """
         from tax_reporting.application.crypto import ogr_handler
         from tax_reporting.application.crypto.ogr_handler import _split_ogr_index
 
@@ -9239,7 +9571,7 @@ class TestApplyOgrDirectionOverrideSpotProtection:
             _split_ogr_index,
         )
 
-        # 3 CG lots with small gains, on the same key — these represent the spot
+        # 3 CG lots with small gains, on the same key, representing the spot
         # fee disposal side of a multi-lot realization.
         capital_entries = [
             _make_ogr_split_entry(
@@ -9253,7 +9585,7 @@ class TestApplyOgrDirectionOverrideSpotProtection:
             for _ in range(3)
         ]
         # OGR Loss row matches aggregate CG proceeds (3 × 1.00 = 3.00 within
-        # tolerance of 4.17? No — to force Spot routing we use a CG-matching value.
+        # tolerance of 4.17? No, to force Spot routing we use a CG-matching value.
         rows = [
             ParsedOgrRow(
                 date="2025-01-13",
@@ -9279,7 +9611,7 @@ class TestApplyOgrDirectionOverrideSpotProtection:
         # disposal gains remain positive because spot fee disposals were POSITIVE
         # gains in the fixture and the override only kicks in for the net loss
         # direction. The protection we test is that derivatives rows NEVER reach
-        # this function — if a derivatives Profit row had leaked into spot_index
+        # this function. If a derivatives Profit row had leaked into spot_index
         # it would flip positive CG gains. We constructed the fixture so the Loss
         # IS in spot_index, which is the correct routing (matches CG). What we
         # assert is the broader contract: after override, each lot's gain/loss
@@ -9287,7 +9619,7 @@ class TestApplyOgrDirectionOverrideSpotProtection:
         # contamination.
         assert len(result) == 3
         # The 3 CG lots match aggregate proceeds 3.00 EUR (3 × 1.00) within
-        # tolerance of OGR magnitude 3.00 — Spot routing is correct. The spot
+        # tolerance of OGR magnitude 3.00, so Spot routing is correct. The spot
         # loss direction override will flip positive gains to losses:
         for entry in result:
             # Direction override flips sign because OGR is negative and CG is positive
@@ -9314,7 +9646,7 @@ class TestApplyOgrDirectionOverrideSpotProtection:
                 cost_eur=Decimal("1.73"),
             ),
         ]
-        # OGR Profit row — derivatives P&L realization, no CG counterpart matching it
+        # OGR Profit row: derivatives P&L realization, no CG counterpart matching it
         rows = [
             ParsedOgrRow(
                 date="2025-01-12",
@@ -9328,13 +9660,13 @@ class TestApplyOgrDirectionOverrideSpotProtection:
         jurisdiction = _ogr_split_jurisdiction(separate=True)
         spot_index, derivatives_entries = _split_ogr_index(rows, capital_entries, jurisdiction)
 
-        # Profit type is always derivatives — routed to derivatives_entries,
+        # Profit type is always derivatives, so it is routed to derivatives_entries,
         # NOT to spot_index.
         assert len(derivatives_entries) == 1
         assert derivatives_entries[0].pnl_eur == Decimal("140.18")
         assert spot_index == {}
 
-        # No spot_index entry to override — CG fee entry retains its original gain
+        # No spot_index entry to override, so the CG fee entry retains its original gain
         result = _apply_ogr_direction_override(capital_entries, spot_index, jurisdiction)
 
         assert len(result) == 1
@@ -9672,7 +10004,7 @@ class TestPipelineIntegration:
                 wallet="ByBit",
             ),
         ]
-        # FIFO-rebuilt CG lot — matches the OGR row key.
+        # FIFO-rebuilt CG lot: matches the OGR row key.
         capital_entries = [
             _make_ogr_split_entry(
                 disposal_date="2025-01-12",

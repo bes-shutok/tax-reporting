@@ -221,7 +221,7 @@ def _load_popular_crypto_tokens() -> frozenset[str]:
     # Security check: reject symlinks
     if _POPULAR_CRYPTO_TOKENS_FILE.is_symlink():
         raise FileProcessingError(
-            f"Popular crypto tokens file at {_POPULAR_CRYPTO_TOKENS_FILE} is a symlink — "
+            f"Popular crypto tokens file at {_POPULAR_CRYPTO_TOKENS_FILE} is a symlink: "
             "only regular files are accepted for security"
         )
 
@@ -437,7 +437,7 @@ def _is_valid_tabela_x_country(country: str) -> bool:
 
 
 # Matching tolerance for OGR-vs-CG disposal value comparison (Task 5 derivatives classifier).
-# 1 cent EUR — absorbs rounding differences between OGR Value (EUR) and CG proceeds_eur.
+# 1 cent EUR; absorbs rounding differences between OGR Value (EUR) and CG proceeds_eur.
 # This is a MATCHING tolerance, not a classification threshold: it gates whether
 # an OGR Loss row's disposal proceeds (OGR "Value (EUR)" column) agrees with the
 # CG disposal proceeds (CryptoCapitalGainEntry.proceeds_eur). Comparing against
@@ -460,13 +460,13 @@ def classify_derivatives_event(  # noqa: PLR0911
     The classifier uses two signals only: the OGR ``Type`` column and the
     existence of a CG counterpart whose disposal proceeds match the OGR
     magnitude within tolerance. No TH-label allowlist, no asset allowlist, no
-    amount threshold (per r1 Blocker 2 and Monitor #2 — these were proposed
+    amount threshold (per r1 Blocker 2 and Monitor #2; these were proposed
     in the investigation and rejected as fragile).
 
     Classification matrix:
 
     - ``Type=Profit`` → Derivatives (profits never have CG counterparts in
-      Koinly's model — realized derivatives P&L has no FIFO cost-basis trail).
+      Koinly's model: realized derivatives P&L has no FIFO cost-basis trail).
     - ``Type=Loss`` with no CG counterpart → Derivatives (no spot disposal to
       anchor it).
     - ``Type=Loss`` with one CG whose ``proceeds_eur`` matches within tolerance
@@ -496,7 +496,7 @@ def classify_derivatives_event(  # noqa: PLR0911
     """
     if ogr_row.row_type == "Profit":
         return DerivativesClassification.Derivatives(
-            reason="OGR Profit — derivatives P&L realization",
+            reason="OGR Profit: derivatives P&L realization",
         )
 
     if ogr_row.row_type == "Loss":
@@ -505,19 +505,19 @@ def classify_derivatives_event(  # noqa: PLR0911
 
         if len(cg_matches) == 0:
             return DerivativesClassification.Derivatives(
-                reason="OGR Loss with no CG counterpart — derivatives realization",
+                reason="OGR Loss with no CG counterpart: derivatives realization",
             )
 
         if len(cg_matches) == 1:
             single_proceeds = cg_matches[0].proceeds_eur
             if abs(single_proceeds - ogr_magnitude) <= _TOLERANCE_OGR_CG:
                 return DerivativesClassification.Spot(
-                    reason="OGR Loss matches CG disposal — spot fee",
+                    reason="OGR Loss matches CG disposal: spot fee",
                 )
             return DerivativesClassification.Ambiguous(
                 reason=(
                     f"OGR={ogr_row.gain_loss} vs CG={single_proceeds} "
-                    f"on {key_descriptor} — manual review needed"
+                    f"on {key_descriptor}: manual review needed"
                 ),
             )
 
@@ -529,17 +529,17 @@ def classify_derivatives_event(  # noqa: PLR0911
         if abs(aggregate_proceeds - ogr_magnitude) <= _TOLERANCE_OGR_CG:
             return DerivativesClassification.Spot(
                 reason=(
-                    f"OGR Loss aggregate-matches {len(cg_matches)} CG lots — spot fee disposals"
+                    f"OGR Loss aggregate-matches {len(cg_matches)} CG lots: spot fee disposals"
                 ),
             )
         return DerivativesClassification.Ambiguous(
             reason=(
                 f"OGR={ogr_row.gain_loss} vs {len(cg_matches)} CG lots "
-                f"on {key_descriptor} — aggregate-match check required"
+                f"on {key_descriptor}: aggregate-match check required"
             ),
         )
 
-    # Unknown Type — defensive fallback. The plan's Monitor #2 requires that
+    # Unknown Type: defensive fallback. The plan's Monitor #2 requires that
     # unrecognized OGR shapes route to derivatives with review. Emit Ambiguous
     # with a specific reason rather than guessing. The current ByBit fixtures
     # only ever produce "Profit" or "Loss", so this branch is unreachable in
@@ -548,6 +548,6 @@ def classify_derivatives_event(  # noqa: PLR0911
     return DerivativesClassification.Ambiguous(
         reason=(
             f"Unrecognized OGR Type='{ogr_row.row_type}' "
-            f"on ({ogr_row.date}, {ogr_row.asset}, {ogr_row.wallet}) — manual review needed"
+            f"on ({ogr_row.date}, {ogr_row.asset}, {ogr_row.wallet}): manual review needed"
         ),
     )

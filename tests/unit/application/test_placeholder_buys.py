@@ -129,7 +129,7 @@ class TestPlaceholderBuys:
 
         calculate_fifo_gains(trade_cycle_per_company, leftover_trades, capital_gains)
 
-        # All 10 sold shares must appear in capital gains — none silently dropped
+        # All 10 sold shares must appear in capital gains; none are silently dropped.
         currency_company = CurrencyCompany(currency, company)
         assert currency_company in capital_gains
         gain_lines = capital_gains[currency_company]

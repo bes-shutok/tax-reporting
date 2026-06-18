@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import NamedTuple, get_type_hints
 
 from ..domain.exceptions import MissingDecisionPointsError
-from ..domain.jurisdiction import TaxJurisdictionConfig
+from ..domain.jurisdiction import DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS, TaxJurisdictionConfig
 from .logging_config import create_module_logger
 from .validation import DEFAULT_SECURITY_CONFIG, SecurityConfig
 
@@ -97,7 +97,7 @@ def _load_decision_points_flags(
     raw_path = _DECISION_POINTS_DIR / f"{fiscal_year}.toml"
     if raw_path.is_symlink():
         raise FileNotFoundError(
-            f"Decision points file at {raw_path} is a symlink — only regular files are accepted"
+            f"Decision points file at {raw_path} is a symlink: only regular files are accepted"
         )
     path = raw_path.resolve()
     logger.info("Loading decision points flags for %s/%d from %s", country, fiscal_year, path)
@@ -147,6 +147,50 @@ def _load_decision_points_flags(
     return flags  # type: ignore[return-value]
 
 
+def _parse_jurisdiction_section(
+    section: configparser.SectionProxy,
+) -> tuple[str, int, Decimal, Decimal]:
+    """Parse the [TAX JURISDICTION] section into (country, fiscal_year, threshold, min_proceeds)."""
+    country = section.get("TAX_COUNTRY", _DEFAULT_JURISDICTION_COUNTRY).strip().upper()
+    if not country:
+        raise ValueError("TAX_COUNTRY in [TAX JURISDICTION] must not be empty")
+    if not re.fullmatch(r"[A-Z]{2}", country):
+        raise ValueError(
+            f"TAX_COUNTRY in [TAX JURISDICTION] must be a 2-letter ISO 3166-1 alpha-2 code "
+            f"(e.g. 'PT', 'US'), got: {country!r}"
+        )
+    fiscal_year_raw = section.get("FISCAL_YEAR", str(_DEFAULT_JURISDICTION_FISCAL_YEAR)).strip()
+    try:
+        fiscal_year = int(fiscal_year_raw)
+    except ValueError as e:
+        raise ValueError(f"Invalid FISCAL_YEAR in [TAX JURISDICTION]: {fiscal_year_raw!r}") from e
+    threshold_raw = section.get(
+        "ZERO_BASIS_REVIEW_THRESHOLD", str(DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD)
+    ).strip()
+    try:
+        threshold = Decimal(threshold_raw)
+    except InvalidOperation as e:
+        raise ValueError(f"Invalid ZERO_BASIS_REVIEW_THRESHOLD in [TAX JURISDICTION]: {threshold_raw!r}") from e
+    if not threshold.is_finite() or threshold < 0:
+        raise ValueError(
+            f"ZERO_BASIS_REVIEW_THRESHOLD must be a finite non-negative number, got: {threshold_raw!r}"
+        )
+    min_proceeds_raw = section.get(
+        "ZERO_BASIS_REVIEW_MIN_PROCEEDS", str(DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS)
+    ).strip()
+    try:
+        min_proceeds = Decimal(min_proceeds_raw)
+    except InvalidOperation as e:
+        raise ValueError(
+            f"Invalid ZERO_BASIS_REVIEW_MIN_PROCEEDS in [TAX JURISDICTION]: {min_proceeds_raw!r}"
+        ) from e
+    if not min_proceeds.is_finite() or min_proceeds < 0:
+        raise ValueError(
+            f"ZERO_BASIS_REVIEW_MIN_PROCEEDS must be a finite non-negative number, got: {min_proceeds_raw!r}"
+        )
+    return country, fiscal_year, threshold, min_proceeds
+
+
 def _load_tax_jurisdiction_config(
     config: configparser.ConfigParser, logger: logging.Logger
 ) -> TaxJurisdictionConfig:
@@ -169,37 +213,16 @@ def _load_tax_jurisdiction_config(
         country = _DEFAULT_JURISDICTION_COUNTRY
         fiscal_year = _DEFAULT_JURISDICTION_FISCAL_YEAR
         threshold = DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD
+        min_proceeds = DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS
     else:
-        section = config["TAX JURISDICTION"]
-        country = section.get("TAX_COUNTRY", _DEFAULT_JURISDICTION_COUNTRY).strip().upper()
-        if not country:
-            raise ValueError("TAX_COUNTRY in [TAX JURISDICTION] must not be empty")
-        if not re.fullmatch(r"[A-Z]{2}", country):
-            raise ValueError(
-                f"TAX_COUNTRY in [TAX JURISDICTION] must be a 2-letter ISO 3166-1 alpha-2 code "
-                f"(e.g. 'PT', 'US'), got: {country!r}"
-            )
-        fiscal_year_raw = section.get("FISCAL_YEAR", str(_DEFAULT_JURISDICTION_FISCAL_YEAR)).strip()
-        try:
-            fiscal_year = int(fiscal_year_raw)
-        except ValueError as e:
-            raise ValueError(f"Invalid FISCAL_YEAR in [TAX JURISDICTION]: {fiscal_year_raw!r}") from e
-        threshold_raw = section.get("ZERO_BASIS_REVIEW_THRESHOLD", str(DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD)).strip()
-        try:
-            threshold = Decimal(threshold_raw)
-        except InvalidOperation as e:
-            raise ValueError(f"Invalid ZERO_BASIS_REVIEW_THRESHOLD in [TAX JURISDICTION]: {threshold_raw!r}") from e
-        if not threshold.is_finite() or threshold < 0:
-            raise ValueError(
-                f"ZERO_BASIS_REVIEW_THRESHOLD must be a finite non-negative number, got: {threshold_raw!r}"
-            )
+        country, fiscal_year, threshold, min_proceeds = _parse_jurisdiction_section(config["TAX JURISDICTION"])
 
     # PT excludes loan repayment gains per CIRS art. 10(20); all other countries default to False.
     try:
         flags = _load_decision_points_flags(country, fiscal_year, logger)
     except FileNotFoundError as e:
         raise MissingDecisionPointsError(
-            f"Decision points file not found — create docs/tax/decision_points/{fiscal_year}.toml and retry: {e}"
+            f"Decision points file not found. Create docs/tax/decision_points/{fiscal_year}.toml and retry: {e}"
         ) from e
     if country == "PT" and "exclude_loan_repayment_gains" not in flags:
         raise ValueError(
@@ -213,16 +236,19 @@ def _load_tax_jurisdiction_config(
             flag_kwargs.setdefault(flag_name, False)
 
     logger.info(
-        "Tax jurisdiction config: country=%s, fiscal_year=%d, exclude_loan_repayment_gains=%s, zero_basis_threshold=%s",
+        "Tax jurisdiction config: country=%s, fiscal_year=%d, exclude_loan_repayment_gains=%s, "
+        "zero_basis_threshold=%s, zero_basis_min_proceeds=%s",
         country,
         fiscal_year,
         flag_kwargs.get("exclude_loan_repayment_gains", False),
         threshold,
+        min_proceeds,
     )
     return TaxJurisdictionConfig(
         country=country,
         fiscal_year=fiscal_year,
         zero_basis_review_threshold=threshold,
+        zero_basis_review_min_proceeds=min_proceeds,
         **flag_kwargs,
     )
 

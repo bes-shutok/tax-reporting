@@ -2,7 +2,7 @@
 
 ## Context
 
-The `TokenOriginResolver` (2,334-line `crypto_reporting.py`, lines 97-1119) fails to provide meaningful origin for tokens acquired from LP (liquidity pool) operations and misclassifies several deposit tags. When a user removes liquidity from a DEX pool, Koinly records `crypto_deposit` rows (tokens received) with empty `Sent Currency`, so the resolver produces self-referential results like `"SSUI (transfer, high confidence)"` — SSUI came from SSUI. The paired `crypto_withdrawal` row (LP tokens sent) is never indexed because `_index_row` skips rows with no `Received Currency`.
+The `TokenOriginResolver` (2,334-line `crypto_reporting.py`, lines 97-1119) fails to provide meaningful origin for tokens acquired from LP (liquidity pool) operations and misclassifies several deposit tags. When a user removes liquidity from a DEX pool, Koinly records `crypto_deposit` rows (tokens received) with empty `Sent Currency`, so the resolver produces self-referential results like `"SSUI (transfer, high confidence)"`: SSUI came from SSUI. The paired `crypto_withdrawal` row (LP tokens sent) is never indexed because `_index_row` skips rows with no `Received Currency`.
 
 **Root causes:**
 1. `crypto_withdrawal` rows (1,346 in the dataset) are completely invisible to the resolver
@@ -10,7 +10,7 @@ The `TokenOriginResolver` (2,334-line `crypto_reporting.py`, lines 97-1119) fail
 3. `crypto_deposit` rows with tag `"Liquidity in"` (20 rows) get `TRANSFER` instead of a DeFi-specific method
 4. Tags `"airdrop"` (14 rows) and `"realized gain"` (3 rows) fall through to generic `TRANSFER`
 
-**Fix:** Two-pass indexing — first index withdrawals by TxHash, then enrich deposit rows with paired withdrawal provenance. Add LP-specific and airdrop `AcquisitionMethod` enum values. Extract origin-related types to a dedicated domain module.
+**Fix:** Two-pass indexing; first index withdrawals by TxHash, then enrich deposit rows with paired withdrawal provenance. Add LP-specific and airdrop `AcquisitionMethod` enum values. Extract origin-related types to a dedicated domain module.
 
 ## Validation Commands
 ```bash
@@ -19,30 +19,30 @@ uv run pytest tests/unit/application/test_crypto_reporting.py -x
 uv run pytest -m unit -x
 ```
 
-## Task 1: Write failing tests — LP withdrawal origin resolution
+## Task 1: Write failing tests; LP withdrawal origin resolution
 Files:
 - `tests/unit/application/test_crypto_origin_resolver.py`
 
 - [x] Add `TestOriginResolverLiquidityOut` class with tests:
-  - `test_liquidity_out_deposit_with_paired_withdrawal` — `crypto_deposit` with tag `"Liquidity out"` + `crypto_withdrawal` sharing same TxHash → `from_asset` resolves to LP token name (e.g., `CETUS-LP`), method `LIQUIDITY_WITHDRAWAL`
-  - `test_liquidity_out_deposit_without_matching_withdrawal` — no paired withdrawal → `from_asset` is `"LP position"`, method `LIQUIDITY_WITHDRAWAL`
-  - `test_liquidity_out_exchange_type` — `exchange` row with tag `"Liquidity out"` (both sent/received populated) → method `LIQUIDITY_WITHDRAWAL`, `from_asset` from `Sent Currency`
+  - `test_liquidity_out_deposit_with_paired_withdrawal`: `crypto_deposit` with tag `"Liquidity out"` + `crypto_withdrawal` sharing same TxHash → `from_asset` resolves to LP token name (e.g., `CETUS-LP`), method `LIQUIDITY_WITHDRAWAL`
+  - `test_liquidity_out_deposit_without_matching_withdrawal`: no paired withdrawal → `from_asset` is `"LP position"`, method `LIQUIDITY_WITHDRAWAL`
+  - `test_liquidity_out_exchange_type`: `exchange` row with tag `"Liquidity out"` (both sent/received populated) → method `LIQUIDITY_WITHDRAWAL`, `from_asset` from `Sent Currency`
 - [x] Run RED: `uv run pytest tests/unit/application/test_crypto_origin_resolver.py -k "liquidity" -x`
 
-## Task 2: Write failing tests — LP provision and new tag classification
+## Task 2: Write failing tests; LP provision and new tag classification
 Files:
 - `tests/unit/application/test_crypto_origin_resolver.py`
 
 - [x] Add `TestOriginResolverLiquidityIn` class:
-  - `test_liquidity_in_deposit_with_paired_withdrawals` — `crypto_deposit` receiving LP tokens + two `crypto_withdrawal` rows → `from_asset` is joined token names (e.g., `"SSUI+USDC"`), method `LIQUIDITY_PROVISION`
-  - `test_liquidity_in_exchange_type` — `exchange` with tag `"Liquidity in"` → method `LIQUIDITY_PROVISION`
+  - `test_liquidity_in_deposit_with_paired_withdrawals`: `crypto_deposit` receiving LP tokens + two `crypto_withdrawal` rows → `from_asset` is joined token names (e.g., `"SSUI+USDC"`), method `LIQUIDITY_PROVISION`
+  - `test_liquidity_in_exchange_type`: `exchange` with tag `"Liquidity in"` → method `LIQUIDITY_PROVISION`
 - [x] Add `TestOriginResolverAirdropTag` class:
-  - `test_airdrop_deposit` — `crypto_deposit` with tag `"Airdrop"` → method `AIRDROP`
+  - `test_airdrop_deposit`: `crypto_deposit` with tag `"Airdrop"` → method `AIRDROP`
 - [x] Add `TestOriginResolverRealizedGainTag` class:
-  - `test_realized_gain_deposit` — `crypto_deposit` with tag `"Realized gain"` → method `REWARD`
+  - `test_realized_gain_deposit`: `crypto_deposit` with tag `"Realized gain"` → method `REWARD`
 - [x] Run RED: `uv run pytest tests/unit/application/test_crypto_origin_resolver.py -x`
 
-## Task 3: Implement — add AcquisitionMethod enum values
+## Task 3: Implement; add AcquisitionMethod enum values
 Files:
 - `src/shares_reporting/application/crypto_reporting.py` (line 97-106)
 
@@ -54,13 +54,13 @@ Files:
   ```
 - [x] Run existing tests to verify no breakage: `uv run pytest tests/unit/application/test_crypto_origin_resolver.py -x`
 
-## Task 4: Implement — add withdrawal indexing infrastructure
+## Task 4: Implement; add withdrawal indexing infrastructure
 Files:
 - `src/shares_reporting/application/crypto_reporting.py`
 
 - [x] Add `_WithdrawalRecord` frozen dataclass (near line 962): `sent_currency`, `sending_wallet`, `tag`, `date_key`, `tx_hash`
 - [x] Add `self._withdrawal_by_txhash: dict[str, list[_WithdrawalRecord]]` to `__init__` (line 981)
-- [x] Add `_index_withdrawal(self, row)` method — indexes `crypto_withdrawal` rows by TxHash, no-op for all other types. Requires non-empty TxHash and non-empty Sent Currency.
+- [x] Add `_index_withdrawal(self, row)` method; indexes `crypto_withdrawal` rows by TxHash, no-op for all other types. Requires non-empty TxHash and non-empty Sent Currency.
 - [x] Restructure `_build_lookup` (lines 993-995) to two-pass:
   ```python
   rows = _read_koinly_rows(path)
@@ -71,14 +71,14 @@ Files:
   ```
   Safe because `_read_koinly_rows` returns a `list`, not a generator.
 
-## Task 5: Implement — LP provenance resolution and tag classification
+## Task 5: Implement; LP provenance resolution and tag classification
 Files:
 - `src/shares_reporting/application/crypto_reporting.py`
 
 - [x] Add `_resolve_lp_provenance(self, tx_hash, receiving_wallet, tag)` method:
   - `"liquidity out"`: looks up withdrawals by TxHash → `from_asset` = LP token name (e.g., `CETUS-LP`). Fallback: `"LP position"`
   - `"liquidity in"`: looks up withdrawals → `from_asset` = joined provided tokens (e.g., `"SSUI+USDC"`). Multiple withdrawals per TxHash expected.
-- [x] Modify `_index_row` (lines 1041-1051) — extend `crypto_deposit`/`fiat_deposit` branch:
+- [x] Modify `_index_row` (lines 1041-1051), extend `crypto_deposit`/`fiat_deposit` branch:
   - `"airdrop"` → `AIRDROP`
   - `"liquidity out"` → `LIQUIDITY_WITHDRAWAL` + `_resolve_lp_provenance()`
   - `"liquidity in"` → `LIQUIDITY_PROVISION` + `_resolve_lp_provenance()`
@@ -104,7 +104,7 @@ This is the DDD extraction step. The 2,334-line `crypto_reporting.py` mixes doma
   - `_WithdrawalRecord` dataclass (from Task 4)
   - `AcquisitionRecord` dataclass (from line 962)
   - `TokenOriginResolver` class (from line 971)
-  - Helper functions used only by the resolver: `_normalize_platform_name`, `_normalize_asset_ticker`, `_parse_koinly_datetime`, `_format_datetime` — OR keep these as imports from `crypto_reporting` if they're shared with other code
+  - Helper functions used only by the resolver: `_normalize_platform_name`, `_normalize_asset_ticker`, `_parse_koinly_datetime`, `_format_datetime`: OR keep these as imports from `crypto_reporting` if they're shared with other code
 - [x] Check which helpers (`_normalize_platform_name`, `_normalize_asset_ticker`, `_parse_koinly_datetime`, `_format_datetime`) are used outside the resolver. If shared, keep them in `crypto_reporting` and import. If resolver-only, move them.
   - All four helpers are used both in TokenOriginResolver and in other parts of crypto_reporting.py (capital gains/rewards parsing)
   - Created `infrastructure/koinly_parser.py` to hold these shared helpers, avoiding circular dependency
@@ -127,7 +127,7 @@ Files:
 
 ## Why same-TxHash grouping is safe
 
-Per CLAUDE.md: "Do not reintroduce same-day disposal-context matching." Same-TxHash is fundamentally different — it's a deterministic on-chain identifier linking all legs of a single atomic transaction. This is not heuristic matching; it's cryptographic fact. The existing code already uses `TxHash` for confidence boosting (line 1055). Using it for grouping is a natural extension.
+Per CLAUDE.md: "Do not reintroduce same-day disposal-context matching." Same-TxHash is fundamentally different; it's a deterministic on-chain identifier linking all legs of a single atomic transaction. This is not heuristic matching; it's cryptographic fact. The existing code already uses `TxHash` for confidence boosting (line 1055). Using it for grouping is a natural extension.
 
 ## Edge Cases
 

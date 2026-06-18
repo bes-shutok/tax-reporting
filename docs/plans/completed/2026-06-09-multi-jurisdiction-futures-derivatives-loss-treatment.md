@@ -45,22 +45,22 @@ Plan review r2: the multi-jurisdiction plan review r2 (local)
 Files directly changed as part of this plan. Review feedback is accepted **only** for the files listed here.
 Any finding about a file not in this list must be rejected as out of scope.
 
-**Production code — in scope:**
+**Production code; in scope:**
 - `src/tax_reporting/domain/jurisdiction.py` *(add `use_other_gains_report` config field)*
 - `src/tax_reporting/application/crypto_reporting.py` *(add OGR parsing and override logic)*
 - `src/tax_reporting/infrastructure/koinly_parser.py` *(add OGR row parsing if needed)*
 
-**Tests — in scope:**
+**Tests; in scope:**
 - `tests/unit/application/test_crypto_reporting.py` *(add OGR override tests)*
 - `tests/unit/application/persisting/test_crypto_gains_sheet.py` *(verify loss values in Excel)*
 - `tests/unit/infrastructure/test_koinly_parser.py` *(add OGR parsing tests, if new parser code)*
 
-**Documentation — scope-linked (not a closed file list):**
+**Documentation; scope-linked (not a closed file list):**
 - `docs/domain/crypto_rules.md` *(add PT-C-033 for OGR-based treatment)*
 - `docs/tax/decision_points/2025.md` *(add DP-011 for OGR configuration)*
 - `docs/tax/decision_points/2025.toml` *(add `use_other_gains_report = true` for PT)*
 
-**Out of scope — reject all review feedback:**
+**Out of scope; reject all review feedback:**
 - FIFO matching engine (unrelated to gain source selection)
 - IB capital gains logic (unrelated to crypto derivatives)
 - Transaction History processing (already used for loan activity, unchanged)
@@ -101,11 +101,11 @@ Files:
 - `resources/source/koinly2025/koinly_2025_capital_gains_report_<ACCOUNT_TOKEN>.csv`
 - `resources/result/extract.xlsx` *(current output)*
 
-- [x] `grep "<OGR timestamp>.*USDT.*Loss,ByBit" koinly_2025_other_gains_report_<ACCOUNT_TOKEN>.csv` — given OGR file, expects row with `USDT,"-<proceeds> EUR","<loss magnitude>",Loss`
-- [x] `grep "<OGR timestamp>.*USDT.*ByBit" koinly_2025_capital_gains_report_<ACCOUNT_TOKEN>.csv` — given CG file, expects matching row with positive gain
-- [x] Open `extract.xlsx` Crypto Gains tab — given the matching USDT disposal, expects Gain/Loss value shown
-- [x] Compare values — given OGR shows a Type="Loss" with larger magnitude and CG shows a smaller positive gain, expects Excel shows positive gain (current bug) not negative loss
-- [x] Document findings in the OGR data-trace verification (local) — confirm the bug and which entries are affected
+- [x] `grep "<OGR timestamp>.*USDT.*Loss,ByBit" koinly_2025_other_gains_report_<ACCOUNT_TOKEN>.csv`: given OGR file, expects row with `USDT,"-<proceeds> EUR","<loss magnitude>",Loss`
+- [x] `grep "<OGR timestamp>.*USDT.*ByBit" koinly_2025_capital_gains_report_<ACCOUNT_TOKEN>.csv`: given CG file, expects matching row with positive gain
+- [x] Open `extract.xlsx` Crypto Gains tab; given the matching USDT disposal, expects Gain/Loss value shown
+- [x] Compare values; given OGR shows a Type="Loss" with larger magnitude and CG shows a smaller positive gain, expects Excel shows positive gain (current bug) not negative loss
+- [x] Document findings in the OGR data-trace verification (local), confirm the bug and which entries are affected
 
 **🔴 BLOCKER FIX 2.1:** Must create verification document before proceeding to Task 2. The document must include:
 1. Actual OGR row showing the bug: `<OGR timestamp>,USDT,"-<proceeds>","<loss magnitude>",Loss,ByBit`
@@ -122,8 +122,8 @@ Add a new boolean field to `TaxJurisdictionConfig` to control whether the jurisd
 Files:
 - `src/tax_reporting/domain/jurisdiction.py`
 
-- [x] `TaxJurisdictionTest#test_use_other_gains_report_field_exists` — given dataclass definition, expects `use_other_gains_report: bool` field exists with default `False`
-- [x] Add field to dataclass — given `TaxJurisdictionConfig`, expects new field `use_other_gains_report: bool = False`
+- [x] `TaxJurisdictionTest#test_use_other_gains_report_field_exists`: given dataclass definition, expects `use_other_gains_report: bool` field exists with default `False`
+- [x] Add field to dataclass; given `TaxJurisdictionConfig`, expects new field `use_other_gains_report: bool = False`
 - [x] Run → expect RED: `uv run pytest tests/unit/domain/test_jurisdiction.py -k "use_other_gains" -v`
 - [ ] Commit: `feat: add use_other_gains_report jurisdiction config field`
 
@@ -135,10 +135,10 @@ Files:
 - `src/tax_reporting/application/crypto_reporting.py`
 - `src/tax_reporting/infrastructure/koinly_parser.py`
 
-- [x] `KoinlyParserTest#test_parse_other_gains_row` — given OGR row `Date,Asset,Amount,Value (EUR),Type,Wallet`, expects returns parsed tuple with (date, asset, amount_eur, type, wallet)
-- [x] `KoinlyParserTest#test_parse_other_gains_loss_type` — given row with `Type="Loss"`, expects type parsed as "Loss"
-- [x] `KoinlyParserTest#test_parse_other_gains_profit_type` — given row with `Type="Profit"`, expects type parsed as "Profit"
-- [x] `KoinlyParserTest#test_parse_other_gains_skips_fee_tokens` — given row with `Value="0.0"`, expects row is skipped (not capital gain)
+- [x] `KoinlyParserTest#test_parse_other_gains_row`: given OGR row `Date,Asset,Amount,Value (EUR),Type,Wallet`, expects returns parsed tuple with (date, asset, amount_eur, type, wallet)
+- [x] `KoinlyParserTest#test_parse_other_gains_loss_type`: given row with `Type="Loss"`, expects type parsed as "Loss"
+- [x] `KoinlyParserTest#test_parse_other_gains_profit_type`: given row with `Type="Profit"`, expects type parsed as "Profit"
+- [x] `KoinlyParserTest#test_parse_other_gains_skips_fee_tokens`: given row with `Value="0.0"`, expects row is skipped (not capital gain)
 - [x] Run → expect RED: `uv run pytest tests/unit/infrastructure/test_koinly_parser.py -k "other_gains" -v`
 - [x] Add `_parse_other_gains_row` function to `koinly_parser.py`
 - [x] Add `_find_and_parse_other_gains_file` function to locate and read OGR CSV
@@ -190,9 +190,9 @@ Create an in-memory index from parsed OGR rows for efficient (date, asset, walle
 Files:
 - `src/tax_reporting/application/crypto_reporting.py`
 
-- [ ] `CryptoReportingTest#test_build_ogr_index` — given parsed OGR rows with date, asset, wallet, expects index keyed by (date, asset, wallet)
-- [ ] `CryptoReportingTest#test_ogr_index_lookup_by_key` — given index with entry (2025-01-13, USDT, ByBit), expects lookup returns matching OGR value and type
-- [ ] `CryptoReportingTest#test_ogr_index_missing_key` — given index and non-matching key, expects returns None
+- [ ] `CryptoReportingTest#test_build_ogr_index`: given parsed OGR rows with date, asset, wallet, expects index keyed by (date, asset, wallet)
+- [ ] `CryptoReportingTest#test_ogr_index_lookup_by_key`: given index with entry (2025-01-13, USDT, ByBit), expects lookup returns matching OGR value and type
+- [ ] `CryptoReportingTest#test_ogr_index_missing_key`: given index and non-matching key, expects returns None
 - [ ] Run → expect RED: `uv run pytest tests/unit/application/test_crypto_reporting.py -k "ogr_index" -v`
 - [ ] Add `_build_ogr_index(parsed_ogr_rows)` function returning dict[(date, asset, wallet), (value_eur, type)]
 
@@ -240,11 +240,11 @@ When jurisdiction enables `use_other_gains_report`, override CG gain/loss values
 Files:
 - `src/tax_reporting/application/crypto_reporting.py`
 
-- [x] `CryptoReportingTest#test_ogr_loss_override_applied` — given CG entry with a smaller positive gain and OGR index with Type="Loss" of larger magnitude, expects entry gain/loss set to the OGR loss value
-- [x] `CryptoReportingTest#test_ogr_profit_override_applied` — given CG entry with gain=+100 EUR and OGR index with Type="Profit", value=+80 EUR, expects entry gain/loss set to +80 EUR
-- [x] `CryptoReportingTest#test_ogr_no_override_when_disabled` — given jurisdiction with `use_other_gains_report=False`, expects CG values unchanged regardless of OGR
-- [x] `CryptoReportingTest#test_ogr_no_override_when_no_match` — given CG entry with no OGR match, expects CG value unchanged with warning log
-- [x] `CryptoReportingTest#test_ogr_skips_fee_tokens` — given OGR entry with Value=0.0, expects override not applied (fee tokens are not capital gains)
+- [x] `CryptoReportingTest#test_ogr_loss_override_applied`: given CG entry with a smaller positive gain and OGR index with Type="Loss" of larger magnitude, expects entry gain/loss set to the OGR loss value
+- [x] `CryptoReportingTest#test_ogr_profit_override_applied`: given CG entry with gain=+100 EUR and OGR index with Type="Profit", value=+80 EUR, expects entry gain/loss set to +80 EUR
+- [x] `CryptoReportingTest#test_ogr_no_override_when_disabled`: given jurisdiction with `use_other_gains_report=False`, expects CG values unchanged regardless of OGR
+- [x] `CryptoReportingTest#test_ogr_no_override_when_no_match`: given CG entry with no OGR match, expects CG value unchanged with warning log
+- [x] `CryptoReportingTest#test_ogr_skips_fee_tokens`: given OGR entry with Value=0.0, expects override not applied (fee tokens are not capital gains)
 - [x] Run → expect RED: `uv run pytest tests/unit/application/test_crypto_reporting.py -k "ogr_override" -v`
 - [x] Add `_apply_ogr_overrides(capital_entries, ogr_index, jurisdiction)` function
 
@@ -273,8 +273,8 @@ Ensure that OGR-overridden losses appear as negative values in the Excel report.
 Files:
 - `tests/unit/application/persisting/test_crypto_gains_sheet.py`
 
-- [x] `CryptoGainsSheetTest#test_loss_value_written_to_excel` — given entry with a negative gain_loss_eur, expects cell contains negative value (not absolute)
-- [x] `CryptoGainsSheetTest#test_ogr_override_reflected_in_excel` — given PT jurisdiction with OGR overrides, expects the overridden disposal entry shows the OGR loss value (not the smaller CG gain)
+- [x] `CryptoGainsSheetTest#test_loss_value_written_to_excel`: given entry with a negative gain_loss_eur, expects cell contains negative value (not absolute)
+- [x] `CryptoGainsSheetTest#test_ogr_override_reflected_in_excel`: given PT jurisdiction with OGR overrides, expects the overridden disposal entry shows the OGR loss value (not the smaller CG gain)
 - [x] Run → expect RED: `uv run pytest tests/unit/application/persisting/test_crypto_gains_sheet.py -k "loss" -v`
 - [x] Verify existing Excel write code preserves negative sign (no change needed, just confirm)
 - [x] Run → expect GREEN
@@ -305,14 +305,14 @@ Files:
 - **Reference to official document** (AT folheto, CIRS article)
 
 - [x] Add PT-C-033 to `crypto_rules.md` with rule text and OGR reference
-- [x] Run validation — given config files updated, expects `TaxJurisdictionConfig` loads without error and has `use_other_gains_report=True` for PT
+- [x] Run validation; given config files updated, expects `TaxJurisdictionConfig` loads without error and has `use_other_gains_report=True` for PT
 - [x] Commit: `docs: add Portugal OGR configuration and PT-C-033`
 
 ### Task 8: Final Validation
 
 Run full test suite and verify the fix with actual data.
 
-- [x] Run all crypto tests — given implementation complete, expects `uv run pytest tests/unit/application/test_crypto_reporting.py -v` passes
-- [x] Run full test suite — given all changes, expects `uv run pytest` passes
-- [x] Manual verification with real data — given Koinly exports with futures losses, expects Excel shows losses as negative values for PT
-- [x] Document final verification in the futures-loss fix verification (local) — confirm the bug is fixed
+- [x] Run all crypto tests; given implementation complete, expects `uv run pytest tests/unit/application/test_crypto_reporting.py -v` passes
+- [x] Run full test suite; given all changes, expects `uv run pytest` passes
+- [x] Manual verification with real data; given Koinly exports with futures losses, expects Excel shows losses as negative values for PT
+- [x] Document final verification in the futures-loss fix verification (local), confirm the bug is fixed

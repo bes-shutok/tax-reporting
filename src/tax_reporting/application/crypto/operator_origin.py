@@ -51,8 +51,8 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
         try:
             parsed_date = _parse_transaction_date(transaction_date)
         # Only ValueError is expected from _parse_transaction_date (invalid format).
-        # Other exceptions should propagate to surface unexpected errors. Fail-soft is intentional
-        # — mark entry for review rather than crash the report.
+        # Other exceptions should propagate to surface unexpected errors. Fail-soft is intentional:
+        # mark entry for review rather than crash the report.
         except ValueError:
             logger.error(
                 "Invalid transaction_date format '%s' for platform '%s': "

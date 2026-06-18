@@ -7,10 +7,13 @@ from collections import Counter
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
-from typing import Final
 
 from ..domain.exceptions import FileProcessingError
-from ..infrastructure.config import DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD, TaxJurisdictionConfig
+from ..infrastructure.config import (
+    DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS,
+    DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD,
+    TaxJurisdictionConfig,
+)
 from ..infrastructure.koinly_parser import (
     _find_and_parse_other_gains_file,
     contains_non_latin_characters,
@@ -22,9 +25,9 @@ from ..infrastructure.koinly_parser import (
     read_koinly_rows,
 )
 from .crypto.aggregation import (
-    aggregate_derivatives_entries,
     _aggregate_capital_entries,
     _filter_immaterial_entries,
+    aggregate_derivatives_entries,
 )
 from .crypto.chain_derivation import _derive_chain
 from .crypto.classification import (
@@ -32,14 +35,16 @@ from .crypto.classification import (
     _contains_popular_token,
     _get_all_fiat_currency_codes,
     _get_popular_crypto_tokens,
-    _load_popular_crypto_tokens,
+    _load_popular_crypto_tokens,  # noqa: F401
 )
+from .crypto.constants import ZERO
+from .crypto.derivatives_dedup import apply_derivatives_dedup
 from .crypto.entities import (
-    AggregatedRewardIncomeEntry,
-    CapitalGainPeriodStats,
+    AggregatedRewardIncomeEntry,  # noqa: F401
+    CapitalGainPeriodStats,  # noqa: F401
     CryptoCapitalGainEntry,
     CryptoCapitalGainStats,
-    CryptoCompletePdfSummary,
+    CryptoCompletePdfSummary,  # noqa: F401
     CryptoReconciliationSummary,
     CryptoReviewEntry,
     CryptoRewardIncomeEntry,
@@ -47,8 +52,8 @@ from .crypto.entities import (
     CryptoTaxReport,
     DerivativesPnLEntry,
     HoldingsSnapshot,
-    LoanActivityEntry,
-    OperatorOrigin,
+    LoanActivityEntry,  # noqa: F401
+    OperatorOrigin,  # noqa: F401
     RewardTaxClassification,
 )
 from .crypto.fifo_helpers import (
@@ -58,8 +63,8 @@ from .crypto.fifo_helpers import (
 from .crypto.loan_activity import _extract_loan_activity
 from .crypto.ogr_handler import (
     _apply_ogr_direction_override,
-    _apply_ogr_overrides,
-    _build_ogr_index,
+    _apply_ogr_overrides,  # noqa: F401
+    _build_ogr_index,  # noqa: F401
     _split_ogr_index,
     _validate_capital_entries_have_valid_countries,
 )
@@ -72,11 +77,9 @@ from .crypto.parsing import (
     _register_skipped_zero_asset,
 )
 from .crypto.validation import (
-    _is_temporally_valid,
-    _parse_transaction_date,
+    _is_temporally_valid,  # noqa: F401
+    _parse_transaction_date,  # noqa: F401
 )
-from .crypto.constants import ZERO
-from .crypto.derivatives_dedup import apply_derivatives_dedup
 from .crypto_fifo import (
     discover_loan_affected_assets,
 )
@@ -116,7 +119,7 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
     _missing = {name for name, f in _required.items() if f is None}
 
     if not _present:
-        # No Koinly exports at all — crypto reporting simply not available for this run.
+        # No Koinly exports at all: crypto reporting is simply not available for this run.
         return None
 
     if _missing:
@@ -156,6 +159,10 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
             )
 
     if capital_file:
+        # When jurisdiction is None, the min_proceeds fallback uses the production
+        # default (10 EUR), which gates zero-cost entries below that floor out of
+        # the review flag. Callers that want prior flag-everything semantics must
+        # construct a TaxJurisdictionConfig with zero_basis_review_min_proceeds=Decimal("0").
         capital_entries, raw_loan_fallback = _parse_capital_gains_file(
             capital_file,
             CapitalGainsParsingContext(
@@ -164,6 +171,11 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
                 review_entries=review_entries,
                 known_assets=known_assets,
                 loan_affected_assets=loan_affected_assets,
+                zero_basis_review_min_proceeds=(
+                    jurisdiction.zero_basis_review_min_proceeds
+                    if jurisdiction
+                    else DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS
+                ),
             ),
         )
     else:
@@ -176,6 +188,11 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
         try:
             fifo_entries, th_assets = _rebuild_fifo_for_loan_affected_assets(
                 transaction_history_file, origin_resolver, loan_affected_assets, fiscal_year=year,
+                zero_basis_review_min_proceeds=(
+                    jurisdiction.zero_basis_review_min_proceeds
+                    if jurisdiction
+                    else DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS
+                ),
             )
             capital_entries.extend(fifo_entries)
             assets_with_fifo = {e.asset for e in fifo_entries}
@@ -189,7 +206,7 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
         except (FileProcessingError, ValueError) as fifo_exc:
             _fifo_logger.error(
                 "FIFO rebuild failed for loan-affected assets %s: %s. "
-                "Falling back to raw Koinly CG rows for these assets — capital gains may include "
+                "Falling back to raw Koinly CG rows for these assets. Capital gains may include "
                 "loan repayment disposals. Fix the Transaction History file and re-run.",
                 sorted(loan_affected_assets),
                 fifo_exc,
@@ -360,6 +377,8 @@ class CapitalGainsParsingContext:
         review_entries: List to collect review-required entries for the Excel sheet.
         known_assets: Set of asset tickers seen in non-zero rows across all files.
         loan_affected_assets: Set of asset tickers affected by loans (for FIFO rebuild).
+        zero_basis_review_min_proceeds: Minimum proceeds (EUR) required to flag a
+            zero-cost entry for review. Defaults to ZERO (preserve prior behavior).
     """
 
     skipped_assets: dict[tuple[str, str], dict]
@@ -367,6 +386,7 @@ class CapitalGainsParsingContext:
     review_entries: list[CryptoReviewEntry]
     known_assets: frozenset[str] | None = None
     loan_affected_assets: frozenset[str] = frozenset()
+    zero_basis_review_min_proceeds: Decimal = ZERO
 
 
 def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
@@ -429,7 +449,10 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
             if is_known_token or (context.known_assets and asset in context.known_assets):
                 review_reason = "Zero EUR value for known crypto asset - likely Koinly tracking entry or data error"
                 if is_suspicious:
-                    review_reason = f"{review_reason}; Asset ticker contains non-Latin characters - potential homoglyph scam token"
+                    review_reason = (
+                        f"{review_reason}; Asset ticker contains non-Latin characters "
+                        "- potential homoglyph scam token"
+                    )
 
                 context.review_entries.append(
                     CryptoReviewEntry(
@@ -468,7 +491,8 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
             review_reason = f"{review_reason}; {cost_basis_reason}" if review_reason else cost_basis_reason
 
         review_required, review_reason = _build_zero_basis_review_reason(
-            cost_eur, proceeds_eur, review_required, review_reason
+            cost_eur, proceeds_eur, review_required, review_reason,
+            min_proceeds=context.zero_basis_review_min_proceeds,
         )
 
         # Flag assets with non-Latin characters as potential scam tokens (homoglyph detection)
@@ -510,7 +534,7 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
             # include loan repayment disposals and must not reach the report unless
             # the FIFO rebuild is unavailable.
             fallback_reason = (
-                "Raw Koinly CG row for loan-affected asset — FIFO rebuild failed; "
+                "Raw Koinly CG row for loan-affected asset: FIFO rebuild failed; "
                 "may include loan repayment disposals. Fix Transaction History and re-run."
             )
             combined_reason = f"{review_reason}; {fallback_reason}" if review_reason else fallback_reason
@@ -534,6 +558,17 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
         )
 
     return capital_entries, raw_loan_fallback
+
+
+def _row_has_non_zero_value(row: dict[str, str]) -> bool:
+    """Return True if the row carries a non-zero EUR value (proceeds for gains, value for income)."""
+    value_field = "Proceeds (EUR)" if "Proceeds (EUR)" in row else "Value (EUR)"
+    if value_field not in row:
+        return False
+    try:
+        return parse_koinly_decimal(row.get(value_field, "")) > ZERO
+    except ValueError:
+        return False
 
 
 def _collect_known_asset_tickers(
@@ -566,22 +601,8 @@ def _collect_known_asset_tickers(
                 asset = normalize_asset_ticker(row.get("Asset", ""))
                 if not asset:
                     continue
-
-                # Check if this row has non-zero value (proceeds for gains, value for income)
-                if "Proceeds (EUR)" in row:
-                    try:
-                        proceeds = parse_koinly_decimal(row.get("Proceeds (EUR)", ""))
-                        if proceeds > ZERO:
-                            known_assets.add(asset)
-                    except ValueError:
-                        pass  # Skip unparseable rows
-                elif "Value (EUR)" in row:
-                    try:
-                        value = parse_koinly_decimal(row.get("Value (EUR)", ""))
-                        if value > ZERO:
-                            known_assets.add(asset)
-                    except ValueError:
-                        pass  # Skip unparseable rows
+                if _row_has_non_zero_value(row):
+                    known_assets.add(asset)
         except Exception as e:
             scan_failures.append((file_path, e))
 
@@ -646,7 +667,7 @@ def _parse_income_file(
                 or (known_assets and asset in known_assets)
             )
             if is_known:
-                # Flag for review instead of skipping — known assets shouldn't have zero value
+                # Flag for review instead of skipping: known assets shouldn't have zero value
                 pass  # Continue to processing below with review flag set
             else:
                 _register_skipped_zero_asset(skipped_assets, "income", asset, contains_non_latin_characters(asset))
@@ -704,7 +725,9 @@ def _parse_income_file(
             )
             if is_known:
                 review_required = True
-                zero_value_reason = "Zero EUR value for known crypto asset - likely Koinly data error or missing price data"
+                zero_value_reason = (
+                    "Zero EUR value for known crypto asset - likely Koinly data error or missing price data"
+                )
                 review_reason = f"{review_reason}; {zero_value_reason}" if review_reason else zero_value_reason
 
         reward_entries.append(

@@ -4,17 +4,10 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
-
 from tax_reporting.infrastructure.koinly_parser import (
     _extract_ogr_gain_loss,
     _find_and_parse_other_gains_file,
     _parse_other_gains_row,
-    format_datetime,
-    normalize_asset_ticker,
-    normalize_platform_name,
-    parse_koinly_datetime,
-    parse_koinly_decimal,
 )
 
 

@@ -173,7 +173,7 @@ def calculate_company_gains(  # noqa: PLR0915
         capital_gain_line: CapitalGainLine = capital_gain_line_accumulator.finalize()
         if capital_gain_line.get_buy_date() > capital_gain_line.get_sell_date():
             logger.warning(
-                "Buy date (%s) is after sell date (%s) for %s — check for missing buy records or leftover data",
+                "Buy date (%s) is after sell date (%s) for %s; check for missing buy records or leftover data",
                 capital_gain_line.get_buy_date(),
                 capital_gain_line.get_sell_date(),
                 company.ticker,
@@ -184,7 +184,7 @@ def calculate_company_gains(  # noqa: PLR0915
         for _sale_date, sale_part in list(sales_daily_slices.items()):
             remaining_qty = sale_part.quantity()
             logger.warning(
-                "Partial sell mismatch for %s: %s shares sold with no matching buys — creating placeholder buy",
+                "Partial sell mismatch for %s: %s shares sold with no matching buys; creating placeholder buy",
                 company.ticker,
                 remaining_qty,
             )

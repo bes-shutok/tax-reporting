@@ -12,7 +12,6 @@ from tax_reporting.application.persisting.ib_sheet import (
 )
 from tax_reporting.application.persisting.tax_constants import get_income_code_description
 from tax_reporting.domain.collections import CapitalGainLinesPerCompany, DividendIncomePerCompany
-from tax_reporting.domain.constants import EXCEL_HEADER_ROW_1, EXCEL_HEADER_ROW_2, EXCEL_START_ROW
 from tax_reporting.domain.entities import (
     CapitalGainLine,
     CurrencyCompany,
@@ -352,7 +351,7 @@ class TestWriteIbReportingSheetCapitalGains:
         write_ib_reporting_sheet(ws, config, lines)
 
         assert ws.cell(1, 1).value == "CAPITAL GAINS"
-        assert ws.cell(1, 1).font.bold == True
+        assert ws.cell(1, 1).font.bold is True
 
     def test_single_blank_row_after_title(self):
         """Verify there is exactly one blank row after the section title."""
@@ -927,20 +926,6 @@ class TestWriteIbReportingSheetCapitalInvestmentIncome:
         # Empty chains should render as empty string in source detail column (column 8)
         source_detail_value = ws.cell(data_row, 8).value
         assert source_detail_value in ("", None)
-
-    def test_empty_chains_tuple_renders_gracefully(self):
-        """Empty chains tuple should render without error."""
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "Reporting"
-        config = _make_config()
-        lines: CapitalGainLinesPerCompany = {}
-        entry = _make_aggregated_reward_entry(chains=())
-        write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
-
-        data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
-        assert data_row is not None
-        # Empty chains should not cause rendering error
 
 
 @pytest.mark.unit

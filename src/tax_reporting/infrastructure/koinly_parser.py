@@ -7,6 +7,7 @@ Used by both crypto_reporting application logic and token_origin domain resoluti
 from __future__ import annotations
 
 import csv
+import logging
 import re
 import unicodedata
 from datetime import UTC, datetime
@@ -137,7 +138,7 @@ def normalize_asset_ticker(asset: str) -> str:
 
     Applies NFKC normalization for compatibility but does NOT convert
     between scripts (no Cyrillic-to-Latin mapping). Non-Latin characters
-    are preserved for security — they may indicate homoglyph scam tokens.
+    are preserved for security; they may indicate homoglyph scam tokens.
 
     Args:
         asset: The raw asset ticker from Koinly.
@@ -149,6 +150,18 @@ def normalize_asset_ticker(asset: str) -> str:
     # Normalize unicode characters to canonical composed form
     asset = unicodedata.normalize("NFKC", asset)
     return asset.strip()
+
+
+# Unicode codepoint bounds for the Latin script ranges used by the homoglyph
+# security check in ``contains_non_latin_characters``. Anything outside these
+# contiguous ranges is treated as non-Latin (potential homoglyph scam token).
+_ASCII_MAX: Final = 0x7F  # End of Basic Latin (ASCII), U+0000 to U+007F
+_LATIN1_SUPPLEMENT_MIN: Final = 0x80  # Start of Latin-1 Supplement (accented Latin)
+_LATIN1_SUPPLEMENT_MAX: Final = 0xFF  # End of Latin-1 Supplement, U+0080 to U+00FF
+_LATIN_EXTENDED_A_MIN: Final = 0x100  # Start of Latin Extended-A
+_LATIN_EXTENDED_A_MAX: Final = 0x17F  # End of Latin Extended-A, U+0100 to U+017F
+_LATIN_EXTENDED_B_MIN: Final = 0x180  # Start of Latin Extended-B
+_LATIN_EXTENDED_B_MAX: Final = 0x24F  # End of Latin Extended-B, U+0180 to U+024F
 
 
 def contains_non_latin_characters(asset: str) -> bool:
@@ -165,20 +178,20 @@ def contains_non_latin_characters(asset: str) -> bool:
         True if the asset contains characters from non-Latin scripts.
     """
     for char in asset:
-        if char == " " or char == "-" or char == "_" or char == ".":
+        if char in {" ", "-", "_", "."}:
             continue  # Skip common separators
         codepoint = ord(char)
         # Basic Latin (ASCII): U+0000 to U+007F
-        if 0x00 <= codepoint <= 0x7F:
+        if 0x00 <= codepoint <= _ASCII_MAX:
             continue
         # Latin-1 Supplement: U+0080 to U+00FF (includes accented Latin characters)
-        if 0x80 <= codepoint <= 0xFF:
+        if _LATIN1_SUPPLEMENT_MIN <= codepoint <= _LATIN1_SUPPLEMENT_MAX:
             continue
         # Latin Extended-A: U+0100 to U+017F
-        if 0x100 <= codepoint <= 0x17F:
+        if _LATIN_EXTENDED_A_MIN <= codepoint <= _LATIN_EXTENDED_A_MAX:
             continue
         # Latin Extended-B: U+0180 to U+024F
-        if 0x180 <= codepoint <= 0x24F:
+        if _LATIN_EXTENDED_B_MIN <= codepoint <= _LATIN_EXTENDED_B_MAX:
             continue
         # Anything else is non-Latin (Cyrillic U+0400-U+04FF, Greek U+0370-U+03FF, etc.)
         return True
@@ -387,7 +400,7 @@ def _find_and_parse_other_gains_file(
     Each CSV row is parsed by ``_parse_other_gains_row`` into a typed
     ``ParsedOgrRow`` carrying the normalized ``(date, asset, gain_loss,
     row_type, wallet)`` fields. Summing duplicate keys is intentionally NOT
-    done here — that responsibility moved to ``_build_ogr_index`` so callers
+    done here; that responsibility moved to ``_build_ogr_index`` so callers
     that need per-row granularity (the derivatives classifier) can consume
     the list directly.
 
@@ -398,8 +411,6 @@ def _find_and_parse_other_gains_file(
         List of ``ParsedOgrRow`` instances, one per non-skipped OGR row, in
         source CSV order. Empty list if the OGR file is missing.
     """
-    import logging
-
     logger = logging.getLogger(__name__)
 
     other_gains_file = _find_report_path(koinly_dir, "other_gains_report", ".csv")

@@ -6,7 +6,6 @@ import logging
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
-from typing import Final
 
 from ...domain.crypto_fifo import AssetFifoResult, CryptoFifoRealization
 from ..crypto_fifo import (
@@ -22,6 +21,17 @@ from .chain_derivation import _derive_chain
 from .constants import ZERO
 from .entities import CryptoCapitalGainEntry
 from .operator_origin import resolve_operator_origin
+
+_ZERO_COST_REASON: str = (
+    "Zero acquisition cost: verify basis (airdrop, data error, or misclassification)"
+)
+_ZERO_PROCEEDS_REASON: str = (
+    "Zero disposal proceeds: verify sale data (transfer error, data quality issue)"
+)
+_ZERO_COST_NEGATIVE_PROCEEDS_REASON: str = (
+    "Zero acquisition cost with negative disposal proceeds: "
+    "verify basis and sale data (fee-heavy liquidation or data anomaly)"
+)
 
 
 def _apply_phantom_lot_flags(
@@ -56,7 +66,7 @@ def _apply_phantom_lot_flags(
         f"Phantom lot: {asset} was transferred cross-platform on {earliest_phantom}; "
         "this platform's FIFO pool retains the lot after the transfer "
         "(CIRS art. 43 n.9 per-wallet scope limitation). "
-        "Cost basis for this realization may be overstated — verify against "
+        "Cost basis for this realization may be overstated: verify against "
         "the sending wallet's transaction records."
     )
     flagged: list[CryptoFifoRealization] = []
@@ -192,6 +202,7 @@ def _rebuild_fifo_for_loan_affected_assets(
     loan_affected_assets: frozenset[str],
     *,
     fiscal_year: int | None = None,
+    zero_basis_review_min_proceeds: Decimal = ZERO,
 ) -> tuple[list[CryptoCapitalGainEntry], frozenset[str]]:
     """Rebuild FIFO for loan-affected assets from Transaction History.
 
@@ -209,6 +220,8 @@ def _rebuild_fifo_for_loan_affected_assets(
         loan_affected_assets: Set of asset tickers to rebuild via FIFO.
         fiscal_year: If provided, only include realizations from this tax year in
             the output. Pass ``None`` to include all years (useful in testing).
+        zero_basis_review_min_proceeds: Minimum proceeds (EUR) required to flag a
+            zero-cost entry for review. Defaults to ZERO (preserve prior behavior).
 
     Returns:
         Tuple of (fifo_entries, th_assets) where th_assets is the set of
@@ -247,7 +260,7 @@ def _rebuild_fifo_for_loan_affected_assets(
 
     # Pre-compute receiver totals across ALL assets before the per-asset loop.
     # Without the full cross-asset totals, each per-asset call would see only itself
-    # (num_unique_assets == 1) and incorrectly claim the full carry-over cost —
+    # (num_unique_assets == 1) and incorrectly claim the full carry-over cost,
     # duplicating cost basis when two receiver assets share the same tx_key.
     all_asset_totals = _compute_cross_asset_receiver_totals(acquisitions_by_asset)
 
@@ -274,7 +287,7 @@ def _rebuild_fifo_for_loan_affected_assets(
                 rows_str = ", ".join(str(i) for i in sorted(failed_rows))
                 parse_error_reason = (
                     f"TH parse error on row(s) {rows_str}: FIFO pool for {r.asset} "
-                    "may be incomplete — verify all acquisitions/disposals are present"
+                    "may be incomplete: verify all acquisitions/disposals are present"
                 )
                 updated.append(replace(
                     r,
@@ -321,7 +334,8 @@ def _rebuild_fifo_for_loan_affected_assets(
             combined_review_reason = "Review required (reason not propagated from FIFO or origin resolver)"
 
         combined_review_required, combined_review_reason = _build_zero_basis_review_reason(
-            r.cost_eur, r.proceeds_eur, combined_review_required, combined_review_reason or ""
+            r.cost_eur, r.proceeds_eur, combined_review_required, combined_review_reason or "",
+            min_proceeds=zero_basis_review_min_proceeds,
         )
 
         fifo_entries.append(
@@ -356,27 +370,57 @@ def _build_zero_basis_review_reason(
     proceeds_eur: Decimal,
     review_required: bool,
     review_reason: str,
+    min_proceeds: Decimal = ZERO,
 ) -> tuple[bool, str]:
     """Build review reason for zero-cost or zero-proceeds entries.
+
+    Applies the zero-basis materiality rule (four flagging branches plus the
+    small-reward suppression between them):
+
+    - cost=0 AND proceeds=0: not flagged when ``min_proceeds > 0`` (FEE token noise);
+      flagged with both zero-cost and zero-proceeds reasons when ``min_proceeds == 0``
+      (legacy flag-everything escape hatch).
+    - cost=0 AND 0 < proceeds < min_proceeds (small reward): no flag.
+    - cost=0 AND proceeds >= min_proceeds: flag with zero-cost reason.
+    - cost=0 AND proceeds < 0: always flag with the negative-proceeds reason
+      (fee-heavy liquidation or data anomaly; independent of ``min_proceeds``).
+    - cost>0 AND proceeds=0: flag with zero-proceeds reason (legitimate data-quality concern).
 
     Args:
         cost_eur: Acquisition cost in EUR.
         proceeds_eur: Disposal proceeds in EUR.
         review_required: Current review_required flag value.
         review_reason: Current review_reason text.
+        min_proceeds: Minimum proceeds (EUR) required to flag a zero-cost entry.
+            Defaults to ZERO (preserve prior behavior; flag every zero-cost entry).
 
     Returns:
         Tuple of (updated_review_required, updated_review_reason) with zero-basis
         flags added if applicable.
     """
-    if cost_eur == ZERO:
+    if cost_eur == ZERO and proceeds_eur > ZERO and proceeds_eur >= min_proceeds:
         review_required = True
-        zero_cost_reason = "Zero acquisition cost - verify basis (airdrop, data error, or misclassification)"
-        review_reason = f"{review_reason}; {zero_cost_reason}" if review_reason else zero_cost_reason
+        review_reason = (
+            f"{review_reason}; {_ZERO_COST_REASON}" if review_reason else _ZERO_COST_REASON
+        )
 
-    if proceeds_eur == ZERO:
+    if proceeds_eur == ZERO and cost_eur > ZERO:
         review_required = True
-        zero_proceeds_reason = "Zero disposal proceeds - verify sale data (transfer error, data quality issue)"
-        review_reason = f"{review_reason}; {zero_proceeds_reason}" if review_reason else zero_proceeds_reason
+        review_reason = (
+            f"{review_reason}; {_ZERO_PROCEEDS_REASON}" if review_reason else _ZERO_PROCEEDS_REASON
+        )
+
+    if cost_eur == ZERO and proceeds_eur == ZERO and min_proceeds == ZERO:
+        review_required = True
+        parts = [_ZERO_COST_REASON, _ZERO_PROCEEDS_REASON]
+        review_reason = f"{review_reason}; " + "; ".join(parts) if review_reason else "; ".join(parts)
+
+    if cost_eur == ZERO and proceeds_eur < ZERO:
+        review_required = True
+        review_reason = (
+            f"{review_reason}; {_ZERO_COST_NEGATIVE_PROCEEDS_REASON}"
+            if review_reason
+            else _ZERO_COST_NEGATIVE_PROCEEDS_REASON
+        )
 
     return review_required, review_reason

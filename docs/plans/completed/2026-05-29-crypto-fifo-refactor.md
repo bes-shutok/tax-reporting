@@ -1,4 +1,4 @@
-# Plan: Refactor crypto_fifo.py — Extract Helpers and Decouple I/O
+# Plan: Refactor crypto_fifo.py; Extract Helpers and Decouple I/O
 
 Plan review: `docs/reviews/2026-05-29-plan-review-crypto-fifo-refactor.md`
 
@@ -14,18 +14,18 @@ Plan review: `docs/reviews/2026-05-29-plan-review-crypto-fifo-refactor.md`
 
 **Concrete before/after:**
 
-*Task 1 — before:* `parse_th_for_loan_affected_assets` iterates rows, parses fields, dispatches to `_handle_exchange`/`_handle_transfer`, and classifies the row all in one 396-line function body.
+*Task 1; before:* `parse_th_for_loan_affected_assets` iterates rows, parses fields, dispatches to `_handle_exchange`/`_handle_transfer`, and classifies the row all in one 396-line function body.
 
-*Task 1 — after:* the outer function handles iteration, error recovery, and dispatch; a new `_classify_th_row` function owns the per-row dispatch logic (lines ~220–527 condensed into a helper).
+*Task 1; after:* the outer function handles iteration, error recovery, and dispatch; a new `_classify_th_row` function owns the per-row dispatch logic (lines ~220–527 condensed into a helper).
 
-*Task 4 — before:* `parse_th_for_loan_affected_assets(path: Path, ...)` calls `read_koinly_rows(path)` on line 1 of its body, coupling file I/O to classification logic.
+*Task 4; before:* `parse_th_for_loan_affected_assets(path: Path, ...)` calls `read_koinly_rows(path)` on line 1 of its body, coupling file I/O to classification logic.
 
-*Task 4 — after:* a new `_classify_rows_for_loan_affected_assets(rows, ...)` function owns the classification logic (no I/O); `parse_th_for_loan_affected_assets` becomes a thin wrapper that calls `read_koinly_rows` and delegates.
+*Task 4; after:* a new `_classify_rows_for_loan_affected_assets(rows, ...)` function owns the classification logic (no I/O); `parse_th_for_loan_affected_assets` becomes a thin wrapper that calls `read_koinly_rows` and delegates.
 
 **Edge cases / constraints:**
-- No behaviour change in any task — the full existing test suite is the sole verification signal.
+- No behaviour change in any task; the full existing test suite is the sole verification signal.
 - `noqa` suppressions on extracted helpers must be evaluated freshly; some may no longer be needed after extraction, others may still be needed on the extracted function.
-- The public signatures of `parse_th_for_loan_affected_assets` and `compute_fifo_for_asset` must not change. For private helpers `_handle_exchange` and `_handle_transfer`, the invariant is: do not change any call signatures used by their current local callers within `crypto_fifo.py` — callers in `crypto_reporting.py` and tests in `test_crypto_fifo.py` must require zero changes.
+- The public signatures of `parse_th_for_loan_affected_assets` and `compute_fifo_for_asset` must not change. For private helpers `_handle_exchange` and `_handle_transfer`, the invariant is: do not change any call signatures used by their current local callers within `crypto_fifo.py`: callers in `crypto_reporting.py` and tests in `test_crypto_fifo.py` must require zero changes.
 
 ---
 
@@ -34,15 +34,15 @@ Plan review: `docs/reviews/2026-05-29-plan-review-crypto-fifo-refactor.md`
 Files directly changed as part of this plan. Review feedback is accepted **only** for the files listed here.
 Any finding about a file not in this list must be rejected as out of scope.
 
-**Production code — in scope:**
-- `src/shares_reporting/application/crypto_fifo.py` — all four extraction/refactoring tasks
+**Production code; in scope:**
+- `src/shares_reporting/application/crypto_fifo.py`: all four extraction/refactoring tasks
 
-**Tests — in scope:**
-- `tests/unit/application/test_crypto_fifo.py` — Task 4 only: update direct `parse_th_for_loan_affected_assets` call-sites if the public signature changes (expected: no change)
+**Tests; in scope:**
+- `tests/unit/application/test_crypto_fifo.py`: Task 4 only: update direct `parse_th_for_loan_affected_assets` call-sites if the public signature changes (expected: no change)
 
-**Out of scope — reject all review feedback:**
-- `src/shares_reporting/application/crypto_reporting.py` — caller of the public API; should require zero changes
-- All other files — no changes expected
+**Out of scope; reject all review feedback:**
+- `src/shares_reporting/application/crypto_reporting.py`: caller of the public API; should require zero changes
+- All other files; no changes expected
 
 ---
 
@@ -99,7 +99,7 @@ def parse_th_for_loan_affected_assets(path, loan_affected_assets):
     rows = read_koinly_rows(path)
     acquisitions, consumptions, phantom, failures = {}, {}, set(), {}
     for row_index, row in enumerate(rows, start=1):  # 1-based index preserved
-        # pre-parse skip (LOAN_TAGS, affectedness) stays here — before field parsing
+        # pre-parse skip (LOAN_TAGS, affectedness) stays here; before field parsing
         ...
         try:
             # field parsing
@@ -112,20 +112,20 @@ def parse_th_for_loan_affected_assets(path, loan_affected_assets):
 ```
 
 **Invariants that must be preserved (do not move to `_classify_th_row`):**
-- `enumerate(rows, start=1)` — `row_index` is 1-based; used in composite tx keys and FIFO ordering.
-- LOAN_TAGS skip and affectedness check execute *before* field parsing — this order must not change.
+- `enumerate(rows, start=1)`: `row_index` is 1-based; used in composite tx keys and FIFO ordering.
+- LOAN_TAGS skip and affectedness check execute *before* field parsing; this order must not change.
 - The `try/except ValueError` error boundary stays in the orchestrator; `parse_failures_by_asset` attribution happens in the except handler (not inside the helper).
-- `phantom_sending_transfers` accumulation: the set is passed into `_classify_th_row` and mutated there, same as `acquisitions`/`consumptions` — no change needed.
+- `phantom_sending_transfers` accumulation: the set is passed into `_classify_th_row` and mutated there, same as `acquisitions`/`consumptions`: no change needed.
 
 **Existing characterization tests to verify remain GREEN after extraction** (reference these in each run):
-- `TestParseTh#test_parse_error_records_asset_and_row_index` — given a TH row with unparseable decimal, expects `parse_failures_by_asset` maps the affected asset to the failing row index
-- `TestParseTh#test_parse_error_on_fee_only_row_attributes_fee_asset` — given a parse error on a fee-only affected row, expects the fee asset (not principal sides) is recorded in `parse_failures_by_asset`
-- `TestParseTh#test_parse_error_on_unrecognised_asset_does_not_pollute_parse_failures` — given a parse error on a row with no loan-affected asset, expects `parse_failures_by_asset` remains empty
+- `TestParseTh#test_parse_error_records_asset_and_row_index`: given a TH row with unparseable decimal, expects `parse_failures_by_asset` maps the affected asset to the failing row index
+- `TestParseTh#test_parse_error_on_fee_only_row_attributes_fee_asset`: given a parse error on a fee-only affected row, expects the fee asset (not principal sides) is recorded in `parse_failures_by_asset`
+- `TestParseTh#test_parse_error_on_unrecognised_asset_does_not_pollute_parse_failures`: given a parse error on a row with no loan-affected asset, expects `parse_failures_by_asset` remains empty
 
 **Missing test to add before extraction** (ADD → run → expect GREEN to establish baseline):
-- `TestBuildCompositeTxKey#test_duplicate_no_txhash_rows_get_unique_tx_keys` — given two TH rows with identical content (same date, wallets, amounts, currencies) but empty TxHash, expects each row produces a distinct tx_key (confirmed by `row_index` suffix in `_build_composite_tx_key`)
+- `TestBuildCompositeTxKey#test_duplicate_no_txhash_rows_get_unique_tx_keys`: given two TH rows with identical content (same date, wallets, amounts, currencies) but empty TxHash, expects each row produces a distinct tx_key (confirmed by `row_index` suffix in `_build_composite_tx_key`)
 
-- [x] Add `TestBuildCompositeTxKey#test_duplicate_no_txhash_rows_get_unique_tx_keys` — call `_build_composite_tx_key` directly with two identical row dicts at row_index=1 and row_index=2; assert the two keys differ.
+- [x] Add `TestBuildCompositeTxKey#test_duplicate_no_txhash_rows_get_unique_tx_keys`: call `_build_composite_tx_key` directly with two identical row dicts at row_index=1 and row_index=2; assert the two keys differ.
 - [x] Run → expect GREEN (characterization: captures existing `_build_composite_tx_key` behaviour before refactor).
 - [x] Verify `parse_th_for_loan_affected_assets` currently passes all existing tests: `uv run pytest tests/unit/application/test_crypto_fifo.py -x -q`
 - [x] Extract the inner dispatch block into `_classify_th_row` with the signature above; leave the outer function as the orchestrator.
@@ -145,10 +145,10 @@ Files:
 - `src/shares_reporting/application/crypto_fifo.py`
 
 **New helpers** (four branches confirmed at lines 1241, 1351, 1413, 1470):
-- `_emit_cross_asset_exchange(...)` — `sent_affected and received_affected` (cross-asset crypto swap with deferred acquisition; covers crypto-to-crypto and wrapped-asset swaps)
-- `_emit_received_only_exchange(...)` — `received_affected and not sent_affected` (any exchange where only the received side is loan-affected; covers fiat-to-crypto, crypto-to-crypto, and deposit-like flows)
-- `_emit_sent_only_exchange(...)` — `sent_affected and not received_affected` (any exchange where only the sent side is loan-affected; covers crypto-to-fiat and crypto-to-crypto disposal flows)
-- `_emit_fee_only_exchange(...)` — `fee_affected and not sent_affected and not received_affected` (fee disposal in a loan-affected asset when neither principal side is affected)
+- `_emit_cross_asset_exchange(...)`: `sent_affected and received_affected` (cross-asset crypto swap with deferred acquisition; covers crypto-to-crypto and wrapped-asset swaps)
+- `_emit_received_only_exchange(...)`: `received_affected and not sent_affected` (any exchange where only the received side is loan-affected; covers fiat-to-crypto, crypto-to-crypto, and deposit-like flows)
+- `_emit_sent_only_exchange(...)`: `sent_affected and not received_affected` (any exchange where only the sent side is loan-affected; covers crypto-to-fiat and crypto-to-crypto disposal flows)
+- `_emit_fee_only_exchange(...)`: `fee_affected and not sent_affected and not received_affected` (fee disposal in a loan-affected asset when neither principal side is affected)
 
 **After extraction, `_handle_exchange` body structure:**
 ```python
@@ -217,9 +217,9 @@ def compute_fifo_for_asset(acquisitions, consumptions, asset, platform) -> Asset
 ```
 
 **Existing characterization tests to verify remain GREEN after extraction:**
-- `TestFifoBasic#test_zero_cost_placeholder_with_review` — given empty pool and a taxable consumption, expects a zero-cost realization with `review_required=True` and "pool exhausted" in `review_reason`
-- `TestFifoCrossAssetCarryOver#test_lbtc_carry_over_becomes_wbtc_acquisition_cost` — given a non-taxable LBTC-to-WBTC exchange, expects `carryover_cost_by_tx_key` carries the cost to the deferred WBTC acquisition
-- `TestFifoPartialTransferCarryOver#test_partial_transfer_marks_receiver_review_required` — given a non-taxable transfer where the sender pool is exhausted mid-way, expects the tx_key appears in `partial_carryover_tx_keys` and the receiver lot is flagged `review_required`
+- `TestFifoBasic#test_zero_cost_placeholder_with_review`: given empty pool and a taxable consumption, expects a zero-cost realization with `review_required=True` and "pool exhausted" in `review_reason`
+- `TestFifoCrossAssetCarryOver#test_lbtc_carry_over_becomes_wbtc_acquisition_cost`: given a non-taxable LBTC-to-WBTC exchange, expects `carryover_cost_by_tx_key` carries the cost to the deferred WBTC acquisition
+- `TestFifoPartialTransferCarryOver#test_partial_transfer_marks_receiver_review_required`: given a non-taxable transfer where the sender pool is exhausted mid-way, expects the tx_key appears in `partial_carryover_tx_keys` and the receiver lot is flagged `review_required`
 
 - [x] Verify `compute_fifo_for_asset` currently passes all `TestFifo*` tests.
 - [x] Extract the deque-loop body into `_match_consumption_to_lots` with the signature above (including `partial_tx_keys` mutation).
@@ -235,7 +235,7 @@ def compute_fifo_for_asset(acquisitions, consumptions, asset, platform) -> Asset
 
 `parse_th_for_loan_affected_assets` calls `read_koinly_rows(path)` as its first line, coupling the application-layer classification logic to the infrastructure-layer file reader. Extract the row-processing logic into a private `_classify_rows_for_loan_affected_assets(rows, ...)` function. The public function becomes a thin wrapper. This makes the classification logic testable without touching the file system, and respects the application → infrastructure dependency direction.
 
-**Note:** `parse_koinly_decimal`, `parse_koinly_datetime`, and `normalize_*` utilities remain imported from `koinly_parser` within `crypto_fifo.py` — they are pure parsing utilities with no I/O side effects and do not violate DIP. Only the `read_koinly_rows` file-I/O call is moved.
+**Note:** `parse_koinly_decimal`, `parse_koinly_datetime`, and `normalize_*` utilities remain imported from `koinly_parser` within `crypto_fifo.py`: they are pure parsing utilities with no I/O side effects and do not violate DIP. Only the `read_koinly_rows` file-I/O call is moved.
 
 Files:
 - `src/shares_reporting/application/crypto_fifo.py`
@@ -255,14 +255,14 @@ def _classify_rows_for_loan_affected_assets(
     rows: Sequence[dict[str, str]],
     loan_affected_assets: frozenset[str] = frozenset(),
 ) -> tuple[...]:
-    """Core classification logic — operates on pre-loaded rows, no file I/O."""
+    """Core classification logic; operates on pre-loaded rows, no file I/O."""
     ...
 ```
 
 - [x] Add `from collections.abc import Sequence` to imports (already available via `__future__` annotations, but explicit import needed for runtime use).
 - [x] Extract the body of `parse_th_for_loan_affected_assets` (post-Task-1, i.e. after `_classify_th_row` is extracted) into `_classify_rows_for_loan_affected_assets(rows, loan_affected_assets)`; make `parse_th_for_loan_affected_assets` a one-liner wrapper.
 - [x] Confirm `_classify_rows_for_loan_affected_assets` body preserves the same invariants as Task 1: `enumerate(rows, start=1)`, pre-parse skips before field parsing, `parse_failures_by_asset` attribution in the except handler (not in any extracted helper), and `phantom_sending_transfers` mutation.
-- [x] Verify public signature of `parse_th_for_loan_affected_assets` is unchanged — all existing tests in `test_crypto_fifo.py` that pass a `Path` must continue to work without modification.
+- [x] Verify public signature of `parse_th_for_loan_affected_assets` is unchanged; all existing tests in `test_crypto_fifo.py` that pass a `Path` must continue to work without modification.
 - [x] Run → expect GREEN: `uv run pytest tests/unit/application/test_crypto_fifo.py -x -q && uv run pytest tests/unit/application/test_crypto_reporting.py -x -q -k "fifo or loan or rebuild"`
 - [x] Verify `crypto_reporting.py` requires zero changes: `uv run pytest tests/ -x -q`
 - [x] Lint: `uv run ruff check src/shares_reporting/application/crypto_fifo.py`

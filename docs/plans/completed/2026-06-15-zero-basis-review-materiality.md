@@ -142,20 +142,20 @@ Files:
 - `src/tax_reporting/domain/jurisdiction.py`
 - `src/tax_reporting/infrastructure/config.py`
 
-- [ ] `TestTaxJurisdictionConfig#accepts_zero_basis_review_min_proceeds` - given a config with the new field set to `Decimal("10")`, expects the field is accessible and equals `Decimal("10")`
-- [ ] `TestTaxJurisdictionConfig#defaults_zero_basis_review_min_proceeds_to_zero_when_absent` - given a jurisdiction config constructed without the field, expects `zero_basis_review_min_proceeds == Decimal("0")` (backward-compatible default: flag everything)
-- [ ] `TestLoadTaxJurisdictionConfig#reads_zero_basis_review_min_proceeds_from_config_ini` - given `config.ini` with `ZERO_BASIS_REVIEW_MIN_PROCEEDS = 10` under `[TAX JURISDICTION]`, expects the parsed `TaxJurisdictionConfig.zero_basis_review_min_proceeds` to equal `Decimal("10")`. Reuse the existing `_PT_TOML` constant and `_make_config` helper at `test_config.py:161-172`.
-- [ ] `TestLoadTaxJurisdictionConfig#falls_back_to_default_when_key_absent` - given `config.ini` without the key, expects the parsed config uses `DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS` (Decimal 10)
-- [ ] `TestLoadTaxJurisdictionConfig#rejects_invalid_zero_basis_review_min_proceeds` - given `config.ini` with `ZERO_BASIS_REVIEW_MIN_PROCEEDS = abc`, expects `ValueError` with the raw value in the message
-- [ ] `TestLoadTaxJurisdictionConfig#rejects_negative_zero_basis_review_min_proceeds` - given `config.ini` with `ZERO_BASIS_REVIEW_MIN_PROCEEDS = -5`, expects `ValueError` (r2 Monitor 1: mirror the `is_finite() and >= 0` validation from `ZERO_BASIS_REVIEW_THRESHOLD` at `config.py:193-196`; a negative value would over-flag rather than under-flag so is harmless, but explicit validation prevents confusion)
-- [ ] Run -> expect RED: `uv run pytest tests/unit/domain/test_jurisdiction.py::TestTaxJurisdictionConfig tests/unit/infrastructure/test_config.py -v`
-- [ ] Add `DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS = Decimal("10")` to `config.py` near `DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD`
-- [ ] Add `zero_basis_review_min_proceeds: Decimal = Decimal("0")` to `TaxJurisdictionConfig` after `zero_basis_review_threshold` (default 0 preserves current behavior when not set). Valid per r1 verified assumption 14: `zero_basis_review_threshold` has no default, but the fields below (`futures_derivatives_taxable` etc.) already have defaults, so inserting a defaulted field here does not violate dataclass ordering.
-- [ ] Verified (r1 Medium 4): `_KNOWN_DECISION_FLAGS` auto-derivation at `config.py:44-52` includes only `bool` fields (`if hint is bool`); the new `Decimal` field is correctly excluded from TOML flag validation. No registration needed.
-- [ ] Update the config loader in `config.py` to read `ZERO_BASIS_REVIEW_MIN_PROCEEDS`, defaulting to `DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS` when absent. Mirror the validation pattern at `config.py:187-196` (`try Decimal(...) except InvalidOperation`, then `if not value.is_finite() or value < 0: raise ValueError(...)`)
-- [ ] Add `ZERO_BASIS_REVIEW_MIN_PROCEEDS = 10` to `config.ini [TAX JURISDICTION]`
-- [ ] Add `ZERO_BASIS_REVIEW_MIN_PROCEEDS = 10` to `tests/config.ini [TAX JURISDICTION]`
-- [ ] Run -> expect GREEN
+- [x] `TestTaxJurisdictionConfig#accepts_zero_basis_review_min_proceeds` - given a config with the new field set to `Decimal("10")`, expects the field is accessible and equals `Decimal("10")`
+- [x] `TestTaxJurisdictionConfig#defaults_zero_basis_review_min_proceeds_to_zero_when_absent` - given a jurisdiction config constructed without the field, expects `zero_basis_review_min_proceeds == Decimal("0")` (backward-compatible default: flag everything)
+- [x] `TestLoadTaxJurisdictionConfig#reads_zero_basis_review_min_proceeds_from_config_ini` - given `config.ini` with `ZERO_BASIS_REVIEW_MIN_PROCEEDS = 10` under `[TAX JURISDICTION]`, expects the parsed `TaxJurisdictionConfig.zero_basis_review_min_proceeds` to equal `Decimal("10")`. Reuse the existing `_PT_TOML` constant and `_make_config` helper at `test_config.py:161-172`.
+- [x] `TestLoadTaxJurisdictionConfig#falls_back_to_default_when_key_absent` - given `config.ini` without the key, expects the parsed config uses `DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS` (Decimal 10)
+- [x] `TestLoadTaxJurisdictionConfig#rejects_invalid_zero_basis_review_min_proceeds` - given `config.ini` with `ZERO_BASIS_REVIEW_MIN_PROCEEDS = abc`, expects `ValueError` with the raw value in the message
+- [x] `TestLoadTaxJurisdictionConfig#rejects_negative_zero_basis_review_min_proceeds` - given `config.ini` with `ZERO_BASIS_REVIEW_MIN_PROCEEDS = -5`, expects `ValueError` (r2 Monitor 1: mirror the `is_finite() and >= 0` validation from `ZERO_BASIS_REVIEW_THRESHOLD` at `config.py:193-196`; a negative value would over-flag rather than under-flag so is harmless, but explicit validation prevents confusion)
+- [x] Run -> expect RED: `uv run pytest tests/unit/domain/test_jurisdiction.py::TestTaxJurisdictionConfig tests/unit/infrastructure/test_config.py -v`
+- [x] Add `DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS = Decimal("10")` to `config.py` near `DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD`
+- [x] Add `zero_basis_review_min_proceeds: Decimal = Decimal("0")` to `TaxJurisdictionConfig` after `zero_basis_review_threshold` (default 0 preserves current behavior when not set). Valid per r1 verified assumption 14: `zero_basis_review_threshold` has no default, but the fields below (`futures_derivatives_taxable` etc.) already have defaults, so inserting a defaulted field here does not violate dataclass ordering.
+- [x] Verified (r1 Medium 4): `_KNOWN_DECISION_FLAGS` auto-derivation at `config.py:44-52` includes only `bool` fields (`if hint is bool`); the new `Decimal` field is correctly excluded from TOML flag validation. No registration needed.
+- [x] Update the config loader in `config.py` to read `ZERO_BASIS_REVIEW_MIN_PROCEEDS`, defaulting to `DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS` when absent. Mirror the validation pattern at `config.py:187-196` (`try Decimal(...) except InvalidOperation`, then `if not value.is_finite() or value < 0: raise ValueError(...)`)
+- [x] Add `ZERO_BASIS_REVIEW_MIN_PROCEEDS = 10` to `config.ini [TAX JURISDICTION]`
+- [x] Add `ZERO_BASIS_REVIEW_MIN_PROCEEDS = 10` to `tests/config.ini [TAX JURISDICTION]`
+- [x] Run -> expect GREEN
 - [ ] Commit: `feat(config): add zero_basis_review_min_proceeds threshold for review flag gating`
 
 ### Task 2: Gate the zero-cost review flag by min_proceeds in `_build_zero_basis_review_reason`
@@ -164,15 +164,15 @@ Files:
 - `src/tax_reporting/application/crypto/fifo_helpers.py`
 - `src/tax_reporting/application/crypto_reporting.py`
 
-- [ ] `TestBuildZeroBasisReviewReason#zero_cost_zero_proceeds_never_flags` - given `cost_eur=0, proceeds_eur=0, min_proceeds=10`, expects `review_required=False` and empty `review_reason` (FEE token case)
-- [ ] `TestBuildZeroBasisReviewReason#zero_cost_small_proceeds_does_not_flag` - given `cost_eur=0, proceeds_eur=5, min_proceeds=10`, expects `review_required=False` (small reward below threshold)
-- [ ] `TestBuildZeroBasisReviewReason#zero_cost_at_threshold_flags` - given `cost_eur=0, proceeds_eur=10, min_proceeds=10`, expects `review_required=True` and reason mentions zero acquisition cost (boundary: at threshold, flag fires)
-- [ ] `TestBuildZeroBasisReviewReason#zero_cost_above_threshold_flags` - given `cost_eur=0, proceeds_eur=30, min_proceeds=10`, expects `review_required=True` with zero-cost reason (actionable review)
-- [ ] `TestBuildZeroBasisReviewReason#zero_proceeds_with_nonzero_cost_always_flags` - given `cost_eur=50, proceeds_eur=0, min_proceeds=10`, expects `review_required=True` with zero-proceeds reason (data-quality concern, threshold does not apply)
-- [ ] `TestBuildZeroBasisReviewReason#min_proceeds_zero_flags_all_zero_cost` - given `cost_eur=0, proceeds_eur=0, min_proceeds=0`, expects `review_required=True` (backward-compat: threshold 0 preserves current behavior). ALSO add `min_proceeds_zero_flags_zero_cost_with_proceeds`: given `cost_eur=0, proceeds_eur=100, min_proceeds=0`, expects `review_required=True` (r1 Monitor 1: cover non-zero-proceeds zero-cost case under backward-compat threshold, not just the zero-zero corner).
-- [ ] `TestBuildZeroBasisReviewReason#preserves_existing_review_reason` - given an entry that already has `review_required=True` and a non-empty `review_reason`, plus `cost_eur=0, proceeds_eur=30`, expects the new zero-cost reason is appended to the existing reason, not replacing it
-- [ ] Run -> expect RED: `uv run pytest tests/unit/application/test_crypto_reporting.py -v -k zero_basis_review`
-- [ ] Modify `_build_zero_basis_review_reason` signature to add `min_proceeds: Decimal = ZERO` as a new defaulted parameter at the end (preserves backward compat for existing tests that do not pass it). Final signature:
+- [x] `TestBuildZeroBasisReviewReason#zero_cost_zero_proceeds_never_flags` - given `cost_eur=0, proceeds_eur=0, min_proceeds=10`, expects `review_required=False` and empty `review_reason` (FEE token case)
+- [x] `TestBuildZeroBasisReviewReason#zero_cost_small_proceeds_does_not_flag` - given `cost_eur=0, proceeds_eur=5, min_proceeds=10`, expects `review_required=False` (small reward below threshold)
+- [x] `TestBuildZeroBasisReviewReason#zero_cost_at_threshold_flags` - given `cost_eur=0, proceeds_eur=10, min_proceeds=10`, expects `review_required=True` and reason mentions zero acquisition cost (boundary: at threshold, flag fires)
+- [x] `TestBuildZeroBasisReviewReason#zero_cost_above_threshold_flags` - given `cost_eur=0, proceeds_eur=30, min_proceeds=10`, expects `review_required=True` with zero-cost reason (actionable review)
+- [x] `TestBuildZeroBasisReviewReason#zero_proceeds_with_nonzero_cost_always_flags` - given `cost_eur=50, proceeds_eur=0, min_proceeds=10`, expects `review_required=True` with zero-proceeds reason (data-quality concern, threshold does not apply)
+- [x] `TestBuildZeroBasisReviewReason#min_proceeds_zero_flags_all_zero_cost` - given `cost_eur=0, proceeds_eur=0, min_proceeds=0`, expects `review_required=True` (backward-compat: threshold 0 preserves current behavior). ALSO add `min_proceeds_zero_flags_zero_cost_with_proceeds`: given `cost_eur=0, proceeds_eur=100, min_proceeds=0`, expects `review_required=True` (r1 Monitor 1: cover non-zero-proceeds zero-cost case under backward-compat threshold, not just the zero-zero corner).
+- [x] `TestBuildZeroBasisReviewReason#preserves_existing_review_reason` - given an entry that already has `review_required=True` and a non-empty `review_reason`, plus `cost_eur=0, proceeds_eur=30`, expects the new zero-cost reason is appended to the existing reason, not replacing it
+- [x] Run -> expect RED: `uv run pytest tests/unit/application/test_crypto_reporting.py -v -k zero_basis_review`
+- [x] Modify `_build_zero_basis_review_reason` signature to add `min_proceeds: Decimal = ZERO` as a new defaulted parameter at the end (preserves backward compat for existing tests that do not pass it). Final signature:
   ```python
   def _build_zero_basis_review_reason(
       cost_eur: Decimal,
@@ -182,7 +182,7 @@ Files:
       min_proceeds: Decimal = ZERO,
   ) -> tuple[bool, str]:
   ```
-- [ ] Replace BOTH branches with the three-tier logic. The proceeds branch MUST gain a `cost_eur > ZERO` guard so zero-zero entries do not trip it (this was r1 Blocker 1: leaving the proceeds branch unchanged lets `proceeds_eur == ZERO` evaluate True on zero-zero, re-flagging the FEE token case):
+- [x] Replace BOTH branches with the three-tier logic. The proceeds branch MUST gain a `cost_eur > ZERO` guard so zero-zero entries do not trip it (this was r1 Blocker 1: leaving the proceeds branch unchanged lets `proceeds_eur == ZERO` evaluate True on zero-zero, re-flagging the FEE token case). **Implementation note:** a third branch was added for `cost_eur == ZERO and proceeds_eur == ZERO and min_proceeds == ZERO` to satisfy Design Invariant 4 (the two-branch pseudocode above would not flag zero-zero under backward-compat threshold 0, contradicting the invariant).
   ```python
   # tier 3: zero-cost with material proceeds (above min_proceeds threshold)
   if cost_eur == ZERO and proceeds_eur > ZERO and proceeds_eur >= min_proceeds:
@@ -200,16 +200,16 @@ Files:
   #   - cost=0 AND proceeds=0 (FEE token case): neither condition matches
   #   - cost=0 AND 0 < proceeds < min_proceeds (small reward): cost branch requires proceeds >= min_proceeds
   ```
-- [ ] Trace verification (r1 recommended step 7): for each of the five input combinations, confirm the flag outcome matches the decision table:
+- [x] Trace verification (r1 recommended step 7): for each of the five input combinations, confirm the flag outcome matches the decision table:
   - `cost=0, proceeds=0, min_proceeds=10` -> no flag (both branch conditions False)
   - `cost=0, proceeds=5, min_proceeds=10` -> no flag (cost branch: `5 >= 10` False; proceeds branch: `cost_eur > ZERO` False)
   - `cost=0, proceeds=30, min_proceeds=10` -> flag with zero-cost reason (cost branch: `30 >= 10` True)
   - `cost=50, proceeds=0, min_proceeds=10` -> flag with zero-proceeds reason (proceeds branch: `cost_eur > ZERO` True)
   - `cost=50, proceeds=100, min_proceeds=10` -> no flag (neither branch matches)
-- [ ] Update the external call site at `crypto_reporting.py:458-460` to pass `min_proceeds=jurisdiction.zero_basis_review_min_proceeds` (or `DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS` fallback, matching the existing threshold pattern)
-- [ ] Update the internal call site at `fifo_helpers.py:323-325` to thread the threshold through
-- [ ] Update the five existing `test_build_zero_basis_review_reason_*` functions at `tests/unit/application/test_crypto_reporting.py:3889-3955` to pass the new `min_proceeds` parameter. SPECIFICALLY REWRITE `test_build_zero_basis_review_reason_both_zero` (line 3921) to assert `review_required is False` and empty `review_reason` (this was r1 Medium 1: the existing test asserts True for both-zero, which contradicts the new three-tier rule). The other four tests (`_zero_cost` at 3889, `_zero_proceeds` at 3905, `_appends_to_existing_reason` at 3939, `_no_trigger_when_both_nonzero` at 3955) need parameter addition but not assertion changes
-- [ ] Run -> expect GREEN
+- [x] Update the external call site at `crypto_reporting.py:458-460` to pass `min_proceeds=jurisdiction.zero_basis_review_min_proceeds` (or `DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS` fallback, matching the existing threshold pattern)
+- [x] Update the internal call site at `fifo_helpers.py:323-325` to thread the threshold through
+- [x] Update the five existing `test_build_zero_basis_review_reason_*` functions at `tests/unit/application/test_crypto_reporting.py:3889-3955` to pass the new `min_proceeds` parameter. SPECIFICALLY REWRITE `test_build_zero_basis_review_reason_both_zero` (line 3921) to assert `review_required is False` and empty `review_reason` (this was r1 Medium 1: the existing test asserts True for both-zero, which contradicts the new three-tier rule). The other four tests (`_zero_cost` at 3889, `_zero_proceeds` at 3905, `_appends_to_existing_reason` at 3939, `_no_trigger_when_both_nonzero` at 3955) need parameter addition but not assertion changes
+- [x] Run -> expect GREEN
 - [ ] Commit: `feat(crypto): gate zero-basis review flag by min_proceeds threshold`
 
 ### Task 3: CryptoTaxReport field NOT needed (r1 Medium 3 resolution)
@@ -221,15 +221,15 @@ The new threshold is consumed only at FIFO build time (`fifo_helpers._build_zero
 Files:
 - `docs/tax/decision_points/2025.md`
 
-- [ ] Verify `2025.md` Decision Points table structure (search for DP-012 entry at line 41 as the template)
-- [ ] Add a new decision point entry **DP-013** (next sequential after DP-012) to the Decision Points table documenting:
+- [x] Verify `2025.md` Decision Points table structure (search for DP-012 entry at line 41 as the template)
+- [x] Add a new decision point entry **DP-013** (next sequential after DP-012) to the Decision Points table documenting:
   - Question: "Gate zero-basis review flag by min proceeds threshold?"
   - Answer: "Yes (default 10 EUR via `ZERO_BASIS_REVIEW_MIN_PROCEEDS` in `config.ini`)"
   - Koinly setting: "N/A (tool behavior)"
   - Legal basis: "PT-C-024 (no de minimis in law, but zero-gain disposals have nothing to declare); PT-C-028 (1 EUR materiality filter precedent)"
   - Notes: "Three-tier rule: `cost=0 AND proceeds=0` never flags (FEE tokens); `cost=0 AND 0 < proceeds < threshold` no flag (small rewards); `cost=0 AND proceeds >= threshold` flags; `cost>0 AND proceeds=0` keeps flagging (data-quality). Setting threshold to 0 restores current behavior."
-- [ ] Add a Change Log entry at the bottom of `2025.md`: "`| 2026-06-15 | Added DP-013 for zero-basis review flag materiality threshold (noise reduction per PT-C-028 rationale) |`"
-- [ ] Do NOT add to `2025.toml` (TOML schema is boolean-only; numeric thresholds live in `config.ini`)
+- [x] Add a Change Log entry at the bottom of `2025.md`: "`| 2026-06-15 | Added DP-013 for zero-basis review flag materiality threshold (noise reduction per PT-C-028 rationale) |`"
+- [x] Do NOT add to `2025.toml` (TOML schema is boolean-only; numeric thresholds live in `config.ini`)
 - [ ] Commit: `docs(decisions): document zero_basis_review_min_proceeds implementation decision`
 
 ### Task 5: E2E backward compatibility test
@@ -237,9 +237,9 @@ Files:
 Files:
 - `tests/end_to_end/test_crypto_zero_basis_materiality.py` (new)
 
-- [ ] `TestZeroBasisMaterialityE2E#fee_token_disposals_not_flagged` - given a Koinly CG fixture with FEE token disposals (cost=0, proceeds=0), expects the generated `CryptoTaxReport.capital_entries` contains those entries with `review_required=False` (or they are filtered out by materiality, in which case the test verifies they do not appear in the review-required set)
-- [ ] `TestZeroBasisMaterialityE2E#small_reward_disposals_below_threshold_not_flagged` - given a fixture with zero-cost entries having proceeds between 0.01 and 9.99 EUR, expects `review_required=False`
-- [ ] `TestZeroBasisMaterialityE2E#larger_zero_cost_disposals_above_threshold_flagged` - given a fixture with a zero-cost entry having proceeds >= 10 EUR, expects `review_required=True` with actionable reason
-- [ ] `TestZeroBasisMaterialityE2E#backward_compat_min_proceeds_zero_flags_all` - given a `TaxJurisdictionConfig` constructed directly with `zero_basis_review_min_proceeds=Decimal("0")` (matching the e2e pattern at `tests/end_to_end/test_crypto_derivatives_separation.py:69` of constructing the config object directly rather than mocking `config.ini`), expects all zero-cost entries flagged (current behavior preserved)
-- [ ] Run -> expect RED initially, then GREEN after Task 2 implementation
+- [x] `TestZeroBasisMaterialityE2E#fee_token_disposals_not_flagged` - given a Koinly CG fixture with FEE token disposals (cost=0, proceeds=0), expects the generated `CryptoTaxReport.capital_entries` contains those entries with `review_required=False` (or they are filtered out by materiality, in which case the test verifies they do not appear in the review-required set)
+- [x] `TestZeroBasisMaterialityE2E#small_reward_disposals_below_threshold_not_flagged` - given a fixture with zero-cost entries having proceeds between 0.01 and 9.99 EUR, expects `review_required=False`
+- [x] `TestZeroBasisMaterialityE2E#larger_zero_cost_disposals_above_threshold_flagged` - given a fixture with a zero-cost entry having proceeds >= 10 EUR, expects `review_required=True` with actionable reason
+- [x] `TestZeroBasisMaterialityE2E#backward_compat_min_proceeds_zero_flags_all` - given a `TaxJurisdictionConfig` constructed directly with `zero_basis_review_min_proceeds=Decimal("0")` (matching the e2e pattern at `tests/end_to_end/test_crypto_derivatives_separation.py:69` of constructing the config object directly rather than mocking `config.ini`), expects all zero-cost entries flagged (current behavior preserved)
+- [x] Run -> expect RED initially, then GREEN after Task 2 implementation
 - [ ] Commit: `test(e2e): add zero-basis materiality backward-compat coverage`

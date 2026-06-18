@@ -99,14 +99,14 @@ Chain-origin mappings collected so far include:
 **CRG-016**
 Distinguish between platform-level review concerns and row-level review flags:
 
-- **Platform-level concerns** (e.g., "Bybit uses account-region specific entities; verify your account region"): These apply to ALL transactions from a platform. Display them in the "Platform Assumptions" worksheet — a complete manifest of every platform in the report. Platform concerns must NOT set `review_required=True` on individual transaction rows.
+- **Platform-level concerns** (e.g., "Bybit uses account-region specific entities; verify your account region"): These apply to ALL transactions from a platform. Display them in the "Platform Assumptions" worksheet, a complete manifest of every platform in the report. Platform concerns must NOT set `review_required=True` on individual transaction rows.
 
 - **Row-level review flags** (e.g., missing cost basis, date parsing errors, phantom transfers, FIFO pool exhaustion): These are specific to individual transactions and must be shown on the row with "YES: <reason>", with the row highlighted red.
 
 **`OperatorOrigin` fields:**
-- `platform_assumption` — free-text note shown in the Platform Assumptions tab (informational; does not trigger red rows)
-- `platform_review_required: bool` — whether this platform must be manually verified before filing; controls red highlighting and "YES"/"NO" in the Platform Assumptions tab; does NOT affect individual transaction rows
-- `review_required: bool` / `review_reason: str` — row-level flag; triggers "YES: <reason>" on the transaction row and red row fill; set only for per-transaction issues (temporal validity failures, unknown platforms, FIFO anomalies)
+- `platform_assumption`: free-text note shown in the Platform Assumptions tab (informational; does not trigger red rows)
+- `platform_review_required: bool`: whether this platform must be manually verified before filing; controls red highlighting and "YES"/"NO" in the Platform Assumptions tab; does NOT affect individual transaction rows
+- `review_required: bool` / `review_reason: str`: row-level flag; triggers "YES: <reason>" on the transaction row and red row fill; set only for per-transaction issues (temporal validity failures, unknown platforms, FIFO anomalies)
 
 **Platform Assumptions tab** shows ALL platforms seen in the data (not just those with assumption text), columns: Platform | Operator Entity | Country | Confidence | Review Required | Assumption Note | Transaction Count. Rows with `platform_review_required=True` are sorted first and highlighted red.
 
@@ -178,7 +178,7 @@ plan `docs/plans/2026-06-13-derivatives-separation.md`.
 ## Token Origin Resolution
 
 **CRG-015**
-Token origin is derived from implicit `(date, asset, wallet)` correlation between the Koinly capital gains report and the Koinly transaction history. The capital gains CSV provides no transaction ID, lot ID, or hash that directly links to the transaction history, so all matching is best-effort correlation — not a direct foreign-key link.
+Token origin is derived from implicit `(date, asset, wallet)` correlation between the Koinly capital gains report and the Koinly transaction history. The capital gains CSV provides no transaction ID, lot ID, or hash that directly links to the transaction history, so all matching is best-effort correlation, not a direct foreign-key link.
 
 Origin resolution uses the `TokenOriginResolver` class:
 
@@ -186,9 +186,9 @@ Origin resolution uses the `TokenOriginResolver` class:
 - **Matching**: For each capital gains row, the resolver looks up acquisition events matching `(Date Acquired, Asset, normalized wallet)` from the transaction history.
 - **Acquisition methods**: `direct_purchase`, `swap_conversion`, `bridge_transfer`, `defi_yield`, `reward`, `transfer`, `unknown`.
 - **Confidence levels**:
-  - `high` — the transaction history row has a `TxHash` or other explicit on-chain identifier.
-  - `medium` — matched via implicit date/asset/wallet correlation only.
-  - `low` — ambiguous match (multiple conflicting records for the same key), capital gains row has `Missing cost basis`, or no match found.
+  - `high`: the transaction history row has a `TxHash` or other explicit on-chain identifier.
+  - `medium`: matched via implicit date/asset/wallet correlation only.
+  - `low`: ambiguous match (multiple conflicting records for the same key), capital gains row has `Missing cost basis`, or no match found.
 - **Fallback**: When no matching transaction history row exists (CEX internal fills, history gaps, pre-Koinly acquisition dates, or epoch date `1970-01-01`), the resolver returns `unknown` with `low` confidence. It never guesses.
 - **Output format**: The `Token origin` column shows `"FROM_ASSET (method, confidence confidence)"` for resolved rows, or blank for unknown.
 - **Disclaimer**: Origin values are best-effort correlation from Koinly export data and should be reviewed against source documents before filing.

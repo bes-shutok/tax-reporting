@@ -184,7 +184,7 @@ def _main(  # noqa: PLR0912, PLR0915
         )
     except (ValueError, KeyError, configparser.Error) as exc:
         raise ConfigurationError(
-            f"Config file has invalid settings — correct config.ini and retry: {exc}"
+            f"Config file has invalid settings. Correct config.ini and retry: {exc}"
         ) from exc
 
     try:
@@ -304,7 +304,7 @@ def _load_crypto_tax_report(
     except FileProcessingError as exc:
         logger.error(
             "Koinly data in %s is malformed and cannot be parsed: %s. "
-            "Continuing without crypto data — fix the Koinly export and re-run.",
+            "Continuing without crypto data: fix the Koinly export and re-run.",
             koinly_dir,
             exc,
         )

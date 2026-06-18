@@ -1,4 +1,7 @@
-"""Action emitters for the crypto FIFO parser. Builds AcquisitionContext and ConsumptionContext objects from classified ParsedTxRow inputs."""
+"""Action emitters for the crypto FIFO parser.
+
+Builds AcquisitionContext and ConsumptionContext objects from classified ParsedTxRow inputs.
+"""
 
 from __future__ import annotations
 
@@ -334,7 +337,7 @@ def _handle_transfer(
             )
         elif not receiving_wallet:
             logger.warning(
-                "Row %d: transfer of loan-affected asset %s (%s) has unknown receiver platform — "
+                "Row %d: transfer of loan-affected asset %s (%s) has unknown receiver platform: "
                 "principal movement not tracked. Sending platform (%s) retains phantom lots; "
                 "future disposals from that platform will be flagged review_required=True.",
                 parsed_row.row_index,
@@ -344,7 +347,9 @@ def _handle_transfer(
             )
             phantom_sending_transfers.add((parsed_row.sent_currency, sending_platform, parsed_row.date_str))
         else:
-            transfer_amount = parsed_row.received_amount if parsed_row.received_amount > ZERO else parsed_row.sent_amount
+            transfer_amount = (
+                parsed_row.received_amount if parsed_row.received_amount > ZERO else parsed_row.sent_amount
+            )
             if parsed_row.sent_amount > transfer_amount:
                 logger.warning(
                     "Row %d: transfer of %s has sent_amount (%s) > received_amount (%s); "

@@ -7,11 +7,11 @@ downgrade on ambiguous or flagged rows.
 
 from __future__ import annotations
 
+from tax_reporting.application.token_origin import TokenOriginResolver
 from tax_reporting.domain.token_origin import (
     AcquisitionMethod,
     TokenOrigin,
 )
-from tax_reporting.application.token_origin import TokenOriginResolver
 
 _TH_HEADER = (
     "Transaction report 2025\n"
@@ -300,7 +300,7 @@ class TestOriginResolverMissingCostBasis:
         resolver = TokenOriginResolver(path)
         origin = resolver.resolve(
             "2025-01-15", "ETH", "Kraken",
-            notes="Auto-imported — Missing cost basis applied",
+            notes="Auto-imported: Missing cost basis applied",
         )
         assert origin.confidence == "low"
 
@@ -451,7 +451,7 @@ class TestOriginResolverGracefulDegradation:
 
 
 class TestOriginResolverLiquidityOut:
-    """Liquidity pool withdrawal scenarios — user removes liquidity and receives tokens."""
+    """Liquidity pool withdrawal scenarios: user removes liquidity and receives tokens."""
 
     def test_liquidity_out_deposit_with_paired_withdrawal(self, tmp_path) -> None:
         """crypto_deposit with tag 'Liquidity out' + crypto_withdrawal sharing same TxHash resolves to LP token name."""
@@ -509,7 +509,7 @@ class TestOriginResolverLiquidityOut:
 
 
 class TestOriginResolverLiquidityIn:
-    """Liquidity pool provision scenarios — user provides tokens and receives LP tokens."""
+    """Liquidity pool provision scenarios: user provides tokens and receives LP tokens."""
 
     def test_liquidity_in_deposit_with_paired_withdrawals(self, tmp_path) -> None:
         """crypto_deposit receiving LP tokens + two crypto_withdrawal rows → from_asset is joined token names."""

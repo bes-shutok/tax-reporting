@@ -6,7 +6,6 @@ import logging
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Final
 
 from ...domain.constants import LOAN_STATUS_OVERPAID
 from ...infrastructure.koinly_parser import normalize_asset_ticker, parse_koinly_decimal, read_koinly_rows
@@ -72,7 +71,7 @@ def _extract_loan_activity(transaction_history_path: Path | None) -> list[LoanAc
         elif tag == "loan repayment" and row_type in {"crypto_withdrawal", "exchange", "sell", "transfer"}:
             # Loan repayments are executed as withdrawals (most common), exchanges (DeFi repay-in-kind),
             # sells, or on-chain transfers. For all these row types, the repaid crypto is in Sent Currency.
-            # Note: "buy" is excluded — buy rows represent fiat→crypto purchases where Sent Currency
+            # Note: "buy" is excluded: buy rows represent fiat→crypto purchases where Sent Currency
             # is fiat, not the crypto being repaid.
             sent_currency = row.get("Sent Currency", "").strip()
             if not sent_currency:

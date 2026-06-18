@@ -8,10 +8,10 @@ Every plan must include a `## Gist & Examples` section immediately after the hea
 
 ### Required Content
 
-1. **What changes** — One paragraph explaining the feature in plain language
-2. **Why needed** — Problem statement or context
-3. **Concrete examples** — Input/output examples showing before/after behavior
-4. **Edge cases** — Non-obvious scenarios that influenced design decisions
+1. **What changes**: One paragraph explaining the feature in plain language
+2. **Why needed**: Problem statement or context
+3. **Concrete examples**: Input/output examples showing before/after behavior
+4. **Edge cases**: Non-obvious scenarios that influenced design decisions
 
 ### Example Format
 
@@ -20,7 +20,7 @@ Every plan must include a `## Gist & Examples` section immediately after the hea
 
 **What changes:** [One plain-language paragraph explaining what changes]
 
-**Why needed:** [Problem statement or context — why this change is necessary]
+**Why needed:** [Problem statement or context: why this change is necessary]
 
 **Example input:** [Concrete input data structure, transaction, API call, etc.]
 
@@ -31,7 +31,7 @@ Every plan must include a `## Gist & Examples` section immediately after the hea
 
 **Guidelines:**
 - Use domain-appropriate examples (database rows, API responses, config formats, etc.)
-- Avoid domain jargon in the "What changes" paragraph — explain for a general technical audience
+- Avoid domain jargon in the "What changes" paragraph; explain for a general technical audience
 - Keep examples concise but complete enough to show the transformation
 - In "Edge cases", focus on non-obvious scenarios, not routine happy paths
 

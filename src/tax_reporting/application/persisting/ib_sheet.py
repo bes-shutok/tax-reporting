@@ -106,18 +106,39 @@ def write_ib_reporting_sheet(  # noqa: PLR0912, PLR0915
         _ = worksheet.cell(line_number + 1, i + 1, first_header[i])
         _ = worksheet.cell(line_number + 2, i + 1, second_header[i])
 
-    # Merge header cells for grouped columns
+    # Merge header cells for grouped columns. Each precondition guards the merge
+    # span against the fixed header array structure; a mismatch means the header
+    # layout drifted from the merge ranges, which would silently corrupt the sheet.
     header_row_1 = line_number + 1
-    # Verify merge spans align with header array structure
-    assert first_header[1] == "SALE" and first_header[4] == ""
+    if first_header[1] != "SALE":
+        raise ReportGenerationError(
+            f"Expected SALE header at column 2, found {first_header[1]!r}; header layout drifted from merge spans"
+        )
+    if first_header[4] != "":
+        raise ReportGenerationError(
+            f"Expected empty SALE sub-header at column 5, found {first_header[4]!r}; merge span mismatch"
+        )
     # Merge SALE header across 4 columns (cols 2-5: SALE + 3 empty sub-headers)
     worksheet.merge_cells(start_row=header_row_1, start_column=2, end_row=header_row_1, end_column=5)
-    # Verify merge spans align with header array structure
-    assert first_header[5] == "PURCHASE" and first_header[8] == ""
+    if first_header[5] != "PURCHASE":
+        raise ReportGenerationError(
+            f"Expected PURCHASE header at column 6, found {first_header[5]!r}; header layout drifted from merge spans"
+        )
+    if first_header[8] != "":
+        raise ReportGenerationError(
+            f"Expected empty PURCHASE sub-header at column 9, found {first_header[8]!r}; merge span mismatch"
+        )
     # Merge PURCHASE header across 4 columns (cols 6-9: PURCHASE + 3 empty sub-headers)
     worksheet.merge_cells(start_row=header_row_1, start_column=6, end_row=header_row_1, end_column=9)
-    # Verify merge spans align with header array structure
-    assert first_header[9] == "WITHOLDING TAX" and first_header[10] == ""
+    if first_header[9] != "WITHOLDING TAX":
+        raise ReportGenerationError(
+            f"Expected WITHOLDING TAX header at column 10, found {first_header[9]!r}; "
+            "header layout drifted from merge spans"
+        )
+    if first_header[10] != "":
+        raise ReportGenerationError(
+            f"Expected empty WITHOLDING TAX sub-header at column 11, found {first_header[10]!r}; merge span mismatch"
+        )
     # Merge WITHOLDING TAX header across 2 columns (cols 10-11: WITHOLDING TAX + 1 empty sub-header)
     worksheet.merge_cells(start_row=header_row_1, start_column=10, end_row=header_row_1, end_column=11)
 

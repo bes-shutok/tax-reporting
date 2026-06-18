@@ -7,19 +7,19 @@ Each rule carries a source reference and the date of the source document so outd
 rules can be identified when the law changes.
 
 **Source authority levels:**
-- `[OFFICIAL]` — direct text from AT (Autoridade Tributária) or DRE (Diário da República)
-- `[SECONDARY]` — from reputable Portuguese tax advisory sites; plausible but not authoritative
+- `[OFFICIAL]`: direct text from AT (Autoridade Tributária) or DRE (Diário da República)
+- `[SECONDARY]`: from reputable Portuguese tax advisory sites; plausible but not authoritative
 
 ---
 
-## Section 1 — Definitions
+## Section 1: Definitions
 
 **PT-C-001** `[OFFICIAL | 2026-01-12]`
 A criptoativo is "toda a representação digital de valor ou direitos que possa ser transferida
 ou armazenada eletronicamente recorrendo à tecnologia de registo distribuído ou outra
 semelhante" (CIRS art. 10 n.17). This includes Bitcoin, ETH, USDT, stablecoins,
 and tokens of all kinds.
-> Source: AT folheto "Criptoativos — Conceito fiscal e tributação", published 2026-01-12.
+> Source: AT folheto "Criptoativos, Conceito fiscal e tributação", published 2026-01-12.
 
 **PT-C-002** `[OFFICIAL | 2026-01-12]`
 NFTs (non-fungible tokens that are unique and non-interchangeable with other crypto assets)
@@ -34,7 +34,7 @@ They are subject to the same capital gains rules as other criptoativos.
 
 ---
 
-## Section 2 — Taxable Event (Alienação Onerosa)
+## Section 2: Taxable Event (Alienação Onerosa)
 
 **PT-C-004** `[OFFICIAL | 2026-01-12]`
 A taxable disposal (alienação onerosa) occurs when crypto is sold for fiat money or
@@ -58,7 +58,7 @@ an EU/EEA member state or a jurisdiction with a double-tax treaty with Portugal
 
 ---
 
-## Section 3 — Capital Gains Calculation
+## Section 3: Capital Gains Calculation
 
 **PT-C-007** `[OFFICIAL | 2026-01-12]`
 Capital gain = **valor de realização − valor de aquisição − despesas necessárias**.
@@ -85,7 +85,7 @@ the disposal date** (CIRS art. 52 n.1).
 
 ---
 
-## Section 4 — Holding Period and Exemption
+## Section 4: Holding Period and Exemption
 
 **PT-C-011** `[OFFICIAL | 2026-01-12]`
 **365-day exemption:** Gains and losses on disposal of non-securities crypto assets held
@@ -108,7 +108,7 @@ jurisdiction without a double-tax treaty with Portugal or an information-exchang
 
 ---
 
-## Section 5 — Tax Rates and Englobamento
+## Section 5: Tax Rates and Englobamento
 
 **PT-C-014** `[OFFICIAL | 2026-01-12]`
 Taxable crypto capital gains are subject to a **28% flat rate** (taxa autónoma).
@@ -124,7 +124,7 @@ reaches the top income bracket of CIRS art. 68 n.1 (CIRS art. 72 n.14).
 
 ---
 
-## Section 6 — Losses
+## Section 6: Losses
 
 **PT-C-016** `[OFFICIAL | 2026-01-12]`
 Capital losses (negative gain) from crypto disposals may be carried forward for **5 years**
@@ -158,7 +158,7 @@ Englobamento option for Quadro 13 derivatives is signalled in Quadro 15 of the s
 
 > **Example:** ByBit SOL/USDT position `<POSITION_ID>` liquidated on 19 Jan 2025,
 > 11:28:53 PM. Koinly reported -42.26 USD loss at 11:29:46 PM. The system assessed disposal
-> of 280.36 USDT (271.79 EUR) as collateral disposition with negative gain/loss — this is
+> of 280.36 USDT (271.79 EUR) as collateral disposition with negative gain/loss. This is
 > correct treatment, not an error. For a detailed verification of how negative gains flow
 > through the pipeline (parsing, storage, aggregation, Excel output), see
 > `docs/domain/negative_gain_handling_verification.md`.
@@ -189,7 +189,7 @@ use the OGR value as the authoritative source for gain/loss calculation, overrid
 corresponding entry in the Capital Gains Report. This ensures derivatives are reported
 with proper classification and collateral flow handling per Portuguese law.
 > Source: CIRS art. 10(1)(e) "Operações relativas a instrumentos financeiros derivados";
-> AT folheto "Criptoativos — Conceito fiscal e tributação", published 2026-01-12;
+> AT folheto "Criptoativos, Conceito fiscal e tributação", published 2026-01-12;
 > official AT portal rendering in `cirs_art10_portal_2026-04-01.html`.
 
 **PT-C-034** `[OFFICIAL | 2026-06-13 | CIRS art. 10(1)(e) and (k) | AT binding ruling Processo 28298/2025]`
@@ -209,7 +209,7 @@ not a tax-law parameter.
 
 ---
 
-## Section 7 — Declaration Forms
+## Section 7: Declaration Forms
 
 **PT-C-018** `[OFFICIAL | 2024-03-24]`
 For **domestic-source** crypto (Portuguese exchanges): short-term disposals (<365 days)
@@ -224,17 +224,17 @@ não constituam valores mobiliários").
 
 **PT-C-020** `[OFFICIAL | 2026-03-05]`
 **Required fields per line in Quadro 9.4 (Anexo J):**
-- País da fonte (source country — country of the exchange)
-- Data de realização — **Ano, Mês, Dia** (disposal date, day precision only)
+- País da fonte (source country: country of the exchange)
+- Data de realização: **Ano, Mês, Dia** (disposal date, day precision only)
 - Valor de realização (proceeds in EUR)
-- Data de aquisição — **Ano, Mês, Dia** (acquisition date, day precision only)
+- Data de aquisição: **Ano, Mês, Dia** (acquisition date, day precision only)
 - Valor de aquisição (cost in EUR)
 - Despesas e encargos (expenses and charges)
 - Imposto pago no estrangeiro (foreign tax paid)
 - País da contraparte (counterparty country)
 - Opção pelo englobamento (opt into progressive taxation: yes/no)
 
-The form has **no time-of-day columns** — dates are captured as year, month, and day only.
+The form has **no time-of-day columns**; dates are captured as year, month, and day only.
 The same day-level precision applies to Anexo G Quadro 18A (domestic crypto, short-term) and
 Anexo G1 Quadro 7 (long-term exempt crypto). Aggregation coarser than day-level (e.g. per month
 or per year) would merge distinct disposal events and is not acceptable. Aggregation at day-level
@@ -257,7 +257,7 @@ contraparte" field in Quadro 9.4 (Anexo J, foreign).
 
 ---
 
-## Section 8 — Reporting Obligations
+## Section 8: Reporting Obligations
 
 **PT-C-023** `[OFFICIAL | 2026-01-12]`
 Crypto service providers (custodians, exchange operators) with customers domiciled in
@@ -275,7 +275,7 @@ transactions has been found in any of the documents reviewed.
 
 ---
 
-## Section 9 — Practical Filing Guidance
+## Section 9: Practical Filing Guidance
 
 **PT-C-025** `[SECONDARY | ~2025]`
 Each disposal (alienação) should be reported as a separate line in the form
@@ -294,7 +294,7 @@ Every line in Quadro 9.4 must be entered manually through the portal's web inter
 
 ---
 
-## Section 10 — Implementation Decisions (this codebase)
+## Section 10: Implementation Decisions (this codebase)
 
 These decisions are specific to this codebase and may be revised.
 
@@ -308,7 +308,7 @@ is the sale transaction, not the lot. The holding_period must be preserved to di
 taxable short-term gains from exempt long-term gains.
 
 **Date precision constraint (PT-C-020):** the official Anexo J Quadro 9.4 form captures dates
-as Ano/Mês/Dia (year, month, day) — no time-of-day field exists. Aggregation must be at
+as Ano/Mês/Dia (year, month, day); no time-of-day field exists. Aggregation must be at
 **day-level or finer**; coarser aggregation (per month, per year) would merge distinct
 disposal events and is not acceptable. The current implementation uses day-level dates
 internally for grouping, matching the Anexo J form's Ano/Mes/Dia precision (PT-C-020).

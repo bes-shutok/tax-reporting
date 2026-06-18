@@ -1,11 +1,9 @@
-"""Tests for crypto/parsing.py — file discovery and parsing helpers."""
+"""Tests for crypto/parsing.py: file discovery and parsing helpers."""
 
 from __future__ import annotations
 
 from decimal import Decimal
 from pathlib import Path
-
-import pytest
 
 from tax_reporting.application.crypto.entities import ParsedOgrRow
 from tax_reporting.application.crypto.ogr_handler import _build_ogr_index
@@ -162,7 +160,9 @@ class TestExtractTaxYear:
         # Mock datetime.now() to return a fixed year for predictable testing
         import datetime
         fixed_date = datetime.datetime(2026, 6, 11, tzinfo=datetime.UTC)
-        monkeypatch.setattr("tax_reporting.application.crypto.parsing.datetime", type("MockDatetime", (), {"now": lambda tz: fixed_date}))
+        # datetime.now is called as now(tz=UTC), so the mock must accept the tz kwarg.
+        mock_datetime = type("MockDatetime", (), {"now": lambda tz: fixed_date})  # noqa: ARG005
+        monkeypatch.setattr("tax_reporting.application.crypto.parsing.datetime", mock_datetime)
 
         # Act
         result = _extract_tax_year(tmp_path, capital_file, None)
@@ -254,7 +254,7 @@ class TestMaxPdfBytes:
         """_MAX_PDF_BYTES is set to 20 MB."""
         # Assert: 20 MB = 20 * 1024 * 1024 bytes
         expected = 20 * 1024 * 1024
-        assert _MAX_PDF_BYTES == expected
+        assert expected == _MAX_PDF_BYTES
 
 
 # =============================================================================

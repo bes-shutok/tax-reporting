@@ -2,13 +2,13 @@
 
 Related rule: PT-C-027 (aggregation by disposal date, asset, platform, holding_period)
 
-Plan review: docs/reviews/2025-06-06-plan-review-multi-date-acquisition-r2.md (Round 2 — all blockers resolved)
+Plan review: docs/reviews/2025-06-06-plan-review-multi-date-acquisition-r2.md (Round 2; all blockers resolved)
 
 ## Gist & Examples
 
 **What changes:** When multiple FIFO lots with different acquisition dates are aggregated into one capital gain line (per Portuguese tax requirements), the system will now (1) show all acquisition dates in the Notes field, and (2) apply blue color coding to visually distinguish these rows from single-date rows.
 
-**Why needed:** Currently, when a sale consumes multiple lots bought on different dates, the aggregated line shows only the earliest acquisition date but the full summed quantity. This creates confusion during manual review — for example, seeing "Acquired: 2024-04-13" with "Quantity: 378.7092 SEI" when only 189.7173 SEI were bought on that date. The financial totals (cost, proceeds, gain) are correct, but the presentation is misleading. Portuguese tax law requires ONE acquisition date per line (Quadro 9.4 has a single "Data de aquisição" field), so we must keep one row but make the multi-lot nature explicit.
+**Why needed:** Currently, when a sale consumes multiple lots bought on different dates, the aggregated line shows only the earliest acquisition date but the full summed quantity. This creates confusion during manual review; for example, seeing "Acquired: 2024-04-13" with "Quantity: 378.7092 SEI" when only 189.7173 SEI were bought on that date. The financial totals (cost, proceeds, gain) are correct, but the presentation is misleading. Portuguese tax law requires ONE acquisition date per line (Quadro 9.4 has a single "Data de aquisição" field), so we must keep one row but make the multi-lot nature explicit.
 
 **Example input (FIFO lots from Koinly):**
 ```
@@ -44,26 +44,26 @@ Lot 2: acquired 2024-04-19, 188.9919 SEI, sold 2025-06-14
 Files directly changed as part of this plan. Review feedback is accepted **only** for the files listed here.
 Any finding about a file not in this list must be rejected as out of scope.
 
-**Production code — in scope:**
-- `src/tax_reporting/application/crypto_reporting.py` — `_aggregate_capital_entries()` function, add `multi_acquisition_dates` field to `CryptoCapitalGainEntry`
-- `src/tax_reporting/application/persisting/crypto_gains_sheet.py` — `_render_capital_gain_row()` function to apply blue fill
-- `src/tax_reporting/application/persisting/excel_utils.py` — add `MULTI_DATE_ROW_FILL` constant and `apply_multi_date_row_fill()` function
-- `src/tax_reporting/application/persisting/assumptions_sheet.py` — rename function to `write_assumptions_and_methodology_sheet`, add methodology section
-- `src/tax_reporting/application/persisting/workbook_builder.py` — update import and call to renamed function
+**Production code; in scope:**
+- `src/tax_reporting/application/crypto_reporting.py`: `_aggregate_capital_entries()` function, add `multi_acquisition_dates` field to `CryptoCapitalGainEntry`
+- `src/tax_reporting/application/persisting/crypto_gains_sheet.py`: `_render_capital_gain_row()` function to apply blue fill
+- `src/tax_reporting/application/persisting/excel_utils.py`: add `MULTI_DATE_ROW_FILL` constant and `apply_multi_date_row_fill()` function
+- `src/tax_reporting/application/persisting/assumptions_sheet.py`: rename function to `write_assumptions_and_methodology_sheet`, add methodology section
+- `src/tax_reporting/application/persisting/workbook_builder.py`: update import and call to renamed function
 
-**Tests — in scope:**
-- `tests/unit/application/test_crypto_reporting.py` — add tests for multi-date aggregation
-- `tests/unit/application/persisting/test_crypto_gains_sheet.py` — add tests for blue fill rendering
-- `tests/unit/application/persisting/test_assumptions_sheet.py` — update tests for renamed sheet
+**Tests; in scope:**
+- `tests/unit/application/test_crypto_reporting.py`: add tests for multi-date aggregation
+- `tests/unit/application/persisting/test_crypto_gains_sheet.py`: add tests for blue fill rendering
+- `tests/unit/application/persisting/test_assumptions_sheet.py`: update tests for renamed sheet
 
-**Documentation — scope-linked (not a closed file list):**
-- `docs/domain/crypto_rules.md` — may update PT-C-027 if the implementation decision needs elaboration
+**Documentation; scope-linked (not a closed file list):**
+- `docs/domain/crypto_rules.md`: may update PT-C-027 if the implementation decision needs elaboration
 
-**Out of scope — reject all review feedback:**
-- FIFO matching logic in `src/tax_reporting/application/crypto_fifo/` — unchanged, aggregates after FIFO runs
-- Koinly parsing in `src/tax_reporting/infrastructure/koinly_parser.py` — unchanged
-- Token origin resolution — unchanged
-- Other sheet writers (crypto_supplementary_sheet, crypto_reconciliation_sheet, etc.) — unchanged
+**Out of scope; reject all review feedback:**
+- FIFO matching logic in `src/tax_reporting/application/crypto_fifo/`: unchanged, aggregates after FIFO runs
+- Koinly parsing in `src/tax_reporting/infrastructure/koinly_parser.py`: unchanged
+- Token origin resolution; unchanged
+- Other sheet writers (crypto_supplementary_sheet, crypto_reconciliation_sheet, etc.), unchanged
 
 ## Validation Commands
 
@@ -117,7 +117,7 @@ def apply_multi_date_row_fill(worksheet: Worksheet, row_no: int, start_col: int,
 ```
 
 **Edge cases handled:**
-- None — this is a constant and a pure function with no branching
+- None; this is a constant and a pure function with no branching
 
 **Negative requirements:**
 - DO NOT use red or any color that conflicts with review_required red fill
@@ -156,7 +156,7 @@ class CryptoCapitalGainEntry:
 - Default value is `False` for single-date rows (backwards compatible)
 
 **Negative requirements:**
-- DO NOT add validation for this field in __post_init__ — it's set programmatically during aggregation, not from user input
+- DO NOT add validation for this field in __post_init__; it's set programmatically during aggregation, not from user input
 - DO NOT modify existing field order or types
 
 **Definition of Done:**
@@ -216,16 +216,16 @@ def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[Cr
 ```
 
 **Edge cases handled:**
-- Empty acquisition dates (`""`) — filtered out before processing via `if e.acquisition_date`
-- Epoch dates (`"1970-..."`) — included in unique dates (user can see the problem)
-- Single lot — `has_multiple_dates=False`, no note added
-- Multiple lots with same date — `len(unique_acquisition_dates) == 1`, no note added
-- Existing notes — multi-date note inserted at the beginning (most prominent), separated with "; "
+- Empty acquisition dates (`""`), filtered out before processing via `if e.acquisition_date`
+- Epoch dates (`"1970-..."`), included in unique dates (user can see the problem)
+- Single lot: `has_multiple_dates=False`, no note added
+- Multiple lots with same date: `len(unique_acquisition_dates) == 1`, no note added
+- Existing notes; multi-date note inserted at the beginning (most prominent), separated with "; "
 
 **Negative requirements:**
 - DO NOT add the note when `len(unique_acquisition_dates) <= 1`
-- DO NOT modify the aggregation key (disposal_date, asset, platform, holding_period) — this is purely a presentation enhancement
-- DO NOT change how cost/proceeds/gain are calculated — sums remain correct
+- DO NOT modify the aggregation key (disposal_date, asset, platform, holding_period), this is purely a presentation enhancement
+- DO NOT change how cost/proceeds/gain are calculated; sums remain correct
 
 **Definition of Done:**
 - [x] Multi-date detection works correctly
@@ -271,7 +271,7 @@ def _render_capital_gain_row(
 - Multi-date rows with no review flag get blue fill
 
 **Negative requirements:**
-- DO NOT apply blue fill when `review_required=True` — red must take precedence
+- DO NOT apply blue fill when `review_required=True`: red must take precedence
 - DO NOT modify the existing red fill logic
 - DO NOT add blue fill to single-date rows
 
@@ -822,7 +822,7 @@ uv run pytest
 ### Task 10: Rename and expand Platform Assumptions tab to "Assumptions & Methodology"
 
 Files:
-- `src/tax_reporting/application/persisting/assumptions_sheet.py` — rename and restructure
+- `src/tax_reporting/application/persisting/assumptions_sheet.py`: rename and restructure
 - Any imports/references to "Platform Assumptions" sheet name
 
 **Purpose:** Add transparency about the methodology and legal basis for reporting decisions. The expanded tab will document why aggregation is legal, FIFO methodology, materiality rules, and other assumptions used in generating the report.
@@ -852,8 +852,8 @@ def write_assumptions_and_methodology_sheet(
     """Create and populate an 'Assumptions & Methodology' worksheet.
 
     Contains two sections:
-    1. Platform Assumptions — complete manifest of platforms with operator metadata
-    2. Methodology Assumptions — legal basis and rationale for reporting decisions
+    1. Platform Assumptions; complete manifest of platforms with operator metadata
+    2. Methodology Assumptions; legal basis and rationale for reporting decisions
     """
     summaries = _collect_platform_summaries(capital_entries, reward_entries)
 
@@ -919,11 +919,11 @@ def write_assumptions_and_methodology_sheet(
 ```
 
 **Edge cases handled:**
-- No platform data — still show methodology section
-- Empty capital/reward entries — methodology section still relevant
+- No platform data; still show methodology section
+- Empty capital/reward entries; methodology section still relevant
 
 **Negative requirements:**
-- DO NOT modify the actual reporting logic — this is purely documentation
+- DO NOT modify the actual reporting logic; this is purely documentation
 - DO NOT make the methodology section conditionally hide based on data
 - DO NOT include platform-specific assumptions in methodology section (those belong in Section 1)
 

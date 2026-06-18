@@ -1,4 +1,4 @@
-# Plan: Crypto FIFO Structural Cleanup — Rename, ParsedTxRow, Package Split
+# Plan: Crypto FIFO Structural Cleanup; Rename, ParsedTxRow, Package Split
 
 Addresses review findings F1 and F8 from
 `docs/reviews/2026-05-29-branch-review-filter-loan-repayment-gains-v3.md`.
@@ -10,7 +10,7 @@ Three sequential structural refactors to the FIFO module and the entire package 
 
 1. **Package rename** (`shares_reporting` → `tax_reporting`): The project is named
    `tax-reporting` in `pyproject.toml` and processes both shares _and_ crypto. The current
-   name `shares_reporting` is misleading and out of date. Mechanical rename — no logic
+   name `shares_reporting` is misleading and out of date. Mechanical rename; no logic
    change.
 
 2. **`ParsedTxRow` dataclass** (F1): `_classify_th_row` has 22 keyword parameters.
@@ -21,7 +21,7 @@ Three sequential structural refactors to the FIFO module and the entire package 
 
 3. **`crypto_fifo.py` package split** (F8): The file is ~2186 lines and grew with every
    iteration. Split into a `crypto_fifo/` sub-package with four focused modules. Public
-   callers (tests, `crypto_reporting.py`) import from `crypto_fifo` as before — only the
+   callers (tests, `crypto_reporting.py`) import from `crypto_fifo` as before; only the
    internal organisation changes.
 
 **Why needed:**
@@ -33,7 +33,7 @@ Three sequential structural refactors to the FIFO module and the entire package 
 - `shares_reporting` appears in 236 import statements across 36 files. The mismatch
   between the module name and the project name (`tax-reporting`) creates confusion.
 
-**Before / After — ParsedTxRow:**
+**Before / After; ParsedTxRow:**
 ```python
 # Before (22 kw-params)
 _classify_th_row(
@@ -52,7 +52,7 @@ _classify_th_row(
 )
 ```
 
-**Before / After — package split:**
+**Before / After; package split:**
 ```
 # Before
 src/shares_reporting/application/crypto_fifo.py   # 2186 lines
@@ -75,7 +75,7 @@ src/tax_reporting/application/crypto_fifo/
                      #   _lookup_carryover_cost, _apply_receiver_proportional_split
 ```
 
-**Shares FIFO note:** `transformation.py` is 375 lines with two functions — no split
+**Shares FIFO note:** `transformation.py` is 375 lines with two functions; no split
 needed. `crypto_reporting.py` at 2455 lines is a future candidate (separate ticket).
 
 **Edge cases handled:**
@@ -94,23 +94,23 @@ Files directly changed as part of this plan. Review feedback is accepted **only*
 the files listed here. Any finding about a file not in this list must be rejected as out
 of scope.
 
-**Production code — in scope:**
-- `pyproject.toml` — package rename
-- `src/tax_reporting/` *(new directory tree — all files)*
+**Production code; in scope:**
+- `pyproject.toml`: package rename
+- `src/tax_reporting/` *(new directory tree; all files)*
 - `src/tax_reporting/application/crypto_fifo/__init__.py` *(new)*
 - `src/tax_reporting/application/crypto_fifo/contexts.py` *(new)*
 - `src/tax_reporting/application/crypto_fifo/parsing.py` *(new)*
 - `src/tax_reporting/application/crypto_fifo/matching.py` *(new)*
 - `src/tax_reporting/application/crypto_fifo/cross_asset.py` *(new)*
 
-**Tests — in scope:**
-- `tests/unit/application/test_crypto_fifo.py` — import path update + new `ParsedTxRow`
+**Tests; in scope:**
+- `tests/unit/application/test_crypto_fifo.py`: import path update + new `ParsedTxRow`
   construction test
 
-**Out of scope — reject all review feedback:**
-- `src/tax_reporting/application/transformation.py` — 375 lines; no structural split needed
-- `src/tax_reporting/application/crypto_reporting.py` — future split ticket; frozen here
-- All other `src/tax_reporting/**` files — import-path-only changes, no logic change
+**Out of scope; reject all review feedback:**
+- `src/tax_reporting/application/transformation.py`: 375 lines; no structural split needed
+- `src/tax_reporting/application/crypto_reporting.py`: future split ticket; frozen here
+- All other `src/tax_reporting/**` files; import-path-only changes, no logic change
 
 ---
 
@@ -125,7 +125,7 @@ uv run ruff check src/ tests/
 
 ### Task 1: Rename package `shares_reporting` → `tax_reporting`
 
-This is a pure mechanical rename — no logic change. All 790 existing tests must stay
+This is a pure mechanical rename; no logic change. All 790 existing tests must stay
 GREEN throughout.
 
 Files:
@@ -156,7 +156,7 @@ CSV-derived fields into a frozen `ParsedTxRow` carrier. The same carrier flows t
 
 The 4 mutable accumulator collections (`acquisitions`, `consumptions`,
 `parse_failures_by_asset`, `phantom_sending_transfers`) remain explicit parameters
-because they are mutated in-place — they must not be bundled into an immutable dataclass.
+because they are mutated in-place; they must not be bundled into an immutable dataclass.
 
 Files:
 - `src/tax_reporting/application/crypto_fifo.py`
@@ -210,13 +210,13 @@ def _handle_transfer(
 ) -> None: ...
 
 # _emit_* helpers: ParsedTxRow + wallet/platform (extracted by _handle_exchange locally)
-# + acquisitions/consumptions — drop all individual currency/amount params
+# + acquisitions/consumptions; drop all individual currency/amount params
 ```
 
-- [x] `TestParsedTxRow#test_parsedtxrow_is_frozen` — given a `ParsedTxRow` instance,
+- [x] `TestParsedTxRow#test_parsedtxrow_is_frozen`: given a `ParsedTxRow` instance,
   expects `AttributeError` when attempting to mutate any field (frozen dataclass
   invariant)
-- [x] `TestParsedTxRow#test_parsedtxrow_round_trips_all_fields` — given known field
+- [x] `TestParsedTxRow#test_parsedtxrow_round_trips_all_fields`: given known field
   values, expects all 18 fields are accessible by name with correct types
 - [x] Run → expect RED: `uv run pytest tests/unit/application/test_crypto_fifo.py -x -q`
 - [x] Add `ParsedTxRow` dataclass to `crypto_fifo.py` (alongside
@@ -267,11 +267,11 @@ cross_asset.py ← contexts.py, matching.py (for CryptoFifoRealization via domai
 __init__.py   ← parsing.py, matching.py, cross_asset.py
 ```
 
-- [x] `TestCryptoFifoPackageImports#test_public_api_importable_from_package` — given
+- [x] `TestCryptoFifoPackageImports#test_public_api_importable_from_package`: given
   `from tax_reporting.application.crypto_fifo import AcquisitionContext,
   ConsumptionContext, discover_loan_affected_assets, parse_th_for_loan_affected_assets,
   compute_fifo_for_asset, resolve_cross_asset_exchanges`, expects no `ImportError`
-- [x] `TestCryptoFifoPackageImports#test_no_circular_imports` — given importing all four
+- [x] `TestCryptoFifoPackageImports#test_no_circular_imports`: given importing all four
   sub-modules in isolation, expects each imports cleanly without circular dependency
   errors
 - [x] Run → expect RED (ImportError): `uv run pytest tests/unit/application/test_crypto_fifo.py -x -q`

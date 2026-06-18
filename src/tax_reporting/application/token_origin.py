@@ -354,7 +354,7 @@ class TokenOriginResolver:
                             confidence=confidence,
                         )
                     logger.warning(
-                        "Origin records disagree for %s at %s on %s — returning unknown",
+                        "Origin records disagree for %s at %s on %s; returning unknown",
                         asset,
                         wallet,
                         acquisition_date,

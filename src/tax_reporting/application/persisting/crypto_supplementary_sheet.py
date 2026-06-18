@@ -14,20 +14,110 @@ classification support detail and traceability for auditability only.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import openpyxl
 from openpyxl.styles import Font
 
-if TYPE_CHECKING:
-    from ..crypto_reporting import CryptoTaxReport
-
-from ..crypto_reporting import ZERO, RewardTaxClassification
+from ..crypto_reporting import (
+    ZERO,
+    CryptoReviewEntry,
+    CryptoRewardIncomeEntry,
+    CryptoTaxReport,
+    RewardTaxClassification,
+)
 from .excel_utils import apply_review_row_fill, auto_column_width, safe_cell_value
 from .tax_constants import _INCOME_CODE_DESCRIPTIONS
 
 _REWARD_ROW_NUM_COLS = 11
 _REVIEW_ROW_NUM_COLS = 5
+
+_REWARD_DETAIL_HEADERS = [
+    "Date",
+    "Asset",
+    "Value (EUR)",
+    "Income type",
+    "Wallet",
+    "Platform",
+    "Reward chain",
+    "Country",
+    "Foreign tax (EUR)",
+    "Review flag",
+    "Description",
+]
+
+
+def _write_reward_detail_rows(
+    worksheet: openpyxl.worksheet.worksheet.Worksheet,
+    row_no: int,
+    entries: list[CryptoRewardIncomeEntry],
+    empty_label: str,
+) -> int:
+    """Write a block of reward detail rows and return the next free row number.
+
+    Renders the shared 11-column detail layout used for both taxable-now and
+    deferred-by-law reward sections. When ``entries`` is empty, writes
+    ``empty_label`` instead.
+    """
+    for idx, header in enumerate(_REWARD_DETAIL_HEADERS, start=1):
+        header_cell = worksheet.cell(row_no, idx, header)
+        header_cell.font = Font(bold=True)
+    row_no += 1
+
+    if not entries:
+        worksheet.cell(row_no, 1, empty_label)
+        return row_no + 1
+
+    for entry in entries:
+        worksheet.cell(row_no, 1, entry.date)
+        worksheet.cell(row_no, 2, safe_cell_value(entry.asset))
+        worksheet.cell(row_no, 3, float(entry.value_eur))
+        worksheet.cell(row_no, 4, safe_cell_value(entry.source_type))
+        worksheet.cell(row_no, 5, safe_cell_value(entry.wallet))
+        worksheet.cell(row_no, 6, safe_cell_value(entry.platform))
+        worksheet.cell(row_no, 7, safe_cell_value(entry.chain))
+        worksheet.cell(row_no, 8, safe_cell_value(entry.operator_origin.operator_country))
+        worksheet.cell(row_no, 9, float(entry.foreign_tax_eur))
+        review_cell = f"YES: {safe_cell_value(entry.review_reason)}" if entry.review_required else "NO"
+        worksheet.cell(row_no, 10, review_cell)
+        worksheet.cell(row_no, 11, safe_cell_value(entry.description))
+        if entry.review_required:
+            apply_review_row_fill(worksheet, row_no, 1, _REWARD_ROW_NUM_COLS)
+        row_no += 1
+
+    return row_no
+
+
+def _write_review_rows(
+    worksheet: openpyxl.worksheet.worksheet.Worksheet,
+    row_no: int,
+    review_entries: list[CryptoReviewEntry],
+) -> int:
+    """Write the REVIEW REQUIRED detail rows and return the next free row number.
+
+    Renders the 5-column review layout. Suspicious entries get a red bold asset
+    cell. When ``review_entries`` is empty, writes "No review items".
+    """
+    review_headers = ["Source", "Date", "Asset", "Platform", "Review reason"]
+    for idx, header in enumerate(review_headers, start=1):
+        header_cell = worksheet.cell(row_no, idx, header)
+        header_cell.font = Font(bold=True)
+    row_no += 1
+
+    if not review_entries:
+        worksheet.cell(row_no, 1, "No review items")
+        return row_no + 1
+
+    for entry in review_entries:
+        source_label = "Capital Gains" if entry.source_section == "capital_gains" else "Income"
+        worksheet.cell(row_no, 1, source_label)
+        worksheet.cell(row_no, 2, entry.date)
+        asset_cell = worksheet.cell(row_no, 3, safe_cell_value(entry.asset))
+        worksheet.cell(row_no, 4, safe_cell_value(entry.platform))
+        worksheet.cell(row_no, 5, entry.review_reason)
+        if entry.is_suspicious:
+            asset_cell.font = Font(color="FF0000", bold=True)
+        row_no += 1
+
+    return row_no
 
 
 def write_crypto_supplementary_sheet(
@@ -101,44 +191,7 @@ def write_crypto_supplementary_sheet(
     taxable_note.font = Font(italic=True, size=9)
     row_no += 1
 
-    taxable_detail_headers = [
-        "Date",
-        "Asset",
-        "Value (EUR)",
-        "Income type",
-        "Wallet",
-        "Platform",
-        "Reward chain",
-        "Country",
-        "Foreign tax (EUR)",
-        "Review flag",
-        "Description",
-    ]
-    for idx, header in enumerate(taxable_detail_headers, start=1):
-        header_cell = worksheet.cell(row_no, idx, header)
-        header_cell.font = Font(bold=True)
-    row_no += 1
-
-    if taxable_now_entries:
-        for entry in taxable_now_entries:
-            worksheet.cell(row_no, 1, entry.date)
-            worksheet.cell(row_no, 2, safe_cell_value(entry.asset))
-            worksheet.cell(row_no, 3, float(entry.value_eur))
-            worksheet.cell(row_no, 4, safe_cell_value(entry.source_type))
-            worksheet.cell(row_no, 5, safe_cell_value(entry.wallet))
-            worksheet.cell(row_no, 6, safe_cell_value(entry.platform))
-            worksheet.cell(row_no, 7, safe_cell_value(entry.chain))
-            worksheet.cell(row_no, 8, safe_cell_value(entry.operator_origin.operator_country))
-            worksheet.cell(row_no, 9, float(entry.foreign_tax_eur))
-            review_cell = f"YES: {safe_cell_value(entry.review_reason)}" if entry.review_required else "NO"
-            worksheet.cell(row_no, 10, review_cell)
-            worksheet.cell(row_no, 11, safe_cell_value(entry.description))
-            if entry.review_required:
-                apply_review_row_fill(worksheet, row_no, 1, _REWARD_ROW_NUM_COLS)
-            row_no += 1
-    else:
-        worksheet.cell(row_no, 1, "No taxable-now rewards")
-        row_no += 1
+    row_no = _write_reward_detail_rows(worksheet, row_no, taxable_now_entries, "No taxable-now rewards")
 
     # 3. DEFERRED BY LAW SUPPORT DETAIL
     row_no += 1
@@ -154,44 +207,7 @@ def write_crypto_supplementary_sheet(
     deferred_note.font = Font(italic=True, size=9)
     row_no += 1
 
-    deferred_headers = [
-        "Date",
-        "Asset",
-        "Value (EUR)",
-        "Income type",
-        "Wallet",
-        "Platform",
-        "Reward chain",
-        "Country",
-        "Foreign tax (EUR)",
-        "Review flag",
-        "Description",
-    ]
-    for idx, header in enumerate(deferred_headers, start=1):
-        header_cell = worksheet.cell(row_no, idx, header)
-        header_cell.font = Font(bold=True)
-    row_no += 1
-
-    if deferred_entries:
-        for entry in deferred_entries:
-            worksheet.cell(row_no, 1, entry.date)
-            worksheet.cell(row_no, 2, safe_cell_value(entry.asset))
-            worksheet.cell(row_no, 3, float(entry.value_eur))
-            worksheet.cell(row_no, 4, safe_cell_value(entry.source_type))
-            worksheet.cell(row_no, 5, safe_cell_value(entry.wallet))
-            worksheet.cell(row_no, 6, safe_cell_value(entry.platform))
-            worksheet.cell(row_no, 7, safe_cell_value(entry.chain))
-            worksheet.cell(row_no, 8, safe_cell_value(entry.operator_origin.operator_country))
-            worksheet.cell(row_no, 9, float(entry.foreign_tax_eur))
-            review_cell = f"YES: {safe_cell_value(entry.review_reason)}" if entry.review_required else "NO"
-            worksheet.cell(row_no, 10, review_cell)
-            worksheet.cell(row_no, 11, safe_cell_value(entry.description))
-            if entry.review_required:
-                apply_review_row_fill(worksheet, row_no, 1, _REWARD_ROW_NUM_COLS)
-            row_no += 1
-    else:
-        worksheet.cell(row_no, 1, "No deferred rewards")
-        row_no += 1
+    row_no = _write_reward_detail_rows(worksheet, row_no, deferred_entries, "No deferred rewards")
 
     # 4. REWARDS CLASSIFICATION RECONCILIATION
     row_no += 1
@@ -228,25 +244,6 @@ def write_crypto_supplementary_sheet(
     review_note.font = Font(italic=True, size=9)
     row_no += 1
 
-    review_headers = ["Source", "Date", "Asset", "Platform", "Review reason"]
-    for idx, header in enumerate(review_headers, start=1):
-        header_cell = worksheet.cell(row_no, idx, header)
-        header_cell.font = Font(bold=True)
-    row_no += 1
-
-    if crypto_tax_report.review_entries:
-        for entry in crypto_tax_report.review_entries:
-            source_label = "Capital Gains" if entry.source_section == "capital_gains" else "Income"
-            worksheet.cell(row_no, 1, source_label)
-            worksheet.cell(row_no, 2, entry.date)
-            asset_cell = worksheet.cell(row_no, 3, safe_cell_value(entry.asset))
-            worksheet.cell(row_no, 4, safe_cell_value(entry.platform))
-            worksheet.cell(row_no, 5, entry.review_reason)
-            if entry.is_suspicious:
-                asset_cell.font = Font(color="FF0000", bold=True)
-            row_no += 1
-    else:
-        worksheet.cell(row_no, 1, "No review items")
-        row_no += 1
+    row_no = _write_review_rows(worksheet, row_no, crypto_tax_report.review_entries)
 
     auto_column_width(worksheet)

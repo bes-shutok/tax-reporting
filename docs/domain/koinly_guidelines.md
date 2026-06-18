@@ -34,7 +34,7 @@ Koinly mixes loan deposits/repayments into the same FIFO pool as regular purchas
 
 ### Solution
 
-When `TaxJurisdictionConfig.exclude_loan_repayment_gains=True` (PT default), the pipeline rebuilds FIFO from the Transaction History for loan-affected assets. The affected-asset set is **dynamically discovered** from loan-tagged TH rows via `discover_loan_affected_assets()` (e.g. WBTC, SUI, LBTC for current data — not a fixed constant). Non-loan assets continue to use Koinly CG output directly.
+When `TaxJurisdictionConfig.exclude_loan_repayment_gains=True` (PT default), the pipeline rebuilds FIFO from the Transaction History for loan-affected assets. The affected-asset set is **dynamically discovered** from loan-tagged TH rows via `discover_loan_affected_assets()` (e.g. WBTC, SUI, LBTC for current data, not a fixed constant). Non-loan assets continue to use Koinly CG output directly.
 
 The FIFO engine (`crypto_fifo.py`) parses the TH CSV, classifies rows into acquisitions and consumptions, and runs per-wallet FIFO matching per CIRS art. 43 n.9. Cross-asset exchanges (LBTC to WBTC/SUI) are resolved by transaction identifier, not by date. Loan-tagged rows are excluded entirely from the FIFO pool.
 

@@ -16,6 +16,7 @@ from tax_reporting.application.crypto_reporting import (
     RewardTaxClassification,
 )
 from tax_reporting.application.persisting.crypto_supplementary_sheet import write_crypto_supplementary_sheet
+
 # make_operator_origin is a module-level helper from conftest, not a pytest fixture
 from tests.conftest import make_operator_origin
 
@@ -569,7 +570,7 @@ class TestCryptoSupplementarySheetAutoWidth:
                 ), f"Column {col_letter} width {col_dim.width} exceeds cap {max_allowed}"
 
     def test_all_columns_have_reasonable_widths(self):
-        """Verify no column is collapsed — all have width >= MIN_DATA_WIDTH floor."""
+        """Verify no column is collapsed: all have width >= MIN_DATA_WIDTH floor."""
 
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()

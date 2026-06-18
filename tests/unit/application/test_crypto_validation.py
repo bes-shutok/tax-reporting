@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from tax_reporting.application.crypto.validation import (
     _is_temporally_valid,
     _parse_transaction_date,

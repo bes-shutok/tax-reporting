@@ -9,23 +9,23 @@ finding #1 (transfer lot carry-over), #2 (parse-error data loss), #5 (carry-over
 
 **What changes:** Four correctness and structural improvements to the FIFO engine for loan-affected crypto assets:
 
-1. **Parse-error data loss (#2)** — when a TH row fails to parse, the affected asset's FIFO pool is silently
+1. **Parse-error data loss (#2)**: when a TH row fails to parse, the affected asset's FIFO pool is silently
    incomplete. This changes the failure mode from warn-and-skip to warn-and-flag: all realizations for the
    affected asset are marked `review_required=True` with a specific reason so the user sees the gap in the workbook.
 
-2. **Carry-over key scope (#5)** — the merged carry-over dict used by `resolve_cross_asset_exchanges` is keyed
+2. **Carry-over key scope (#5)**: the merged carry-over dict used by `resolve_cross_asset_exchanges` is keyed
    only by `tx_key`, so two platforms producing the same composite key (same-date same-pair swap, no TxHash)
    could cross-contaminate cost basis across platforms. Changing the merged key to `(tx_key, platform)` restricts
    look-up to the correct platform.
 
-3. **Transfer lot carry-over (#1)** — when a loan-affected asset is transferred between platforms, the current
+3. **Transfer lot carry-over (#1)**: when a loan-affected asset is transferred between platforms, the current
    code neither consumes the lot from the sender pool nor creates it on the receiver pool. Any subsequent sale
    on the receiver produces a zero-cost placeholder. This models the transfer the same way as a cross-asset
    exchange: a non-taxable consumption on the sender and a `transfer_in_deferred` acquisition on the receiver,
    resolved by `resolve_cross_asset_exchanges` using the carry-over by `(tx_key, platform)`.
 
-4. **Domain entity cleanup (#7)** — `CryptoAcquisition`, `CryptoConsumption`, and `AssetFifoResult` in the
-   domain layer carry `tx_key`, `source_row_index`, and `carryover_cost_by_tx_key` — Koinly parser correlation
+4. **Domain entity cleanup (#7)**: `CryptoAcquisition`, `CryptoConsumption`, and `AssetFifoResult` in the
+   domain layer carry `tx_key`, `source_row_index`, and `carryover_cost_by_tx_key`: Koinly parser correlation
    IDs and pipeline workflow state that are not pure financial facts. These are moved to application-layer
    correlation wrappers, leaving the domain types as pure FIFO facts.
 
@@ -40,28 +40,28 @@ finding #1 (transfer lot carry-over), #2 (parse-error data loss), #5 (carry-over
 - #7: `domain/crypto_fifo.py` is coupled to Koinly parser internals (`tx_key`, `source_row_index`). Any change
   to how the TH parser builds its correlation keys requires updating the domain type contract.
 
-**Example — #2 (parse error flagging):**
+**Example 2 (parse error flagging):**
 ```
 Before: TH row 47 has unparseable date → WARNING logged, row skipped, WBTC FIFO runs with missing acquisition,
         realization produced with cost_eur=0, review_required=False (user sees "correct-looking" zero-cost gain)
 
 After:  TH row 47 has unparseable date → ERROR logged (row skipped), WBTC added to parse_failed_assets,
         all WBTC realizations marked review_required=True with reason
-        "TH parse error on row 47: FIFO pool for WBTC may be incomplete — verify all acquisitions are present"
+        "TH parse error on row 47: FIFO pool for WBTC may be incomplete; verify all acquisitions are present"
 ```
 
-**Example — #5 (carry-over key):**
+**Example 5 (carry-over key):**
 ```
 Before: Platform A swap at 10:00 produces key "composite_2025-01-01_..." → merged_carryover["composite_..."] = 150
         Platform B swap at 10:00 same pair produces same key → WARNING + summed to 300
-        Receiver on Platform B deferred acquisition resolves to 300 EUR (wrong — double-counted Platform A)
+        Receiver on Platform B deferred acquisition resolves to 300 EUR (wrong; double-counted Platform A)
 
 After:  merged_carryover[("composite_...", "Platform A")] = 150
         merged_carryover[("composite_...", "Platform B")] = 150  (distinct keys, no collision)
         Receiver on Platform B resolves to 150 EUR (correct)
 ```
 
-**Example — #1 (transfer lot carry-over):**
+**Example 1 (transfer lot carry-over):**
 ```
 Before: WBTC transferred Kraken→ByBit on 2025-01-10 (cost basis 1000 EUR)
         ByBit WBTC pool: empty
@@ -75,7 +75,7 @@ After:  Transfer parsed: non-taxable consumption (Kraken, tx_key=T1) → carryov
         Kraken pool: lot consumed, no phantom
 ```
 
-**Example — #7 (domain cleanup):**
+**Example 7 (domain cleanup):**
 ```
 Before: CryptoAcquisition(date=..., asset=..., amount=..., cost_basis_eur=..., fee_eur=...,
                            source_type=..., wallet=..., platform=...,
@@ -94,7 +94,7 @@ After:  CryptoAcquisition(date=..., asset=..., amount=..., cost_basis_eur=..., f
 **Edge cases handled:**
 - #2: Row fails to parse before `sent_currency`/`received_currency` are known → treat as "unknown asset" and
   log the error but cannot flag a specific asset. Fail loudly (log at ERROR) but continue.
-- #1: Transfer fee paid in the same loan-affected asset as the principal — the fee portion is already modelled
+- #1: Transfer fee paid in the same loan-affected asset as the principal; the fee portion is already modelled
   as a separate taxable consumption; the transferred (received) amount is `sent_amount - fee_amount`; the
   carryover for the deferred acquisition is proportional: `carryover * received_amount / sent_amount`.
 - #1: Transfer where receiving wallet is unknown (no `Receiving Wallet` column value) → log WARNING and fall
@@ -103,7 +103,7 @@ After:  CryptoAcquisition(date=..., asset=..., amount=..., cost_basis_eur=..., f
 - #5: The `resolve_cross_asset_exchanges` look-up uses the *deferred acquisition's platform* as the key
   component. For same-asset transfers the deferred platform is the receiver, not the sender. For cross-asset
   exchanges (LBTC→WBTC) the carry-over platform is the sender asset's platform and the deferred acquisition
-  platform may differ — the resolution must iterate over all `(tx_key, *)` entries to find matches, or store
+  platform may differ; the resolution must iterate over all `(tx_key, *)` entries to find matches, or store
   the platform mapping explicitly.
 
 ## Design Invariants (CR Guard)
@@ -128,18 +128,18 @@ Prior-phase decisions that must not be compromised:
 Files directly changed as part of this plan. Review feedback is accepted **only** for the files listed here.
 Any finding about a file not in this list must be rejected as out of scope.
 
-**Production code — in scope:**
-- `src/shares_reporting/domain/crypto_fifo.py` — remove `tx_key`/`source_row_index` from domain entities (task 4)
-- `src/shares_reporting/application/crypto_fifo.py` — transfer lot carry-over (#1), parse-error flagging (#2)
-- `src/shares_reporting/application/crypto_reporting.py` — carry-over key type (#5), resolve logic update (#5/#1)
+**Production code; in scope:**
+- `src/shares_reporting/domain/crypto_fifo.py`: remove `tx_key`/`source_row_index` from domain entities (task 4)
+- `src/shares_reporting/application/crypto_fifo.py`: transfer lot carry-over (#1), parse-error flagging (#2)
+- `src/shares_reporting/application/crypto_reporting.py`: carry-over key type (#5), resolve logic update (#5/#1)
 
-**Tests — in scope:**
+**Tests; in scope:**
 - `tests/unit/application/test_crypto_fifo.py`
 - `tests/unit/application/test_crypto_reporting.py`
 
-**Out of scope — reject all review feedback:**
-- `src/shares_reporting/application/persisting/crypto_gains_sheet.py` — presentation layer, unchanged
-- `src/shares_reporting/application/crypto_fifo.py` methods not listed in tasks — frozen; flag separately
+**Out of scope; reject all review feedback:**
+- `src/shares_reporting/application/persisting/crypto_gains_sheet.py`: presentation layer, unchanged
+- `src/shares_reporting/application/crypto_fifo.py` methods not listed in tasks; frozen; flag separately
 
 ## Validation Commands
 
@@ -166,7 +166,7 @@ uv run pytest -m e2e -q
   (4th return value; update all callers).
 - In `_rebuild_fifo_for_loan_affected_assets`, after computing FIFO realizations, mark every realization for an
   asset with parse failures as `review_required=True` and include concrete row attribution in the reason, e.g.
-  `"TH parse error on row 47: FIFO pool for WBTC may be incomplete — verify all acquisitions/disposals are present"`.
+  `"TH parse error on row 47: FIFO pool for WBTC may be incomplete; verify all acquisitions/disposals are present"`.
   If multiple rows failed for the same asset, include the first row and mention additional failed rows, or join the
   row numbers explicitly.
 
@@ -176,14 +176,14 @@ loan assets in the `except` block; do not re-parse raw currency strings there. I
 attributed, log at ERROR without asset attribution and do not create an unknown placeholder.
 
 - [x] Write failing tests in `test_crypto_fifo.py`:
-  - `TestParseThParseFail#test_parse_error_records_asset_and_row_index` — TH with one malformed WBTC buy row
+  - `TestParseThParseFail#test_parse_error_records_asset_and_row_index`: TH with one malformed WBTC buy row
     (bad decimal) and one valid WBTC sell row; run through `parse_th_for_loan_affected_assets`; assert the returned
     parse-failure structure records `WBTC` and the failing row index.
-  - `TestParseThParseFail#test_parse_error_logged_at_error_level` — same setup; assert `caplog` contains an
+  - `TestParseThParseFail#test_parse_error_logged_at_error_level`: same setup; assert `caplog` contains an
     ERROR-level record mentioning the row index.
-  - `TestParseThParseFail#test_parse_error_on_unrecognised_asset_does_not_pollute_parse_failures` — TH with a
+  - `TestParseThParseFail#test_parse_error_on_unrecognised_asset_does_not_pollute_parse_failures`: TH with a
     malformed row where only a non-loan-affected asset is involved; assert the parse-failure structure is empty.
-  - `TestParseThParseFail#test_parse_error_on_fee_only_row_attributes_fee_asset` — malformed row where only
+  - `TestParseThParseFail#test_parse_error_on_fee_only_row_attributes_fee_asset`: malformed row where only
     `Fee Currency` is loan-affected; assert the fee asset is recorded in the parse-failure structure.
 - [x] Run → expect RED: `uv run pytest tests/unit/application/test_crypto_fifo.py -k "ParseFail" -v`
 - [x] Implement in `parse_th_for_loan_affected_assets`:
@@ -197,7 +197,7 @@ attributed, log at ERROR without asset attribution and do not create an unknown 
   assets present in `parse_failures_by_asset` with `review_required=True` and an actionable `review_reason`
   that preserves row attribution.
 - [x] Write failing test in `test_crypto_reporting.py`:
-  - `test_rebuild_fifo_marks_review_required_when_asset_has_parse_errors` — integration test using a TH file
+  - `test_rebuild_fifo_marks_review_required_when_asset_has_parse_errors`: integration test using a TH file
     with one malformed row for WBTC; after `_rebuild_fifo_for_loan_affected_assets`, assert all WBTC
     `CryptoCapitalGainEntry` objects have `review_required=True`.
 - [x] Run → expect GREEN: `uv run pytest tests/unit/application/test_crypto_fifo.py tests/unit/application/test_crypto_reporting.py -k "ParseFail or parse_error" -v`
@@ -236,12 +236,12 @@ cross-platform transfers resolved in Task 3) rather than WARNING. Remove the WAR
 re-introduce it only for unresolved cases).
 
 - [x] Write failing tests in `test_crypto_reporting.py` and `test_crypto_fifo.py`:
-  - `TestResolveCarryoverPlatformKey#test_same_tx_key_different_platforms_not_summed` — two platform-specific
+  - `TestResolveCarryoverPlatformKey#test_same_tx_key_different_platforms_not_summed`: two platform-specific
     carry-over contributors for the same asset and `tx1`; verify `merged_carryover` contains distinct
     `("tx1", "PlatformA")` and `("tx1", "PlatformB")` entries.
-  - `TestResolveCarryoverPlatformKey#test_resolve_uses_sender_platform_when_looking_up_carryover` — deferred
+  - `TestResolveCarryoverPlatformKey#test_resolve_uses_sender_platform_when_looking_up_carryover`: deferred
     acquisition with `tx_key="tx1"` and sender platform `Kraken`; verify only `("tx1", "Kraken")` contributes.
-  - `TestBuildCrossAssetOrder#test_sender_platforms_are_exposed_for_platform_key_lookup` — assert the new
+  - `TestBuildCrossAssetOrder#test_sender_platforms_are_exposed_for_platform_key_lookup`: assert the new
     sender-platform correlation map exposes the producing platform needed by `resolve_cross_asset_exchanges`.
 - [x] Run → expect RED
 - [x] Update `_build_cross_asset_order` (or add a sibling helper) to return the sender-platform correlation
@@ -310,29 +310,29 @@ metadata (or apply the filter earlier in the pipeline) so the code can distingui
 markers without guessing from date alone.
 
 - [x] Write failing tests in `test_crypto_fifo.py`:
-  - `TestHandleTransfer#test_transfer_emits_nontaxable_consumption_on_sender` — TH with a WBTC `transfer`
+  - `TestHandleTransfer#test_transfer_emits_nontaxable_consumption_on_sender`: TH with a WBTC `transfer`
     row, sending from Kraken; assert `consumptions["WBTC"]` contains one entry with `event_type="transfer_out"`,
     `taxable=False`, `platform="Kraken"`.
-  - `TestHandleTransfer#test_transfer_emits_deferred_acquisition_on_receiver` — same row; assert
+  - `TestHandleTransfer#test_transfer_emits_deferred_acquisition_on_receiver`: same row; assert
     `acquisitions["WBTC"]` contains one entry with `source_type="transfer_in_deferred"`, `platform="ByBit"`,
     `cost_basis_eur=Decimal("0")`.
-  - `TestHandleTransfer#test_transfer_with_same_asset_fee_uses_received_amount_for_deferred` — transfer row
+  - `TestHandleTransfer#test_transfer_with_same_asset_fee_uses_received_amount_for_deferred`: transfer row
     with `Sent Amount=1.0`, `Received Amount=0.99`, `Fee Amount=0.01`, `Fee Currency=WBTC`; assert deferred
     acquisition `amount=Decimal("0.99")` and separate fee disposal `amount=Decimal("0.01")`.
-  - `TestHandleTransfer#test_transfer_with_unknown_receiver_falls_back_to_phantom_flag` — transfer row with
+  - `TestHandleTransfer#test_transfer_with_unknown_receiver_falls_back_to_phantom_flag`: transfer row with
     empty `Receiving Wallet`; assert `phantom_sending_transfers` is non-empty and NO deferred acquisition is
     created.
 - [x] Run → expect RED
 - [x] Implement changes in `_handle_transfer()` as described above.
 - [x] Write failing tests in `test_crypto_fifo.py` and `test_crypto_reporting.py`:
-  - `TestFifoCrossPlatformTransfer#test_transfer_lot_cost_basis_carries_to_receiver_platform` — unit-level
+  - `TestFifoCrossPlatformTransfer#test_transfer_lot_cost_basis_carries_to_receiver_platform`: unit-level
     sender/receiver carry-over resolution for one asset across two platforms.
-  - `TestFifoCrossPlatformTransfer#test_transfer_with_fee_proportions_cost_correctly` — assert the receiver lot
+  - `TestFifoCrossPlatformTransfer#test_transfer_with_fee_proportions_cost_correctly`: assert the receiver lot
     cost scales by `received_amount / sent_amount` and the same-asset fee remains a separate taxable disposal.
-  - `test_rebuild_fifo_resolves_same_asset_cross_platform_transfer_after_sender_platform_fifo` — integration test
+  - `test_rebuild_fifo_resolves_same_asset_cross_platform_transfer_after_sender_platform_fifo`: integration test
     at `_rebuild_fifo_for_loan_affected_assets` level proving the pipeline change really resolves a same-asset
     Kraken→ByBit transfer instead of leaving the deferred acquisition unresolved.
-  - `test_apply_phantom_flags_only_for_unresolved_transfers` — verify phantom warnings remain for unknown/failed
+  - `test_apply_phantom_flags_only_for_unresolved_transfers`: verify phantom warnings remain for unknown/failed
     receiver cases but not for transfers that were actually resolved.
 - [x] Run → expect RED
 - [x] Implement the chosen intra-asset resolution design (second pass or platform-ordered processing) so
@@ -361,9 +361,9 @@ and the carry-over correlation output.
 
 **Domain entities after change:**
 - `CryptoAcquisition`: `date`, `asset`, `amount`, `cost_basis_eur`, `fee_eur`, `source_type`, `wallet`,
-  `platform`, `review_required`, `review_reason` — pure financial acquisition facts.
+  `platform`, `review_required`, `review_reason`: pure financial acquisition facts.
 - `CryptoConsumption`: `date`, `asset`, `amount`, `proceeds_eur`, `event_type`, `taxable`, `wallet`,
-  `platform`, `notes`, `review_required`, `review_reason` — pure financial disposal facts.
+  `platform`, `notes`, `review_required`, `review_reason`: pure financial disposal facts.
 - `CryptoFifoRealization`: already clean after earlier CR fixes (no tx_key).
 - Domain `AssetFifoResult`: either stays domain-local until follow-up cleanup, or is replaced by an explicit
   application-layer FIFO result type that carries both `realizations` and carry-over correlation data. The plan
@@ -406,9 +406,9 @@ available during those behaviour fixes. Verify no circular imports: `domain/cryp
 from `application/`.
 
 - [x] Write failing tests in `test_crypto_fifo.py`:
-  - `TestAcquisitionContext#test_acquisition_context_wraps_domain_entity` — construct `AcquisitionContext`
+  - `TestAcquisitionContext#test_acquisition_context_wraps_domain_entity`: construct `AcquisitionContext`
     with a domain `CryptoAcquisition` and assert `.acq.cost_basis_eur` and `.tx_key` are accessible.
-  - `TestAcquisitionContext#test_parse_th_returns_acquisition_contexts_not_bare_entities` — `parse_th_for_loan_affected_assets`
+  - `TestAcquisitionContext#test_parse_th_returns_acquisition_contexts_not_bare_entities`: `parse_th_for_loan_affected_assets`
     with a valid buy row; assert the returned dict value is a list of `AcquisitionContext` objects.
 - [x] Run → expect RED
 - [x] Add `AcquisitionContext` and `ConsumptionContext` to `application/crypto_fifo.py`.

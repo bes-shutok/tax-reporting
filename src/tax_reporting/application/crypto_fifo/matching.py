@@ -134,17 +134,17 @@ def _build_taxable_realization(  # noqa: PLR0913
     if is_epoch_acq:
         epoch_parts.append(
             f"Epoch sentinel acquisition date for {asset}; "
-            "missing Date field in TH row — holding period unknown, Short term"
+            "missing Date field in TH row: holding period unknown, Short term"
         )
     if is_epoch_con:
         epoch_parts.append(
             f"Epoch sentinel disposal date for {asset} at row {con.source_row_index}; "
-            "missing Date field in TH row — holding period unknown, Short term"
+            "missing Date field in TH row: holding period unknown, Short term"
         )
     epoch_reason: str | None = "; ".join(epoch_parts) or None
     deferred_reason: str | None = (
         f"Deferred acquisition for {asset} (tx_key={acq.tx_key}): "
-        "cross-asset carry-over cost cannot be resolved in the current single-pass FIFO engine — "
+        "cross-asset carry-over cost cannot be resolved in the current single-pass FIFO engine: "
         "the sending asset's FIFO runs after this asset's, so the cost basis "
         "is permanently ZERO in the automated report (this is not a transient state; "
         "re-running will not fix it). "
@@ -157,7 +157,7 @@ def _build_taxable_realization(  # noqa: PLR0913
     if is_deferred_acq:
         logger.warning(
             "FIFO: %s disposal on %s uses unresolved deferred acquisition (tx_key=%s); "
-            "cost basis is zero — capital gain is overstated. "
+            "cost basis is zero: capital gain is overstated. "
             "Review required: %s",
             asset,
             con.con.date,

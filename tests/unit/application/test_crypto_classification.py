@@ -198,7 +198,7 @@ class TestDerivativesClassifier:
       Case 1 fixture: OGR row 9 Value=4.17 matches CG line 19 proceeds_eur=4.17
       (gain_loss_eur there is 2.44, which would not match).
     - Correction 2: the Ambiguous branch splits into two distinct reason
-      suffixes — "manual review needed" for single-CG mismatch, and
+      suffixes: "manual review needed" for single-CG mismatch, and
       "aggregate-match check required" for multi-CG mismatch.
     """
 
@@ -287,7 +287,7 @@ class TestDerivativesClassifier:
 
         assert isinstance(result, DerivativesClassification)
         assert result.kind == "derivatives"
-        assert result.reason == "OGR Profit — derivatives P&L realization"
+        assert result.reason == "OGR Profit: derivatives P&L realization"
 
     def test_ogr_loss_exact_cg_match(self):
         """Given an OGR Loss row with one CG whose proceeds match, expects Spot.
@@ -308,7 +308,7 @@ class TestDerivativesClassifier:
 
         assert isinstance(result, DerivativesClassification)
         assert result.kind == "spot"
-        assert result.reason == "OGR Loss matches CG disposal — spot fee"
+        assert result.reason == "OGR Loss matches CG disposal: spot fee"
 
     def test_ogr_loss_no_cg_counterpart(self):
         """Given an OGR Loss row with no CG counterpart, expects Derivatives.
@@ -326,7 +326,7 @@ class TestDerivativesClassifier:
 
         assert isinstance(result, DerivativesClassification)
         assert result.kind == "derivatives"
-        assert result.reason == "OGR Loss with no CG counterpart — derivatives realization"
+        assert result.reason == "OGR Loss with no CG counterpart: derivatives realization"
 
     def test_ogr_loss_value_mismatch_ambiguous(self):
         """Given an OGR Loss row with one CG whose proceeds differ, expects Ambiguous.
@@ -351,7 +351,7 @@ class TestDerivativesClassifier:
         assert isinstance(result, DerivativesClassification)
         assert result.kind == "ambiguous"
         assert result.reason == (
-            "OGR=-8.31 vs CG=5.00 on (2025-01-13, USDT, ByBit) — manual review needed"
+            "OGR=-8.31 vs CG=5.00 on (2025-01-13, USDT, ByBit): manual review needed"
         )
 
     def test_ogr_loss_multiple_cg_entries_ambiguous(self):
@@ -384,7 +384,7 @@ class TestDerivativesClassifier:
         assert isinstance(result, DerivativesClassification)
         assert result.kind == "ambiguous"
         assert result.reason == (
-            "OGR=-138.73 vs 109 CG lots on (2025-01-13, USDT, ByBit) — aggregate-match check required"
+            "OGR=-138.73 vs 109 CG lots on (2025-01-13, USDT, ByBit): aggregate-match check required"
         )
 
     def test_ogr_loss_multiple_cg_entries_aggregate_match(self):
@@ -409,4 +409,4 @@ class TestDerivativesClassifier:
 
         assert isinstance(result, DerivativesClassification)
         assert result.kind == "spot"
-        assert result.reason == "OGR Loss aggregate-matches 3 CG lots — spot fee disposals"
+        assert result.reason == "OGR Loss aggregate-matches 3 CG lots: spot fee disposals"

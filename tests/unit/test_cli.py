@@ -5,6 +5,7 @@ Tests follow TDD pattern: failing tests written first, then implementation.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
 from unittest.mock import patch
@@ -195,11 +196,8 @@ class TestMainWithMissingConfig:
         mock_read.return_value = []
 
         # Call load_configuration_from_file
-        with caplog.at_level(logging.ERROR):
-            try:
-                load_configuration_from_file()
-            except Exception:
-                pass  # Ignore other errors
+        with caplog.at_level(logging.ERROR), contextlib.suppress(Exception):
+            load_configuration_from_file()
 
         # Verify error was logged about missing config
         assert any(
@@ -217,7 +215,10 @@ def test_main_raises_configuration_error_for_missing_decision_points(tmp_path):
         patch("tax_reporting.main.parse_ib_export_all", return_value=IBExportData({}, {})),
         patch("tax_reporting.main.calculate_fifo_gains"),
         patch("tax_reporting.main.export_rollover_file"),
-        patch("tax_reporting.main.load_configuration_from_file", side_effect=MissingDecisionPointsError("missing toml")),
+        patch(
+            "tax_reporting.main.load_configuration_from_file",
+            side_effect=MissingDecisionPointsError("missing toml"),
+        ),
+        pytest.raises(ConfigurationError, match="missing toml"),
     ):
-        with pytest.raises(ConfigurationError, match="missing toml"):
-            _main(source_file=source_file, output_dir=tmp_path)
+        _main(source_file=source_file, output_dir=tmp_path)

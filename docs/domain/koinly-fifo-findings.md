@@ -15,12 +15,12 @@
 **Evidence:**
 - WBTC repayment on 2025-03-09: CG "Date Acquired" = **27/07/2024** (regular purchase, not a loan deposit)
 - WBTC repayments on 2025-04-05: Most lots acquired on **01/03/2025** (not loan deposit dates)
-- Only coincidentally do some lots match loan deposit dates (09/03/2025) — because those happened to be the FIFO-next acquisitions
+- Only coincidentally do some lots match loan deposit dates (09/03/2025), because those happened to be the FIFO-next acquisitions
 - Loan deposits for WBTC were on 2025-03-09 (14:44, 16:04, 16:06, 16:09)
 
 **Implication:** Cannot identify loan CG entries by matching acquisition dates to loan deposit dates.
 
-**Additional detail — FIFO splitting:** Koinly splits a single loan repayment into multiple CG FIFO lots. One TH repayment row can produce 1–6 CG lines (partial lot matching). The CG amounts sum closely to the TH sent amount (with tiny rounding differences).
+**Additional detail, FIFO splitting:** Koinly splits a single loan repayment into multiple CG FIFO lots. One TH repayment row can produce 1–6 CG lines (partial lot matching). The CG amounts sum closely to the TH sent amount (with tiny rounding differences).
 
 ---
 
@@ -28,9 +28,9 @@
 
 Since Koinly mixes loan and non-loan transactions in the same FIFO pool:
 
-1. **Loan repayment disposals consume real purchase cost basis** — e.g., a repayment on April 5 used a buy lot from July 2024 as its cost basis
-2. **Loan deposit lots remain in the FIFO pool** — available for future real disposals at zero cost, overstating gains
-3. **Cascading contamination** — LBTC→WBTC exchanges carry contaminated LBTC cost basis into WBTC lots
+1. **Loan repayment disposals consume real purchase cost basis**: e.g., a repayment on April 5 used a buy lot from July 2024 as its cost basis
+2. **Loan deposit lots remain in the FIFO pool**: available for future real disposals at zero cost, overstating gains
+3. **Cascading contamination**: LBTC→WBTC exchanges carry contaminated LBTC cost basis into WBTC lots
 
 **For Portuguese tax law:** Neither loan receipt nor repayment is a taxable event. Both must be invisible to capital gains calculations.
 
@@ -61,7 +61,7 @@ TxSrc, TxDest, TxHash, Description
 ### Cost Basis Behavior by Transaction Type
 
 **Loan deposit** (`crypto_deposit`, Tag="Loan"):
-- `Received Cost Basis` = `Net Value` (FMV at receipt) — both 130.88 for 0.00170238 WBTC
+- `Received Cost Basis` = `Net Value` (FMV at receipt); both 130.88 for 0.00170238 WBTC
 - No sent side (receiving wallet only)
 - These add zero-cost-basis lots to Koinly's FIFO pool (problematic)
 
@@ -80,8 +80,8 @@ TxSrc, TxDest, TxHash, Description
 
 **Transfer** (wallet-to-wallet, same chain or bridge):
 - Same currency, same amount on both sides (minus possible fee)
-- Small fee possible (gas) — treated as micro-disposal if "Realize gains on transfer fees?" is ON
-- NOT a taxable event — skip in FIFO
+- Small fee possible (gas); treated as micro-disposal if "Realize gains on transfer fees?" is ON
+- NOT a taxable event; skip in FIFO
 - Wallet at disposal time comes from the disposal row's `Sending Wallet` field (no need to trace transfer chains)
 - Holding period is NOT reset by transfers
 
@@ -108,20 +108,20 @@ All three main loan assets (WBTC, SUI, LBTC) have inter-dependencies via exchang
 
 - Loan deposits: 17 rows (WBTC, SUI, LBTC)
 - Loan repayments: 19 rows (WBTC, SUI, LBTC)
-- Loan fees: 45 rows (all FEE token — separate asset, immaterial)
+- Loan fees: 45 rows (all FEE token, separate asset, immaterial)
 - Total exchanges (all assets): 342
 - CG file entries: ~3100 lines
-- `crypto_withdrawal` Tag="Cost" (gas fees): 705 rows — these generate CG entries
-- `Type=exchange` generating CG entries: **0** — Koinly does NOT generate CG for crypto→crypto exchanges
+- `crypto_withdrawal` Tag="Cost" (gas fees): 705 rows; these generate CG entries
+- `Type=exchange` generating CG entries: **0**; Koinly does NOT generate CG for crypto→crypto exchanges
 
 ### What Generates Koinly CG Entries
 
 Koinly's CG file only contains entries from:
-1. **Gas/network fees** (Notes="Fee") — tiny amounts consumed as transaction costs
-2. **`crypto_withdrawal`** — tokens leaving tracked wallets (to external, DeFi, etc.)
-3. **`sell`** type — actual fiat exits
+1. **Gas/network fees** (Notes="Fee"): tiny amounts consumed as transaction costs
+2. **`crypto_withdrawal`**: tokens leaving tracked wallets (to external, DeFi, etc.)
+3. **`sell`** type: actual fiat exits
 
-**NOT included in CG:** `Type=exchange` transactions. Verified: BTC→WBTC exchange of 0.01 BTC on 2025-02-23 does NOT appear in the CG file. This is consistent with Art. 10(20) — crypto-to-crypto is non-taxable, so Koinly correctly excludes it from CG.
+**NOT included in CG:** `Type=exchange` transactions. Verified: BTC→WBTC exchange of 0.01 BTC on 2025-02-23 does NOT appear in the CG file. This is consistent with Art. 10(20): crypto-to-crypto is non-taxable, so Koinly correctly excludes it from CG.
 
 ### File Structure Details
 
@@ -164,11 +164,11 @@ Koinly's CG file only contains entries from:
 ## 7. FIFO Engine Reuse
 
 Existing shares FIFO engine (`transformation.py` + `accumulators.py`):
-- `TradeAction` — buy/sell with company, datetime, currency, quantity, price, fee
-- `TradeCycle` — collects buys/sells per asset
-- `TradePartsWithinDay` — day-based grouping for FIFO ordering
-- `CapitalGainLineAccumulator` — matches buy lots to sell lots
-- `calculate_company_gains()` — core FIFO algorithm
+- `TradeAction`: buy/sell with company, datetime, currency, quantity, price, fee
+- `TradeCycle`: collects buys/sells per asset
+- `TradePartsWithinDay`: day-based grouping for FIFO ordering
+- `CapitalGainLineAccumulator`: matches buy lots to sell lots
+- `calculate_company_gains()`: core FIFO algorithm
 
 Core algorithm is identical for crypto. Differences:
 - Input format (Koinly TH vs IB CSV)
@@ -176,33 +176,33 @@ Core algorithm is identical for crypto. Differences:
 - Price derivation (carry-over cost from sent asset, not explicit price field)
 - Output type (CryptoCapitalGainEntry vs CapitalGainLine)
 - Filtering (exclude loan-tagged rows)
-- Exchanges are NOT disposals (Art. 10(20)) — they just transfer cost basis between assets
+- Exchanges are NOT disposals (Art. 10(20)); they just transfer cost basis between assets
 - Only `crypto_withdrawal` (non-loan, non-transfer) and `sell` types generate capital gain events
 
 ---
 
 ## 8. CRITICAL: Portuguese Law Mandates Carry-Over for Crypto-to-Crypto
 
-### CIRS Art. 10(17)–(22) — The Complete Framework
+### CIRS Art. 10(17)–(22): The Complete Framework
 
-**Art. 10(17):** Definition — "crypto-asset" = any digital representation of value or rights transferable/storable via DLT.
+**Art. 10(17):** Definition: "crypto-asset" = any digital representation of value or rights transferable/storable via DLT.
 
 **Art. 10(19):** Gains from crypto held **≥ 365 days** are **excluded** from taxation entirely.
 
 **Art. 10(20):** When (19) doesn't apply [held < 365 days] AND the consideration received is **in the form of crypto-assets** → **no taxation occurs**. The received crypto-assets are assigned the acquisition value of the delivered crypto-assets (**carry-over cost basis mandated by statute**).
 
-**Art. 10(21):** Exception — (19) and (20) don't apply when either party is NOT resident in EU/EEA or a jurisdiction with a tax treaty providing for exchange of information.
+**Art. 10(21):** Exception: (19) and (20) don't apply when either party is NOT resident in EU/EEA or a jurisdiction with a tax treaty providing for exchange of information.
 
 ### Implications for Koinly Settings
 
 | Setting | Correct value | Legal basis |
 |---------|---------------|-------------|
-| Realize gains on crypto → crypto trades? | **OFF** | Art. 10(20) — deferral with carry-over |
+| Realize gains on crypto → crypto trades? | **OFF** | Art. 10(20): deferral with carry-over |
 | Realize gains on liquidity transactions? | **OFF** | LP tokens are crypto → same Art. 10(20) deferral |
 | Wallet based cost-tracking | **OFF** | FIFO is per-asset globally |
 | Cost basis method | **FIFO** | Standard Portuguese method |
 | Realize gains on transfer fees? | **ON** | Fees are real consumption (tiny but correct) |
-| Treat transfer fees as deductible costs? | **ON** | Reduces taxable gain — defensible |
+| Treat transfer fees as deductible costs? | **ON** | Reduces taxable gain; defensible |
 
 ### Key Correction
 
@@ -216,14 +216,14 @@ Core algorithm is identical for crypto. Differences:
 - Our FIFO rebuild for loan-affected assets must use **carry-over cost** (same as Koinly)
 - `Received Cost Basis` in TH = carry-over cost = **the correct value for Portuguese FIFO**
 - Validation against Koinly CG for non-loan assets is apples-to-apples (same methodology)
-- No Koinly settings need to change — current configuration is PT-compliant
+- No Koinly settings need to change; current configuration is PT-compliant
 
-### Art. 10(21) Gray Area — DEX Counterparties
+### Art. 10(21) Gray Area: DEX Counterparties
 
 For on-chain swaps via DEX protocols:
 - Is the smart contract/protocol considered a "counterparty"?
 - If so, is the protocol's jurisdiction EU/EEA?
-- Unclear under current guidance — conservative position may vary
+- Unclear under current guidance; conservative position may vary
 
 For centralized exchanges (Kraken, ByBit, Gate.io): clearly EU-accessible entities with information sharing agreements → Art. 10(20) deferral applies.
 
@@ -239,7 +239,7 @@ For centralized exchanges (Kraken, ByBit, Gate.io): clearly EU-accessible entiti
 
 4. **Art. 10(21) counterparty check:** Should we flag CG entries involving non-EU counterparties where deferral might not apply? (Future scope)
 
-5. **What constitutes "exit to fiat" for taxation:** Only direct crypto→fiat sells? Or also crypto→stablecoin (USDT/USDC)? Note: USDT appears in CG file (223 entries) — Koinly treats USDT disposals as taxable events.
+5. **What constitutes "exit to fiat" for taxation:** Only direct crypto→fiat sells? Or also crypto→stablecoin (USDT/USDC)? Note: USDT appears in CG file (223 entries); Koinly treats USDT disposals as taxable events.
 
 6. **sSUI appreciation:** sSUI is a yield-bearing liquid staking token (appreciates vs SUI over time, unlike a 1:1 wrapped token). SUI→sSUI swaps are deferred under Art. 10(20). The embedded yield only materializes as a taxable gain when exiting to fiat. No special handling needed in current scope.
 
@@ -249,27 +249,27 @@ For centralized exchanges (Kraken, ByBit, Gate.io): clearly EU-accessible entiti
 
 ### Still Valuable (keep)
 
-1. **TaxJurisdictionConfig** (`config.py`) — FISCAL_YEAR, TAX_COUNTRY, EXCLUDE_LOAN_REPAYMENT_GAINS flag, config validation (NaN/Infinity/negative rejection). Still needed to gate loan exclusion behavior.
+1. **TaxJurisdictionConfig** (`config.py`): FISCAL_YEAR, TAX_COUNTRY, EXCLUDE_LOAN_REPAYMENT_GAINS flag, config validation (NaN/Infinity/negative rejection). Still needed to gate loan exclusion behavior.
 
-2. **Loan Activity Sheet** (`loan_activity_sheet.py`) — Useful reporting output showing loan balances for user visibility. Independent of FIFO approach.
+2. **Loan Activity Sheet** (`loan_activity_sheet.py`): Useful reporting output showing loan balances for user visibility. Independent of FIFO approach.
 
-3. **Zero-cost red highlighting** (`crypto_gains_sheet.py`) — Visual flagging of review-needed entries. Independent of FIFO approach.
+3. **Zero-cost red highlighting** (`crypto_gains_sheet.py`): Visual flagging of review-needed entries. Independent of FIFO approach.
 
-4. **Decision points docs** (`docs/tax/decision_points/`) — Tax law documentation structure. PT-specific decision points.
+4. **Decision points docs** (`docs/tax/decision_points/`): Tax law documentation structure. PT-specific decision points.
 
-5. **Tax law source references** (`docs/tax/laws/`) — Legal citation structure.
+5. **Tax law source references** (`docs/tax/laws/`): Legal citation structure.
 
 ### Now Obsolete (discard)
 
-6. **`_extract_loan_repayment_fingerprints()`** — Designed to match TH rows to CG rows for filtering. Not needed: we rebuild FIFO, not filter CG.
+6. **`_extract_loan_repayment_fingerprints()`**: Designed to match TH rows to CG rows for filtering. Not needed: we rebuild FIFO, not filter CG.
 
-7. **`_filter_loan_repayment_lots()`** — Core filtering logic that removes CG entries. Entirely replaced by FIFO rebuild.
+7. **`_filter_loan_repayment_lots()`**: Core filtering logic that removes CG entries. Entirely replaced by FIFO rebuild.
 
-8. **`_flag_colocated_entries()` / `_select_review_candidates()`** — Ambiguity resolution for filtered entries. Not needed when we rebuild FIFO ourselves.
+8. **`_flag_colocated_entries()` / `_select_review_candidates()`**: Ambiguity resolution for filtered entries. Not needed when we rebuild FIFO ourselves.
 
-9. **Integration wiring in `crypto_reporting.py` pipeline** — The "filter before aggregation" pipeline step. Replaced by "build from TH" pipeline step.
+9. **Integration wiring in `crypto_reporting.py` pipeline**: The "filter before aggregation" pipeline step. Replaced by "build from TH" pipeline step.
 
-10. **All loan filter tests** (`test_crypto_reporting.py` ~1200 lines) — Test the now-obsolete filtering approach.
+10. **All loan filter tests** (`test_crypto_reporting.py` ~1200 lines): Test the now-obsolete filtering approach.
 
 ### Summary
 

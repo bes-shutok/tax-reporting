@@ -36,7 +36,7 @@ def _validate_capital_entries_have_valid_countries(
     Entries with invalid/unknown country codes are retained in the output but flagged
     with review_required=True and an actionable review_reason. This follows the
     "process with error indicators" principle: the report is never aborted due to a
-    missing registry entry — the user is informed and can add the platform mapping.
+    missing registry entry. The user is informed and can add the platform mapping.
 
     Args:
         entries: Parsed capital gain entries to validate.
@@ -58,7 +58,7 @@ def _validate_capital_entries_have_valid_countries(
             invalid_count += 1
             logger.error(
                 "Capital entry for %s on %s has unresolvable country '%s' (platform=%s, wallet=%s); "
-                "entry flagged for review — add platform mapping to resolve_operator_origin()",
+                "entry flagged for review: add platform mapping to resolve_operator_origin()",
                 entry.asset,
                 entry.disposal_date,
                 country,
@@ -67,8 +67,8 @@ def _validate_capital_entries_have_valid_countries(
             )
             new_reason = (
                 f"Platform '{entry.platform}' has no registered country mapping; "
-                f"resolved country '{country}' is not a valid Tabela X code — "
-                "add this platform to resolve_operator_origin() before filing"
+                f"resolved country '{country}' is not a valid Tabela X code. "
+                "Add this platform to resolve_operator_origin() before filing"
             )
             result.append(
                 replace(
@@ -179,9 +179,9 @@ def _split_ogr_index(
       ``_apply_ogr_direction_override`` may consume it.
 
     Backward compatibility (``separate_derivatives_reporting=False``): the
-    function returns ``(_build_ogr_index(ogr_rows), [])`` — i.e., the combined
-    summed index with no derivatives split, byte-identical to the pre-Task-7
-    pipeline. The downstream ``_apply_ogr_direction_override`` receives the
+    function returns ``(_build_ogr_index(ogr_rows), [])`` (i.e., the combined
+    summed index with no derivatives split, byte-identical to the pre-Task-7 pipeline).
+    The downstream ``_apply_ogr_direction_override`` receives the
     combined index and behaves as before.
 
     Safety net (r1 Medium #7): when ``separate_derivatives_reporting=True`` and
@@ -189,7 +189,7 @@ def _split_ogr_index(
     ``logger.warning`` is emitted so ambiguous platform cases (no CG counterpart
     to confirm spot vs derivatives classification) are surfaced. The row is
     still routed to ``derivatives_entries`` because the OGR ``Type`` column is
-    the authoritative signal — Profit rows are always derivatives, and Loss
+    the authoritative signal: Profit rows are always derivatives, and Loss
     rows with no CG counterpart have no spot anchor.
 
     Args:
@@ -408,7 +408,7 @@ def _apply_ogr_direction_override(
             ``separate_derivatives_reporting`` is enabled, or the combined
             summed index produced by ``_build_ogr_index`` when the flag is
             disabled (backward-compat path). The function body does NOT branch
-            on the flag — it consumes whatever index the caller passes. When
+            on the flag; it consumes whatever index the caller passes. When
             the split is active, derivatives rows never reach this function.
         jurisdiction: Tax jurisdiction config with use_other_gains_report flag.
 

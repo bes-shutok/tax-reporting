@@ -3,6 +3,7 @@
 import configparser
 import logging
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -300,6 +301,73 @@ class TestLoadTaxJurisdictionConfig:
         assert cfg.tax_jurisdiction.fiscal_year == 2025
         assert cfg.tax_jurisdiction.zero_basis_review_threshold == Decimal("75")
         assert cfg.tax_jurisdiction.exclude_loan_repayment_gains is True
+
+    def test_reads_zero_basis_review_min_proceeds_from_config_ini(self, tmp_path, monkeypatch):
+        """ZERO_BASIS_REVIEW_MIN_PROCEEDS in [TAX JURISDICTION] is parsed into the config."""
+        import tax_reporting.infrastructure.config as config_module
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(self._PT_TOML)
+        cp = self._make_config({
+            "TAX_COUNTRY": "PT",
+            "FISCAL_YEAR": "2025",
+            "ZERO_BASIS_REVIEW_MIN_PROCEEDS": "10",
+        })
+        logger = logging.getLogger(__name__)
+        result = _load_tax_jurisdiction_config(cp, logger)
+        assert result.zero_basis_review_min_proceeds == Decimal("10")
+
+    def test_falls_back_to_default_when_key_absent(self, tmp_path, monkeypatch):
+        """When ZERO_BASIS_REVIEW_MIN_PROCEEDS is absent, DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS is used."""
+        import tax_reporting.infrastructure.config as config_module
+        from tax_reporting.infrastructure.config import DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(self._PT_TOML)
+        cp = self._make_config({"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025"})
+        logger = logging.getLogger(__name__)
+        result = _load_tax_jurisdiction_config(cp, logger)
+        assert result.zero_basis_review_min_proceeds == DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS
+
+    def test_rejects_invalid_zero_basis_review_min_proceeds(self):
+        """Non-numeric ZERO_BASIS_REVIEW_MIN_PROCEEDS raises ValueError with raw value in message."""
+        cp = self._make_config({
+            "TAX_COUNTRY": "PT",
+            "FISCAL_YEAR": "2025",
+            "ZERO_BASIS_REVIEW_MIN_PROCEEDS": "abc",
+        })
+        logger = logging.getLogger(__name__)
+        with pytest.raises(ValueError, match="abc"):
+            _load_tax_jurisdiction_config(cp, logger)
+
+    def test_rejects_negative_zero_basis_review_min_proceeds(self):
+        """Negative ZERO_BASIS_REVIEW_MIN_PROCEEDS raises ValueError."""
+        cp = self._make_config({
+            "TAX_COUNTRY": "PT",
+            "FISCAL_YEAR": "2025",
+            "ZERO_BASIS_REVIEW_MIN_PROCEEDS": "-5",
+        })
+        logger = logging.getLogger(__name__)
+        with pytest.raises(ValueError, match="finite non-negative"):
+            _load_tax_jurisdiction_config(cp, logger)
+
+    def test_committed_config_ini_min_proceeds_matches_default(self):
+        """Both committed INI files pin ZERO_BASIS_REVIEW_MIN_PROCEEDS to the domain default.
+
+        Guards against drift between config.ini, tests/config.ini, and
+        DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS when the default is revised.
+        """
+        from tax_reporting.infrastructure.config import DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS
+
+        repo_root = Path(__file__).resolve().parents[3]
+        ini_paths = [repo_root / "config.ini", repo_root / "tests" / "config.ini"]
+        for ini_path in ini_paths:
+            assert ini_path.exists(), f"committed config not found: {ini_path}"
+            cp = configparser.ConfigParser()
+            cp.read(ini_path, encoding="utf-8")
+            raw = cp["TAX JURISDICTION"]["ZERO_BASIS_REVIEW_MIN_PROCEEDS"]
+            assert Decimal(raw) == DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS, (
+                f"{ini_path.name} ZERO_BASIS_REVIEW_MIN_PROCEEDS={raw!r} diverges from "
+                f"DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS={DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS}"
+            )
 
 
 def _write_toml(path, content: str) -> None:

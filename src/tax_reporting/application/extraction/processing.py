@@ -223,7 +223,7 @@ def _process_dividends(csv_data: IBCsvData) -> DividendIncomePerCompany:  # noqa
         except Exception as e:
             raise FileProcessingError(f"Failed to process dividend/tax for symbol {symbol}: {e}") from e
 
-    # Validate after all rows are accumulated — mid-accumulation state can be temporarily invalid
+    # Validate after all rows are accumulated: mid-accumulation state can be temporarily invalid
     # (e.g. reversal arrives before dividend, or withholding tax arrives after full reversal).
     # Symbols that are fully reversed (net zero or invalid after reversal) are skipped with a warning.
     invalid_symbols = []

@@ -459,7 +459,7 @@ review_reason="; ".join(dict.fromkeys(e.review_reason for e in group if e.review
 ### Lessons Learned
 
 1. Bare "TRUE" review flags required users to trace through source data to understand why. Specific reasons eliminate this round-trip.
-2. The `review_reason` field is optional (`str | None`) — entries without review flags have `None`, not an empty string.
+2. The `review_reason` field is optional (`str | None`): entries without review flags have `None`, not an empty string.
 3. When adding a new review flag condition, always provide a `review_reason` that tells the user what to verify, not just that something needs review.
 
 ## Common Implementation Pitfalls
@@ -561,7 +561,7 @@ Always test exact threshold values, not just values on either side:
 
 Use exact equality when the expected count is known:
 - `assert len(entries) == 1` when exactly one entry is expected
-- Avoid `assert len(entries) >= 1` — it hides duplications and partial failures
+- Avoid `assert len(entries) >= 1`; it hides duplications and partial failures
 
 ### False-Positive Tests
 
@@ -576,7 +576,7 @@ Multi-agent review found critical implementation bugs that single-reviewer passe
 - Temporal FIFO violations (future-dated lots consumed by past disposals)
 - Empty string handling in aggregation
 
-Multiple review iterations were necessary — fixes in one pass revealed new issues. Always verify findings against actual code, not assumptions from prior iterations.
+Multiple review iterations were necessary: fixes in one pass revealed new issues. Always verify findings against actual code, not assumptions from prior iterations.
 
 ## Aggregation Grouping Invariants
 
@@ -755,7 +755,7 @@ When changing `_index_row`, verify coverage of ALL transaction types found in re
 Missing-data guards must be applied uniformly across all transaction type branches. If one branch returns early when a required field is empty, all branches that use that field must apply the same guard:
 
 ```python
-# ❌ WRONG — exchange guards sent_currency but buy does not
+# ❌ WRONG: exchange guards sent_currency but buy does not
 def _index_row(self, row):
     if row_type == "exchange":
         if not sent_currency:
@@ -766,7 +766,7 @@ def _index_row(self, row):
         # creating fabricated "EUROC acquired from EUROC"
         self._add_record(asset, sent_currency, ...)  # from_asset = asset when sent_currency is ""
 
-# ✅ CORRECT — consistent early return for empty required field
+# ✅ CORRECT: consistent early return for empty required field
     elif row_type == "buy":
         if not sent_currency:
             return  # degrade to unknown, same as exchange branch
@@ -814,7 +814,7 @@ Unresolved deferred acquisitions (no matching carry-over entry) are flagged with
 
 ### Cross-Platform Carry-Over Keying
 
-When `_rebuild_fifo_for_loan_affected_assets` merges carry-over maps from multiple per-platform FIFO runs, the merged dict must use `(tx_key, platform)` composite keys — not plain `tx_key` strings. Two platforms can independently produce a carry-over entry with the same `tx_key` (especially when `_build_composite_tx_key` is used because `TxHash` is empty and both platforms happen to process a row with identical Date/Amount/Currency fields). Without the platform dimension, the second write silently overwrites the first, using the wrong cost basis for one of the two assets.
+When `_rebuild_fifo_for_loan_affected_assets` merges carry-over maps from multiple per-platform FIFO runs, the merged dict must use `(tx_key, platform)` composite keys, not plain `tx_key` strings. Two platforms can independently produce a carry-over entry with the same `tx_key` (especially when `_build_composite_tx_key` is used because `TxHash` is empty and both platforms happen to process a row with identical Date/Amount/Currency fields). Without the platform dimension, the second write silently overwrites the first, using the wrong cost basis for one of the two assets.
 
 The `AssetFifoResult.carryover_cost_by_tx_key` field therefore holds `dict[str | tuple[str, str], Decimal]`: per-platform results use plain `str` keys; the merged carry-over map used by `_rebuild_fifo_for_loan_affected_assets` uses `(tx_key, platform)` tuple keys.
 
@@ -883,7 +883,7 @@ Date parsing for TH rows must be inside the same try/except that catches decimal
 
 #### FIFO Pool Temporal Gating
 
-The FIFO consumption loop must enforce `acq.date <= con.date`. When a disposal exhausts all lots acquired on or before its own date, the remaining quantity is treated as pool-exhausted (zero-cost placeholder) — not consumed from future-dated lots. Consuming from the future corrupts both gain amounts and holding period labels.
+The FIFO consumption loop must enforce `acq.date <= con.date`. When a disposal exhausts all lots acquired on or before its own date, the remaining quantity is treated as pool-exhausted (zero-cost placeholder), not consumed from future-dated lots. Consuming from the future corrupts both gain amounts and holding period labels.
 
 #### Pool-Exhaustion Review Signaling
 
@@ -909,7 +909,7 @@ When decision points or rules conflict, always verify against the primary author
 
 ### Review Entries Must Not Be Ghost Data
 
-When flagging entries for manual review, ensure they remain visible in their primary data context. If an entry appears ONLY in a "REVIEW REQUIRED" section and not in the main capital gains/reward data, users cannot trace it back to source rows—creating a "ghost" review item with no audit trail.
+When flagging entries for manual review, ensure they remain visible in their primary data context. If an entry appears ONLY in a "REVIEW REQUIRED" section and not in the main capital gains/reward data, users cannot trace it back to source rows, creating a "ghost" review item with no audit trail.
 
 **Correct pattern**: Zero-value entries for known assets should be added to the main entry list with `review_required=True`, AND added to review_entries for prominence. Review-only sections should be additive cross-references, not the sole location for flagged items.
 
@@ -1302,7 +1302,7 @@ underlying collateral is a cryptoasset.
 ## References
 
 - Plan: `docs/plans/aggregate-crypto-rewards-income.md`
-- Plan: `docs/plans/crypto_manual_review_reduction.md` (token swap history — superseded; heuristic removed 2026-04-05)
+- Plan: `docs/plans/crypto_manual_review_reduction.md` (token swap history, superseded; heuristic removed 2026-04-05)
 - Plan: `docs/plans/2026-04-05-koinly-first-token-origin.md` (implemented: deterministic origin matching via `TokenOriginResolver`)
 - Rules: `docs/domain/crypto_rules.md`
 - Guidelines: `docs/domain/crypto_reporting_guidelines.md`

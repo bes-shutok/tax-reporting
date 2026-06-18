@@ -1,6 +1,6 @@
 # Plan: Assumptions & Methodology Decision Points
 
-Plan review: the local review record (latest, ready=yes) — 0 Blockers, 0 Medium | r2 (1 Blocker, 3 Medium addressed) | r1 (2 Blockers, 3 Medium addressed)
+Plan review: the local review record (latest, ready=yes), 0 Blockers, 0 Medium | r2 (1 Blocker, 3 Medium addressed) | r1 (2 Blockers, 3 Medium addressed)
 
 ## Terms
 
@@ -49,20 +49,20 @@ The Methodology Assumptions section is the taxpayer's audit trail for filing dec
 Files directly changed as part of this plan. Review feedback is accepted **only** for the files listed here.
 Any finding about a file not in this list must be rejected as out of scope.
 
-**Production code — in scope:**
+**Production code; in scope:**
 - `src/tax_reporting/application/persisting/assumptions_sheet.py` *(modified)*
 
-**Tests — in scope:**
+**Tests; in scope:**
 - `tests/unit/application/persisting/test_assumptions_sheet.py` *(new)*
 
-**Documentation — scope-linked (not a closed file list):**
-- `docs/tax/decision_points/2025.md` — may be updated to ensure all decision points are documented
-- `docs/domain/crypto_rules.md` — reference only; no changes expected
+**Documentation; scope-linked (not a closed file list):**
+- `docs/tax/decision_points/2025.md`: may be updated to ensure all decision points are documented
+- `docs/domain/crypto_rules.md`: reference only; no changes expected
 
-**Out of scope — reject all review feedback:**
-- Other sheet writers (crypto_gains_sheet.py, ib_sheet.py, etc.) — not touched by this change
-- Platform Assumptions section of assumptions_sheet.py — first section unchanged
-- Other report tabs (IB, Crypto Gains, Crypto Supplementary, etc.) — not in scope
+**Out of scope; reject all review feedback:**
+- Other sheet writers (crypto_gains_sheet.py, ib_sheet.py, etc.), not touched by this change
+- Platform Assumptions section of assumptions_sheet.py; first section unchanged
+- Other report tabs (IB, Crypto Gains, Crypto Supplementary, etc.), not in scope
 
 ## Validation Commands
 
@@ -144,7 +144,7 @@ Files:
 
 **CRITICAL:** Current implementation has early return when `not summaries` (lines 121-124), which skips the methodology section entirely. This violates Design Invariant #3.
 
-- [x] `AssumptionsSheetTest#test_methodology_renders_without_crypto_data` — given empty capital_entries and reward_entries, expects methodology section still renders with "Methodology Assumptions" header and all content
+- [x] `AssumptionsSheetTest#test_methodology_renders_without_crypto_data`: given empty capital_entries and reward_entries, expects methodology section still renders with "Methodology Assumptions" header and all content
 - [x] Run → expect RED: `uv run pytest tests/unit/application/persisting/test_assumptions_sheet.py -x -k test_methodology_renders_without_crypto_data`
 - [x] Remove early return logic; methodology section should populate regardless of platform data presence
 - [x] Platform Assumptions section should show "No platform data found." when summaries empty, but methodology should still render below
@@ -156,8 +156,8 @@ Files:
 Files:
 - `src/tax_reporting/application/persisting/assumptions_sheet.py`
 
-- [x] `AssumptionsSheetTest#test_methodology_sections_render` — given a report with crypto data, expects methodology section renders with grouped section headers in bold
-- [x] `AssumptionsSheetTest#test_methodology_items_have_legal_citations` — given methodology items, expects each item includes CIRS article or AT source reference
+- [x] `AssumptionsSheetTest#test_methodology_sections_render`: given a report with crypto data, expects methodology section renders with grouped section headers in bold
+- [x] `AssumptionsSheetTest#test_methodology_items_have_legal_citations`: given methodology items, expects each item includes CIRS article or AT source reference
 - [x] Run → expect RED: `uv run pytest tests/unit/application/persisting/test_assumptions_sheet.py -x -k methodology`
 - [x] Refactor write_assumptions_and_methodology_sheet() to use grouped structure
 - [x] Update methodology_items to nested structure: list of (section_title, [(label, description), ...])
@@ -175,36 +175,36 @@ Files:
 Add the following missing decision points to appropriate sections. This documents ALL decision points from decision_points/2025.md (DP-001 through DP-011) plus key PT-C rules:
 
 **Taxable Events section:**
-- [x] Loan Repayment Exclusion — Returning borrowed crypto is NOT taxable disposal (DP-001, CIRS art. 10(20))
-- [x] Crypto-to-Crypto Deferral — No tax on crypto-to-crypto swaps (DP-002, CIRS art. 10(20))
-- [x] Cost Basis Method — FIFO method mandatory (DP-003, CIRS art. 43 n.6 al.g, PT-C-008)
-- [x] Transfer Fees — Gas fees are taxable disposals (DP-006, CIRS art. 10(4)(a), PT-C-007)
-- [x] Fee Deductibility — Fees are deductible costs (DP-007, CIRS art. 10(4)(a), PT-C-007)
+- [x] Loan Repayment Exclusion; Returning borrowed crypto is NOT taxable disposal (DP-001, CIRS art. 10(20))
+- [x] Crypto-to-Crypto Deferral; No tax on crypto-to-crypto swaps (DP-002, CIRS art. 10(20))
+- [x] Cost Basis Method; FIFO method mandatory (DP-003, CIRS art. 43 n.6 al.g, PT-C-008)
+- [x] Transfer Fees; Gas fees are taxable disposals (DP-006, CIRS art. 10(4)(a), PT-C-007)
+- [x] Fee Deductibility; Fees are deductible costs (DP-007, CIRS art. 10(4)(a), PT-C-007)
 
 **Holding Period & Exemptions section:**
-- [x] Transitional Rule — Assets acquired before 2023 qualify immediately (PT-C-012, Art. 220 Lei n.º 24-D/2022)
+- [x] Transitional Rule; Assets acquired before 2023 qualify immediately (PT-C-012, Art. 220 Lei n.º 24-D/2022)
 
 **Capital Gains Calculation section:**
-- [x] Per-Wallet FIFO — FIFO applied per exchange/institution (DP-004, CIRS art. 43 n.9, PT-C-009)
-- [x] Liquidity Provision — LP operations deferred (DP-005, CIRS art. 10(20))
+- [x] Per-Wallet FIFO; FIFO applied per exchange/institution (DP-004, CIRS art. 43 n.9, PT-C-009)
+- [x] Liquidity Provision; LP operations deferred (DP-005, CIRS art. 10(20))
 
 **Losses section:**
-- [x] Losses Carry-Forward — Capital losses carried forward 5 years (PT-C-016, CIRS art. 55(1)(d))
-- [x] Futures/Derivatives Losses — Liquidations are taxable disposals (DP-010, CIRS art. 10(1)(e), PT-C-031)
-- [x] Blacklisted Jurisdictions — Losses with blacklisted counterparties not deductible (PT-C-017, CIRS art. 43 n.5)
+- [x] Losses Carry-Forward; Capital losses carried forward 5 years (PT-C-016, CIRS art. 55(1)(d))
+- [x] Futures/Derivatives Losses; Liquidations are taxable disposals (DP-010, CIRS art. 10(1)(e), PT-C-031)
+- [x] Blacklisted Jurisdictions; Losses with blacklisted counterparties not deductible (PT-C-017, CIRS art. 43 n.5)
 
 **Tax Rates section:**
-- [x] 28% Flat Rate — Capital gains taxed at 28% flat rate (PT-C-014, CIRS art. 72(1)(c))
-- [x] Englobamento — Option to aggregate for progressive rates (PT-C-014, CIRS art. 72(13))
+- [x] 28% Flat Rate; Capital gains taxed at 28% flat rate (PT-C-014, CIRS art. 72(1)(c))
+- [x] Englobamento; Option to aggregate for progressive rates (PT-C-014, CIRS art. 72(13))
 
 **Other Gains section:**
-- [x] Other Gains Classification — Rewards are Category E income, not Category G (DP-008, CIRS art. 5(11))
+- [x] Other Gains Classification; Rewards are Category E income, not Category G (DP-008, CIRS art. 5(11))
 
 **Implementation section:**
-- [x] Cashback Treatment — Record actual value, not zero-cost (DP-009, implementation decision)
-- [x] OGR Usage for Derivatives — Use Other Gains Report values for futures/derivatives (DP-011, CIRS art. 10(1)(e))
+- [x] Cashback Treatment; Record actual value, not zero-cost (DP-009, implementation decision)
+- [x] OGR Usage for Derivatives; Use Other Gains Report values for futures/derivatives (DP-011, CIRS art. 10(1)(e))
 
-- [x] `AssumptionsSheetTest#test_all_decision_points_documented` — given decision_points/2025.md content, expects each DP-XXX has corresponding methodology item
+- [x] `AssumptionsSheetTest#test_all_decision_points_documented`: given decision_points/2025.md content, expects each DP-XXX has corresponding methodology item
 - [x] Run → expect RED
 - [x] Add each missing decision point to methodology_items with legal citation
 - [x] For DP-006 and DP-009 (lacking explicit CIRS citations), document with best available basis and mark as implementation decision where appropriate
@@ -230,11 +230,11 @@ Files:
 Files:
 - `tests/unit/application/persisting/test_assumptions_sheet.py`
 
-- [x] `AssumptionsSheetTest#test_platform_assumptions_section_unchanged` — given a report with crypto data, expects Platform Assumptions section structure (headers, column order, red-fill logic) unchanged after methodology refactor
-- [x] `AssumptionsSheetTest#test_methodology_renders_without_crypto_data` — given empty entries, expects methodology section renders completely (Design Invariant #3 verification)
-- [x] `AssumptionsSheetTest#test_section_headers_bold` — given methodology section, expects section headers (e.g. "Taxable Events") have `.font.bold is True`
-- [x] `AssumptionsSheetTest#test_section_spacing` — given multiple sections, expects exactly 1 blank row between sections (cell value is None)
-- [x] `AssumptionsSheetTest#test_legal_citation_format` — given methodology items, expects legal citations follow format: "CIRS art. X" or "AT folheto YYYY-MM-DD" or "AT PIV XXXXX" (regex validation)
+- [x] `AssumptionsSheetTest#test_platform_assumptions_section_unchanged`: given a report with crypto data, expects Platform Assumptions section structure (headers, column order, red-fill logic) unchanged after methodology refactor
+- [x] `AssumptionsSheetTest#test_methodology_renders_without_crypto_data`: given empty entries, expects methodology section renders completely (Design Invariant #3 verification)
+- [x] `AssumptionsSheetTest#test_section_headers_bold`: given methodology section, expects section headers (e.g. "Taxable Events") have `.font.bold is True`
+- [x] `AssumptionsSheetTest#test_section_spacing`: given multiple sections, expects exactly 1 blank row between sections (cell value is None)
+- [x] `AssumptionsSheetTest#test_legal_citation_format`: given methodology items, expects legal citations follow format: "CIRS art. X" or "AT folheto YYYY-MM-DD" or "AT PIV XXXXX" (regex validation)
 - [x] Run → expect RED
 - [x] Verify auto_column_width handles multi-line descriptions without overflow
 - [x] Ensure no cell text is truncated in Excel output
@@ -271,6 +271,6 @@ Files:
 
 ## Design Invariants
 
-1. **Platform Assumptions section unchanged** — The first section of the sheet (Platform Assumptions) must remain exactly as is; only the Methodology Assumptions section is modified.
-2. **Other tabs unchanged** — This plan touches only the Assumptions & Methodology tab writer; no other report tabs are affected.
-3. **No crypto dependency** — The sheet must render correctly even when crypto data is absent (platforms list may be empty, but methodology should always populate).
+1. **Platform Assumptions section unchanged**: The first section of the sheet (Platform Assumptions) must remain exactly as is; only the Methodology Assumptions section is modified.
+2. **Other tabs unchanged**: This plan touches only the Assumptions & Methodology tab writer; no other report tabs are affected.
+3. **No crypto dependency**: The sheet must render correctly even when crypto data is absent (platforms list may be empty, but methodology should always populate).

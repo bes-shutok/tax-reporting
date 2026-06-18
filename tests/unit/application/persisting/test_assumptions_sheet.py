@@ -1,10 +1,10 @@
 """Tests for the Assumptions & Methodology sheet writer."""
 
+import re
 from decimal import Decimal
 
 import openpyxl
 import pytest
-import re
 
 from tax_reporting.application.crypto_reporting import (
     CapitalGainPeriodStats,
@@ -479,7 +479,9 @@ class TestMethodologyAssumptionsSection:
             if cell_value in expected_labels:
                 found_labels.add(cell_value)
 
-        assert found_labels == expected_labels, f"Expected all methodology labels {expected_labels}, found {found_labels}"
+        assert found_labels == expected_labels, (
+            f"Expected all methodology labels {expected_labels}, found {found_labels}"
+        )
 
     def test_methodology_sections_render(self):
         """Methodology section renders with grouped section headers in bold."""
@@ -566,7 +568,10 @@ class TestMethodologyAssumptionsSection:
             assert description is not None, f"Item '{label}' at row {row_idx} must have description"
 
             has_legal_citation = any(pattern in description for pattern in legal_citation_patterns)
-            assert has_legal_citation, f"Item '{label}' description must include legal citation (CIRS, AT folheto, PIV, or Implementation decision)"
+            assert has_legal_citation, (
+                f"Item '{label}' description must include legal citation "
+                "(CIRS, AT folheto, PIV, or Implementation decision)"
+            )
 
     def test_all_decision_points_documented(self):
         """All decision points from decision_points/2025.md are documented in methodology.
@@ -642,7 +647,9 @@ class TestMethodologyAssumptionsSection:
         ]
 
         for col_idx, expected_header in enumerate(expected_headers, 1):
-            assert ws.cell(headers_row, col_idx).value == expected_header, f"Expected header '{expected_header}' at column {col_idx}"
+            assert ws.cell(headers_row, col_idx).value == expected_header, (
+                f"Expected header '{expected_header}' at column {col_idx}"
+            )
 
         # Verify column order with actual data
         assert ws.cell(6, 1).value == "Kraken"
@@ -799,7 +806,9 @@ class TestMethodologyAssumptionsSection:
                 methodology_descriptions.append((cell_value, description))
 
         # Should have multiple methodology items
-        assert len(methodology_descriptions) >= 15, f"Expected at least 15 methodology items, found {len(methodology_descriptions)}"
+        assert len(methodology_descriptions) >= 15, (
+            f"Expected at least 15 methodology items, found {len(methodology_descriptions)}"
+        )
 
         # Each description must match at least one legal citation pattern
         for label, description in methodology_descriptions:
@@ -808,4 +817,7 @@ class TestMethodologyAssumptionsSection:
                 if re.search(pattern, description):
                     matches_pattern = True
                     break
-            assert matches_pattern, f"Item '{label}' description must include legal citation matching one of the expected patterns. Description: {description}"
+            assert matches_pattern, (
+                f"Item '{label}' description must include legal citation matching one of the expected patterns. "
+                f"Description: {description}"
+            )

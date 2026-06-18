@@ -3,7 +3,7 @@
 ## Review Amendments (2025-06-06)
 
 **Round 1:** Applied fixes from plan review (docs/reviews/2025-06-06-plan-review-2025-06-06-fix-capital-gains-table-structure.md)
-**Round 2:** Verified all amendments — review confirmed plan is ready (docs/reviews/2025-06-06-plan-review-2025-06-06-fix-capital-gains-table-structure-r2.md)
+**Round 2:** Verified all amendments; review confirmed plan is ready (docs/reviews/2025-06-06-plan-review-2025-06-06-fix-capital-gains-table-structure-r2.md)
 
 Applied fixes from plan review (docs/reviews/2025-06-06-plan-review-2025-06-06-fix-capital-gains-table-structure.md):
 - **B1 fix**: `start_column` must stay at 2 (not change to 1). Column 1 is reserved for Country of Source (written by the separate country pass). Changing it to 1 would cause the country pass to overwrite sell_day data.
@@ -43,14 +43,14 @@ Row 5+: [data starts at column 2]
 
 ## Review Scope
 
-**Production code — in scope:**
+**Production code; in scope:**
 - `src/tax_reporting/application/persisting/ib_sheet.py`
 
-**Tests — in scope:**
+**Tests; in scope:**
 - `tests/unit/application/persisting/test_ib_sheet.py`
 
-**Out of scope — reject all review feedback:**
-- All other files (crypto_reporting.py, excel_utils.py, etc.) — focus on capital gains table only
+**Out of scope; reject all review feedback:**
+- All other files (crypto_reporting.py, excel_utils.py, etc.), focus on capital gains table only
 
 ## Validation Commands
 

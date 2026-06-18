@@ -848,7 +848,7 @@ class TestParseRawIbExport:
         try:
             trade_cycles = parse_ib_export(Path(tmp_name))
             assert len(trade_cycles) == 1
-            # Key contains enriched company (with ISIN) — get it from the result
+            # Key contains enriched company (with ISIN). Get it from the result.
             (key, cycle) = next(iter(trade_cycles.items()))
             assert key.currency == parse_currency("USD")
             assert key.company.ticker == "AAPL"

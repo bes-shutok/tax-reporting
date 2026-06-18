@@ -1,6 +1,6 @@
 # Plan: Check Crypto Grouping Regression And Add Guardrail Tests
 
-**Status: Complete** — All tasks done. Task 2 deferred (no same-key duplicate reproducible).
+**Status: Complete**: All tasks done. Task 2 deferred (no same-key duplicate reproducible).
 
 ## Context
 The reported example (`2024-07-27 11:03:00`) does not currently reproduce as a duplicate disposal row in the generated workbook. In `resources/result/extract.xlsx`, that timestamp appears in the `Acquisition date` column, not `Disposal date`, and current runtime inspection shows zero duplicate aggregation keys by `(disposal_date, asset, platform, holding_period)`. `master` and `remove-legacy-token-origin-and-add-safe-examples` are identical for `src/shares_reporting/application/crypto_reporting.py` and its aggregation tests, so the squash merge itself does not appear to have dropped grouping logic. The fix plan is therefore to lock the intended grouping invariants with regression tests first, then only change implementation if a same-key duplicate is reproduced by a RED test.
@@ -23,7 +23,7 @@ The user observed output increasing from ~100 lines to ~138 lines in Capital Gai
 
 6. **Aggregation granularity floor is day-level.** Per PT-C-020, the form captures dates as Ano/Mês/Dia. Aggregation coarser than day-level (e.g. per month or per year) would merge distinct disposal events and is not acceptable. The current minute-level grouping is stricter than legally required; day-level would also be correct.
 
-7. **The `_format_datetime` seconds change was introduced to prevent a theoretical collision** (e.g. `13:01:05` vs `13:01:55` merging at minute level) described in the plan's "Post-Implementation Fixes — Issue 1". This collision cannot occur with Koinly's actual minute-precision source data, but the change is harmless and defensive if future data sources include seconds.
+7. **The `_format_datetime` seconds change was introduced to prevent a theoretical collision** (e.g. `13:01:05` vs `13:01:55` merging at minute level) described in the plan's "Post-Implementation Fixes; Issue 1". This collision cannot occur with Koinly's actual minute-precision source data, but the change is harmless and defensive if future data sources include seconds.
 
 ## Validation Commands
 ```bash
@@ -76,7 +76,7 @@ Files:
 - [x] Add a durable regression test that fails whenever `_aggregate_capital_entries()` emits duplicate rows for the same `(disposal_date, asset, platform, holding_period)` key.
 - [x] Add a regression test for a mixed holding-period timestamp to confirm same-timestamp rows stay split when the holding period differs, because that split is intentional and legally significant.
 - [x] Document the distinction between “expected repeated timestamps” and “forbidden duplicate aggregation keys” in the crypto implementation guidance so future reviews use the same definition of a grouping regression.
-- [x] Update the relevant crypto rule/guidance reference only if the investigation changes the intended grouping contract, not merely its implementation. (no update needed — investigation confirmed the grouping contract is correct and unchanged)
+- [x] Update the relevant crypto rule/guidance reference only if the investigation changes the intended grouping contract, not merely its implementation. (no update needed; investigation confirmed the grouping contract is correct and unchanged)
 
 ## Follow-On Investigation
 The grouping investigation above remains valid and is preserved unchanged. Additional debugging after that work surfaced a separate likely bug in reward classification, plus a clarification about the `Fee` note concern:

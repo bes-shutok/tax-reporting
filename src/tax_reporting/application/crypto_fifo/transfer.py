@@ -84,7 +84,7 @@ def _resolve_intra_asset_transfers(  # noqa: PLR0912
                 sender_names = ", ".join(p for p, _ in matching_senders)
                 review_reason = (
                     f"tx_key={acq.tx_key} matched {len(matching_senders)} sender platforms "
-                    f"({sender_names}); costs have been summed ({resolved_cost}) — verify manually "
+                    f"({sender_names}); costs have been summed ({resolved_cost}): verify manually "
                     "that these represent a single economic transfer and not separate operations"
                 )
             elif resolved_cost == ZERO:
@@ -102,7 +102,7 @@ def _resolve_intra_asset_transfers(  # noqa: PLR0912
                 review_reason = None
             if review_required:
                 logger.warning(
-                    "Transfer carry-over for %s tx_key=%s requires review — %s",
+                    "Transfer carry-over for %s tx_key=%s requires review: %s",
                     acq.acq.asset,
                     acq.tx_key,
                     review_reason,
@@ -121,7 +121,7 @@ def _resolve_intra_asset_transfers(  # noqa: PLR0912
                 f"sender platform FIFO carry-over not available."
             )
             logger.warning(
-                "Could not resolve transfer_in_deferred for %s tx_key=%s — "
+                "Could not resolve transfer_in_deferred for %s tx_key=%s: "
                 "sender platform carry-over not found; flagging for review.",
                 acq.acq.asset,
                 acq.tx_key,

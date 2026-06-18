@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from tax_reporting.application.crypto.fifo_helpers import _apply_phantom_lot_flags
 from tax_reporting.application.crypto_fifo import (
     AcquisitionContext,
     ConsumptionContext,
@@ -16,11 +17,19 @@ from tax_reporting.application.crypto_fifo import (
     compute_fifo_for_asset,
     discover_loan_affected_assets,
     parse_th_for_loan_affected_assets,
+)
+from tax_reporting.application.crypto_fifo import (
     resolve_cross_asset_exchanges as _resolve_cross_asset_exchanges_impl,
 )
-from tax_reporting.application.crypto_fifo.parsing import _build_composite_tx_key
-from tax_reporting.application.crypto.fifo_helpers import _apply_phantom_lot_flags
-from tax_reporting.domain.crypto_fifo import AssetFifoResult, CryptoAcquisition, CryptoConsumption, CryptoFifoRealization
+from tax_reporting.application.crypto_fifo.parsing import (
+    _build_composite_tx_key,
+)
+from tax_reporting.domain.crypto_fifo import (
+    AssetFifoResult,
+    CryptoAcquisition,
+    CryptoConsumption,
+    CryptoFifoRealization,
+)
 
 TH_HEADER = (
     "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
@@ -699,7 +708,7 @@ class TestFifoPartialSellPoolExhausted:
     ) -> None:
         """Buy 5 units at EUR 100 each (EUR 500 total), then sell 8 units for EUR 200 total.
 
-        Expected: two realizations —
+        Expected: two realizations:
           1. Matched portion (5 units): cost = 500, proceeds = 125, gain = −375
           2. Placeholder portion (3 units, pool exhausted): cost = 0, proceeds = 75, gain = 75
         Both must appear in the output. A warning must be logged for pool exhaustion.
@@ -764,7 +773,7 @@ class TestFifoPartialSellPoolExhausted:
         assert len(result.carryover_cost_by_tx_key) == 0
 
     def test_acquisition_before_disposal_same_day_matches_normally(self) -> None:
-        # Acquisition at row 5 precedes disposal at row 10 on the same day — normal match.
+        # Acquisition at row 5 precedes disposal at row 10 on the same day: normal match.
         acquisitions = [
             _acq(date="2025-03-01", amount="1", cost_basis_eur="100", row_index=5),
         ]
@@ -1016,7 +1025,7 @@ class TestResolveCrossAssetMultiSenderAmbiguity:
         Regression test for cycle-fallback scenario: tx_key_to_sender maps tx1→["B","Z"]
         but only "B" is in fifo_results_by_asset (Z was never processed due to a dependency
         cycle). The resolved cost must use only B's contribution AND flag review_required=True
-        with an explanation — not silently accept the partial match as fully resolved.
+        with an explanation, not silently accept the partial match as fully resolved.
         """
         import logging
 
@@ -1195,7 +1204,7 @@ class TestResolveCrossAssetDuplicateReceiverSplitting:
 
         fifo_results_by_asset = {"SUI": sender_result}
 
-        # Pre-compute totals across ALL assets — as the production caller must do.
+        # Pre-compute totals across ALL assets, as the production caller must do.
         all_acqs = {"WBTC": [wbtc_deferred], "LBTC": [lbtc_deferred]}
         precomputed: dict[str, dict[str, Decimal]] = {}
         for _a, _acs in all_acqs.items():
@@ -1915,7 +1924,7 @@ class TestFifoCrossPlatformTransfer:
         kraken_acq = _acq(
             asset="WBTC", amount="1", cost_basis_eur="1000", platform="Kraken", tx_key="tx_buy",
         )
-        # transfer_out amount = received_amount (0.99) — fee handled separately
+        # transfer_out amount = received_amount (0.99); fee handled separately
         kraken_transfer_out = _con(
             asset="WBTC", amount="0.99", proceeds_eur="0", event_type="transfer_out",
             taxable=False, platform="Kraken", tx_key="tx_transfer",
@@ -1973,7 +1982,7 @@ class TestFifoCrossPlatformTransfer:
             source_type="transfer_in_deferred", platform="ByBit", tx_key="tx_transfer",
         )
 
-        # Run Kraken FIFO — pool is exhausted at 0.5 WBTC, so tx_transfer lands in partial keys
+        # Run Kraken FIFO; pool is exhausted at 0.5 WBTC, so tx_transfer lands in partial keys
         kraken_result = compute_fifo_for_asset([kraken_acq], [kraken_con], "WBTC", "Kraken")
         assert "tx_transfer" in kraken_result.carryover_cost_by_tx_key
         assert kraken_result.carryover_cost_by_tx_key["tx_transfer"] == Decimal("500")
@@ -1994,7 +2003,8 @@ class TestFifoCrossPlatformTransfer:
         # But the lot MUST be flagged for review because the sender pool was exhausted
         assert resolved_acq.acq.review_required, "Partial transfer receiver lot must be review_required"
         assert resolved_acq.acq.review_reason is not None
-        assert "partial" in resolved_acq.acq.review_reason.lower() or "understated" in resolved_acq.acq.review_reason.lower()
+        review_lower = resolved_acq.acq.review_reason.lower()
+        assert "partial" in review_lower or "understated" in review_lower
 
     def test_non_partial_transfer_not_flagged(self) -> None:
         """When sender FIFO pool fully covers the transfer, receiver lot is NOT flagged."""
@@ -2394,7 +2404,10 @@ class TestFifoRebuildIntegration:
         by using the existing test row format that is known to work.
         """
         # Use the existing working test row format from test_uses_sent_cost_basis_for_acquisition
-        row = '2025-02-23 18:07:16 UTC,exchange,"",Kraken,"0,01000000",BTC,"608,54",Kraken,"0,01000026",WBTC,"608,54",,,,,,,tx1,"""'
+        row = (
+            '2025-02-23 18:07:16 UTC,exchange,"",Kraken,"0,01000000",BTC,"608,54",'
+            'Kraken,"0,01000026",WBTC,"608,54",,,,,,,tx1,"""'
+        )
         csv_path = _write_th_csv(tmp_path, [row])
 
         # Step 1: Parse TH rows (using _WBTC_SUI_LBTC which includes WBTC)
@@ -2538,7 +2551,7 @@ class TestApplyPhantomLotFlags:
     def test_appends_phantom_reason_to_existing_review_reason(self) -> None:
         """Given realization with existing review_reason, appends phantom reason."""
         phantom_transfers = frozenset({("WBTC", "Kraken", "2025-02-01")})
-        existing_reason = "Zero acquisition cost - verify basis"
+        existing_reason = "Zero acquisition cost: verify basis"
         result = AssetFifoResult(
             realizations=[
                 CryptoFifoRealization(

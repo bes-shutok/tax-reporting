@@ -1,7 +1,7 @@
 # Plan: Fix column widths and restructure persisting layer
 
 ## Context
-The Excel report has excessively wide columns caused by auto-width measuring raw formula text instead of rendered values. Additionally, the persisting module (`persisting.py`, 891 lines) mixes IB-specific and Koinly-specific sheet generation in two monolithic functions (357 and 354 lines). The user wants: (1) fix auto-width to skip formula cells, (2) split the single Crypto tab into three named tabs — Crypto Gains, Crypto Rewards, Crypto Reconciliation, (3) full DDD refactor extracting source-specific writers, (4) TDD approach.
+The Excel report has excessively wide columns caused by auto-width measuring raw formula text instead of rendered values. Additionally, the persisting module (`persisting.py`, 891 lines) mixes IB-specific and Koinly-specific sheet generation in two monolithic functions (357 and 354 lines). The user wants: (1) fix auto-width to skip formula cells, (2) split the single Crypto tab into three named tabs; Crypto Gains, Crypto Rewards, Crypto Reconciliation, (3) full DDD refactor extracting source-specific writers, (4) TDD approach.
 
 ## Validation Commands
 ```bash
@@ -17,14 +17,14 @@ Files:
 - `tests/unit/application/persisting/test_excel_utils.py` (new)
 
 - [x] Write failing tests: measures text/number cells, skips formula cells (`data_type == "f"`), handles empty columns, adds +2 padding
-- [x] Implement `auto_column_width(worksheet)` — extract existing auto-width logic from `persisting.py` lines 412–425 and 823–832, with formula-cell skip
+- [x] Implement `auto_column_width(worksheet)`: extract existing auto-width logic from `persisting.py` lines 412–425 and 823–832, with formula-cell skip
 - [x] Also move `safe_remove_file()` into `excel_utils.py`
 
 ### Task 2: Extract `export_rollover_file()` with relocated tests
 
 Files:
 - `src/shares_reporting/application/persisting/rollover.py` (new)
-- `tests/unit/application/persisting/test_rollover.py` (new — move from `test_persisting.py`)
+- `tests/unit/application/persisting/test_rollover.py` (new; move from `test_persisting.py`)
 
 - [x] Move `export_rollover_file()` from `persisting.py` lines 49–117 into `rollover.py`
 - [x] Move the 2 existing rollover tests from `tests/unit/application/test_persisting.py` into `test_rollover.py`
@@ -79,11 +79,11 @@ Files:
 - `src/shares_reporting/main.py` (modify imports)
 - All test files importing from `persisting` (update imports)
 
-- [x] `workbook_builder.py` — `generate_tax_report()` becomes thin orchestrator: create workbook → write IB sheet → write crypto sheets → save → cleanup
-- [x] `__init__.py` — re-exports `generate_tax_report`, `export_rollover_file`
+- [x] `workbook_builder.py`: `generate_tax_report()` becomes thin orchestrator: create workbook → write IB sheet → write crypto sheets → save → cleanup
+- [x] `__init__.py`: re-exports `generate_tax_report`, `export_rollover_file`
 - [x] Update `main.py` imports
 - [x] Update all test imports (`from persisting import ...` → `from persisting import ...` same path, package resolves)
-- [x] Run full test suite — all pass
+- [x] Run full test suite; all pass
 
 ### Task 8: Delete old `persisting.py`
 

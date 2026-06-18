@@ -18,7 +18,7 @@ def write_loan_activity_sheet(workbook: openpyxl.Workbook, crypto_tax_report: Cr
     """Create and populate a 'Loan Activity' worksheet with per-asset loan summaries.
 
     Shows all loan receipts and repayments found in the Koinly transaction history
-    regardless of filing year — the tab reflects all-history balances so that
+    regardless of filing year; the tab reflects all-history balances so that
     cross-year loan repayments are visible. Rows where the repaid amount exceeds
     the received amount (overpaid balance) are highlighted with a light-red fill
     to flag potential cross-year repayment scenarios for manual review.
@@ -35,13 +35,13 @@ def write_loan_activity_sheet(workbook: openpyxl.Workbook, crypto_tax_report: Cr
     worksheet = workbook.create_sheet("Loan Activity")
 
     # Row 1: visible note so the reviewer understands balances are all-history.
-    # This is intentional — cross-year loan repayments must be visible so the reviewer
+    # This is intentional: cross-year loan repayments must be visible so the reviewer
     # can verify the outstanding balance. "Overpaid" flags repaid > received (likely a
     # prior-year loan being fully repaid in the filing year).
     note_cell = worksheet.cell(
         1,
         1,
-        "Note: balances shown across ALL years in Transaction History — not filtered to the filing year.",
+        "Note: balances shown across ALL years in Transaction History, not filtered to the filing year.",
     )
     note_cell.font = openpyxl.styles.Font(italic=True)
 

@@ -157,7 +157,7 @@ def _resolve_single_acquisition(
 
     if not matched:
         logger.warning(
-            "Unresolved deferred acquisition for %s tx_key=%s: cost remains zero — "
+            "Unresolved deferred acquisition for %s tx_key=%s: cost remains zero: "
             "the sending asset's FIFO produced no carry-over entry for this tx_key. "
             "Possible causes: tx_key mismatch between the exchange_out consumption and the "
             "exchange_in_deferred acquisition row, or a topological-sort cycle that placed "
@@ -203,7 +203,7 @@ def _resolve_single_acquisition(
     elif is_partial_carryover:
         logger.warning(
             "Resolved carry-over cost for %s tx_key=%s is partial; "
-            "FIFO pool was partially exhausted on the sending asset — "
+            "FIFO pool was partially exhausted on the sending asset: "
             "cost basis may be understated",
             acq.acq.asset,
             acq.tx_key,
