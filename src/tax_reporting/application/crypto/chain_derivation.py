@@ -2,7 +2,7 @@
 
 Uses deterministic normalization rules to extract chain names from wallet labels.
 The wallet/platform name is only a discovery hint; final mappings come from
-trusted sources in docs/tax/crypto-origin/operator_chain_origin_registry.md.
+trusted sources in docs/maintenance/tax/crypto-origin/operator_chain_origin_registry.md.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from ...infrastructure.koinly_parser import normalize_platform_name
 _MAX_TICKER_LENGTH: Final = 10
 _SPLIT_PARTS_WITH_TICKER: Final = 2
 
-# Chain names from docs/tax/crypto-origin/operator_chain_origin_registry.md
+# Chain names from docs/maintenance/tax/crypto-origin/operator_chain_origin_registry.md
 # These are the canonical chain identifiers used for reporting
 _KNOWN_CHAINS: Final = frozenset(
     {
@@ -49,7 +49,7 @@ def _derive_chain(wallet: str) -> str:  # noqa: PLR0911, PLR0912
 
     Uses deterministic normalization rules to extract chain names from wallet labels.
     The wallet/platform name is only a discovery hint; final mappings come from
-    trusted sources in docs/tax/crypto-origin/operator_chain_origin_registry.md.
+    trusted sources in docs/maintenance/tax/crypto-origin/operator_chain_origin_registry.md.
 
     Normalization rules:
     - Strip platform aliases like "Ledger " prefix

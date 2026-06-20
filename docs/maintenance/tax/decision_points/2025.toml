@@ -1,0 +1,62 @@
+[meta]
+fiscal_year = 2025
+source_decision_file = "docs/maintenance/tax/decision_points/2025.md"
+last_verified = "2026-05-26"
+
+[countries.PT]
+# DP-001: Loan repayment disposals are not taxable events under PT law.
+# Legal basis: CIRS art. 10(20) — returning borrowed crypto is not "alienação onerosa".
+exclude_loan_repayment_gains = true
+
+# DP-010: Futures and derivatives liquidations are taxable events under PT law.
+# Legal basis: CIRS art. 10(1)(e) covers "instrumentos financeiros derivados".
+# A liquidation is treated as alienação onerosa (disposal), not as a withdrawal.
+# Losses follow the same rules as other capital losses:
+#   - Short-term (<365 days): can be carried forward for 5 years (PT-C-016)
+#   - Long-term (≥365 days): both gains and losses are excluded (CIRS art. 10(19))
+futures_derivatives_taxable = true
+
+# DP-011: For futures and derivatives, use Koinly Other Gains Report values
+# rather than Capital Gains Report when available.
+# Legal basis: CIRS art. 10(1)(e) for derivatives; OGR provides more granular
+# Type classification (Profit/Loss) and better handling of collateral flow.
+# Interaction with DP-010: DP-010 says derivatives are taxable; DP-011 specifies
+# which Koinly report carries the authoritative value when both are present.
+# When OGR overrides CG: futures/derivatives with Type="Loss" or Type="Profit"
+use_other_gains_report = true
+
+# DP-012: Separate derivatives P&L from spot crypto in the report.
+# Legal basis: CIRS art. 10(1)(e) covers "instrumentos financeiros derivados"
+# (no 365-day exemption) vs art. 10(1)(k) for other crypto-assets (365-day
+# exemption under art. 10(19)). AT binding ruling 28298/2025 confirms derivatives
+# are reported under art. 10(1)(e); spot retains art. 10(1)(k).
+separate_derivatives_reporting = true
+
+# DP-014: Infer the realization value (valor de realização) of Koinly-tagged
+# Payment/Card Payment disposals whose CG proceeds_eur == 0 because Koinly's
+# price DB had no match for the imported ticker (a typical root cause is a
+# token-rename alias, e.g. the 1:1 EUR-pegged Circle stablecoin that launched
+# in 2022 as EUROC and was renamed to the canonical EURC; Koinly still holds
+# the old EUROC label, which its price DB no longer matches).
+# Legal basis: PT-C-004 (a goods/services purchase paid in crypto is a taxable
+# alienação onerosa - the disposal stays taxable; this corrects the realization
+# value, it does NOT exclude the event) and PT-C-007 (the realization value
+# equals the fair market value of the crypto spent).
+# Resolution is three-tier: (1) primary - trust Koinly's own TH
+# Net Value (EUR) when present (works for any asset Koinly prices, including
+# USD-pegged stablecoins); (2) stablecoin fallback when Net Value == 0 - EUR
+# par for configured EUR-pegged stablecoins (EURC/EUROC/EURT), or the fiscal
+# year-end peg->EUR rate conversion for non-EUR-pegged stablecoins whose peg
+# currency has an [EXCHANGE RATES] rate (the same source shares/dividends use);
+# both fallbacks set review_required=True (approximations of the disposal-date
+# FMV); (3) review flag for non-EUR stablecoins whose peg has no config rate
+# and for non-stablecoins (leave proceeds=0, advise the user to check the
+# ticker mapping in Koinly). Stablecoin membership + peg annotation + payment
+# tag set are reused from docs/maintenance/tax/popular_crypto_tokens.json
+# (tokens.stablecoins, stablecoin_pegs, payment_tags); no new config file.
+# Out of scope: LP-token unstaking (distinct DP-005 non-taxable-deferred
+# treatment, tracked follow-up that will reuse the CG<->TH correlation).
+infer_payment_proceeds = true
+
+[countries.US]
+exclude_loan_repayment_gains = false

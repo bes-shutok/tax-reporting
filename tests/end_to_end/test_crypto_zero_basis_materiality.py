@@ -7,7 +7,7 @@ and small rewards when the production ``koinly2025`` fixtures are run
 through the full pipeline, and that the backward-compat escape hatch
 (``min_proceeds=0``) restores the prior flag-everything behavior.
 
-Per docs/plans/2026-06-15-zero-basis-review-materiality.md Task 5 and
+Per docs/history/plans/2026-06-15-zero-basis-review-materiality.md Task 5 and
 development_lessons.md #72, #73: assertions are grounded in source data
 rather than internal pipeline constants wherever possible.
 """

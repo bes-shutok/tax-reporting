@@ -8861,7 +8861,7 @@ class TestOgrDisabledBackwardCompatibility:
 
 # =============================================================================
 # Characterization tests for OGR override (golden values captured BEFORE
-# derivatives separation, see docs/plans/2026-06-13-derivatives-separation.md
+# derivatives separation, see docs/history/plans/2026-06-13-derivatives-separation.md
 # Task 1). These tests capture TODAY's pipeline behavior so that Tasks 2-14 can
 # verify the separate_derivatives_reporting=False path remains byte-identical.
 # =============================================================================
@@ -8888,7 +8888,7 @@ def _load_golden_snapshot() -> dict[str, str]:
     if not _GOLDEN_JSON_PATH.exists():
         pytest.fail(
             f"Golden snapshot not found at {_GOLDEN_JSON_PATH}. "
-            "Run Task 1 of docs/plans/2026-06-13-derivatives-separation.md to create it."
+            "Run Task 1 of docs/history/plans/2026-06-13-derivatives-separation.md to create it."
         )
     return json.loads(_GOLDEN_JSON_PATH.read_text(encoding="utf-8"))
 
@@ -8915,7 +8915,7 @@ def _build_characterization_jurisdiction():
     The characterization test must capture the REAL production OGR override
     behavior, which requires use_other_gains_report=True (the override path is
     gated on this flag at crypto_reporting.py:203). The flags mirror
-    docs/tax/decision_points/2025.toml [countries.PT] so the captured values
+    docs/maintenance/tax/decision_points/2025.toml [countries.PT] so the captured values
     reflect what main.py produces when run against the koinly2025 fixtures.
     """
     from tax_reporting.infrastructure.config import TaxJurisdictionConfig
@@ -9008,7 +9008,7 @@ class TestOgrCharacterizationGolden:
         pre-override; the direction override negates each lot's magnitude,
         producing an aggregated -26.64 EUR post-override.
 
-        NOTE: the plan (docs/plans/2026-06-13-derivatives-separation.md Task 1)
+        NOTE: the plan (docs/history/plans/2026-06-13-derivatives-separation.md Task 1)
         states the expected golden value is -147.19 EUR, but that figure is the
         OGR USDT ByBit total for 2025-01-13 (rows 0.15 + 8.31 + 138.73), NOT the
         override output. The _apply_ogr_direction_override function
@@ -9088,7 +9088,7 @@ class TestSeparateDerivativesReportingFlag:
 
 
 # =============================================================================
-# Task 7 (docs/plans/2026-06-13-derivatives-separation.md): row-level OGR
+# Task 7 (docs/history/plans/2026-06-13-derivatives-separation.md): row-level OGR
 # split into derivatives_entries and spot_index, plus protection of spot CG
 # from derivatives direction override.
 # =============================================================================
@@ -9957,7 +9957,7 @@ class TestDerivativesAggregation:
 
 
 # =============================================================================
-# Task 9 (docs/plans/2026-06-13-derivatives-separation.md): pipeline integration
+# Task 9 (docs/history/plans/2026-06-13-derivatives-separation.md): pipeline integration
 # of the OGR split inside load_koinly_crypto_report. The split must run AFTER
 # FIFO rebuild/post-validation and BEFORE _aggregate_capital_entries. The
 # derivatives_entries produced by the split must be aggregated separately and
@@ -10158,3 +10158,533 @@ class TestPipelineIntegration:
             f"{len(case1_matches)} entries: "
             f"{[(e.gain_loss_eur, e.holding_period) for e in case1_matches]}"
         )
+
+
+# --- DP-014 payment-proceeds correction integration tests ---
+#
+# These tests exercise the wiring of ``correct_payment_proceeds`` into
+# ``load_koinly_crypto_report`` (after the OGR override, before aggregation,
+# guarded by ``jurisdiction.infer_payment_proceeds``) plus the re-zero snapshot
+# that closes the OGR pre-mutation residual. Synthetic tickers/amounts only;
+# no real transaction data. See docs/history/plans/2026-06-18-crypto-payment-proceeds.md
+# Task 6.
+
+_OGR_HEADER = "Date,Asset,Amount,Value (EUR),Type,Wallet Name"
+
+_PHANTOM_USDT_BYBIT = {
+    "asset": "USDT",
+    "amount": "50,00000000",
+    "cost": "100,00",
+    "proceeds": "0.0",
+    "gain": "-100,00",
+    "wallet": "ByBit (2)",
+}
+
+
+def _pp_jurisdiction(*, infer: bool = True, use_ogr: bool = False):
+    """Build a PT/2025 jurisdiction with the payment-proceeds flag toggled.
+
+    ``use_ogr`` enables the OGR override path so the re-zero mitigation can be
+    exercised. ``separate_derivatives_reporting`` is left False so the OGR path
+    is the legacy combined-index override (the contract the re-zero snapshot
+    was designed against).
+    """
+    from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+
+    return TaxJurisdictionConfig(
+        country="PT",
+        fiscal_year=2025,
+        exclude_loan_repayment_gains=False,
+        zero_basis_review_threshold=Decimal("50"),
+        infer_payment_proceeds=infer,
+        use_other_gains_report=use_ogr,
+    )
+
+
+def _write_payment_fixture(
+    koinly_dir: Path,
+    *,
+    cg_rows: list[str],
+    th_rows: list[str],
+    ogr_rows: list[str] | None = None,
+    income_rows: list[str] | None = None,
+) -> None:
+    """Write a minimal Koinly export set exercising the payment-proceeds correction."""
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(
+        "\n".join(["Capital gains report 2025", "", _CG_HEADER, *cg_rows]),
+        encoding="utf-8",
+    )
+    default_income = ["01/01/2025 00:01,WXT,1,1.00,Reward,,Wirex"]
+    (koinly_dir / "koinly_2025_income_report.csv").write_text(
+        "\n".join(["Income report 2025", "", _INCOME_HEADER, *(income_rows or default_income)]),
+        encoding="utf-8",
+    )
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(
+        "\n".join(["Transaction report 2025", "", _TH_HEADER, *th_rows]),
+        encoding="utf-8",
+    )
+    if ogr_rows is not None:
+        (koinly_dir / "koinly_2025_other_gains_report.csv").write_text(
+            "\n".join(["Other gains report 2025", "", _OGR_HEADER, *ogr_rows]),
+            encoding="utf-8",
+        )
+
+
+def _cg_row(**fields) -> str:  # noqa: PLR0913
+    """Build a single CG CSV row string matching ``_CG_HEADER`` (keyword args).
+
+    Decimal fields are QUOTED so the European decimal comma does not split the row.
+    All fields have sensible defaults matching the common phantom-payment fixture.
+    """
+    f = {
+        "date_sold": "13/01/2025 13:01",
+        "acquisition_date": "18/11/2024 00:15",
+        "asset": "USDT",
+        "amount": "1,00000000",
+        "cost": "1,00",
+        "proceeds": "0.0",
+        "gain": "-1,00",
+        "wallet": "ByBit (2)",
+        "holding_period": "Short term",
+        "notes": "",
+    }
+    f.update(fields)
+    return ",".join([
+        f["date_sold"],
+        f["acquisition_date"],
+        f["asset"],
+        f'"{f["amount"]}"',
+        f'"{f["cost"]}"',
+        f'"{f["proceeds"]}"',
+        f'"{f["gain"]}"',
+        f["notes"],
+        f["wallet"],
+        f["holding_period"],
+    ])
+
+
+def _th_payment_row(**fields) -> str:  # noqa: PLR0913
+    """Build a single payment-tagged TH CSV row matching ``_TH_HEADER`` (keyword args)."""
+    f = {
+        "date_utc": "2025-01-13 13:01:00 UTC",
+        "wallet": "ByBit (2)",
+        "amount": "1,00000000",
+        "currency": "USDT",
+        "net_value_eur": '"0,0"',
+        "tag": "Payment",
+    }
+    f.update(fields)
+    return ",".join([
+        f["date_utc"],
+        "crypto_withdrawal",
+        f["tag"],
+        f["wallet"],
+        f'"{f["amount"]}"',
+        f["currency"],
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        f["net_value_eur"],
+        "",
+        "",
+        "",
+        "",
+        "",
+    ])
+
+
+def _ogr_row(date: str, asset: str, amount: str, value_eur: str, row_type: str, wallet: str) -> str:  # noqa: PLR0913
+    """Build a single OGR CSV row string matching ``_OGR_HEADER``."""
+    return ",".join([date, asset, amount, value_eur, row_type, wallet])
+
+
+@pytest.mark.unit
+def test_payment_proceeds_priced_row_corrected_from_net_value(tmp_path):
+    """Flag on, priced Payment: proceeds = Koinly Net Value, gain recomputed."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+    _write_payment_fixture(
+        koinly_dir,
+        cg_rows=[_cg_row(**_PHANTOM_USDT_BYBIT)],
+        th_rows=[_th_payment_row(amount="50,00000000", currency="USDT", net_value_eur='"120,00"')],
+    )
+
+    report = load_koinly_crypto_report(koinly_dir, jurisdiction=_pp_jurisdiction(infer=True))
+    assert report is not None
+
+    matches = [e for e in report.capital_entries if e.asset == "USDT" and e.disposal_date == "2025-01-13"]
+    assert matches, "Expected the corrected USDT Payment lot to survive aggregation (gain 20 EUR is material)"
+    entry = matches[0]
+    assert entry.proceeds_eur == Decimal("120.00"), f"proceeds must equal Net Value 120.00, got {entry.proceeds_eur}"
+    assert entry.gain_loss_eur == Decimal("20.00"), f"gain must be 20.00 (120 - 100), got {entry.gain_loss_eur}"
+    assert entry.review_required is True
+    assert "USDT" in (entry.review_reason or "")
+    assert "Net Value" in (entry.review_reason or "")
+    assert any(
+        r.asset == "USDT" and "Net Value" in (r.review_reason or "") for r in report.review_entries
+    ), "Expected a CryptoReviewEntry audit row naming USDT and Net Value"
+
+
+@pytest.mark.unit
+def test_payment_proceeds_eur_stablecoin_unpriced_falls_back_to_par(tmp_path):
+    """Flag on, EUR-pegged stablecoin unpriced: proceeds = amount at par; gain recomputed."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+    _write_payment_fixture(
+        koinly_dir,
+        cg_rows=[_cg_row(asset="EURC", amount="73,00000000", cost="100,00", gain="-100,00", wallet="Wirex")],
+        th_rows=[_th_payment_row(
+            wallet="Wirex", amount="73,00000000", currency="EURC", net_value_eur='"0,0"'
+        )],
+    )
+
+    report = load_koinly_crypto_report(koinly_dir, jurisdiction=_pp_jurisdiction(infer=True))
+    assert report is not None
+
+    matches = [e for e in report.capital_entries if e.asset == "EURC"]
+    assert matches, "Expected the corrected EURC Payment lot to survive (|gain| 27 >= 1 EUR)"
+    entry = matches[0]
+    assert entry.proceeds_eur == Decimal("73.00"), f"proceeds must be amount at par 73.00, got {entry.proceeds_eur}"
+    assert entry.gain_loss_eur == Decimal("-27.00"), f"gain must be -27.00 (73 - 100), got {entry.gain_loss_eur}"
+    assert "EUR par" in (entry.review_reason or "")
+    assert any(
+        "EUR par" in (r.review_reason or "") and r.asset == "EURC" for r in report.review_entries
+    )
+
+
+@pytest.mark.unit
+def test_payment_proceeds_usd_stablecoin_unpriced_converted_via_threaded_rate(tmp_path):
+    """Flag on, USD-pegged stablecoin unpriced, rate threaded: proceeds = amount x year-end rate.
+
+    The expected proceeds is DERIVED at runtime from the threaded ConversionRate.rate
+    (not a hand-picked literal), so the rate direction is anchored to the real magnitude.
+    """
+    from tax_reporting.infrastructure.config import ConversionRate
+
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+    _write_payment_fixture(
+        koinly_dir,
+        cg_rows=[_cg_row(amount="80,00000000", cost="100,00", gain="-100,00")],
+        th_rows=[_th_payment_row(amount="80,00000000", currency="USDT", net_value_eur='"0,0"')],
+    )
+
+    usd_rate = Decimal("0.90")
+    rates = [ConversionRate(base="EUR", calculated="USD", rate=usd_rate)]
+    expected_proceeds = Decimal("80") * usd_rate  # 72.00
+
+    report = load_koinly_crypto_report(
+        koinly_dir, jurisdiction=_pp_jurisdiction(infer=True), rates=rates
+    )
+    assert report is not None
+
+    matches = [e for e in report.capital_entries if e.asset == "USDT" and e.disposal_date == "2025-01-13"]
+    assert matches, "Expected the corrected USDT Payment lot to survive"
+    entry = matches[0]
+    assert entry.proceeds_eur == expected_proceeds, (
+        f"proceeds must equal amount * year-end USD->EUR rate = {expected_proceeds}, "
+        f"got {entry.proceeds_eur}"
+    )
+    assert entry.gain_loss_eur == expected_proceeds - Decimal("100"), (
+        f"gain must be {expected_proceeds - Decimal('100')} (proceeds - cost), got {entry.gain_loss_eur}"
+    )
+    assert entry.review_required is True
+    reason = entry.review_reason or ""
+    assert "USD" in reason, f"reason must name the USD peg, got {reason!r}"
+    assert "0.90" in reason, f"reason must name the rate 0.90, got {reason!r}"
+    assert "year-end rate" in reason.lower(), f"reason must name 'year-end rate', got {reason!r}"
+    assert "verify" in reason.lower(), f"reason must name 'verify', got {reason!r}"
+
+
+@pytest.mark.unit
+def test_payment_proceeds_config_missing_does_not_raise_nameerror(tmp_path, monkeypatch):
+    """Config-missing fallback path must NOT raise NameError on app_config (Design Invariant 8)."""
+    import tax_reporting.main as main_mod
+
+    def _raise_fnf(*_args, **_kwargs):
+        raise FileNotFoundError("config.ini missing")
+
+    monkeypatch.setattr(main_mod, "load_configuration_from_file", _raise_fnf)
+
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+    _write_payment_fixture(
+        koinly_dir,
+        cg_rows=[_cg_row(**_PHANTOM_USDT_BYBIT)],
+        th_rows=[_th_payment_row(amount="50,00000000", currency="USDT", net_value_eur='"120,00"')],
+    )
+
+    # Simulate the _main config-load path: app_config stays None on FileNotFoundError.
+    app_config = None
+    try:
+        app_config = main_mod.load_configuration_from_file()
+    except FileNotFoundError:
+        # Mirrors main.py: warn-and-continue without binding app_config.
+        logging.getLogger("test_config_missing").warning(
+            "Config file not found; crypto pipeline will run without jurisdiction filters"
+        )
+
+    # The call under test: rates=app_config.rates if app_config is not None else None
+    # must NOT raise NameError when app_config is None.
+    report = main_mod._load_crypto_tax_report(
+        koinly_dir=koinly_dir,
+        tax_year_hint=2025,
+        tax_jurisdiction=None,  # Stays None on the config-missing path
+        logger=logging.getLogger("test_config_missing"),
+        rates=app_config.rates if app_config is not None else None,
+    )
+
+    # (1) No NameError raised (reaching here proves it).
+    # (4) Regression guard: zero-proceeds Payment keeps proceeds_eur == 0 (block skipped).
+    assert report is not None
+    phantom = [e for e in report.capital_entries if e.asset == "USDT" and e.proceeds_eur == 0]
+    assert phantom, (
+        "On the config-missing path the correction block is SKIPPED (jurisdiction is None), "
+        "so the zero-proceeds Payment must keep proceeds_eur == 0 exactly as today."
+    )
+
+
+@pytest.mark.unit
+def test_payment_proceeds_config_missing_warns_and_continues_via_main(tmp_path, monkeypatch):
+    """Config-missing + Koinly present: the warn-continue WARNING fires and no NameError escapes.
+
+    Uses a logging handler attached directly to the ``tax_reporting.main`` logger so
+    the warning is captured regardless of ``configure_application_logging``'s propagation.
+    """
+    import tax_reporting.main as main_mod
+
+    def _raise_fnf(*_args, **_kwargs):
+        raise FileNotFoundError("config.ini missing")
+
+    monkeypatch.setattr(main_mod, "load_configuration_from_file", _raise_fnf)
+    monkeypatch.setattr(main_mod, "generate_tax_report", lambda *_a, **_kw: False)
+
+    src = tmp_path / "ib_export.csv"
+    src.write_text("Data,Header\n", encoding="utf-8")
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+    _write_payment_fixture(
+        koinly_dir,
+        cg_rows=[_cg_row(**_PHANTOM_USDT_BYBIT)],
+        th_rows=[_th_payment_row(amount="50,00000000", currency="USDT", net_value_eur='"120,00"')],
+    )
+    monkeypatch.setattr(main_mod, "parse_ib_export_all", lambda _p: _EmptyIbData())
+    monkeypatch.setattr(main_mod, "calculate_fifo_gains", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main_mod, "export_rollover_file", lambda *_a, **_kw: None)
+
+    main_logger = logging.getLogger("tax_reporting.main")
+    captured: list[str] = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record.getMessage())
+
+    handler = _CaptureHandler(level=logging.WARNING)
+    main_logger.addHandler(handler)
+    try:
+        try:
+            main_mod._main(source_file=src, output_dir=tmp_path, log_level="WARNING")
+        except Exception as exc:  # noqa: BLE001
+            # Other downstream errors are fine; the contract is no NameError on app_config.
+            assert not isinstance(exc, NameError), f"NameError escaped _main: {exc}"
+    finally:
+        main_logger.removeHandler(handler)
+
+    warn_text = " ".join(captured)
+    assert "Config file not found" in warn_text or "without jurisdiction filters" in warn_text, (
+        "Expected the warn-continue WARNING from the except branch; got: " + warn_text
+    )
+
+
+@dataclasses.dataclass
+class _EmptyIbData:
+    """Minimal stand-in for IBExportData so _main can proceed under monkeypatch."""
+
+    trade_cycles: dict = dataclasses.field(default_factory=dict)
+    dividend_income: dict = dataclasses.field(default_factory=dict)
+
+
+@pytest.mark.unit
+def test_payment_proceeds_flag_off_preserves_today_behavior(tmp_path):
+    """Flag off (lesson #84): Payment row passes through unchanged."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+    _write_payment_fixture(
+        koinly_dir,
+        cg_rows=[_cg_row(**_PHANTOM_USDT_BYBIT)],
+        th_rows=[_th_payment_row(amount="50,00000000", currency="USDT", net_value_eur='"120,00"')],
+    )
+
+    report = load_koinly_crypto_report(koinly_dir, jurisdiction=_pp_jurisdiction(infer=False))
+    assert report is not None
+
+    matches = [e for e in report.capital_entries if e.asset == "USDT" and e.disposal_date == "2025-01-13"]
+    assert matches, "Expected the uncorrected USDT Payment lot to survive (phantom loss is material)"
+    entry = matches[0]
+    assert entry.proceeds_eur == Decimal("0"), f"proceeds must stay 0 with flag off, got {entry.proceeds_eur}"
+    assert entry.gain_loss_eur == Decimal("-100.00"), f"phantom loss must survive, got {entry.gain_loss_eur}"
+    assert not any(
+        "Net Value" in (r.review_reason or "") or "EUR par" in (r.review_reason or "")
+        for r in report.review_entries
+    ), "Flag off must NOT append payment-proceeds correction review entries"
+
+
+@pytest.mark.unit
+def test_payment_proceeds_material_priced_payment_survives_filter(tmp_path):
+    """Materiality inversion: a priced Payment whose Net Value makes |gain| >= 1 EUR survives."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+    _write_payment_fixture(
+        koinly_dir,
+        cg_rows=[_cg_row(**_PHANTOM_USDT_BYBIT)],
+        th_rows=[_th_payment_row(amount="50,00000000", currency="USDT", net_value_eur='"120,00"')],
+    )
+
+    report = load_koinly_crypto_report(koinly_dir, jurisdiction=_pp_jurisdiction(infer=True))
+    assert report is not None
+    matches = [
+        e for e in report.capital_entries if e.asset == "USDT" and e.gain_loss_eur == Decimal("20.00")
+    ]
+    assert matches, "Material corrected Payment (gain 20 EUR) must survive _filter_immaterial_entries"
+
+
+@pytest.mark.unit
+def test_payment_proceeds_ogr_rezero_restores_zero_before_correction(tmp_path):
+    """OGR pre-mutation resilience (RED test for the re-zero mitigation).
+
+    An OGR Loss row with near-zero magnitude on the SAME (date, asset, wallet) as a
+    proceeds==0 Payment whose TH Net Value > 0. The classifier classifies Spot, so
+    _apply_ogr_direction_override mutates the Payment's proceeds. The re-zero snapshot
+    must restore the zero so correction's proceeds==0 gate fires and repairs it.
+    """
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+    _write_payment_fixture(
+        koinly_dir,
+        cg_rows=[_cg_row(**_PHANTOM_USDT_BYBIT)],
+        th_rows=[_th_payment_row(amount="50,00000000", currency="USDT", net_value_eur='"120,00"')],
+        ogr_rows=[_ogr_row("13/01/2025 13:01", "USDT", "-0,005", "0,005", "Loss", "ByBit (2)")],
+    )
+
+    report = load_koinly_crypto_report(
+        koinly_dir, jurisdiction=_pp_jurisdiction(infer=True, use_ogr=True)
+    )
+    assert report is not None
+
+    matches = [e for e in report.capital_entries if e.asset == "USDT" and e.disposal_date == "2025-01-13"]
+    assert matches, "Expected the corrected USDT Payment lot to survive after re-zero + correction"
+    entry = matches[0]
+    assert entry.proceeds_eur == Decimal("120.00"), (
+        f"After re-zero + correction, proceeds must equal Net Value 120.00, got {entry.proceeds_eur}"
+    )
+    assert entry.gain_loss_eur == Decimal("20.00"), f"gain must be 20.00, got {entry.gain_loss_eur}"
+
+
+@pytest.mark.unit
+def test_payment_proceeds_rezero_index_based_not_key_based(tmp_path):
+    """Re-zero does NOT clobber a same-key legitimate OGR override.
+
+    On ONE (date, asset, wallet) key: (a) a genuine non-zero-proceeds derivatives disposal
+    that OGR Spot-matches and overrides, AND (b) a separate zero-proceeds Payment. The
+    derivatives disposal KEEPS its OGR-overridden proceeds; the re-zero is INDEX-based.
+    """
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+    _write_payment_fixture(
+        koinly_dir,
+        cg_rows=[
+            # (a) Legitimate disposal: non-zero proceeds (150), gain 50
+            _cg_row(amount="50,00000000", cost="100,00", proceeds="150,00", gain="50,00"),
+            # (b) Zero-proceeds Payment
+            _cg_row(**_PHANTOM_USDT_BYBIT),
+        ],
+        th_rows=[_th_payment_row(amount="50,00000000", currency="USDT", net_value_eur='"120,00"')],
+        ogr_rows=[_ogr_row("13/01/2025 13:01", "USDT", "-0,01", "0,01", "Loss", "ByBit (2)")],
+    )
+
+    report = load_koinly_crypto_report(
+        koinly_dir, jurisdiction=_pp_jurisdiction(infer=True, use_ogr=True)
+    )
+    assert report is not None
+
+    matches = [e for e in report.capital_entries if e.asset == "USDT" and e.disposal_date == "2025-01-13"]
+    assert matches, "Expected an aggregated USDT ByBit row"
+    # The legitimate row (a) survived with non-zero proceeds (OGR-overridden); the
+    # re-zero did NOT clobber it (it had non-zero proceeds originally, NOT in snapshot).
+    assert matches[0].proceeds_eur > Decimal("0"), (
+        "The legitimate non-zero-proceeds disposal must KEEP its OGR-overridden proceeds "
+        f"(re-zero is INDEX-based); got aggregate proceeds {matches[0].proceeds_eur}"
+    )
+
+
+@pytest.mark.unit
+def test_payment_proceeds_same_day_aggregation_sums_proceeds(tmp_path):
+    """Same-day aggregation: two corrected Payment lots aggregate to SUMMED proceeds."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+    _write_payment_fixture(
+        koinly_dir,
+        cg_rows=[
+            _cg_row(amount="30,00000000", cost="60,00", gain="-60,00"),
+            _cg_row(amount="20,00000000", cost="40,00", gain="-40,00"),
+        ],
+        th_rows=[
+            _th_payment_row(amount="30,00000000", currency="USDT", net_value_eur='"70,00"'),
+            _th_payment_row(amount="20,00000000", currency="USDT", net_value_eur='"50,00"'),
+        ],
+    )
+
+    report = load_koinly_crypto_report(koinly_dir, jurisdiction=_pp_jurisdiction(infer=True))
+    assert report is not None
+
+    matches = [e for e in report.capital_entries if e.asset == "USDT" and e.disposal_date == "2025-01-13"]
+    assert len(matches) == 1, f"Expected the two same-day lots to aggregate to ONE row, got {len(matches)}"
+    entry = matches[0]
+    # SUMMED proceeds = 70 + 50 = 120 (not overwritten).
+    assert entry.proceeds_eur == Decimal("120.00"), (
+        f"Aggregated proceeds must be SUMMED (70 + 50 = 120.00), got {entry.proceeds_eur}"
+    )
+    assert entry.gain_loss_eur == Decimal("20.00"), (
+        f"Aggregated gain must be SUMMED (10 + 10 = 20.00), got {entry.gain_loss_eur}"
+    )
+
+
+@pytest.mark.unit
+def test_payment_proceeds_eurc_reward_now_flagged_by_tokens_extension(tmp_path):
+    """Backward-compat for the tokens.stablecoins extension (EUROC/EURC/EURT).
+
+    Adding EUR-pegged tickers enlarges the set _load_popular_crypto_tokens flattens,
+    so a zero-value reward for an EUR-pegged stablecoin is now FLAGGED (not skipped).
+    """
+    # Clear the cache so this test loads the REAL extended JSON (with EURC) regardless
+    # of what an earlier test cached with mocked data.
+    _load_popular_crypto_tokens.cache_clear()
+
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+    _write_payment_fixture(
+        koinly_dir,
+        cg_rows=[_cg_row(amount="1,00000000", cost="1,00", proceeds="1,00", gain="0,00")],
+        th_rows=[_th_payment_row(amount="1,00000000", currency="USDT", net_value_eur='"1,00"')],
+        income_rows=[
+            "01/02/2025 00:01,EURC,5,0.00,Reward,,Wirex",
+            "01/03/2025 00:01,WXT,5,1.00,Reward,,Wirex",
+        ],
+    )
+
+    report = load_koinly_crypto_report(koinly_dir, jurisdiction=_pp_jurisdiction(infer=False))
+    assert report is not None
+
+    eurc_rewards = [e for e in report.reward_entries if e.asset == "EURC"]
+    assert eurc_rewards, (
+        "A zero-value EURC reward must be FLAGGED (EURC is now in tokens.stablecoins), "
+        "not skipped."
+    )
+    assert eurc_rewards[0].review_required is True
+    wxt_rewards = [e for e in report.reward_entries if e.asset == "WXT"]
+    assert wxt_rewards, "Control: the non-zero WXT reward must still be parsed"

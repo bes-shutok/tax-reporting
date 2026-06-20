@@ -84,10 +84,13 @@ config.ini
 /.ralphex/
 
 # Review artifacts (temporary analysis documents)
-docs/reviews/
+docs/history/reviews/
 
 # Personal artifacts (temporary analysis documents)
-docs/personal/
+docs/maintenance/personal/
+
+# Repo agent runtime (doc-hierarchy migration; bootstrap-only, never committed)
+/.ai-playbook/
 
 # LLM agent config (bootstrap-only, never committed)
 .opencode/

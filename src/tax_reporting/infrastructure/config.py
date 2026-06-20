@@ -18,7 +18,7 @@ from .logging_config import create_module_logger
 from .validation import DEFAULT_SECURITY_CONFIG, SecurityConfig
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_DECISION_POINTS_DIR = _REPO_ROOT / "docs/tax/decision_points"
+_DECISION_POINTS_DIR = _REPO_ROOT / "docs/maintenance/tax/decision_points"
 
 
 class ConversionRate(NamedTuple):
@@ -222,7 +222,8 @@ def _load_tax_jurisdiction_config(
         flags = _load_decision_points_flags(country, fiscal_year, logger)
     except FileNotFoundError as e:
         raise MissingDecisionPointsError(
-            f"Decision points file not found. Create docs/tax/decision_points/{fiscal_year}.toml and retry: {e}"
+            f"Decision points file not found. Create "
+            f"docs/maintenance/tax/decision_points/{fiscal_year}.toml and retry: {e}"
         ) from e
     if country == "PT" and "exclude_loan_repayment_gains" not in flags:
         raise ValueError(
@@ -257,7 +258,7 @@ def load_configuration_from_file() -> Config:
     """Load configuration from the standard config.ini file.
 
     Also reads the fiscal-year decision-points TOML from
-    ``docs/tax/decision_points/<fiscal_year>.toml`` to populate
+    ``docs/maintenance/tax/decision_points/<fiscal_year>.toml`` to populate
     law-driven flags (e.g. ``exclude_loan_repayment_gains``).
     ``main()`` converts the resulting ``ValueError`` to ``ConfigurationError``.
 

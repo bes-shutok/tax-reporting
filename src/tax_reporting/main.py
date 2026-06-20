@@ -30,7 +30,7 @@ from .domain.exceptions import (
     ReportGenerationError,
     SharesReportingError,
 )
-from .infrastructure.config import TaxJurisdictionConfig, load_configuration_from_file
+from .infrastructure.config import Config, ConversionRate, TaxJurisdictionConfig, load_configuration_from_file
 from .infrastructure.logging_config import configure_application_logging, create_module_logger
 from .infrastructure.validation import validate_output_directory
 
@@ -173,6 +173,7 @@ def _main(  # noqa: PLR0912, PLR0915
         raise ReportGenerationError(f"Failed to generate unmatched securities rollover file: {e}") from e
 
     tax_jurisdiction = None
+    app_config: Config | None = None
     try:
         app_config = load_configuration_from_file()
         tax_jurisdiction = app_config.tax_jurisdiction
@@ -205,6 +206,7 @@ def _main(  # noqa: PLR0912, PLR0915
                 tax_year_hint=tax_year_hint,
                 tax_jurisdiction=tax_jurisdiction,
                 logger=logger,
+                rates=app_config.rates if app_config is not None else None,
             )
         else:
             logger.warning(
@@ -289,6 +291,7 @@ def _load_crypto_tax_report(
     tax_year_hint: int | None,
     logger: logging.Logger,
     tax_jurisdiction: TaxJurisdictionConfig | None = None,
+    rates: list[ConversionRate] | None = None,
 ) -> CryptoTaxReport | None:
     if _is_koinly_year_mismatch(koinly_dir, tax_year_hint):
         logger.warning(
@@ -300,7 +303,9 @@ def _load_crypto_tax_report(
         return None
 
     try:
-        crypto_tax_report = load_koinly_crypto_report(koinly_dir, jurisdiction=tax_jurisdiction)
+        crypto_tax_report = load_koinly_crypto_report(
+            koinly_dir, jurisdiction=tax_jurisdiction, rates=rates
+        )
     except FileProcessingError as exc:
         logger.error(
             "Koinly data in %s is malformed and cannot be parsed: %s. "

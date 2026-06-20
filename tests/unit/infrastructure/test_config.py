@@ -376,7 +376,7 @@ def _write_toml(path, content: str) -> None:
 
 
 _MINIMAL_VALID_TOML = (
-    '[meta]\nfiscal_year = 2025\nsource_decision_file = "docs/tax/decision_points/2025.md"\n'
+    '[meta]\nfiscal_year = 2025\nsource_decision_file = "docs/maintenance/tax/decision_points/2025.md"\n'
     'last_verified = "2026-05-26"\n'
 )
 

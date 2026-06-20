@@ -130,7 +130,7 @@ def safe_cell_value(value: str) -> str:
     strings (platform names, wallet labels, Koinly-derived values) should be wrapped
     with this function before writing to worksheet cells.
 
-    See docs/domain/development_lessons.md #7 for Excel security guidance.
+    See docs/maintenance/development_lessons.md #7 for Excel security guidance.
 
     Args:
         value: The raw string to write to a cell.

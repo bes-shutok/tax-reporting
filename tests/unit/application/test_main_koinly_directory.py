@@ -109,6 +109,45 @@ def test_load_crypto_tax_report_passes_jurisdiction_to_loader(tmp_path, monkeypa
     assert captured_kwargs["jurisdiction"] is jurisdiction
 
 
+def test_load_crypto_tax_report_passes_rates_to_loader(tmp_path, monkeypatch):
+    """Verify the threaded rates list is forwarded to load_koinly_crypto_report.
+
+    Binds the inner-hop forward (Design Invariant 8 of DP-014): ``_load_crypto_tax_report``
+    MUST pass its ``rates`` kwarg INTO the inner ``load_koinly_crypto_report`` call. An
+    implementer who adds the param to both signatures but leaves the inner call
+    unchanged produces a plan-conformant result that passes the config-missing RED
+    test yet silently drops ``rates`` (stays ``None``). Mirrors the existing
+    ``test_load_crypto_tax_report_passes_jurisdiction_to_loader`` discriminator.
+    """
+    from tax_reporting.infrastructure.config import ConversionRate
+
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+    captured_kwargs = {}
+
+    def _capturing_loader(_path, **kwargs):
+        captured_kwargs.update(kwargs)
+
+    monkeypatch.setattr("tax_reporting.main.load_koinly_crypto_report", _capturing_loader)
+
+    rates = [ConversionRate(base="EUR", calculated="USD", rate=__import__("decimal").Decimal("0.90"))]
+    _load_crypto_tax_report(
+        koinly_dir=koinly_dir,
+        tax_year_hint=2025,
+        logger=logging.getLogger("test_passes_rates"),
+        rates=rates,
+    )
+
+    assert "rates" in captured_kwargs, (
+        "rates kwarg must be forwarded to load_koinly_crypto_report; "
+        f"got captured_kwargs={captured_kwargs}"
+    )
+    assert captured_kwargs["rates"] is rates, (
+        "The SAME rates list object passed into _load_crypto_tax_report must reach "
+        "load_koinly_crypto_report (inner-hop forward); got a different object."
+    )
+
+
 def test_resolve_koinly_directory_fiscal_year_fallback_via_main(tmp_path, monkeypatch):
     """When IB data has no year hint, fiscal_year from config is used as fallback."""
     (tmp_path / "koinly2024").mkdir()

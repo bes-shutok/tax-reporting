@@ -10,7 +10,7 @@ label config loader; Task 4 introduces the TH scanner that emits one
 Design notes
 ------------
 - The label set is small and stable per (provider, year). It is stored as
-  JSON under `docs/tax/derivatives_labels/<provider>_<year>.json` so the
+  JSON under `docs/maintenance/tax/derivatives_labels/<provider>_<year>.json` so the
   labels can be updated without code changes.
 - A *missing* config file degrades gracefully (warning plus empty set): the
   caller skips deduplication and the legacy behaviour is preserved. This is
@@ -148,6 +148,7 @@ def _load_derivatives_labels_config(provider: str, year: int) -> frozenset[str]:
     path = (
         _REPOSITORY_ROOT
         / "docs"
+        / "maintenance"
         / "tax"
         / "derivatives_labels"
         / f"{provider}_{year}.json"
@@ -695,7 +696,7 @@ def apply_derivatives_dedup(
     if not labels:
         logger.warning(
             "Derivatives TH-label config missing for koinly year %d; CG dedup skipped. "
-            "Add docs/tax/derivatives_labels/koinly_%d.json to enable.",
+            "Add docs/maintenance/tax/derivatives_labels/koinly_%d.json to enable.",
             year,
             year,
         )

@@ -12,6 +12,7 @@ from ..domain.exceptions import FileProcessingError
 from ..infrastructure.config import (
     DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS,
     DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD,
+    ConversionRate,
     TaxJurisdictionConfig,
 )
 from ..infrastructure.koinly_parser import (
@@ -76,6 +77,11 @@ from .crypto.parsing import (
     _parse_complete_tax_report_pdf,
     _register_skipped_zero_asset,
 )
+from .crypto.payment_proceeds import (
+    _derive_peg_to_eur_rates,
+    _get_payment_proceeds_config,
+    correct_payment_proceeds,
+)
 from .crypto.validation import (
     _is_temporally_valid,  # noqa: F401
     _parse_transaction_date,  # noqa: F401
@@ -87,7 +93,9 @@ from .token_origin import TokenOriginResolver
 
 
 def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
-    koinly_dir: Path, jurisdiction: TaxJurisdictionConfig | None = None
+    koinly_dir: Path,
+    jurisdiction: TaxJurisdictionConfig | None = None,
+    rates: list[ConversionRate] | None = None,
 ) -> CryptoTaxReport | None:
     """Load Koinly exports from a directory and normalize for tax reporting.
 
@@ -96,7 +104,15 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
             and optionally transaction history reports).
         jurisdiction: Optional tax jurisdiction config.  When provided and
             ``exclude_loan_repayment_gains`` is True, the FIFO rebuild path is
-            activated for loan-affected assets.
+            activated for loan-affected assets. When ``infer_payment_proceeds``
+            is True, zero-proceeds Payment disposals are corrected from the TH
+            Net Value / stablecoin pegs (DP-014).
+        rates: Optional currency conversion rates (``Config.rates``). Threaded
+            ONLY for the non-EUR-pegged stablecoin fallback of the
+            payment-proceeds correction, which reuses the same ``[EXCHANGE RATES]``
+            source shares/dividends use to derive the year-end peg->EUR rate.
+            ``None`` (default) is backward-compatible and routes non-EUR-pegged
+            stablecoins without a config rate to the review-flag fallback.
 
     Returns:
         A populated ``CryptoTaxReport`` on success, or ``None`` when the directory
@@ -233,6 +249,28 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
     # The split runs post-FIFO/post-validation so the classifier sees rebuilt lots.
     # derivatives_entries is initialized BEFORE the gate so it is in scope for the
     # later aggregation step regardless of whether OGR processing ran.
+    infer_payment_proceeds_active = (
+        jurisdiction is not None and jurisdiction.infer_payment_proceeds
+    )
+
+    # Re-zero snapshot (DP-014, closes the OGR pre-mutation residual): capture the
+    # INDICES of pre-OGR entries whose proceeds is zero AND whose asset is NOT
+    # loan-affected (FIFO-rebuilt assets already have proceeds; re-zeroing would
+    # clobber a legitimate OGR override on a rebuilt lot). INDICES, not keys: a
+    # key-based snapshot would also restore a genuine non-zero OGR-overridden
+    # derivatives disposal that merely SHARES a (date, asset, wallet) key with a
+    # zero-proceeds Payment, silently destroying a legitimate OGR-derived gain.
+    # _apply_ogr_direction_override rebuilds its result 1:1 in input order, so the
+    # i-th post-OGR entry corresponds to the i-th pre-OGR entry. The snapshot+restore
+    # runs only when the payment-proceeds flag is on (the residual only matters then).
+    zero_proceeds_indices: set[int] = set()
+    if infer_payment_proceeds_active:
+        zero_proceeds_indices = {
+            i
+            for i, e in enumerate(capital_entries)
+            if e.proceeds_eur == 0 and e.asset not in loan_affected_assets
+        }
+
     derivatives_entries: list[DerivativesPnLEntry] = []
     if jurisdiction and jurisdiction.use_other_gains_report:
         ogr_rows = _find_and_parse_other_gains_file(koinly_dir)
@@ -248,6 +286,53 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
             capital_entries = _apply_ogr_direction_override(
                 capital_entries, spot_index, jurisdiction
             )
+
+    # Re-zero restore: for each originally-zero-proceeds index where the post-OGR
+    # entry's proceeds is now non-zero (OGR mutated THAT row), restore the zero
+    # so correction's proceeds==0 gate fires on it. An OGR override touching an
+    # originally-zero-proceeds row is NECESSARILY spurious (a real OGR disposal
+    # has non-zero proceeds), so restoring loses no legitimate OGR authority and
+    # is idempotent when OGR did not touch that row. Runs only when the flag is on.
+    if infer_payment_proceeds_active and zero_proceeds_indices:
+        _pp_logger = logging.getLogger(__name__)
+        for i in zero_proceeds_indices:
+            if i < len(capital_entries) and capital_entries[i].proceeds_eur != 0:
+                entry_i = capital_entries[i]
+                capital_entries[i] = replace(
+                    entry_i,
+                    proceeds_eur=Decimal(0),
+                    gain_loss_eur=-entry_i.cost_eur,
+                )
+                _pp_logger.info(
+                    "Re-zeroed spurious OGR override on originally-zero-proceeds "
+                    "Payment row %d (asset %s on %s): proceeds restored to 0 for "
+                    "payment-proceeds correction.",
+                    i,
+                    entry_i.asset,
+                    entry_i.disposal_date,
+                )
+
+    # Payment-proceeds correction (DP-014): correct zero-proceeds Payment
+    # disposals using the TH Net Value / stablecoin pegs. Runs AFTER the OGR
+    # override (and after the re-zero restore) so the spurious-override residual
+    # is closed, and BEFORE _aggregate_capital_entries so corrected lots aggregate
+    # by (date, asset, platform, holding_period). Guarded by the jurisdiction
+    # flag; transaction_history_file is guaranteed non-None after the three-file
+    # presence guard above. Corrected entries intentionally SKIP re-validation and
+    # derivatives dedup (safe: the original proceeds==0 entry already passed
+    # validation; payments are spot disposals; country inherited unchanged) and
+    # flow into aggregation + the materiality filter.
+    if infer_payment_proceeds_active:
+        pp_config = _get_payment_proceeds_config()
+        peg_to_eur_rates = _derive_peg_to_eur_rates(rates or [], pp_config.stablecoin_pegs)
+        capital_entries = correct_payment_proceeds(
+            capital_entries,
+            read_koinly_rows(transaction_history_file),
+            config=pp_config,
+            peg_to_eur_rates=peg_to_eur_rates,
+            loan_affected_assets=loan_affected_assets,
+            review_entries=review_entries,
+        )
 
     capital_entries = _aggregate_capital_entries(capital_entries)
     pre_filter_count = len(capital_entries)

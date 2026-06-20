@@ -27,7 +27,7 @@ class TestDerivativesLabelsConfig:
     """Tests for _load_derivatives_labels_config and its _from_path helper."""
 
     def test_loads_koinly_2025_labels(self):
-        """Given docs/tax/derivatives_labels/koinly_2025.json with the canonical
+        """Given docs/maintenance/tax/derivatives_labels/koinly_2025.json with the canonical
         label list, expects the loader to return the frozenset of those labels.
         """
         from tax_reporting.application.crypto.derivatives_dedup import (

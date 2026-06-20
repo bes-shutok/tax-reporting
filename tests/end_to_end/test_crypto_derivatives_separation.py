@@ -1,6 +1,6 @@
 """End-to-end data-trace verification for the ByBit derivatives separation pipeline.
 
-Verifies (per docs/plans/2026-06-13-derivatives-separation.md Task 11 and
+Verifies (per docs/history/plans/2026-06-13-derivatives-separation.md Task 11 and
 development_lessons.md #72, #73) that the real ByBit fixtures in
 ``resources/source/koinly2025/`` produce the expected split between Crypto
 Gains (spot fee disposal lots) and Derivatives P&L (art. 10(1)(e) realizations),
@@ -520,7 +520,7 @@ class TestByBitCase3Trace:
     """Case 3 (2025-01-24, USDT, ByBit): derivatives CG dedup via TH Labels.
 
     This case captures the bug described in
-    ``docs/plans/2026-06-14-derivatives-th-label-cg-dedup.md``: Koinly emits
+    ``docs/history/plans/2026-06-14-derivatives-th-label-cg-dedup.md``: Koinly emits
     the SAME disposal into BOTH the OGR report (as Loss rows summing to
     -39.62 EUR) AND the CG report (as 3 FIFO lots summing to +20.24 EUR gain).
     The fix is a CG-side filter that scans TH rows for derivatives Labels
@@ -653,7 +653,7 @@ class TestByBitCase3Trace:
         """Each removed CG lot logs at INFO; exactly one summary WARNING covers the aggregate.
 
         Per Design Invariant 15 of
-        ``docs/plans/2026-06-14-derivatives-th-label-cg-dedup.md`` and
+        ``docs/history/plans/2026-06-14-derivatives-th-label-cg-dedup.md`` and
         CLAUDE.md's "Every WARNING must be actionable and non-noisy at scale"
         rule, the dedup does NOT emit per-lot WARNINGs. Each removal logs at
         INFO (audit-traceable: timestamp, asset, wallet, amount, match type,

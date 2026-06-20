@@ -194,10 +194,10 @@ _KOINLY_TYPE_TO_INCOME_CODE: dict[str, str] = {
 # Popular/known crypto tokens that should not have zero value in rewards.
 # If a reward for one of these tokens has zero value, it's likely a Koinly data error
 # (missing price data, export issue) and should be flagged for review instead of skipped.
-# Loaded from docs/tax/popular_crypto_tokens.json to allow maintenance without code changes.
+# Loaded from docs/maintenance/tax/popular_crypto_tokens.json to allow maintenance without code changes.
 # Path computed from repository root for robustness against module structure changes.
 _POPULAR_CRYPTO_TOKENS_FILE = (
-    _REPOSITORY_ROOT / "docs" / "tax" / "popular_crypto_tokens.json"
+    _REPOSITORY_ROOT / "docs" / "maintenance" / "tax" / "popular_crypto_tokens.json"
 )
 
 logger = logging.getLogger(__name__)

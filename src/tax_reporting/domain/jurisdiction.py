@@ -36,6 +36,22 @@ class TaxJurisdictionConfig:
         separate_derivatives_reporting: Whether derivatives P&L is reported separately
             from spot crypto (e.g., True for PT per DP-012; CIRS art. 10(1)(e) covers
             derivatives with no 365-day exemption, while spot retains art. 10(1)(k)).
+        infer_payment_proceeds: Whether to correct the realization value (valor de
+            realização) of Koinly-tagged ``Payment``/``Card Payment`` disposals whose
+            CG ``proceeds_eur == 0`` because Koinly's price DB had no match for the
+            imported ticker. Legal basis: PT-C-004 (a goods/services purchase paid in
+            crypto is a taxable alienação onerosa - the disposal stays taxable) and
+            PT-C-007 (the realization value equals the fair market value of the crypto
+            spent). Resolution is three-tier: (1) primary - trust Koinly's own TH
+            ``Net Value (EUR)`` when present (works for any asset Koinly prices,
+            including USD-pegged stablecoins); (2) stablecoin fallback when
+            ``Net Value == 0`` - EUR par for configured EUR-pegged stablecoins
+            (e.g. EURC/EUROC/EURT), or the fiscal year-end peg->EUR rate conversion
+            for non-EUR-pegged stablecoins whose peg currency has an
+            ``[EXCHANGE RATES]`` rate (the same source shares/dividends use); both
+            fallbacks are ``review_required=True`` approximations of the disposal-date
+            FMV; (3) review flag for non-EUR stablecoins whose peg has no config rate
+            and for non-stablecoins. See decision point DP-014.
     """
 
     country: str
@@ -46,3 +62,4 @@ class TaxJurisdictionConfig:
     futures_derivatives_taxable: bool = False
     use_other_gains_report: bool = False
     separate_derivatives_reporting: bool = False
+    infer_payment_proceeds: bool = False
