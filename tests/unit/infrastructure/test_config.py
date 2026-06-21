@@ -4,6 +4,7 @@ import configparser
 import logging
 from decimal import Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -13,6 +14,7 @@ from tax_reporting.infrastructure.config import (
     TaxJurisdictionConfig,
     _load_security_config,
     _load_tax_jurisdiction_config,
+    _parse_jurisdiction_section,
 )
 from tax_reporting.infrastructure.validation import SecurityConfig
 
@@ -368,6 +370,95 @@ class TestLoadTaxJurisdictionConfig:
                 f"{ini_path.name} ZERO_BASIS_REVIEW_MIN_PROCEEDS={raw!r} diverges from "
                 f"DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS={DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS}"
             )
+
+    def test_load_tax_jurisdiction_config_pt_defaults_to_lisbon(self, tmp_path, monkeypatch):
+        """PT with no IANA_TIMEZONE key resolves timezone to Europe/Lisbon."""
+        import tax_reporting.infrastructure.config as config_module
+
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(self._PT_TOML)
+        cp = self._make_config({"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025"})
+        logger = logging.getLogger(__name__)
+        result = _load_tax_jurisdiction_config(cp, logger)
+        assert result.timezone == ZoneInfo("Europe/Lisbon")
+
+    def test_load_tax_jurisdiction_config_explicit_zone_overrides_default(self, tmp_path, monkeypatch):
+        """An explicit IANA_TIMEZONE overrides the PT default (Azores is UTC-1/+0, distinct from Lisbon)."""
+        import tax_reporting.infrastructure.config as config_module
+
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(self._PT_TOML)
+        cp = self._make_config({"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025", "IANA_TIMEZONE": "Atlantic/Azores"})
+        logger = logging.getLogger(__name__)
+        result = _load_tax_jurisdiction_config(cp, logger)
+        assert result.timezone == ZoneInfo("Atlantic/Azores")
+
+    def test_load_tax_jurisdiction_config_invalid_zone_raises(self, tmp_path, monkeypatch):
+        """An invalid IANA_TIMEZONE raises ValueError naming the bad zone after decision-points load."""
+        import tax_reporting.infrastructure.config as config_module
+
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(self._PT_TOML)
+        cp = self._make_config({"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025", "IANA_TIMEZONE": "Foo/Bar"})
+        logger = logging.getLogger(__name__)
+        with pytest.raises(ValueError, match="Foo/Bar"):
+            _load_tax_jurisdiction_config(cp, logger)
+
+    def test_load_tax_jurisdiction_config_generic_zone_error_raises(self, tmp_path, monkeypatch):
+        """A non-ZoneInfoNotFoundError failure from ZoneInfo() hits the generic except branch.
+
+        The invalid-zone test above exercises only ``except ZoneInfoNotFoundError``; this
+        covers the catch-all ``except Exception`` (e.g. a tz database read failure), which
+        produces a different message that appends the underlying error.
+        """
+        import tax_reporting.infrastructure.config as config_module
+
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(self._PT_TOML)
+        cp = self._make_config(
+            {"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025", "IANA_TIMEZONE": "Europe/Lisbon"}
+        )
+        logger = logging.getLogger(__name__)
+
+        def _boom(_key: str):
+            raise OSError("tz database read failed")
+
+        monkeypatch.setattr(config_module, "ZoneInfo", _boom)
+        with pytest.raises(ValueError, match="Invalid IANA_TIMEZONE"):
+            _load_tax_jurisdiction_config(cp, logger)
+
+    def test_load_tax_jurisdiction_config_non_pt_without_key_is_none(self, tmp_path, monkeypatch):
+        """Non-PT country without IANA_TIMEZONE yields timezone None (documented backward-compat)."""
+        import tax_reporting.infrastructure.config as config_module
+
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(self._NO_COUNTRY_TOML)
+        cp = self._make_config({"TAX_COUNTRY": "US", "FISCAL_YEAR": "2025"})
+        logger = logging.getLogger(__name__)
+        result = _load_tax_jurisdiction_config(cp, logger)
+        assert result.timezone is None
+
+    def test_parse_jurisdiction_section_surfaces_iana_timezone(self):
+        """_parse_jurisdiction_section returns a NamedTuple carrying iana_timezone with PT default applied."""
+        cp = configparser.ConfigParser()
+        cp.optionxform = lambda optionstr: optionstr
+        cp["TAX JURISDICTION"] = {"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025", "IANA_TIMEZONE": "Europe/Lisbon"}
+        result = _parse_jurisdiction_section(cp["TAX JURISDICTION"])
+        assert result.iana_timezone == "Europe/Lisbon"
+
+        # PT default applied inside the section parser when the key is absent and country is PT.
+        cp2 = configparser.ConfigParser()
+        cp2.optionxform = lambda optionstr: optionstr
+        cp2["TAX JURISDICTION"] = {"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025"}
+        result2 = _parse_jurisdiction_section(cp2["TAX JURISDICTION"])
+        assert result2.iana_timezone == "Europe/Lisbon"
+
+        # Non-PT without key yields None.
+        cp3 = configparser.ConfigParser()
+        cp3.optionxform = lambda optionstr: optionstr
+        cp3["TAX JURISDICTION"] = {"TAX_COUNTRY": "US", "FISCAL_YEAR": "2025"}
+        result3 = _parse_jurisdiction_section(cp3["TAX JURISDICTION"])
+        assert result3.iana_timezone is None
 
 
 def _write_toml(path, content: str) -> None:

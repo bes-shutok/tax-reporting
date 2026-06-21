@@ -44,6 +44,7 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 - If an inferred IB tax year exists and the selected Koinly directory year differs, skip crypto loading for that run.
 - Dividend aggregation validates one currency per symbol; mismatches raise `FileProcessingError`.
 - `TradeDate` is a `NamedTuple(year, month, day)`. Do not call `.date()` on it; use it directly or call `.to_datetime()`.
+- External-report date parsers must localize naive dates to the jurisdiction zone (a `strptime` format literal like ` UTC` does not populate `tzinfo`; detect on the matched format). See `development_lessons.md` #132.
 - When classifying a dividend row as withholding tax, match only the literal `"Withholding Tax"`; never bare `"Tax"` (dividend descriptions contain "Tax" as a word fragment, e.g. "Tax-Exempt Interest").
 - `docs/maintenance/tax/.../official/` keeps only source-origin files; derived notes and numbered guidance belong outside `official/`; `sources.md` records issuing/effective/superseded dates. See `docs/maintenance/project-guidelines.md` #1.
 - For external source archive provenance and freshness checks, see `docs/maintenance/project-guidelines.md` #1.
@@ -103,7 +104,7 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 - Test string sanitization/validation/parsing for edge cases: empty, whitespace-only, multi-byte, control chars, multi-char prefixes, padded. See `development_lessons.md` #6.
 - Test error paths including double-failure (e.g. aggregation fails AND workbook.close fails). See `development_lessons.md` #6.
 - Examine existing source data files (`resources/source/koinly*/`) directly before asking for samples. Use Glob/Read.
-- Do not commit changes unless explicitly asked.
+- Commits are allowed by default; never push (or open PRs) without explicit instruction (per global Git Push Policy). `~/Projects/myrepos` personal repos stay local-only.
 - Always use `uv run pytest`, not `uvx pytest`.
 - `valid_from` = audit-only; `service_start_date` = matching. See `development_lessons.md` #17.
 - Never write to `docs/review/` (singular); convention is `docs/history/reviews/` (plural). See `development_lessons.md` #95.
@@ -135,8 +136,7 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 
 ### 5. Domain Knowledge References
 
-- Before changing crypto reporting logic, read `docs/maintenance/crypto_rules.md`, `docs/maintenance/crypto_reporting_guidelines.md`, `docs/maintenance/crypto_implementation_guidelines.md`. Cite PT-C / CRG rule IDs for law-driven changes.
-- Before implementing new crypto features, read `docs/maintenance/crypto_implementation_guidelines.md` for pitfalls.
+- Before changing crypto reporting logic or implementing new crypto features, read `docs/maintenance/crypto_rules.md`, `docs/maintenance/crypto_reporting_guidelines.md`, and `docs/maintenance/crypto_implementation_guidelines.md` (pitfalls); cite PT-C/CRG rule IDs for law-driven changes.
 - Before processing Koinly exports or changing Koinly-related code, read `docs/maintenance/koinly_guidelines.md` (loan repayment disposal treatment, wrapped-asset repair, Other Gains Report relevance, required settings).
 - Before discussing crypto tax treatment, proposing architecture, or advising on Koinly settings, check `docs/maintenance/tax/decision_points/` first.
 - Before changing cross-cutting report-generation behavior, read `docs/maintenance/tax_reporting_guidelines.md` (also documents Excel report sections) and cite SRG IDs.
@@ -158,10 +158,10 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 
 ## Configuration
 
-- `configparser` INI files: `config.ini` (prod), `tests/config.ini` (test). Four sections: `[COMMON]`, `[EXCHANGE RATES]`, `[SECURITY]`, `[TAX JURISDICTION]` (`TAX_COUNTRY`, `FISCAL_YEAR`, `ZERO_BASIS_REVIEW_THRESHOLD`, `ZERO_BASIS_REVIEW_MIN_PROCEEDS`; defaults PT/2025/50/10).
-- Update exchange rates annually (e.g., from your national central bank).
-- **Law-driven flags** (e.g. `exclude_loan_repayment_gains`) live in `docs/maintenance/tax/decision_points/<fiscal_year>.toml`, NOT `config.ini`. Both the `.md` and `.toml` sidecar must be updated together. `config.ini` holds only user-preference settings.
-- TOML schema: `[meta]` with integer `fiscal_year`, plus `[countries.XX]` boolean-flag tables. Copy `docs/maintenance/tax/decision_points/2025.toml` for a new year. Missing TOML for the configured `FISCAL_YEAR` raises `MissingDecisionPointsError` (a `ConfigurationError` subclass) at startup; invalid `[TAX JURISDICTION]` raises `ConfigurationError`. Both propagate from `main()` unwrapped so callers distinguish config problems from data problems.
+- `configparser` INI files: `config.ini` (prod), `tests/config.ini` (test). Four sections: `[COMMON]`, `[EXCHANGE RATES]`, `[SECURITY]`, `[TAX JURISDICTION]` (`TAX_COUNTRY`, `FISCAL_YEAR`, `ZERO_BASIS_REVIEW_THRESHOLD`, `ZERO_BASIS_REVIEW_MIN_PROCEEDS`, `IANA_TIMEZONE`); the four scalar fields default to PT/2025/50/10 and `IANA_TIMEZONE` defaults to Europe/Lisbon for PT (None otherwise). Update exchange rates annually (e.g. from your national central bank).
+- `IANA_TIMEZONE`: auto-deduces `Europe/Lisbon` for `TAX_COUNTRY=PT`; REQUIRED for other countries with crypto data, else fails fast (`development_lessons.md` #135).
+- **Law-driven flags** (e.g. `exclude_loan_repayment_gains`) live in `docs/maintenance/tax/decision_points/<fiscal_year>.toml`, NOT `config.ini` (user preferences only); update the `.md` and `.toml` sidecar together.
+- TOML schema: `[meta].fiscal_year` (integer) + `[countries.XX]` boolean tables; copy `2025.toml` for a new year. Missing TOML raises `MissingDecisionPointsError` (a `ConfigurationError` subclass); invalid `[TAX JURISDICTION]` raises `ConfigurationError`; both surface unwrapped from `main()`.
 
 ## Testing
 
@@ -180,7 +180,7 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 
 ## Data Handling
 
-See `docs/maintenance/project-guidelines.md` #5 for the full missing-vs-invalid rules. Missing data (supplementary info absent): warn with actionable guidance, include record with visible sentinel (`"MISSING_ISIN_REQUIRES_ATTENTION"`, `"UNKNOWN_COUNTRY"`), highlight in Excel, never lose monetary amounts. Internal placeholder sentinels from resolution functions (e.g., `UNKNOWN_OPERATOR_REVIEW_REQUIRED`) must NOT leak to user-facing fields; use the raw input value instead; see `development_lessons.md` #113. Invalid data (format corrupted, non-numeric amounts, missing required columns): fail fast with `FileProcessingError` (row number, field, expected format) using `from e`.
+See `docs/maintenance/project-guidelines.md` #5 for the full missing-vs-invalid rules. Missing data: warn, keep a visible sentinel (`"MISSING_ISIN_REQUIRES_ATTENTION"`, `"UNKNOWN_COUNTRY"`), highlight in Excel, never lose monetary amounts. Internal resolution sentinels (e.g. `UNKNOWN_OPERATOR_REVIEW_REQUIRED`) must NOT leak to user-facing fields - use the raw input value (`development_lessons.md` #113). Invalid data: fail fast with `FileProcessingError` (row, field, expected format) via `from e`.
 
 ## Error Handling
 

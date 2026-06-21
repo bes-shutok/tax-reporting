@@ -181,7 +181,8 @@ def _main(  # noqa: PLR0912, PLR0915
         raise
     except (FileNotFoundError, OSError):
         logger.warning(
-            "Config file not found; crypto pipeline will run without jurisdiction filters"
+            "Config file not found; no jurisdiction config loaded. Crypto processing will "
+            "fail fast if a Koinly directory is present (naive Koinly dates need a zone to localize)"
         )
     except (ValueError, KeyError, configparser.Error) as exc:
         raise ConfigurationError(
@@ -226,6 +227,13 @@ def _main(  # noqa: PLR0912, PLR0915
         if not dividend_income_per_company:
             final_report_type = "capital gains + crypto" if crypto_sheet_created else "capital gains"
         logger.info("Generated %s report: %s", final_report_type, extract_path)
+    except ConfigurationError:
+        # A config problem (e.g. crypto data present but the jurisdiction timezone
+        # cannot be resolved) must surface as a ConfigurationError, not be wrapped
+        # into a ReportGenerationError, so callers can distinguish config problems
+        # from data/generation problems. Mirrors the unwrapped-propagation contract
+        # of the config-loading block above.
+        raise
     except Exception as e:
         raise ReportGenerationError(f"Failed to generate report: {e}") from e
 
@@ -302,10 +310,42 @@ def _load_crypto_tax_report(
         )
         return None
 
+    # STRICT localization contract: crypto data is present and the year matched, so
+    # naive CG/OGR/Income dates WILL be parsed and localized. Without a resolved
+    # jurisdiction timezone there is no correct way to localize them - the loader's
+    # no-zone path silently stamps naive dates as UTC, putting every cross-report
+    # match key (DP-014 payment match, derivatives dedup, OGR override) on the wrong
+    # calendar day. Fail fast instead of silently producing a wrong-day report. Both
+    # ``tax_jurisdiction is None`` (no config loaded at all) and
+    # ``tax_jurisdiction.timezone is None`` (configured but no IANA_TIMEZONE, and not
+    # PT which auto-deduces Europe/Lisbon at config load) fail here. The loader
+    # itself stays a pure parser (unit-testable with jurisdiction=None); this is the
+    # application boundary that enforces it. See development_lessons.md #135.
+    if tax_jurisdiction is None or tax_jurisdiction.timezone is None:
+        reason = (
+            "no jurisdiction config loaded (config.ini absent or unreadable)"
+            if tax_jurisdiction is None
+            else (
+                f"jurisdiction {tax_jurisdiction.country!r} has no resolved timezone "
+                "(set IANA_TIMEZONE in [TAX JURISDICTION]; TAX_COUNTRY=PT auto-deduces Europe/Lisbon)"
+            )
+        )
+        raise ConfigurationError(
+            f"Cannot process crypto data from {koinly_dir}: {reason}. Naive Koinly "
+            "CG/OGR/Income dates are jurisdiction-local and cannot be localized "
+            "without a zone; refusing to silently treat them as UTC."
+        )
+
     try:
         crypto_tax_report = load_koinly_crypto_report(
             koinly_dir, jurisdiction=tax_jurisdiction, rates=rates
         )
+    except ConfigurationError:
+        # A configuration problem raised by the loader must fail the run. It must NOT
+        # be degraded to "continue without crypto" like a parse/data error. (The
+        # STRICT guard above raises before this try; this clause keeps any future
+        # loader-side ConfigurationError from being silently swallowed too.)
+        raise
     except FileProcessingError as exc:
         logger.error(
             "Koinly data in %s is malformed and cannot be parsed: %s. "

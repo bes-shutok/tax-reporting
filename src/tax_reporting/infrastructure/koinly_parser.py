@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Final
+from zoneinfo import ZoneInfo
 
 from ..application.crypto.entities import ParsedOgrRow
 from ..domain.exceptions import FileProcessingError
@@ -96,14 +97,46 @@ def _detect_header_index(lines: list[str], path: Path) -> int:
     raise ValueError(f"Unable to detect CSV header in Koinly export: {path}")
 
 
-def parse_koinly_datetime(value: str) -> datetime:
-    """Parse a Koinly datetime string into a datetime object.
+def _format_declares_utc(date_format: str) -> bool:
+    """Return True when the matched format string declares UTC.
+
+    Koinly Transaction History dates use the format ``%Y-%m-%d %H:%M:%S UTC``,
+    where the `` UTC`` suffix is a literal in the format string (NOT a ``%z``
+    directive). ``datetime.strptime`` therefore never sets ``tzinfo`` for TH
+    dates, so the only reliable way to distinguish TH explicit-UTC dates from
+    naive CG/OGR/Income dates is to inspect the matched format string itself.
 
     Args:
-        value: Datetime string from Koinly CSV.
+        date_format: One of the formats in :data:`DATE_FORMATS` that matched.
 
     Returns:
-        datetime object with UTC timezone if specified, or epoch datetime for empty strings.
+        True iff the format string ends with the `` UTC`` literal (the TH format
+        token), so a future naive format cannot satisfy it by coincidence.
+    """
+    return date_format.endswith(" UTC")
+
+
+def parse_koinly_datetime(value: str, *, zone: ZoneInfo | None = None) -> datetime:
+    """Parse a Koinly datetime string into a zone-aware datetime object.
+
+    Naive Koinly dates (CG/OGR/Income, format ``DD/MM/YYYY HH:MM``) denote
+    mainland-Portugal local time (WET/WEST), not UTC. When ``zone`` is provided
+    the naive instant is stamped with that zone and converted to UTC, letting
+    ``zoneinfo`` own DST transitions historically. TH dates (format
+    ``YYYY-MM-DD HH:MM:SS UTC``) declare UTC via their format and are kept as
+    UTC regardless of ``zone`` (the `` UTC`` suffix is a format literal, not a
+    ``%z`` directive, so detection is on the matched format string, never on
+    ``parsed.tzinfo``).
+
+    Args:
+        value: Datetime string from a Koinly CSV.
+        zone: Optional jurisdiction ``ZoneInfo`` used to localize naive dates.
+            When ``None`` (default), naive dates are stamped as UTC exactly as
+            before this parameter existed, preserving backward compatibility.
+
+    Returns:
+        timezone-aware datetime in UTC. Empty strings yield the epoch sentinel
+        ``datetime(1970, 1, 1, tzinfo=UTC)``.
 
     Raises:
         ValueError: If the date format is not supported.
@@ -115,9 +148,16 @@ def parse_koinly_datetime(value: str) -> datetime:
     for date_format in DATE_FORMATS:
         try:
             parsed = datetime.strptime(text, date_format)  # noqa: DTZ007
-            return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
         except ValueError:
             continue
+        # strptime never sets tzinfo for any of our formats (TH's ` UTC` is a
+        # literal, not a %z directive), so detection MUST be on the format
+        # string, not on parsed.tzinfo.
+        if _format_declares_utc(date_format):
+            return parsed.replace(tzinfo=UTC)
+        if zone is not None:
+            return parsed.replace(tzinfo=zone).astimezone(UTC)
+        return parsed.replace(tzinfo=UTC)
     raise ValueError(f"Unsupported Koinly date format: {value}")
 
 
@@ -328,6 +368,8 @@ def _extract_ogr_gain_loss(ogr_row: dict[str, str]) -> Decimal | None:
 
 def _parse_other_gains_row(
     ogr_row: dict[str, str],
+    *,
+    zone: ZoneInfo | None = None,
 ) -> ParsedOgrRow | None:
     """Parse a single Other Gains Report row into a typed ``ParsedOgrRow``.
 
@@ -335,7 +377,10 @@ def _parse_other_gains_row(
     classifier and ``_build_ogr_index``) receive ready-to-use fields and never
     re-parse the raw row:
 
-    - ``date`` is formatted to ISO ``YYYY-MM-DD`` via ``format_datetime``
+    - ``date`` is formatted to ISO ``YYYY-MM-DD`` via ``format_datetime``. Naive
+      OGR dates denote mainland-Portugal local time (WET/WEST); when ``zone`` is
+      provided the date is localized to that zone and converted to UTC so the
+      OGR index key lands on the same true-UTC day as the CG/TH keys.
     - ``asset`` is normalized via ``normalize_asset_ticker``
     - ``wallet`` is normalized via ``normalize_platform_name`` so platform
       aliases like "ByBit (2)" collapse to "ByBit" at parse time
@@ -344,6 +389,8 @@ def _parse_other_gains_row(
 
     Args:
         ogr_row: Row dictionary from Other Gains Report CSV.
+        zone: Optional jurisdiction ``ZoneInfo`` used to localize naive dates.
+            ``None`` (default) preserves the legacy UTC-stamp behavior.
 
     Returns:
         ``ParsedOgrRow`` with normalized fields, or ``None`` if the row has a
@@ -351,7 +398,7 @@ def _parse_other_gains_row(
     """
     try:
         date_str = ogr_row.get("Date", "")
-        date = parse_koinly_datetime(date_str)
+        date = parse_koinly_datetime(date_str, zone=zone)
 
         asset = normalize_asset_ticker(ogr_row.get("Asset", ""))
 
@@ -394,6 +441,8 @@ def _find_report_path(koinly_dir: Path, marker: str, suffix: str) -> Path | None
 
 def _find_and_parse_other_gains_file(
     koinly_dir: Path,
+    *,
+    zone: ZoneInfo | None = None,
 ) -> list[ParsedOgrRow]:
     """Find and parse the Other Gains Report CSV file.
 
@@ -406,6 +455,9 @@ def _find_and_parse_other_gains_file(
 
     Args:
         koinly_dir: Directory containing Koinly export files.
+        zone: Optional jurisdiction ``ZoneInfo`` forwarded to
+            ``_parse_other_gains_row`` to localize naive OGR dates to UTC.
+            ``None`` (default) preserves the legacy UTC-stamp behavior.
 
     Returns:
         List of ``ParsedOgrRow`` instances, one per non-skipped OGR row, in
@@ -422,7 +474,7 @@ def _find_and_parse_other_gains_file(
 
     result: list[ParsedOgrRow] = []
     for row in rows:
-        parsed = _parse_other_gains_row(row)
+        parsed = _parse_other_gains_row(row, zone=zone)
         if parsed is None:
             continue
         result.append(parsed)

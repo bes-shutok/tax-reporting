@@ -5,6 +5,7 @@ import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -552,6 +553,7 @@ def test_load_koinly_crypto_report_flags_zero_cost_above_min_proceeds(tmp_path):
         "futures_derivatives_taxable": False,
         "use_other_gains_report": False,
         "separate_derivatives_reporting": False,
+        "timezone": ZoneInfo("Europe/Lisbon"),
     }
 
     # Above-threshold: min_proceeds=10, proceeds=15 → flags with zero-cost reason.
@@ -6265,6 +6267,7 @@ def test_parse_capital_gains_file_excludes_loan_affected_assets_when_pt(tmp_path
         fiscal_year=2025,
         exclude_loan_repayment_gains=True,
         zero_basis_review_threshold=DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD,
+        timezone=ZoneInfo("Europe/Lisbon"),
     )
 
     with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"):
@@ -6286,6 +6289,7 @@ def test_parse_capital_gains_file_includes_loan_affected_assets_when_non_pt(tmp_
         fiscal_year=2025,
         exclude_loan_repayment_gains=False,
         zero_basis_review_threshold=DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD,
+        timezone=ZoneInfo("America/New_York"),
     )
 
     report = load_koinly_crypto_report(koinly_dir, jurisdiction=non_pt_jurisdiction)
@@ -6449,6 +6453,7 @@ def _pt_jurisdiction():
         fiscal_year=2025,
         exclude_loan_repayment_gains=True,
         zero_basis_review_threshold=DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD,
+        timezone=ZoneInfo("Europe/Lisbon"),
     )
 
 
@@ -6460,6 +6465,7 @@ def _non_pt_jurisdiction():
         fiscal_year=2025,
         exclude_loan_repayment_gains=False,
         zero_basis_review_threshold=DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD,
+        timezone=ZoneInfo("America/New_York"),
     )
 
 
@@ -10160,6 +10166,167 @@ class TestPipelineIntegration:
         )
 
 
+# --- jurisdiction-zone date localization (CG / income / DP-014 match-key) ---
+#
+# Naive Koinly dates (CG/OGR/Income) denote mainland-Portugal local time
+# (WET/WEST); threading the jurisdiction ZoneInfo through parse_koinly_datetime
+# converts them to a true-UTC instant so cross-report match keys agree. The
+# summer-midnight cases (WEST = UTC+1) are the discriminating ones: a naive
+# 15/06/2025 00:30 must roll back to the previous UTC day (2025-06-14 23:30).
+
+
+@pytest.mark.unit
+def test_parse_capital_gains_file_summer_midnight_disposal_true_utc_day(tmp_path):
+    """A summer-midnight CG Date Sold localizes to the previous UTC day with a PT zone.
+
+    Date Sold = 15/06/2025 00:30 is mainland-Portugal WEST (UTC+1); its true UTC
+    instant is 2025-06-14 23:30. With ``zone=Europe/Lisbon`` the disposal_date
+    and disposal_timestamp must reflect the UTC day, not the local day (without
+    the zone both read 2025-06-15 because naive dates are stamped as UTC).
+    """
+    from collections import Counter
+
+    th_csv = tmp_path / "th.csv"
+    th_csv.write_text("\n".join(["Transaction report 2025", "", _TH_HEADER]), encoding="utf-8")
+    capital_csv = tmp_path / "capital.csv"
+    capital_csv.write_text(
+        "\n".join(["Capital gains report 2025", "", _CG_HEADER, _cg_row(date_sold="15/06/2025 00:30")]),
+        encoding="utf-8",
+    )
+
+    resolver = TokenOriginResolver(th_csv)
+    context = CapitalGainsParsingContext(
+        skipped_assets=Counter(),
+        origin_resolver=resolver,
+        review_entries=[],
+        zone=ZoneInfo("Europe/Lisbon"),
+    )
+    entries, _ = _parse_capital_gains_file(capital_csv, context)
+
+    assert entries, "expected one CG entry from the summer-midnight row"
+    assert entries[0].disposal_date == "2025-06-14", (
+        f"summer-midnight disposal must map to the previous UTC day, got {entries[0].disposal_date}"
+    )
+    assert entries[0].disposal_timestamp == "2025-06-14 23:30", (
+        "summer-midnight disposal timestamp must reflect the WEST->UTC offset, "
+        f"got {entries[0].disposal_timestamp}"
+    )
+
+
+@pytest.mark.unit
+def test_parse_capital_gains_file_winter_disposal_unchanged(tmp_path):
+    """A winter CG Date Sold is unchanged by the PT zone (WET = UTC+0, no DST).
+
+    Characterization test protecting existing fixtures: 13/01/2025 13:01 (WET)
+    has no offset to UTC, so both the legacy UTC-stamp and the localized path
+    yield 2025-01-13 13:01.
+    """
+    from collections import Counter
+
+    th_csv = tmp_path / "th.csv"
+    th_csv.write_text("\n".join(["Transaction report 2025", "", _TH_HEADER]), encoding="utf-8")
+    capital_csv = tmp_path / "capital.csv"
+    capital_csv.write_text(
+        "\n".join(["Capital gains report 2025", "", _CG_HEADER, _cg_row(date_sold="13/01/2025 13:01")]),
+        encoding="utf-8",
+    )
+
+    resolver = TokenOriginResolver(th_csv)
+    context = CapitalGainsParsingContext(
+        skipped_assets=Counter(),
+        origin_resolver=resolver,
+        review_entries=[],
+        zone=ZoneInfo("Europe/Lisbon"),
+    )
+    entries, _ = _parse_capital_gains_file(capital_csv, context)
+
+    assert entries, "expected one CG entry from the winter row"
+    assert entries[0].disposal_date == "2025-01-13", (
+        f"winter disposal must be unchanged (WET = UTC+0), got {entries[0].disposal_date}"
+    )
+    assert entries[0].disposal_timestamp == "2025-01-13 13:01", (
+        f"winter disposal timestamp must be unchanged, got {entries[0].disposal_timestamp}"
+    )
+
+
+@pytest.mark.unit
+def test_parse_income_file_summer_date_true_utc_day(tmp_path):
+    """A summer-midnight income Date localizes to the previous UTC day with a PT zone.
+
+    Date = 15/06/2025 00:30 (WEST, UTC+1) -> true UTC 2025-06-14 23:30 -> calendar
+    day 2025-06-14. Without the zone the naive date is stamped UTC and reads
+    2025-06-15.
+    """
+    income_file = tmp_path / "income.csv"
+    income_file.write_text(
+        "\n".join(
+            [
+                "Income report 2025",
+                "",
+                _INCOME_HEADER,
+                '15/06/2025 00:30,BTC,"0,10",1000.00,Reward,,Kraken',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    skipped: dict[tuple[str, str], dict] = {}
+    entries = _parse_income_file(income_file, skipped, zone=ZoneInfo("Europe/Lisbon"))
+
+    assert entries, "expected one income entry from the summer-midnight row"
+    assert entries[0].date == "2025-06-14", (
+        f"summer-midnight income date must map to the previous UTC day, got {entries[0].date}"
+    )
+
+
+@pytest.mark.unit
+def test_payment_match_survives_summer_midnight_drift(tmp_path):
+    """DP-014 correction survives a summer-midnight cross-report drift (capstone).
+
+    The Payment disposal's CG Date Sold is 15/06/2025 00:30 (WEST, local
+    midnight); its TH twin declares the true UTC instant 2025-06-14 23:30:00 UTC.
+    With ``zone=Europe/Lisbon`` the CG disposal_date becomes 2025-06-14, matching
+    the TH day, so the DP-014 correction fires and rezeros proceeds to the TH Net
+    Value. Without the zone, CG reads 2025-06-15 vs TH 2025-06-14 -> no match ->
+    correction skipped -> proceeds stay 0.
+
+    Uses the CSV-writing helpers so the pipeline reads the rows through
+    parse_koinly_datetime (the fix path), not a hardcoded _make_cg_entry builder.
+    """
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+    _write_payment_fixture(
+        koinly_dir,
+        cg_rows=[_cg_row(date_sold="15/06/2025 00:30", **_PHANTOM_USDT_BYBIT)],
+        th_rows=[
+            _th_payment_row(
+                date_utc="2025-06-14 23:30:00 UTC",
+                amount="50,00000000",
+                net_value_eur='"120,00"',
+            ),
+        ],
+    )
+
+    report = load_koinly_crypto_report(
+        koinly_dir,
+        jurisdiction=_pp_jurisdiction(infer=True, timezone=ZoneInfo("Europe/Lisbon")),
+    )
+    assert report is not None
+
+    matches = [
+        e
+        for e in report.capital_entries
+        if e.asset == "USDT" and e.disposal_date == "2025-06-14" and e.platform == "ByBit"
+    ]
+    assert matches, (
+        "Expected the corrected Payment disposal on 2025-06-14 (the true UTC day); "
+        "the summer-midnight drift broke the cross-report match so the correction was skipped"
+    )
+    assert matches[0].proceeds_eur == Decimal("120.00"), (
+        "DP-014 correction must have rezeroed proceeds to the TH Net Value (120.00); "
+        f"got {matches[0].proceeds_eur}"
+    )
+
+
 # --- DP-014 payment-proceeds correction integration tests ---
 #
 # These tests exercise the wiring of ``correct_payment_proceeds`` into
@@ -10180,14 +10347,28 @@ _PHANTOM_USDT_BYBIT = {
     "wallet": "ByBit (2)",
 }
 
+# PT-mainland zone reused as the default for payment-proceeds test jurisdictions so
+# naive Koinly dates localize correctly (module-level constant: ZoneInfo must not be
+# called in an argument default, per ruff B008).
+_LISBON_TZ = ZoneInfo("Europe/Lisbon")
 
-def _pp_jurisdiction(*, infer: bool = True, use_ogr: bool = False):
+
+def _pp_jurisdiction(
+    *,
+    infer: bool = True,
+    use_ogr: bool = False,
+    timezone: ZoneInfo | None = _LISBON_TZ,
+):
     """Build a PT/2025 jurisdiction with the payment-proceeds flag toggled.
 
     ``use_ogr`` enables the OGR override path so the re-zero mitigation can be
     exercised. ``separate_derivatives_reporting`` is left False so the OGR path
     is the legacy combined-index override (the contract the re-zero snapshot
-    was designed against).
+    was designed against). ``timezone`` defaults to ``ZoneInfo("Europe/Lisbon")``
+    (the production PT default; a configured jurisdiction without a resolved
+    timezone now fails fast at crypto load rather than silently UTC-stamping).
+    Existing fixtures use winter dates, so Lisbon localization is byte-identical
+    to the prior UTC-stamp for them.
     """
     from tax_reporting.infrastructure.config import TaxJurisdictionConfig
 
@@ -10198,6 +10379,7 @@ def _pp_jurisdiction(*, infer: bool = True, use_ogr: bool = False):
         zero_basis_review_threshold=Decimal("50"),
         infer_payment_proceeds=infer,
         use_other_gains_report=use_ogr,
+        timezone=timezone,
     )
 
 
@@ -10299,8 +10481,16 @@ def _th_payment_row(**fields) -> str:  # noqa: PLR0913
 
 
 def _ogr_row(date: str, asset: str, amount: str, value_eur: str, row_type: str, wallet: str) -> str:  # noqa: PLR0913
-    """Build a single OGR CSV row string matching ``_OGR_HEADER``."""
-    return ",".join([date, asset, amount, value_eur, row_type, wallet])
+    """Build a single OGR CSV row string matching ``_OGR_HEADER``.
+
+    ``amount`` and ``value_eur`` are QUOTED so the European decimal comma does not
+    split the row. Real Koinly OGR exports quote both (e.g.
+    ``...,USD,"-17,05260000","16,48",Loss,Kraken``); unquoted commas produced a
+    malformed row that csv parsing silently turned into garbage fields, leaving
+    the OGR override inert (and the re-zero restore it is meant to trigger never
+    firing). Callers pass bare European decimals, e.g. ``"-0,01"`` / ``"0,01"``.
+    """
+    return ",".join([date, asset, f'"{amount}"', f'"{value_eur}"', row_type, wallet])
 
 
 @pytest.mark.unit
@@ -10402,9 +10592,22 @@ def test_payment_proceeds_usd_stablecoin_unpriced_converted_via_threaded_rate(tm
 
 
 @pytest.mark.unit
-def test_payment_proceeds_config_missing_does_not_raise_nameerror(tmp_path, monkeypatch):
-    """Config-missing fallback path must NOT raise NameError on app_config (Design Invariant 8)."""
+def test_payment_proceeds_config_missing_fails_fast(tmp_path, monkeypatch):
+    """STRICT: config-missing path fails fast with ConfigurationError, never silent run.
+
+    Previously (pre-STRICT) the config-missing path ran crypto with ``jurisdiction=None``
+    and the test guarded a NameError on ``app_config`` (Design Invariant 8, DP-014). Under
+    the STRICT localization contract the config-missing path can no longer run crypto at
+    all: with real fixture data present, ``_load_crypto_tax_report`` raises
+    ``ConfigurationError`` BEFORE any parsing, so neither a silent wrong-day report nor a
+    NameError can occur. ``app_config`` is initialised to ``None`` in ``_main`` and the
+    ``rates`` expression degrades safely to ``None``, so the NameError the old test guarded
+    is structurally impossible; this test now pins the fail-fast contract end-to-end with
+    real CG/TH data (vs. the monkeypatched-loader STRICT tests in
+    ``test_main_koinly_directory.py``).
+    """
     import tax_reporting.main as main_mod
+    from tax_reporting.domain.exceptions import ConfigurationError
 
     def _raise_fnf(*_args, **_kwargs):
         raise FileNotFoundError("config.ini missing")
@@ -10424,39 +10627,38 @@ def test_payment_proceeds_config_missing_does_not_raise_nameerror(tmp_path, monk
     try:
         app_config = main_mod.load_configuration_from_file()
     except FileNotFoundError:
-        # Mirrors main.py: warn-and-continue without binding app_config.
         logging.getLogger("test_config_missing").warning(
             "Config file not found; crypto pipeline will run without jurisdiction filters"
         )
 
-    # The call under test: rates=app_config.rates if app_config is not None else None
-    # must NOT raise NameError when app_config is None.
-    report = main_mod._load_crypto_tax_report(
-        koinly_dir=koinly_dir,
-        tax_year_hint=2025,
-        tax_jurisdiction=None,  # Stays None on the config-missing path
-        logger=logging.getLogger("test_config_missing"),
-        rates=app_config.rates if app_config is not None else None,
-    )
-
-    # (1) No NameError raised (reaching here proves it).
-    # (4) Regression guard: zero-proceeds Payment keeps proceeds_eur == 0 (block skipped).
-    assert report is not None
-    phantom = [e for e in report.capital_entries if e.asset == "USDT" and e.proceeds_eur == 0]
-    assert phantom, (
-        "On the config-missing path the correction block is SKIPPED (jurisdiction is None), "
-        "so the zero-proceeds Payment must keep proceeds_eur == 0 exactly as today."
-    )
+    # STRICT: with crypto data present and no resolved jurisdiction timezone, the helper
+    # fails fast. The rates expression must still degrade safely to None (no NameError).
+    with pytest.raises(ConfigurationError, match="no jurisdiction config"):
+        main_mod._load_crypto_tax_report(
+            koinly_dir=koinly_dir,
+            tax_year_hint=2025,
+            tax_jurisdiction=None,  # Stays None on the config-missing path
+            logger=logging.getLogger("test_config_missing"),
+            rates=app_config.rates if app_config is not None else None,
+        )
 
 
 @pytest.mark.unit
-def test_payment_proceeds_config_missing_warns_and_continues_via_main(tmp_path, monkeypatch):
-    """Config-missing + Koinly present: the warn-continue WARNING fires and no NameError escapes.
+def test_payment_proceeds_config_missing_warns_then_fails_fast_via_main(tmp_path, monkeypatch):
+    """STRICT: config-missing + Koinly present warns, then fails fast from ``_main``.
 
-    Uses a logging handler attached directly to the ``tax_reporting.main`` logger so
-    the warning is captured regardless of ``configure_application_logging``'s propagation.
+    Previously (pre-STRICT) ``_main`` warned "config not found; crypto pipeline will run
+    without jurisdiction filters" and continued. Under the STRICT localization contract
+    that silent run is incorrect by default: ``_main`` still emits the config-missing
+    WARNING (during config load, before crypto), then the STRICT guard in
+    ``_load_crypto_tax_report`` raises ``ConfigurationError`` which propagates OUT of
+    ``_main`` unwrapped (via ``except ConfigurationError: raise``), rather than being
+    wrapped into a ``ReportGenerationError`` or degraded to a silent skip. This test pins
+    both halves: the WARNING fires, and a ``ConfigurationError`` (not a ``NameError`` on
+    ``app_config``) escapes ``_main``.
     """
     import tax_reporting.main as main_mod
+    from tax_reporting.domain.exceptions import ConfigurationError
 
     def _raise_fnf(*_args, **_kwargs):
         raise FileNotFoundError("config.ini missing")
@@ -10486,18 +10688,25 @@ def test_payment_proceeds_config_missing_warns_and_continues_via_main(tmp_path, 
 
     handler = _CaptureHandler(level=logging.WARNING)
     main_logger.addHandler(handler)
+    raised: Exception | None = None
     try:
         try:
             main_mod._main(source_file=src, output_dir=tmp_path, log_level="WARNING")
         except Exception as exc:  # noqa: BLE001
-            # Other downstream errors are fine; the contract is no NameError on app_config.
-            assert not isinstance(exc, NameError), f"NameError escaped _main: {exc}"
+            raised = exc
     finally:
         main_logger.removeHandler(handler)
 
+    # STRICT: a ConfigurationError must escape _main (not a NameError, not None/continue).
+    assert isinstance(raised, ConfigurationError), (
+        f"Expected ConfigurationError to escape _main on the config-missing+crypto path; "
+        f"got {type(raised).__name__ if raised else 'no exception'}: {raised}"
+    )
+
     warn_text = " ".join(captured)
     assert "Config file not found" in warn_text or "without jurisdiction filters" in warn_text, (
-        "Expected the warn-continue WARNING from the except branch; got: " + warn_text
+        "Expected the config-missing WARNING from the except branch to fire before the guard; "
+        "got: " + warn_text
     )
 
 
@@ -10587,20 +10796,37 @@ def test_payment_proceeds_ogr_rezero_restores_zero_before_correction(tmp_path):
 
 @pytest.mark.unit
 def test_payment_proceeds_rezero_index_based_not_key_based(tmp_path):
-    """Re-zero does NOT clobber a same-key legitimate OGR override.
+    """Re-zero does NOT clobber a same-key legitimate OGR-overridden disposal.
 
-    On ONE (date, asset, wallet) key: (a) a genuine non-zero-proceeds derivatives disposal
-    that OGR Spot-matches and overrides, AND (b) a separate zero-proceeds Payment. The
-    derivatives disposal KEEPS its OGR-overridden proceeds; the re-zero is INDEX-based.
+    On ONE (date, asset, wallet) key: (a) a genuine non-zero-proceeds derivatives
+    disposal that OGR Spot-matches and overrides, AND (b) a separate zero-proceeds
+    Payment. The re-zero snapshot is INDEX-based (it captures the i-th pre-OGR
+    zero-proceeds entry), so (a) - which had non-zero proceeds - is never in the
+    snapshot and KEEPS its OGR-overridden proceeds. A KEY-based snapshot would
+    restore every row on the shared (date, asset, wallet) key to 0, destroying
+    the legitimate disposal.
+
+    The two rows are given DIFFERENT holding periods so they land in SEPARATE
+    aggregation buckets ((date, asset, platform, holding_period)); that lets us
+    assert (a)'s proceeds in isolation. If they aggregated into one row, a
+    key-based re-zero clobbering (a) would still pass (the corrected Payment's
+    proceeds mask it) - a false green the original test admitted.
     """
     koinly_dir = tmp_path / "koinly2025"
     koinly_dir.mkdir()
     _write_payment_fixture(
         koinly_dir,
         cg_rows=[
-            # (a) Legitimate disposal: non-zero proceeds (150), gain 50
-            _cg_row(amount="50,00000000", cost="100,00", proceeds="150,00", gain="50,00"),
-            # (b) Zero-proceeds Payment
+            # (a) Legitimate disposal: non-zero proceeds (150), gain 50. Long term
+            #     so it aggregates into its own bucket, isolated from the Payment.
+            _cg_row(
+                amount="50,00000000",
+                cost="100,00",
+                proceeds="150,00",
+                gain="50,00",
+                holding_period="Long term",
+            ),
+            # (b) Zero-proceeds Payment, same (date, asset, wallet) as (a).
             _cg_row(**_PHANTOM_USDT_BYBIT),
         ],
         th_rows=[_th_payment_row(amount="50,00000000", currency="USDT", net_value_eur='"120,00"')],
@@ -10612,13 +10838,24 @@ def test_payment_proceeds_rezero_index_based_not_key_based(tmp_path):
     )
     assert report is not None
 
-    matches = [e for e in report.capital_entries if e.asset == "USDT" and e.disposal_date == "2025-01-13"]
-    assert matches, "Expected an aggregated USDT ByBit row"
-    # The legitimate row (a) survived with non-zero proceeds (OGR-overridden); the
-    # re-zero did NOT clobber it (it had non-zero proceeds originally, NOT in snapshot).
-    assert matches[0].proceeds_eur > Decimal("0"), (
+    legitimate = [
+        e
+        for e in report.capital_entries
+        if e.asset == "USDT"
+        and e.disposal_date == "2025-01-13"
+        and e.platform == "ByBit"
+        and e.holding_period.lower().startswith("long")
+    ]
+    assert len(legitimate) == 1, (
+        "Expected the legitimate Long-term disposal as its own aggregated row "
+        "(separate bucket from the Payment), "
+        f"got {len(legitimate)}: {[(e.holding_period, e.proceeds_eur) for e in legitimate]}"
+    )
+    # (a) was non-zero proceeds before OGR, so it is OUTSIDE the re-zero snapshot;
+    # its OGR-overridden proceeds (recomputed as cost + final_gain_loss) survives.
+    assert legitimate[0].proceeds_eur > Decimal("0"), (
         "The legitimate non-zero-proceeds disposal must KEEP its OGR-overridden proceeds "
-        f"(re-zero is INDEX-based); got aggregate proceeds {matches[0].proceeds_eur}"
+        f"(re-zero is INDEX-based, not key-based); got {legitimate[0].proceeds_eur}"
     )
 
 

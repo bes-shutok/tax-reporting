@@ -7,6 +7,7 @@ from collections import Counter
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from ..domain.exceptions import FileProcessingError
 from ..infrastructure.config import (
@@ -148,6 +149,8 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
         )
 
     year = _extract_tax_year(koinly_dir, capital_file, income_file, jurisdiction=jurisdiction)
+    # Jurisdiction zone, resolved once and reused by every naive-date parser (CG/OGR/Income).
+    zone = jurisdiction.timezone if jurisdiction else None
     skipped_assets: dict[tuple[str, str], dict] = {}
     review_entries: list[CryptoReviewEntry] = []
 
@@ -192,6 +195,7 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
                     if jurisdiction
                     else DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS
                 ),
+                zone=zone,
             ),
         )
     else:
@@ -229,7 +233,13 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
             )
             capital_entries.extend(raw_loan_fallback)
 
-    reward_entries = _parse_income_file(income_file, skipped_assets, known_assets) if income_file else []
+    reward_entries = (
+        _parse_income_file(
+            income_file, skipped_assets, known_assets, zone=zone
+        )
+        if income_file
+        else []
+    )
 
     capital_entries = _validate_capital_entries_have_valid_countries(capital_entries, jurisdiction)
 
@@ -273,7 +283,9 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
 
     derivatives_entries: list[DerivativesPnLEntry] = []
     if jurisdiction and jurisdiction.use_other_gains_report:
-        ogr_rows = _find_and_parse_other_gains_file(koinly_dir)
+        ogr_rows = _find_and_parse_other_gains_file(
+            koinly_dir, zone=zone
+        )
         if ogr_rows:
             spot_index, derivatives_entries = _split_ogr_index(
                 ogr_rows, capital_entries, jurisdiction
@@ -464,6 +476,10 @@ class CapitalGainsParsingContext:
         loan_affected_assets: Set of asset tickers affected by loans (for FIFO rebuild).
         zero_basis_review_min_proceeds: Minimum proceeds (EUR) required to flag a
             zero-cost entry for review. Defaults to ZERO (preserve prior behavior).
+        zone: Jurisdiction ``ZoneInfo`` used to localize naive CG dates (Date Sold,
+            Date Acquired are mainland-Portugal local time) to a true-UTC instant so
+            ``disposal_date`` / ``disposal_timestamp`` agree with TH explicit-UTC dates.
+            ``None`` (default) preserves the legacy UTC-stamp behavior.
     """
 
     skipped_assets: dict[tuple[str, str], dict]
@@ -472,6 +488,7 @@ class CapitalGainsParsingContext:
     known_assets: frozenset[str] | None = None
     loan_affected_assets: frozenset[str] = frozenset()
     zero_basis_review_min_proceeds: Decimal = ZERO
+    zone: ZoneInfo | None = None
 
 
 def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
@@ -510,10 +527,10 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
             proceeds_eur = parse_koinly_decimal(row.get("Proceeds (EUR)", ""))
             gain_loss_eur = parse_koinly_decimal(row.get("Gain / loss", ""))
             amount = parse_koinly_decimal(row.get("Amount", ""))
-            disposal_dt = parse_koinly_datetime(row.get("Date Sold", ""))
+            disposal_dt = parse_koinly_datetime(row.get("Date Sold", ""), zone=context.zone)
             disposal_date = format_datetime(disposal_dt)
             disposal_timestamp = disposal_dt.strftime("%Y-%m-%d %H:%M")
-            acquisition_date = format_datetime(parse_koinly_datetime(row.get("Date Acquired", "")))
+            acquisition_date = format_datetime(parse_koinly_datetime(row.get("Date Acquired", ""), zone=context.zone))
         except ValueError as exc:
             logger.warning("Skipping capital gains row %d for %r: ambiguous decimal value: %s", row_number, asset, exc)
             skipped_parse_errors += 1
@@ -723,6 +740,7 @@ def _parse_income_file(
     path: Path,
     skipped_assets: Counter[tuple[str, str]],
     known_assets: frozenset[str] | None = None,
+    zone: ZoneInfo | None = None,
 ) -> list[CryptoRewardIncomeEntry]:
     rows = read_koinly_rows(path)
     reward_entries: list[CryptoRewardIncomeEntry] = []
@@ -733,7 +751,7 @@ def _parse_income_file(
         try:
             value_eur = parse_koinly_decimal(row.get("Value (EUR)", ""))
             amount = parse_koinly_decimal(row.get("Amount", ""))
-            date_str = format_datetime(parse_koinly_datetime(row.get("Date", "")))
+            date_str = format_datetime(parse_koinly_datetime(row.get("Date", ""), zone=zone))
         except ValueError as exc:
             logger.warning("Skipping income row %d for %r: ambiguous decimal value: %s", row_number, asset, exc)
             continue

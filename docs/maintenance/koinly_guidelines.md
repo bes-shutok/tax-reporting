@@ -246,6 +246,40 @@ proceeds via CG<->TH tag correlation and a three-tier resolution:
    non-stablecoin, are left at `proceeds_eur == 0` with a specific review
    reason (check the ticker mapping in Koinly).
 
+The CG/OGR/Income `Date` columns are local-time-naive (mainland-Portugal
+WET/WEST), not UTC; `parse_koinly_datetime` localizes them to the jurisdiction
+`IANA_TIMEZONE` (default `Europe/Lisbon` for PT) and converts to UTC at
+ingestion, so the CG and TH calendar-day keys agree. TH explicit-UTC dates are
+unchanged. A zone is mandatory to localize these dates, so the application
+enforces STRICT fail-fast at the crypto-loading boundary: when crypto data is
+present and the timezone cannot be resolved - either a configured jurisdiction
+with `timezone is None` (any non-PT country without `IANA_TIMEZONE`; PT
+auto-deduces `Europe/Lisbon`) OR no config loaded at all (`jurisdiction is
+None`) - `_load_crypto_tax_report` in `main.py` raises `ConfigurationError`
+instead of silently stamping naive dates as UTC, and `_main` propagates it. The
+loader `load_koinly_crypto_report` stays a pure parser and does not enforce
+this; the no-zone UTC-stamp is a library affordance in `parse_koinly_datetime`,
+not the application default.
+
+UTC detection is on the matched format string, never on `parsed.tzinfo`
+(`strptime` never sets `tzinfo` for any of our formats; TH's ` UTC` is a literal,
+not a `%z` directive). `_format_declares_utc` matches the trailing ` UTC` token of
+the TH format, so a future naive format cannot be misclassified as UTC by
+coincidence. TH input is required to carry the ` UTC` suffix; if a future Koinly
+export drops it, those rows would fall through to naive localization, so any
+`DATE_FORMATS` change that affects TH must preserve the suffix invariant.
+
+DST ambiguity: naive local timestamps that land in the fall-back repeated hour
+(last Sunday of October, 01:00-02:00 WEST->WET) or the spring-forward nonexistent
+hour resolve deterministically via Python's default `fold=0`
+(`parsed.replace(tzinfo=zone)` never sets `fold`), selecting the first occurrence /
+pre-transition offset. The calendar-day reporting key (`disposal_date`) is
+unaffected either way; the only edge is minute-precision cross-report matching
+(`derivatives_dedup` matches TH-UTC-minute against the zone-localized CG
+`disposal_timestamp`), which could miss by one hour for a disposal whose true
+instant was the second occurrence of the repeated hour. The `fold=0` convention is
+deliberate and locked by the spring-forward / fall-back characterization tests.
+
 See `docs/maintenance/crypto_implementation_guidelines.md` "Payment Proceeds
 Correction (DP-014)" for the full mechanism (deque + count-equality collision
 gate, day-key timezone rationale, loader degrade-never-raise semantics, and the

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS: Decimal = Decimal("10")
 
@@ -52,6 +53,13 @@ class TaxJurisdictionConfig:
             fallbacks are ``review_required=True`` approximations of the disposal-date
             FMV; (3) review flag for non-EUR stablecoins whose peg has no config rate
             and for non-stablecoins. See decision point DP-014.
+        timezone: Resolved IANA timezone (``ZoneInfo``) of the jurisdiction, used to localize
+            naive Koinly dates (CG/OGR/Income, which are mainland-Portugal local time per
+            WET/WEST) to a true-UTC instant at ingestion so cross-report match keys agree.
+            Defaults to ``Europe/Lisbon`` for PT when ``IANA_TIMEZONE`` is absent from
+            ``config.ini``; ``None`` for non-PT countries without an explicit key (naive dates
+            then keep the legacy UTC-stamp behavior). Resolved exactly once at config-load and
+            passed to the parser as a value object; never re-constructed at call sites.
     """
 
     country: str
@@ -63,3 +71,4 @@ class TaxJurisdictionConfig:
     use_other_gains_report: bool = False
     separate_derivatives_reporting: bool = False
     infer_payment_proceeds: bool = False
+    timezone: ZoneInfo | None = None

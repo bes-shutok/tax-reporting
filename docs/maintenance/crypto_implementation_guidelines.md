@@ -1124,7 +1124,8 @@ The match key is `(timestamp, asset, wallet, amount)`:
   `Date Sold` column is minute precision (`DD/MM/YYYY HH:MM`); TH `Date`
   is second precision (`YYYY-MM-DD HH:MM:SS UTC`) and is truncated to
   minute for matching. Both normalize to `%Y-%m-%d %H:%M` via
-  `parse_koinly_datetime` (which adds UTC when no tzinfo is present)
+  `parse_koinly_datetime` (which localizes naive dates to the jurisdiction
+  zone and converts to UTC; TH explicit-UTC dates pass through)
   then `strftime("%Y-%m-%d %H:%M")`.
 - **Asset** is normalized via `normalize_asset_ticker`.
 - **Wallet** is normalized via `normalize_platform_name` (ByBit-specific:
@@ -1398,14 +1399,31 @@ dividends already depend on (parsed once into `Config.rates` in
 
 ### Day-key timezone rationale
 
-The CG `disposal_date` is local-time-naive and tagged UTC by Koinly; the TH
-`Date` is true UTC at second precision. The correlation collapses both onto a
-10-character calendar day (`YYYY-MM-DD`) via `_calendar_day()`, so a CG row and
-its TH twin match even when their sub-day wall-clock representations differ.
-This is same-day-robust only, NOT unconditionally timezone-robust: a payment
-whose true-UTC TH row lands on the NEXT calendar day yields no match and falls
-to the DP-013 zero-proceeds flag. Widening to a +/-1-day window is tracked as
-a Monitor item if a real motivating case is observed going uncorrected.
+The CG/OGR/Income `Date` columns are local-time-naive (mainland-Portugal
+WET/WEST), while the TH `Date` is true UTC at second precision. Both are
+localized to the same true-UTC instant at ingestion: naive dates are stamped
+with the jurisdiction `IANA_TIMEZONE` (resolved once at config load into a
+`ZoneInfo` on `TaxJurisdictionConfig.timezone`, defaulting to `Europe/Lisbon`
+for PT) and converted to UTC by `parse_koinly_datetime`, while TH
+explicit-UTC dates pass through unchanged (a ` UTC` literal in the `strptime`
+format does not populate `tzinfo`; detection is on the matched format string).
+Because a zone is mandatory to localize naive dates, the application enforces a
+STRICT fail-fast at the crypto-loading boundary: when crypto data is present and
+the timezone cannot be resolved - a configured jurisdiction with `timezone is
+None` (any non-PT country without `IANA_TIMEZONE`) OR no config loaded at all
+(`jurisdiction is None`) - `_load_crypto_tax_report` in `main.py` raises
+`ConfigurationError` before any date is parsed, and `_main` propagates it
+unwrapped. The program fails rather than silently treating naive dates as UTC.
+The loader `load_koinly_crypto_report` itself stays a pure parser and does NOT
+enforce this; the no-zone UTC-stamp remains a deliberate library affordance in
+`parse_koinly_datetime` for direct/programmatic callers (and unit tests), not
+the application default. The correlation then collapses both onto a 10-character calendar day
+(`YYYY-MM-DD`) via `_calendar_day()`, so a CG row and its TH twin match even
+when their sub-day wall-clock representations differ, including a summer
+disposal in the 00:00-01:00 local window that maps to the previous UTC day.
+With both sides on the true-UTC day, the calendar-day key is timezone-robust;
+a +/-1-day window is no longer needed. See the crypto-timezone-normalization
+plan and `development_lessons.md` #132.
 
 ### Deque + count-equality collision-blocks-correction pattern
 

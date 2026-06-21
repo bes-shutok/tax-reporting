@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -64,6 +65,7 @@ def _build_jurisdiction(*, min_proceeds: Decimal) -> TaxJurisdictionConfig:
         futures_derivatives_taxable=True,
         use_other_gains_report=True,
         separate_derivatives_reporting=True,
+        timezone=ZoneInfo("Europe/Lisbon"),
     )
 
 

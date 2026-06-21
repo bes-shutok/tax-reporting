@@ -58,7 +58,7 @@ transaction *is* (type and tag) and *which* transaction it was (`TxHash` /
    because **0 CG keys share a key with any OGR Profit/Loss row** in the current
    data; the structural assumption is unguarded.
 
-3. **Dates are timezone-naive and assumed UTC, but are actually local.**
+3. **[ADDRESSED 2026-06-20] Dates are timezone-naive and assumed UTC, but are actually local.**
    Cross-referencing unambiguous CG/TH disposal pairs (TH is explicit UTC): the
    CG-minus-TH hour offset is ~0 in winter (Jan-Mar, Nov-Dec) and ~+1h in summer
    (Apr-Oct), with the spring-forward jump visible in late March and the
@@ -69,6 +69,15 @@ transaction *is* (type and tag) and *which* transaction it was (`TxHash` /
    00:00-01:00 local maps to the previous UTC day, so any calendar-day match key
    can drift by a day. The DP-014 payment match happens to work on the current
    EUROC/Wirex case only because that disposal does not sit in that window.
+
+   **Resolution:** addressed by the crypto-timezone-normalization plan
+   (`docs/history/plans/2026-06-20-crypto-timezone-normalization.md`). Naive
+   CG/OGR/Income dates are now localized to the jurisdiction IANA zone (default
+   `Europe/Lisbon`) and converted to UTC at ingestion; TH explicit-UTC dates are
+   unchanged. The OGR-side thread (weakness #3's reach into the derivatives
+   dedup) is covered by the same plan's Task 4. The multi-lot OGR
+   `proceeds = cost + gain` correspondence assumption (weakness #4 below)
+   remains open and is NOT addressed by that plan.
 
 4. **The OGR proceeds formula `proceeds = cost + gain` is an identity that hides
    a correspondence assumption.** It is correct only when the matched CG lot's

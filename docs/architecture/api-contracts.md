@@ -18,7 +18,7 @@ Adding a boolean flag to the `.md` requires the corresponding field on `TaxJuris
 
 ## config.ini schema
 
-Four sections: `[COMMON]`, `[EXCHANGE RATES]`, `[SECURITY]`, `[TAX JURISDICTION]` (`TAX_COUNTRY`, `FISCAL_YEAR`, `ZERO_BASIS_REVIEW_THRESHOLD`, `ZERO_BASIS_REVIEW_MIN_PROCEEDS`; defaults PT/2025/50/10). User preferences only - law-driven flags stay in decision-points TOML.
+Four sections: `[COMMON]`, `[EXCHANGE RATES]`, `[SECURITY]`, `[TAX JURISDICTION]` (`TAX_COUNTRY`, `FISCAL_YEAR`, `ZERO_BASIS_REVIEW_THRESHOLD`, `ZERO_BASIS_REVIEW_MIN_PROCEEDS`, `IANA_TIMEZONE` (optional for `TAX_COUNTRY=PT`, which auto-deduces `Europe/Lisbon`; for any other country it is REQUIRED when crypto data is present - crypto processing fails fast with `ConfigurationError` when it cannot resolve a timezone, whether because a configured jurisdiction lacks `IANA_TIMEZONE` or because `config.ini` is absent entirely, rather than silently stamping naive Koinly CG/OGR/Income dates as UTC)); the four scalar fields default to PT/2025/50/10, and `IANA_TIMEZONE` defaults to Europe/Lisbon for PT and None otherwise). User preferences only - law-driven flags stay in decision-points TOML.
 
 ## Output
 

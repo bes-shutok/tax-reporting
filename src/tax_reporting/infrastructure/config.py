@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import NamedTuple, get_type_hints
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..domain.exceptions import MissingDecisionPointsError
 from ..domain.jurisdiction import DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS, TaxJurisdictionConfig
@@ -37,6 +38,10 @@ class ConversionRate(NamedTuple):
 _DEFAULT_JURISDICTION_COUNTRY = "PT"
 _DEFAULT_JURISDICTION_FISCAL_YEAR = 2025
 DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD = Decimal("50")
+# Single, explicit PT convenience default for IANA_TIMEZONE when TAX_COUNTRY=PT and the key is
+# absent (user-approved constant during planning). Not a broad country->zone map. Non-PT
+# countries must set IANA_TIMEZONE explicitly or leave timezone None (legacy UTC-stamp behavior).
+_DEFAULT_PT_TIMEZONE = "Europe/Lisbon"
 
 # Derived at import time from TaxJurisdictionConfig field types so it stays in sync
 # automatically when new bool flags are added to the dataclass + TOML schema.
@@ -147,10 +152,28 @@ def _load_decision_points_flags(
     return flags  # type: ignore[return-value]
 
 
-def _parse_jurisdiction_section(
-    section: configparser.SectionProxy,
-) -> tuple[str, int, Decimal, Decimal]:
-    """Parse the [TAX JURISDICTION] section into (country, fiscal_year, threshold, min_proceeds)."""
+class JurisdictionSectionFields(NamedTuple):
+    """Parsed [TAX JURISDICTION] fields (NamedTuple so adding fields does not break positional unpacking).
+
+    Attributes:
+        country: ISO 3166-1 alpha-2 country code (upper-cased).
+        fiscal_year: Fiscal year integer.
+        threshold: Zero-basis review threshold (EUR).
+        min_proceeds: Zero-basis review min proceeds (EUR).
+        iana_timezone: Raw IANA timezone string from IANA_TIMEZONE, or the PT default
+            ("Europe/Lisbon") when the key is absent and country is PT, or None otherwise.
+            Resolved to a ZoneInfo value object in _load_tax_jurisdiction_config.
+    """
+
+    country: str
+    fiscal_year: int
+    threshold: Decimal
+    min_proceeds: Decimal
+    iana_timezone: str | None
+
+
+def _parse_jurisdiction_section(section: configparser.SectionProxy) -> JurisdictionSectionFields:
+    """Parse the [TAX JURISDICTION] section into country, fiscal_year, threshold, min_proceeds, iana_timezone."""
     country = section.get("TAX_COUNTRY", _DEFAULT_JURISDICTION_COUNTRY).strip().upper()
     if not country:
         raise ValueError("TAX_COUNTRY in [TAX JURISDICTION] must not be empty")
@@ -188,7 +211,16 @@ def _parse_jurisdiction_section(
         raise ValueError(
             f"ZERO_BASIS_REVIEW_MIN_PROCEEDS must be a finite non-negative number, got: {min_proceeds_raw!r}"
         )
-    return country, fiscal_year, threshold, min_proceeds
+    iana_raw = section.get("IANA_TIMEZONE")
+    if iana_raw is not None:
+        iana_raw = iana_raw.strip()
+    if iana_raw:
+        iana_timezone: str | None = iana_raw
+    elif country == "PT":
+        iana_timezone = _DEFAULT_PT_TIMEZONE
+    else:
+        iana_timezone = None
+    return JurisdictionSectionFields(country, fiscal_year, threshold, min_proceeds, iana_timezone)
 
 
 def _load_tax_jurisdiction_config(
@@ -214,8 +246,12 @@ def _load_tax_jurisdiction_config(
         fiscal_year = _DEFAULT_JURISDICTION_FISCAL_YEAR
         threshold = DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD
         min_proceeds = DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS
+        # Country defaults to PT, so the PT timezone default applies.
+        iana_timezone: str | None = _DEFAULT_PT_TIMEZONE
     else:
-        country, fiscal_year, threshold, min_proceeds = _parse_jurisdiction_section(config["TAX JURISDICTION"])
+        country, fiscal_year, threshold, min_proceeds, iana_timezone = _parse_jurisdiction_section(
+            config["TAX JURISDICTION"]
+        )
 
     # PT excludes loan repayment gains per CIRS art. 10(20); all other countries default to False.
     try:
@@ -236,14 +272,35 @@ def _load_tax_jurisdiction_config(
         if flag_name in config_field_names:
             flag_kwargs.setdefault(flag_name, False)
 
+    # Resolve the IANA timezone string to a ZoneInfo value object exactly once, at config-load
+    # (after the decision-points TOML loads, so an invalid zone surfaces as a plain ValueError
+    # rather than being masked by MissingDecisionPointsError). timezone cannot ride
+    # **flag_kwargs (only bool decision flags); pass it explicitly to the constructor.
+    timezone: ZoneInfo | None
+    if iana_timezone is not None:
+        try:
+            timezone = ZoneInfo(iana_timezone)
+        except ZoneInfoNotFoundError as e:
+            raise ValueError(
+                f"Invalid IANA_TIMEZONE {iana_timezone!r} in [TAX JURISDICTION]: "
+                f"not a recognized IANA tz database zone"
+            ) from e
+        except Exception as e:
+            raise ValueError(
+                f"Invalid IANA_TIMEZONE {iana_timezone!r} in [TAX JURISDICTION]: {e}"
+            ) from e
+    else:
+        timezone = None
+
     logger.info(
         "Tax jurisdiction config: country=%s, fiscal_year=%d, exclude_loan_repayment_gains=%s, "
-        "zero_basis_threshold=%s, zero_basis_min_proceeds=%s",
+        "zero_basis_threshold=%s, zero_basis_min_proceeds=%s, timezone=%s",
         country,
         fiscal_year,
         flag_kwargs.get("exclude_loan_repayment_gains", False),
         threshold,
         min_proceeds,
+        iana_timezone,
     )
     return TaxJurisdictionConfig(
         country=country,
@@ -251,6 +308,7 @@ def _load_tax_jurisdiction_config(
         zero_basis_review_threshold=threshold,
         zero_basis_review_min_proceeds=min_proceeds,
         **flag_kwargs,
+        timezone=timezone,
     )
 
 
