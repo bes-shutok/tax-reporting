@@ -1,42 +1,49 @@
 """End-to-end data-trace verification for the ByBit derivatives separation pipeline.
 
 Verifies (per docs/history/plans/2026-06-13-derivatives-separation.md Task 11 and
-development_lessons.md #72, #73) that the real ByBit fixtures in
-``resources/source/koinly2025/`` produce the expected split between Crypto
-Gains (spot fee disposal lots) and Derivatives P&L (art. 10(1)(e) realizations),
-and that disabling ``separate_derivatives_reporting`` reproduces the Task 1
-golden characterization values exactly.
+development_lessons.md #72, #73) that the committed synthetic Koinly 2025 example
+fixture in ``resources/source/example/koinly2025/`` produces the expected split
+between Crypto Gains (spot fee disposal lots) and Derivatives P&L
+(art. 10(1)(e) realizations), and that disabling
+``separate_derivatives_reporting`` reproduces the legacy mixed value exactly.
 
-Cases:
-    Case 1 = (2025-01-12, USDT, ByBit): one OGR Profit row (+140.18 EUR) plus
-        one OGR Loss row (-4.17 EUR futures fee). With separation AND the TH-label
-        CG dedup (Task 4 scanner), the profit routes to Derivatives P&L and the
-        single CG fee-disposal lot (+2.44 EUR) is REMOVED from Crypto Gains
-        because its TH event carries Label="Futures fee". The -4.17 EUR OGR Loss
-        row now classifies as Derivatives (cg_matches == 0 after dedup) instead of
-        the old Spot classification. Without separation, the legacy path mixes
-        profit plus fee into a single 136.01 EUR Crypto Gains entry.
-    Case 2 = (2025-01-13, USDT, ByBit): three OGR Loss rows (0.15 + 8.31 +
-        138.73 = 147.19 EUR) and ~108 CG lots at the 13:01 timestamp (plus 1
-        Funding fee lot at 08:00 = 109 total). With separation AND the TH-label
-        CG dedup, ALL 109 CG lots are removed: the Funding fee lot and Futures
-        fee lot via exact match, and the remaining 107 lots at 13:01 (which sum
-        to 142.11299953 USDT, within tolerance of the 142.113 Realized gain TH
-        event) via contiguous-range fallback. The three OGR Loss rows then
-        classify as clean Derivatives (-147.19 EUR total). Without separation,
-        the legacy direction-override path flips every lot to negative,
-        producing -26.64 EUR in Crypto Gains.
-    Case 3 = (2025-01-24, USDT, ByBit): three derivatives events whose TH rows
-        carry derivatives Labels (Funding fee 0.088 USDT at 20:00, Futures fee
-        0.414 USDT at 23:40:53, Realized gain 40.755 USDT at 23:40:53). Koinly
-        emits the SAME disposals into BOTH the CG report (3 FIFO lots summing
-        to +20.24 EUR gain) AND the OGR report (3 Loss rows summing to -39.62
-        EUR). With separation + the TH-label CG dedup (planned), the 3 CG lots
-        are removed from capital_entries (no Crypto Gains row) and the 3 OGR
-        rows classify as clean Derivatives (-39.62 EUR, no review flag).
-        Without the dedup (current buggy state), the same disposal is taxed
-        twice: once as +20.24 EUR Crypto Gains and once as -39.62 EUR
-        Derivatives P&L.
+Migrated off the gitignored personal ``resources/source/koinly2025/`` export by
+plan ``docs/history/plans/2026-06-22-crypto-tests-off-local-fixtures.md`` Task 3.
+All golden values are recomputed against the synthetic CSVs by independent
+arithmetic (see the worked comments next to each assertion). The synthetic
+fixture uses the wallets ``Demo Futures`` / ``Demo Spot`` (deliberately NOT in
+the operator platform map), so derivatives rows carry ``review_required=True``
+from the unmapped-platform signal; the tests assert the classification KIND
+(Derivatives, not Ambiguous) rather than the platform-mapping flag.
+
+Cases (synthetic fixture, all USDT on ``Demo Futures`` unless noted):
+    Case A = (2025-01-12, USDT, Demo Futures): one OGR Profit row (+140.18 EUR)
+        and one OGR Loss row (4.17 EUR futures fee). With separation AND the
+        TH-label CG dedup, the profit routes to Derivatives P&L and the single
+        CG fee-disposal lot (+2.44 EUR) is REMOVED from Crypto Gains because
+        its TH event carries Tag="Futures fee". The -4.17 EUR OGR Loss row
+        classifies as Derivatives (cg_matches == 0 after dedup). Without
+        separation, the legacy path mixes profit plus fee into a single
+        136.01 EUR Crypto Gains entry (140.18 + -4.17 = 136.01).
+    Case B = (2025-01-13, USDT, Demo Futures): three OGR Loss rows
+        (1.50 + 2.50 + 4.00 = 8.00 EUR) and four CG lots: one exact-match
+        Funding-fee lot (0.5 at 08:00) plus three contiguous-range lots at
+        13:01 (1.5 + 1.5 + 2.000025 = 5.000025 vs TH Realized 5.000000;
+        delta 0.000025 within tolerance Decimal("0.00001") * 3 = 0.00003).
+        With separation AND the dedup, ALL 4 CG lots are removed (1 exact +
+        3 range); the three OGR Loss rows classify as clean Derivatives
+        (-8.00 EUR total).
+    Case C = (2025-01-24, USDT, Demo Futures): three derivatives events whose
+        TH rows carry derivatives Tags (Funding fee 0.08838575 at 20:00,
+        Futures fee 0.41424953 at 23:40, Realized gain 40.75540000 at 23:40).
+        Koinly emits the SAME disposals into BOTH the CG report (3 lots, all
+        gain 0.00) AND the OGR report (3 Loss rows summing to -39.62 EUR =
+        0.08 + 0.40 + 39.14). With separation + the TH-label CG dedup, the
+        3 CG lots are removed and the 3 OGR rows classify as clean
+        Derivatives (-39.62 EUR).
+
+Preserved non-derivatives spot entries (prevent a false green on the dedup):
+BTC gain 2.00 + ETH gain 3.50 on 2025-03-10 (Demo Spot), both |gain| >= 1 EUR.
 """
 
 from __future__ import annotations
@@ -53,83 +60,56 @@ from tax_reporting.application.crypto.classification import _is_valid_tabela_x_c
 from tax_reporting.application.crypto.entities import CryptoCapitalGainEntry, DerivativesEventType
 from tax_reporting.application.crypto_reporting import load_koinly_crypto_report
 from tax_reporting.application.persisting.derivatives_sheet import write_derivatives_sheet
-from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+from tests.conftest import KOINLY_2025_EXAMPLE_DIR, build_koinly_jurisdiction
 
 pytestmark = pytest.mark.e2e
 
-_FIXTURE_DIR = Path("resources/source/koinly2025")
+_FIXTURE_DIR = KOINLY_2025_EXAMPLE_DIR
 
 
-def _find_fixture(pattern: str) -> Path | None:
-    """Find a Koinly fixture CSV by glob pattern.
+def _find_fixture(pattern: str) -> Path:
+    """Find a synthetic Koinly fixture CSV by glob pattern.
 
-    The koinly2025 directory contains real exports with account-specific tokens
-    in their filenames. Discovery via glob keeps those tokens out of tracked
-    test code.
+    The committed synthetic example directory uses the fixed ``_synth.csv``
+    filename token, so glob discovery resolves exactly one file per pattern.
     """
     matches = sorted(_FIXTURE_DIR.glob(pattern))
-    return matches[0] if matches else None
+    assert matches, (
+        f"Expected exactly one synthetic fixture matching {pattern!r} under "
+        f"{_FIXTURE_DIR}; the committed example data is missing or renamed. "
+        "Regenerate per docs/history/plans/2026-06-22-crypto-tests-off-local-fixtures.md Task 1."
+    )
+    return matches[0]
 
 
 def _ogr_path() -> Path:
-    path = _find_fixture("koinly_2025_other_gains_report_*.csv")
-    if path is None:
-        pytest.skip("koinly_2025_other_gains_report_*.csv not available")
-    return path
+    return _find_fixture("koinly_2025_other_gains_report_*.csv")
 
 
 def _cg_path() -> Path:
-    path = _find_fixture("koinly_2025_capital_gains_report_*.csv")
-    if path is None:
-        pytest.skip("koinly_2025_capital_gains_report_*.csv not available")
-    return path
+    return _find_fixture("koinly_2025_capital_gains_report_*.csv")
 
 
 def _th_path() -> Path:
-    path = _find_fixture("koinly_2025_transaction_history_*.csv")
-    if path is None:
-        pytest.skip("koinly_2025_transaction_history_*.csv not available")
-    return path
+    return _find_fixture("koinly_2025_transaction_history_*.csv")
 
 
 _CASE1_DATE = "2025-01-12"
 _CASE2_DATE = "2025-01-13"
 _CASE3_DATE = "2025-01-24"
 _ASSET = "USDT"
-_PLATFORM = "ByBit"
-
-
-def _build_jurisdiction(*, separate_derivatives: bool) -> TaxJurisdictionConfig:
-    """Build a PT/2025 jurisdiction mirroring the production decision-point flags.
-
-    ``separate_derivatives_reporting`` toggles between the new separated path
-    (True) and the legacy mixed path (False) so both directions can be exercised
-    against the same fixtures.
-    """
-    return TaxJurisdictionConfig(
-        country="PT",
-        fiscal_year=2025,
-        exclude_loan_repayment_gains=True,
-        zero_basis_review_threshold=Decimal("500"),
-        futures_derivatives_taxable=True,
-        use_other_gains_report=True,
-        separate_derivatives_reporting=separate_derivatives,
-    )
-
-
-def _skip_if_fixtures_missing() -> None:
-    """Skip the calling test gracefully when the koinly2025 directory is absent."""
-    if not _FIXTURE_DIR.exists() or not _FIXTURE_DIR.is_dir():
-        pytest.skip(f"koinly2025 fixture directory not available at {_FIXTURE_DIR}")
+_PLATFORM = "Demo Futures"
+_PRESERVED_DATE = "2025-03-10"
+_PRESERVED_PLATFORM = "Demo Spot"
 
 
 def _load_with_separation(*, separate_derivatives: bool):
-    """Load the koinly2025 report under the requested jurisdiction setting."""
+    """Load the synthetic koinly2025 report under the requested jurisdiction setting."""
     report = load_koinly_crypto_report(
-        _FIXTURE_DIR, jurisdiction=_build_jurisdiction(separate_derivatives=separate_derivatives)
+        _FIXTURE_DIR,
+        jurisdiction=build_koinly_jurisdiction(separate_derivatives_reporting=separate_derivatives),
     )
-    if report is None:
-        pytest.skip("load_koinly_crypto_report returned None for koinly2025 fixtures")
+    assert report is not None, "load_koinly_crypto_report returned None for the synthetic koinly2025 fixtures"
     return report
 
 
@@ -151,29 +131,65 @@ def _assert_csv_contains_value(csv_path: Path, needle: str) -> None:
     )
 
 
-class TestByBitCase1Trace:
-    """Case 1 (2025-01-12, USDT, ByBit): futures Profit + fee disposal separation."""
+def _read_csv_rows(csv_path: Path) -> list[list[str]]:
+    """Read all rows of a fixture CSV for direct content assertions."""
+    assert csv_path.exists(), f"Fixture CSV not found: {csv_path}"
+    with csv_path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.reader(handle))
 
-    def setup_method(self) -> None:
-        _skip_if_fixtures_missing()
+
+def test_synthetic_fixture_contains_derivatives_scenarios() -> None:
+    """Guard against fixture content drift: assert the synthetic CSVs carry the derivatives scenarios.
+
+    Parses the committed example CSVs and asserts each derivatives scenario is
+    present (Case A fee disposal, Case B funding-fee + realized-gain events and
+    the load-bearing 2.000025 range lot, Case C derivatives-label events, plus
+    the two preserved non-derivatives spot disposals). A future edit to the
+    synthetic CSV that drops a scenario fails this test loudly instead of
+    silently changing a pinned golden value.
+    """
+    th_rows = _read_csv_rows(_th_path())
+    th_text = "\n".join(",".join(row) for row in th_rows)
+    # Case A: Futures fee disposal event.
+    assert "Futures fee" in th_text, "Case A Futures fee Tag missing from the synthetic TH CSV."
+    assert "Case A" in th_text, "Case A TH event description missing from the synthetic fixture."
+    # Case B: Funding fee + Realized gain events and the load-bearing range lot.
+    assert "Funding fee" in th_text, "Case B Funding fee Tag missing from the synthetic TH CSV."
+    assert "Case B" in th_text, "Case B TH event description missing from the synthetic fixture."
+    assert "5,00000000" in th_text, "Case B Realized gain TH event (5.0 USDT) missing."
+
+    cg_rows = _read_csv_rows(_cg_path())
+    cg_amounts = [row[3] for row in cg_rows if len(row) > 3 and row[2] == "USDT"]
+    assert "2,00002500" in cg_amounts, (
+        "Case B load-bearing range lot (amount 2.00002500) missing from the CG CSV; "
+        "without it the tolerance window is not exercised."
+    )
+    # Case C: three derivatives-label events at 2025-01-24.
+    assert "Case C" in th_text, "Case C derivatives-label TH events missing from the synthetic fixture."
+
+    # Preserved non-derivatives spot entries (BTC + ETH on 2025-03-10, Demo Spot).
+    cg_assets = [(row[2], row[8]) for row in cg_rows if len(row) > 8]
+    assert ("BTC", "Demo Spot") in cg_assets, (
+        "Preserved non-derivatives BTC Demo Spot CG entry missing; "
+        "test_spot_exchange_lots_preserved cannot verify the dedup does not over-remove."
+    )
+    assert ("ETH", "Demo Spot") in cg_assets, (
+        "Preserved non-derivatives ETH Demo Spot CG entry missing; "
+        "test_spot_exchange_lots_preserved cannot verify the dedup does not over-remove."
+    )
+
+
+class TestByBitCase1Trace:
+    """Case A (2025-01-12, USDT, Demo Futures): futures Profit + fee disposal separation."""
 
     def test_profit_in_derivatives_sheet(self) -> None:
         """+140.18 EUR futures profit routes to Derivatives P&L; the 2.44 EUR fee-disposal lot is removed by the dedup.
 
-        The fee-disposal lot was Spot under the legacy classifier; after the
-        dedup removes its CG counterpart, the OGR Loss row reclassifies to
-        Derivatives (see ``test_fee_disposal_reclassifies_to_derivatives``).
-
-        Per Task 7 of the derivatives-th-label-cg-dedup plan: the 2.44 EUR
-        fee-disposal CG lot is removed because its TH event carries
-        Label="Futures fee" (TH line 205 crypto_withdrawal Futures fee
-        4,27180510 USDT ByBit). The +140.18 EUR OGR Profit row is UNCHANGED
-        by the dedup (its TH event is a crypto_deposit, filtered out by the
-        Task 4 scanner's crypto_withdrawal-only filter) and still routes to
-        derivatives_entries. This test asserts ONLY the Profit routing; the
-        fee-disposal reclassification is covered by
-        ``test_fee_disposal_reclassifies_to_derivatives`` and
-        ``test_no_fee_disposal_lot_in_capital_entries``.
+        Golden value (140.18) recomputed from the synthetic OGR CSV row 4:
+        ``Value (EUR)`` column = 140.18, ``Type`` = Profit. The fee-disposal
+        lot (2.44 EUR gain, CG row 4) is removed because its TH event carries
+        Tag="Futures fee"; its -4.17 EUR OGR Loss counterpart reclassifies to
+        Derivatives (covered by ``test_fee_disposal_reclassifies_to_derivatives``).
         """
         _assert_csv_contains_value(_ogr_path(), "140,18")
         _assert_csv_contains_value(_ogr_path(), "4,17")
@@ -196,20 +212,21 @@ class TestByBitCase1Trace:
             f"({_CASE1_DATE}, {_ASSET}, {_PLATFORM}); got "
             f"{[(e.date, e.asset, e.platform, e.event_type, e.pnl_eur) for e in report.derivatives_entries]}"
         )
+        # CSV arithmetic: OGR row 4 Value(EUR) = 140.18 (Profit type).
         profit_total = sum((e.pnl_eur for e in profit_matches), start=Decimal("0"))
         assert profit_total == Decimal("140.18"), (
-            f"Expected +140.18 EUR PROFIT in derivatives_entries for Case 1, got {profit_total}. "
+            f"Expected +140.18 EUR PROFIT in derivatives_entries for Case A, got {profit_total}. "
             "Entries: "
             f"{[(e.event_type, e.pnl_eur) for e in profit_matches]}"
         )
 
     def test_no_fee_disposal_lot_in_capital_entries(self) -> None:
-        """capital_entries has no entry with disposal_date=2025-01-12, asset=USDT, wallet=ByBit after dedup.
+        """capital_entries has no entry for (2025-01-12, USDT, Demo Futures) after dedup.
 
-        The 2.44 EUR Futures fee CG lot (CG line 19: amount 4.27180510,
-        proceeds 4.17, gain 2.44) is removed by the dedup because its TH
-        event (TH line 205: crypto_withdrawal Futures fee 4.27180510 USDT
-        ByBit at 15:22) carries Label="Futures fee".
+        The 2.44 EUR Futures fee CG lot (CG row 4: amount 4.27180510, proceeds
+        4.17, gain 2.44) is removed by the dedup because its TH event (TH row 4:
+        crypto_withdrawal Futures fee 4.27180510 USDT Demo Futures at 15:22)
+        carries Tag="Futures fee".
         """
         _assert_csv_contains_value(_cg_path(), "2,44")
 
@@ -224,13 +241,19 @@ class TestByBitCase1Trace:
             "Expected NO Crypto Gains entry for "
             f"({_CASE1_DATE}, {_ASSET}, {_PLATFORM}) after the derivatives CG dedup "
             "(the 2.44 EUR Futures fee CG lot should be removed because its TH "
-            "event carries Label='Futures fee'). "
+            "event carries Tag='Futures fee'). "
             f"Got {len(case1_capital)} entries: "
             f"{[(e.gain_loss_eur, e.holding_period) for e in case1_capital]}"
         )
 
     def test_no_derivatives_value_in_capital_entries(self) -> None:
-        """No CryptoCapitalGainEntry in capital_entries equals the legacy 136.01 EUR mixed value."""
+        """No CryptoCapitalGainEntry in capital_entries equals the legacy 136.01 EUR mixed value.
+
+        Golden value (136.01) recomputed from the synthetic OGR CSV: Case A
+        flag-OFF mixes OGR Profit 140.18 + OGR Loss -4.17 = 136.01 EUR (asserted
+        green in TestBackwardCompatTrace). Under flag-ON this value must NOT
+        appear in capital_entries (the profit routes to derivatives_entries).
+        """
         _assert_csv_contains_value(_ogr_path(), "140,18")
 
         report = _load_with_separation(separate_derivatives=True)
@@ -247,15 +270,18 @@ class TestByBitCase1Trace:
         )
 
     def test_fee_disposal_reclassifies_to_derivatives(self) -> None:
-        """The -4.17 EUR OGR Loss row (Case 1 Futures fee) reclassifies to Derivatives after the dedup.
+        """The -4.17 EUR OGR Loss row (Case A Futures fee) reclassifies to Derivatives after the dedup.
 
-        Per Task 7: with the 2.44 EUR Futures fee CG lot removed by the dedup
-        (TH line 205 carries Label='Futures fee'), the OGR classifier at
-        ``classification.py:506-509`` sees ``cg_matches == 0`` for the -4.17 EUR
-        OGR Loss row at OGR line 9 and returns ``Derivatives(reason='OGR Loss
-        with no CG counterpart - derivatives realization')`` instead of the old
-        Spot classification. So ``derivatives_entries`` for Case 1 contains a
-        LOSS entry totalling -4.17 EUR.
+        With the 2.44 EUR Futures fee CG lot removed by the dedup (TH row 4
+        carries Tag='Futures fee'), the OGR classifier sees ``cg_matches == 0``
+        for the -4.17 EUR OGR Loss row (OGR row 5) and classifies it as
+        Derivatives (not Spot, not Ambiguous). So ``derivatives_entries`` for
+        Case A contains a LOSS entry totalling -4.17 EUR.
+
+        Note: because ``Demo Futures`` is unmapped, the row also carries
+        ``review_required=True`` from the platform-mapping signal; this test
+        asserts the classification KIND (LOSS present, not Ambiguous) via the
+        OGR-handler log message rather than the review flag.
         """
         _assert_csv_contains_value(_ogr_path(), "4,17")
         _assert_csv_contains_value(_cg_path(), "2,44")
@@ -271,56 +297,48 @@ class TestByBitCase1Trace:
             and e.event_type == DerivativesEventType.LOSS
         ]
         assert loss_derivatives, (
-            "Expected the Case 1 -4.17 EUR OGR Loss row to reclassify as a Derivatives "
+            "Expected the Case A -4.17 EUR OGR Loss row to reclassify as a Derivatives "
             "LOSS entry after the dedup (its CG counterpart was removed). Got: "
             f"{[(e.event_type, e.pnl_eur) for e in report.derivatives_entries]}"
         )
+        # CSV arithmetic: OGR row 5 Value(EUR) = 4.17 (Loss type, negative sign on routing).
         loss_total = sum((e.pnl_eur for e in loss_derivatives), start=Decimal("0"))
         assert loss_total == Decimal("-4.17"), (
-            "Expected sum of Case 1 LOSS derivatives_entries.pnl_eur to be -4.17 EUR "
+            "Expected sum of Case A LOSS derivatives_entries.pnl_eur to be -4.17 EUR "
             "(the Futures fee OGR row, reclassified from Spot to Derivatives because its "
             "CG counterpart was removed). "
             f"Got {loss_total}. Entries: "
             f"{[(e.event_type, e.pnl_eur, e.review_required) for e in loss_derivatives]}"
         )
-        # No review flag: the OGR row classifies as clean Derivatives (cg_matches == 0),
-        # not Ambiguous. See ``TestPipelineIntegration.test_ogr_classifies_clean_after_dedup``.
-        flagged = [e for e in loss_derivatives if e.review_required]
-        assert not flagged, (
-            "Case 1 LOSS derivatives entry must NOT carry review_required=True after dedup "
-            "(classifier sees zero CG counterparts). "
-            f"Flagged: {[(e.event_type, e.pnl_eur, e.review_reason) for e in flagged]}"
-        )
+        # Assert classification is clean Derivatives (NOT Ambiguous). The Ambiguous
+        # classification reason mentions "matches CG disposal" or "mismatch"; a clean
+        # Derivatives routing has an empty classification_reason. The platform-mapping
+        # review_required=True is a separate, expected signal for the unmapped Demo wallet
+        # and must not be conflated with the Ambiguous flag (CRG-016).
+        for entry in loss_derivatives:
+            assert "matches CG disposal" not in entry.review_reason, (
+                "Case A LOSS entry must NOT carry the Ambiguous classification reason "
+                "(cg_matches == 0 after dedup). The only review signal should be the "
+                "unmapped-platform one. "
+                f"review_reason={entry.review_reason!r}"
+            )
 
 
 class TestByBitCase2Trace:
-    """Case 2 (2025-01-13, USDT, ByBit): three OGR Loss rows + ~108 CG lots at the 13:01 timestamp."""
-
-    def setup_method(self) -> None:
-        _skip_if_fixtures_missing()
+    """Case B (2025-01-13, USDT, Demo Futures): three OGR Loss rows + 4 CG lots."""
 
     def test_lots_remain_positive_for_spot_only(self) -> None:
-        """Case 2 CG lots are entirely removed by the dedup; capital_entries has 0 Case 2 rows.
+        """Case B CG lots are entirely removed by the dedup; capital_entries has 0 Case B rows.
 
-        Plan-vs-implementation finding (recorded in Task 7 execution log):
-        the plan predicted only 2 of ~108 CG lots would be removed (Funding
-        fee 0.154 + Futures fee 8.515) and asserted the rest retain positive
-        magnitudes. The actual pipeline removes ALL 109 Case 2 CG lots
-        because the contiguous-range fallback matches the 142.113 Realized
-        gain TH event against the remaining 107 lots at 13:01 (they sum to
-        142.11299953 USDT, within tolerance Decimal("0.00001") * 107 of
-        142.113). Brute-force sliding-window scan on the full 108-lot set
-        (before the Futures fee exact-match consumes one lot) confirms NO
-        contiguous range sums to 142.113; the match only emerges AFTER phase
-        1 removes the Futures fee lot, leaving 107 lots whose entire set is
-        a contiguous range summing within tolerance. The post-dedup Crypto
-        Gains aggregate for Case 2 is 0 EUR (no entries), so this test
-        asserts the computed pipeline output (0 entries) rather than a
-        precomputed positive value.
+        CSV arithmetic (CG rows 5-8): one Funding-fee exact-match lot (0.5 at
+        08:00) plus three contiguous-range lots at 13:01 (1.5 + 1.5 + 2.000025
+        = 5.000025 vs TH Realized 5.000000; delta 0.000025 within tolerance
+        Decimal("0.00001") * 3 = 0.00003). All 4 lots are removed, so no Case B
+        capital entry survives.
         """
-        _assert_csv_contains_value(_ogr_path(), "0,15")
-        _assert_csv_contains_value(_ogr_path(), "8,31")
-        _assert_csv_contains_value(_ogr_path(), "138,73")
+        _assert_csv_contains_value(_ogr_path(), "1,50")
+        _assert_csv_contains_value(_ogr_path(), "2,50")
+        _assert_csv_contains_value(_ogr_path(), "4,00")
 
         report = _load_with_separation(separate_derivatives=True)
 
@@ -330,25 +348,22 @@ class TestByBitCase2Trace:
             if e.disposal_date == _CASE2_DATE and e.asset == _ASSET and e.platform == _PLATFORM
         ]
         assert case2_capital_entries == [], (
-            "Expected NO Crypto Gains entries for Case 2 after the dedup (all 109 "
-            "USDT ByBit lots removed: Funding fee exact, Futures fee exact, plus "
-            "107-lot contiguous range matching 142.113 Realized gain within tolerance). "
+            "Expected NO Crypto Gains entries for Case B after the dedup (all 4 "
+            "USDT Demo Futures lots removed: Funding fee exact + 3-lot contiguous "
+            "range matching the 5.000000 Realized gain within tolerance). "
             f"Got {len(case2_capital_entries)} entries: "
             f"{[(e.gain_loss_eur, e.holding_period) for e in case2_capital_entries]}"
         )
 
     def test_derivatives_lots_removed(self) -> None:
-        """Exactly 109 Case 2 CG lots are removed by the dedup.
+        """Exactly 4 Case B CG lots are removed by the dedup (1 exact + 3 range).
 
-        Breakdown: 1 Funding fee exact + 1 Futures fee exact + 107 Realized
-        gain contiguous range. Per Task 7 verification (read from actual
-        pipeline output via instrumented ``remove_derivatives_flagged_lots``):
-        the TH scanner finds 3 derivatives events for Case 2 (Funding fee
-        0.154 at 08:00, Futures fee 8.515 at 13:01, Realized gain 142.113 at
-        13:01). Phase 1 exact-match consumes 1 lot for Funding fee and 1 lot
-        for Futures fee. Phase 2 contiguous-range fallback matches the
-        remaining 107 lots at 13:01 (sum 142.11299953 within tolerance
-        Decimal("0.00001") * 107) for the Realized gain event.
+        Breakdown: 1 Funding fee exact (0.5) + 3 Realized gain contiguous range
+        (1.5 + 1.5 + 2.000025 = 5.000025 vs TH Realized 5.000000 within
+        tolerance). The synthetic fixture was designed so phase-2 is
+        load-bearing: the range lots sum within tolerance but NOT exactly equal
+        to the TH Realized amount (delta 0.000025), so removing the tolerance
+        window would break the match.
         """
         import tax_reporting.application.crypto.derivatives_dedup as dd_mod
 
@@ -377,76 +392,113 @@ class TestByBitCase2Trace:
         finally:
             dd_mod.remove_derivatives_flagged_lots = orig_remove
 
-        assert removed_count["value"] == 109, (
-            "Expected exactly 109 Case 2 CG lots removed by the dedup "
-            "(1 Funding fee exact + 1 Futures fee exact + 107 Realized gain range). "
+        # CSV arithmetic: CG rows 5-8 = 4 Case B lots (0.5 + 1.5 + 1.5 + 2.000025).
+        assert removed_count["value"] == 4, (
+            "Expected exactly 4 Case B CG lots removed by the dedup "
+            "(1 Funding fee exact + 3 Realized gain range). "
             f"Got {removed_count['value']}."
         )
 
-    def test_spot_exchange_lots_preserved(self) -> None:
-        """A non-derivatives ByBit CG entry elsewhere in the fixture is preserved by the dedup.
+    def test_range_removal_count_load_bearing(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Phase-2 contiguous-range removal count is >= 2 (proves the fallback is load-bearing).
 
-        The Case 2 fixture has no SUI/CARV CG entries on 2025-01-13 (those
-        assets were acquired, not disposed, in the USDT->SUI and USDT->CARV
-        exchanges). To verify the dedup does not over-remove, this test
-        picks a non-derivatives CG entry on a different date and asserts it
-        survives the dedup unchanged. Fixture: 2025-01-26 SOL ByBit
-        gain=1.95 EUR (TH Label empty, not in the derivatives set).
+        Observes the per-lot removal INFO logs from ``derivatives_dedup`` (each
+        removal logs ``match_type=exact`` or ``match_type=range``). For Case B
+        the synthetic fixture produces 1 exact + 3 range removals; asserting
+        >= 2 range removals proves phase-2 matched a multi-lot window within
+        tolerance. A lot set that summed exactly to the TH Realized amount
+        would defeat the test (Design Invariant #2).
+        """
+        with caplog.at_level(logging.INFO, logger="tax_reporting.application.crypto.derivatives_dedup"):
+            _load_with_separation(separate_derivatives=True)
+
+        removal_records = [
+            r
+            for r in caplog.records
+            if r.name == "tax_reporting.application.crypto.derivatives_dedup"
+            and "Removed derivatives-flagged CG lot" in r.getMessage()
+        ]
+        range_records = [
+            r for r in removal_records if "match_type=range" in r.getMessage()
+        ]
+        # CSV arithmetic: 3 range lots (1.5 + 1.5 + 2.000025) match the 5.000000 TH Realized.
+        assert len(range_records) >= 2, (
+            "Expected >= 2 contiguous-range (match_type=range) removals proving phase-2 "
+            "is load-bearing; the synthetic Case B fixture produces 3 range removals. "
+            f"Got {len(range_records)} range removals out of {len(removal_records)} total. "
+            f"Records: {[r.getMessage() for r in removal_records]}"
+        )
+
+    def test_spot_exchange_lots_preserved(self) -> None:
+        """The two synthetic non-derivatives spot entries survive the dedup identically in flag-on and flag-off.
+
+        Replaces the volatile 2025-01-26 SOL ByBit entry (which broke under the
+        "Transfer fees" Koinly toggle). The synthetic fixture's preserved
+        non-derivatives entries are (2025-03-10, BTC, Demo Spot) gain 2.00 and
+        (2025-03-10, ETH, Demo Spot) gain 3.50 (CG rows 12-13). Both must
+        survive the dedup unchanged in flag-on AND flag-off with identical
+        gains, and the count of non-derivatives Demo Spot entries must be
+        unchanged between paths (count_on == count_off == 2).
+
+        CSV arithmetic (CG rows 12-13): BTC gain 2.00, ETH gain 3.50
+        (proceeds 12.00 - cost 10.00 = 2.00; proceeds 9.50 - cost 6.00 = 3.50).
         """
         report_on = _load_with_separation(separate_derivatives=True)
         report_off = _load_with_separation(separate_derivatives=False)
 
-        # Pick a known preserved spot CG entry: 2025-01-26 SOL ByBit.
-        preserved_key = ("2025-01-26", "SOL", "ByBit")
-        on_match = [
+        on_preserved = [
             e
             for e in report_on.capital_entries
-            if (e.disposal_date, e.asset, e.platform) == preserved_key
+            if e.disposal_date == _PRESERVED_DATE and e.platform == _PRESERVED_PLATFORM
         ]
-        off_match = [
+        off_preserved = [
             e
             for e in report_off.capital_entries
-            if (e.disposal_date, e.asset, e.platform) == preserved_key
+            if e.disposal_date == _PRESERVED_DATE and e.platform == _PRESERVED_PLATFORM
         ]
-        assert on_match, (
-            "Expected at least one 2025-01-26 SOL ByBit CG entry in the flag-on path "
-            "(a non-derivatives spot disposal preserved by the dedup). "
-            f"flag_on={len(on_match)}"
+        assert len(on_preserved) == 2, (
+            "Expected exactly 2 preserved non-derivatives Demo Spot entries (BTC + ETH) "
+            "in the flag-on path. "
+            f"flag_on={len(on_preserved)}: {[(e.asset, e.gain_loss_eur) for e in on_preserved]}"
         )
-        assert off_match, (
-            "Expected at least one 2025-01-26 SOL ByBit CG entry in the flag-off path. "
-            f"flag_off={len(off_match)}"
+        assert len(off_preserved) == 2, (
+            "Expected exactly 2 preserved non-derivatives Demo Spot entries (BTC + ETH) "
+            "in the flag-off path. "
+            f"flag_off={len(off_preserved)}: {[(e.asset, e.gain_loss_eur) for e in off_preserved]}"
         )
-        on_gain = on_match[0].gain_loss_eur
-        off_gain = off_match[0].gain_loss_eur
-        assert on_gain == off_gain, (
-            "2025-01-26 SOL ByBit CG gain must be identical between flag-on and flag-off "
-            "(the dedup must not modify non-derivatives entries). "
-            f"flag_on={on_gain}, flag_off={off_gain}"
+
+        def _by_asset(entries):
+            return {e.asset: e.gain_loss_eur for e in entries}
+
+        on_gains = _by_asset(on_preserved)
+        off_gains = _by_asset(off_preserved)
+        # CSV arithmetic: BTC gain = 12.00 - 10.00 = 2.00; ETH gain = 9.50 - 6.00 = 3.50.
+        assert on_gains == {"BTC": Decimal("2.00"), "ETH": Decimal("3.50")}, (
+            "Flag-on preserved entry gains drifted from the synthetic CSV values. "
+            f"Got {on_gains}."
+        )
+        assert off_gains == {"BTC": Decimal("2.00"), "ETH": Decimal("3.50")}, (
+            "Flag-off preserved entry gains drifted from the synthetic CSV values. "
+            f"Got {off_gains}."
+        )
+        assert on_gains == off_gains, (
+            "Preserved non-derivatives entry gains must be identical between flag-on and "
+            "flag-off (the dedup must not modify non-derivatives entries). "
+            f"flag_on={on_gains}, flag_off={off_gains}"
         )
 
     def test_derivatives_total_matches_ogr_net(self) -> None:
-        """Sum of Case 2 derivatives_entries.pnl_eur equals the OGR net (-147.19 EUR = 0.15 + 8.31 + 138.73).
+        """Sum of Case B derivatives_entries.pnl_eur equals the OGR net (-8.00 EUR).
 
-        Plan-vs-implementation note (Task 7 execution log): the plan claimed
-        the 142.113 Realized gain has no contiguous-range CG counterpart
-        (brute-force scan on the full 108-lot set). Reproduced here against
-        the fixture: scanning all 108 CG rows at (13/01/2025 13:01, USDT,
-        ByBit) sorted by acquisition_date, no contiguous range sums to
-        142.113 within tolerance Decimal("0.00001") * range_size. However,
-        the pipeline's phase-1 exact match consumes the Futures fee lot
-        (amount 8.51539785) first, leaving 107 lots that sum to
-        142.11299953 USDT (within tolerance of 142.113), so phase 2
-        matches ALL 107 remaining lots as the contiguous range for the
-        142.113 Realized gain. The OGR Loss rows still route to
-        derivatives_entries regardless (independent of CG removal), so
-        this -147.19 EUR assertion holds; the Crypto Gains aggregate is
-        0 EUR (no Case 2 rows survive), which is asserted by
-        ``test_lots_remain_positive_for_spot_only``.
+        CSV arithmetic: OGR rows 6-8 (Case B Loss rows) Value(EUR) column:
+        1.50 + 2.50 + 4.00 = 8.00 EUR, negated on routing = -8.00 EUR.
+        The three OGR Loss rows route to derivatives_entries regardless of CG
+        removal; the Crypto Gains aggregate is 0 EUR (no Case B rows survive),
+        asserted by ``test_lots_remain_positive_for_spot_only``.
         """
-        _assert_csv_contains_value(_ogr_path(), "0,15")
-        _assert_csv_contains_value(_ogr_path(), "8,31")
-        _assert_csv_contains_value(_ogr_path(), "138,73")
+        _assert_csv_contains_value(_ogr_path(), "1,50")
+        _assert_csv_contains_value(_ogr_path(), "2,50")
+        _assert_csv_contains_value(_ogr_path(), "4,00")
 
         report = _load_with_separation(separate_derivatives=True)
 
@@ -456,22 +508,32 @@ class TestByBitCase2Trace:
             if e.date == _CASE2_DATE and e.asset == _ASSET and e.platform == _PLATFORM
         ]
         total = sum((e.pnl_eur for e in case2_derivatives), start=Decimal("0"))
-        assert total == Decimal("-147.19"), (
-            "Expected sum of Case 2 derivatives_entries.pnl_eur to be -147.19 EUR "
-            "(the OGR Loss rows 0.15 + 8.31 + 138.73 with negative sign), "
+        # CSV arithmetic: -(1.50 + 2.50 + 4.00) = -8.00 EUR.
+        assert total == Decimal("-8.00"), (
+            "Expected sum of Case B derivatives_entries.pnl_eur to be -8.00 EUR "
+            "(the OGR Loss rows 1.50 + 2.50 + 4.00 with negative sign), "
             f"got {total}. Entries: "
             f"{[(e.event_type, e.pnl_eur) for e in case2_derivatives]}"
         )
 
 
 class TestBackwardCompatTrace:
-    """Flag-off path reproduces the Task 1 golden characterization values."""
-
-    def setup_method(self) -> None:
-        _skip_if_fixtures_missing()
+    """Flag-off path reproduces the legacy mixed Crypto Gains value for Case A."""
 
     def test_flag_off_matches_golden_values(self) -> None:
-        """With separate_derivatives_reporting=False, Case 1 reproduces 136.01 EUR and Case 2 reproduces -26.64 EUR."""
+        """With separate_derivatives_reporting=False, Case A reproduces 136.01 EUR.
+
+        Golden value (136.01) recomputed from the synthetic OGR CSV: Case A
+        flag-OFF mixes the OGR Profit 140.18 (row 4) with the OGR Loss -4.17
+        (row 5) into a single Crypto Gains entry: 140.18 + (-4.17) = 136.01.
+
+        Note: the real-fixture Case 2 backward-compat value (-26.64 EUR) does
+        NOT reproduce against the synthetic fixture because the synthetic Case
+        B CG lots all have gain 0.00, so the flag-OFF direction-override output
+        is filtered by the PT-C-028 materiality filter (|gain| < 1 EUR). The
+        Case A 136.01 EUR guard is the sole positive backward-compat
+        characterization (preserved per Task 6's note).
+        """
         _assert_csv_contains_value(_ogr_path(), "140,18")
 
         report = _load_with_separation(separate_derivatives=False)
@@ -482,30 +544,13 @@ class TestBackwardCompatTrace:
             if e.disposal_date == _CASE1_DATE and e.asset == _ASSET and e.platform == _PLATFORM
         ]
         assert len(case1_matches) == 1, (
-            "Expected exactly one Crypto Gains entry for Case 1 under the legacy path, "
+            "Expected exactly one Crypto Gains entry for Case A under the legacy path, "
             f"got {len(case1_matches)}"
         )
+        # CSV arithmetic: OGR Profit 140.18 + OGR Loss -4.17 = 136.01 EUR.
         assert case1_matches[0].gain_loss_eur == Decimal("136.01"), (
-            "Case 1 backward-compat drift: expected 136.01 EUR (mixed Profit + fee) in "
+            "Case A backward-compat drift: expected 136.01 EUR (mixed Profit + fee) in "
             f"Crypto Gains, got {case1_matches[0].gain_loss_eur} EUR"
-        )
-
-        case2_matches = [
-            e
-            for e in report.capital_entries
-            if e.disposal_date == _CASE2_DATE and e.asset == _ASSET and e.platform == _PLATFORM
-        ]
-        assert len(case2_matches) == 1, (
-            "Expected exactly one Crypto Gains entry for Case 2 under the legacy path, "
-            f"got {len(case2_matches)}"
-        )
-        # The legacy direction-override path flips each CG lot's sign (preserving
-        # magnitude) when OGR reports a net Loss for the same key, so the 109
-        # lots that summed to +26.64 EUR pre-override become -26.64 EUR after.
-        assert case2_matches[0].gain_loss_eur == Decimal("-26.64"), (
-            "Case 2 backward-compat drift: expected -26.64 EUR in Crypto Gains "
-            "(direction override preserves CG magnitude; -147.19 is the OGR row "
-            f"total, NOT the override output), got {case2_matches[0].gain_loss_eur} EUR"
         )
 
         # No derivatives_entries should be populated under the legacy path.
@@ -517,54 +562,29 @@ class TestBackwardCompatTrace:
 
 
 class TestByBitCase3Trace:
-    """Case 3 (2025-01-24, USDT, ByBit): derivatives CG dedup via TH Labels.
+    """Case C (2025-01-24, USDT, Demo Futures): derivatives CG dedup via TH Tags.
 
     This case captures the bug described in
     ``docs/history/plans/2026-06-14-derivatives-th-label-cg-dedup.md``: Koinly emits
     the SAME disposal into BOTH the OGR report (as Loss rows summing to
-    -39.62 EUR) AND the CG report (as 3 FIFO lots summing to +20.24 EUR gain).
-    The fix is a CG-side filter that scans TH rows for derivatives Labels
-    (Funding fee / Futures fee / Realized gain) and removes matching CG lots
-    before the OGR classifier runs, so the disposal is reported once (in
-    Derivatives P&L) rather than twice.
+    -39.62 EUR) AND the CG report (as 3 FIFO lots, all gain 0.00 in the
+    synthetic fixture). The fix is a CG-side filter that scans TH rows for
+    derivatives Tags (Funding fee / Futures fee / Realized gain) and removes
+    matching CG lots before the OGR classifier runs, so the disposal is
+    reported once (in Derivatives P&L) rather than twice.
 
-    These tests are RED by design until Task 5 wires the dedup into
-    ``load_koinly_crypto_report``. Expected post-fix state per the plan:
-
-      - capital_entries: no row for (2025-01-24, USDT, ByBit)
-        (the 3 CG lots removed because their TH events carry derivatives Labels)
-      - derivatives_entries: aggregated row for (2025-01-24, USDT, ByBit, LOSS)
-        with total pnl -39.62 EUR and review_required=False (no Ambiguous flag
-        because the OGR classifier now sees zero CG counterparts for these rows)
-      - logger.info: one per removed CG lot (3 total), each containing the
-        disposal date, asset, wallet, amount, and matching TH Label
-        (audit-traceable per Design Invariant 8).
-      - logger.warning: a single aggregate summary line covering all
-        removals, surplus lots, and malformed-input lots for the run, per
-        Design Invariant 15 (per-lot removals are INFO to avoid warning
-        floods at scale; the aggregate preserves the CLAUDE.md
-        "data-loss conditions logged at warning+" signal).
-
-    Source data trace (verified 2026-06-14 against the koinly2025 fixtures):
-      - TH line 450: 2025-01-24 20:00:00 crypto_withdrawal Funding fee 0.08838575 USDT ByBit
-      - TH line 452: 2025-01-24 23:40:53 crypto_withdrawal Futures fee 0.41424953 USDT ByBit
-      - TH line 453: 2025-01-24 23:40:53 crypto_withdrawal Realized gain 40.75540000 USDT ByBit
-      - OGR lines 42-44: 2025-01-24 USDT Loss rows 0.08 + 0.40 + 39.14 = -39.62 EUR
-      - CG lines 162, 164, 165: 2025-01-24 USDT ByBit lots (0.08, 0.40, 39.14 EUR proceeds)
+    Source data trace (synthetic fixture CSVs):
+      - TH row 8: 2025-01-24 20:00:00 crypto_withdrawal Funding fee 0.08838575 USDT Demo Futures
+      - TH row 9: 2025-01-24 23:40:00 crypto_withdrawal Futures fee 0.41424953 USDT Demo Futures
+      - TH row 10: 2025-01-24 23:40:00 crypto_withdrawal Realized gain 40.75540000 USDT Demo Futures
+      - OGR rows 9-11: 2025-01-24 USDT Loss rows 0.08 + 0.40 + 39.14 = -39.62 EUR
+      - CG rows 9-11: 2025-01-24 USDT Demo Futures lots (0.08, 0.40, 39.14 EUR proceeds, gain 0.00)
     """
 
-    def setup_method(self) -> None:
-        _skip_if_fixtures_missing()
-
     def test_derivatives_th_events_identified(self) -> None:
-        """TH scanner identifies 3 derivatives events on 2025-01-24 via the config-driven label set.
+        """TH scanner identifies the 3 derivatives events on 2025-01-24 via the config-driven tag set.
 
-        Expected post-fix events (date, asset, wallet, amount, label):
-          - 2025-01-24 USDT ByBit 0.08838575 "Funding fee"
-          - 2025-01-24 USDT ByBit 0.41424953 "Futures fee"
-          - 2025-01-24 USDT ByBit 40.75540000 "Realized gain"
-
-        Guards against future label-vocabulary drift; ``find_derivatives_th_events``
+        Guards against future tag-vocabulary drift; ``find_derivatives_th_events``
         is implemented in ``derivatives_dedup.py``.
         """
         _assert_csv_contains_value(_th_path(), "Funding fee")
@@ -572,12 +592,7 @@ class TestByBitCase3Trace:
         _assert_csv_contains_value(_th_path(), "Realized gain")
 
     def test_no_capital_entries_for_2025_01_24_after_dedup(self) -> None:
-        """capital_entries contains no (2025-01-24, USDT, ByBit) row after the dedup removes the 3 CG lots.
-
-        RED by design: with the current pipeline (no dedup), the 3 CG lots for
-        2025-01-24 USDT ByBit remain in capital_entries (aggregated into a
-        single Crypto Gains row with proceeds 39.62 EUR and gain +20.24 EUR).
-        """
+        """capital_entries contains no (2025-01-24, USDT, Demo Futures) row after the dedup removes the 3 CG lots."""
         _assert_csv_contains_value(_ogr_path(), "0,08")
         _assert_csv_contains_value(_ogr_path(), "0,40")
         _assert_csv_contains_value(_ogr_path(), "39,14")
@@ -595,23 +610,20 @@ class TestByBitCase3Trace:
         assert not case3_capital, (
             "Expected NO Crypto Gains entry for "
             f"({_CASE3_DATE}, {_ASSET}, {_PLATFORM}) after the derivatives CG dedup "
-            "(all 3 CG lots should be removed because their TH events carry derivatives Labels). "
+            "(all 3 CG lots should be removed because their TH events carry derivatives Tags). "
             f"Got {len(case3_capital)} entries: "
             f"{[(e.gain_loss_eur, e.holding_period) for e in case3_capital]}"
         )
 
     def test_derivatives_entries_clean_for_2025_01_24(self) -> None:
-        """derivatives_entries contains a clean LOSS row for (2025-01-24, USDT, ByBit) with total pnl -39.62 EUR.
+        """derivatives_entries contains a LOSS row for (2025-01-24, USDT, Demo Futures) with total pnl -39.62 EUR.
 
-        RED by design: with the current pipeline, the 3 OGR rows are routed to
-        derivatives_entries with review_required=True because the classifier
-        sees their CG counterparts and classifies as Ambiguous. After the dedup
-        removes the CG lots, the classifier sees zero CG counterparts and routes
-        the rows as clean Derivatives with review_required=False.
-
-        Post-fix expected state: one aggregated DerivativesPnLEntry per
-        (date, asset, platform, event_type) tuple, all LOSS type, summing to
-        -39.62 EUR (0.08 + 0.40 + 39.14 EUR with negative sign from OGR Amount).
+        Post-dedup state: one aggregated DerivativesPnLEntry per
+        (date, asset, platform, event_type) tuple, LOSS type, summing to
+        -39.62 EUR. Because ``Demo Futures`` is unmapped, the row carries
+        ``review_required=True`` from the platform-mapping signal; this test
+        asserts the classification KIND (Derivatives LOSS, not Ambiguous) via
+        the review_reason rather than the review flag.
         """
         _assert_csv_contains_value(_ogr_path(), "0,08")
         _assert_csv_contains_value(_ogr_path(), "0,40")
@@ -631,23 +643,27 @@ class TestByBitCase3Trace:
             f"{[(e.date, e.asset, e.platform, e.pnl_eur) for e in report.derivatives_entries]}"
         )
         assert all(e.event_type == DerivativesEventType.LOSS for e in case3_derivatives), (
-            "All Case 3 derivatives entries should be LOSS type. Got: "
+            "All Case C derivatives entries should be LOSS type. Got: "
             f"{[(e.event_type, e.pnl_eur) for e in case3_derivatives]}"
         )
         total = sum((e.pnl_eur for e in case3_derivatives), start=Decimal("0"))
+        # CSV arithmetic: OGR rows 9-11 Value(EUR) = 0.08 + 0.40 + 39.14 = 39.62, negated = -39.62.
         assert total == Decimal("-39.62"), (
-            "Expected sum of Case 3 derivatives_entries.pnl_eur to be -39.62 EUR "
+            "Expected sum of Case C derivatives_entries.pnl_eur to be -39.62 EUR "
             "(the OGR Loss rows 0.08 + 0.40 + 39.14 with negative sign), "
             f"got {total}. Entries: "
             f"{[(e.event_type, e.pnl_eur, e.review_required) for e in case3_derivatives]}"
         )
-        flagged = [e for e in case3_derivatives if e.review_required]
-        assert not flagged, (
-            "No Case 3 derivatives entry should carry review_required=True after the dedup "
-            "(the OGR classifier should see zero CG counterparts and classify as clean "
-            "Derivatives, not Ambiguous). Flagged entries: "
-            f"{[(e.event_type, e.pnl_eur, e.review_reason) for e in flagged]}"
-        )
+        # Assert classification is clean Derivatives (NOT Ambiguous). The unmapped
+        # Demo Futures platform sets review_required=True from the platform-mapping
+        # signal; the Ambiguous classification reason must NOT be present.
+        for entry in case3_derivatives:
+            assert "matches CG disposal" not in entry.review_reason, (
+                "Case C derivatives entry must NOT carry the Ambiguous classification reason "
+                "(cg_matches == 0 after dedup). The only review signal should be the "
+                "unmapped-platform one. "
+                f"review_reason={entry.review_reason!r}"
+            )
 
     def test_removal_logged(self, caplog: pytest.LogCaptureFixture) -> None:
         """Each removed CG lot logs at INFO; exactly one summary WARNING covers the aggregate.
@@ -657,20 +673,18 @@ class TestByBitCase3Trace:
         CLAUDE.md's "Every WARNING must be actionable and non-noisy at scale"
         rule, the dedup does NOT emit per-lot WARNINGs. Each removal logs at
         INFO (audit-traceable: timestamp, asset, wallet, amount, match type,
-        matching TH Label), and exactly one aggregate WARNING per pipeline
+        matching TH Tag), and exactly one aggregate WARNING per pipeline
         run carries the total count, breakdown by match type, and aggregate
-        proceeds and gain removed. The aggregate WARNING is the data-loss
-        audit signal CLAUDE.md requires; per-lot INFO keeps the log readable
-        at the user's disclosed scale (thousands of removals per year).
+        proceeds and gain removed.
 
-        Expected post-fix caplog contents:
-          - 3 INFO records from ``derivatives_dedup`` for the Case 3 lots
+        Expected caplog contents against the synthetic fixture:
+          - 3 INFO records from ``derivatives_dedup`` for the Case C lots
             (Funding fee 0.08838575 USDT at 20:00, Futures fee 0.41424953
             USDT at 23:40, Realized gain 40.75540000 USDT at 23:40).
           - 1 WARNING record from ``derivatives_dedup`` with the summary
             text including the word ``removed`` and a count greater than
             or equal to 3 (the summary covers ALL removals for the year,
-            not just Case 3).
+            not just Case C).
         """
         _assert_csv_contains_value(_th_path(), "Funding fee")
         _assert_csv_contains_value(_th_path(), "Futures fee")
@@ -686,12 +700,12 @@ class TestByBitCase3Trace:
             if e.disposal_date == _CASE3_DATE and e.asset == _ASSET and e.platform == _PLATFORM
         ]
         assert not case3_capital, (
-            "Test precondition failed: Case 3 CG lots were not removed by the dedup; "
+            "Test precondition failed: Case C CG lots were not removed by the dedup; "
             "caplog INFO removal records cannot be present. "
             "Pipeline still produces the old double-counted output."
         )
 
-        # Per-lot INFO records for the 3 Case 3 lots.
+        # Per-lot INFO records for the 3 Case C lots.
         info_records = [r for r in caplog.records if r.levelno == logging.INFO]
         info_text = " ".join(r.getMessage() for r in info_records)
         for needle in (_CASE3_DATE, _ASSET, _PLATFORM):
@@ -706,7 +720,7 @@ class TestByBitCase3Trace:
             )
         for label in ("Funding fee", "Futures fee", "Realized gain"):
             assert label in info_text, (
-                f"Expected INFO removal text to mention matching TH Label {label!r}; "
+                f"Expected INFO removal text to mention matching TH Tag {label!r}; "
                 f"got INFO records: {[r.getMessage() for r in info_records]}"
             )
 
@@ -734,14 +748,11 @@ class TestPipelineIntegration:
     """Pipeline-level integration tests for the derivatives CG dedup wiring.
 
     These tests exercise ``load_koinly_crypto_report`` and
-    ``apply_derivatives_dedup`` end-to-end against the real koinly2025
-    fixtures, verifying the dedup runs at the correct pipeline point
+    ``apply_derivatives_dedup`` end-to-end against the synthetic koinly2025
+    fixture, verifying the dedup runs at the correct pipeline point
     (after validation, before OGR split) and gracefully degrades when
     any of its gates fail.
     """
-
-    def setup_method(self) -> None:
-        _skip_if_fixtures_missing()
 
     def test_dedup_runs_after_validation_before_split(
         self,
@@ -780,9 +791,10 @@ class TestPipelineIntegration:
         monkeypatch.setattr(cr_mod, "apply_derivatives_dedup", spy_dedup)
         monkeypatch.setattr(cr_mod, "_split_ogr_index", spy_split)
 
-        report = _load_with_separation(separate_derivatives=True)
-        if report is None:
-            pytest.skip("load_koinly_crypto_report returned None for koinly2025 fixtures")
+        # The load itself is the act: it must invoke the spied pipeline stages
+        # in the validate -> dedup -> split order. The returned report is not
+        # inspected here (call_order carries the signal under test).
+        _load_with_separation(separate_derivatives=True)
 
         # Validate the three expected stages were called, in order, with no
         # interleaving. Other stages (parsing, FIFO rebuild, aggregation)
@@ -812,10 +824,10 @@ class TestPipelineIntegration:
 
         The pipeline must produce byte-identical output to the predecessor
         plan. The TestBackwardCompatTrace#test_flag_off_matches_golden_values
-        test already covers this for the legacy golden values (Case 1 =
-        136.01 EUR, Case 2 = -26.64 EUR). This test additionally asserts
-        that no derivatives_dedup summary WARNING fires (the dedup short-
-        circuits on the gate before reaching remove_derivatives_flagged_lots).
+        test already covers this for the legacy Case A value (136.01 EUR).
+        This test additionally asserts that no derivatives_dedup summary
+        WARNING fires (the dedup short-circuits on the gate before reaching
+        remove_derivatives_flagged_lots).
         """
         from tax_reporting.application.crypto import derivatives_dedup as dd_mod
 
@@ -828,10 +840,7 @@ class TestPipelineIntegration:
             return original(entries, events)
 
         monkeypatch.setattr(dd_mod, "remove_derivatives_flagged_lots", spy_remove)
-        report = _load_with_separation(separate_derivatives=False)
-
-        if report is None:
-            pytest.skip("load_koinly_crypto_report returned None for koinly2025 fixtures")
+        _load_with_separation(separate_derivatives=False)
 
         assert not invoked, (
             "remove_derivatives_flagged_lots must NOT be invoked when "
@@ -848,7 +857,7 @@ class TestPipelineIntegration:
         ``apply_derivatives_dedup`` short-circuits on the gate check when
         ``transaction_history_file`` is None. No WARNING is emitted from
         the dedup (the gate failure is silent; the missing TH is already
-        surfaced by the pipeline's required-files check at lines 109-128).
+        surfaced by the pipeline's required-files check).
         """
         from tax_reporting.application.crypto.derivatives_dedup import (
             apply_derivatives_dedup,
@@ -861,7 +870,7 @@ class TestPipelineIntegration:
         with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto.derivatives_dedup"):
             result = apply_derivatives_dedup(
                 capital_entries=entries_in,
-                jurisdiction=_build_jurisdiction(separate_derivatives=True),
+                jurisdiction=build_koinly_jurisdiction(separate_derivatives_reporting=True),
                 transaction_history_file=None,
                 year=2025,
             )
@@ -908,7 +917,7 @@ class TestPipelineIntegration:
         with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto.derivatives_dedup"):
             result = apply_derivatives_dedup(
                 capital_entries=entries_in,
-                jurisdiction=_build_jurisdiction(separate_derivatives=True),
+                jurisdiction=build_koinly_jurisdiction(separate_derivatives_reporting=True),
                 transaction_history_file=_th_path(),
                 year=2025,
             )
@@ -929,20 +938,17 @@ class TestPipelineIntegration:
         )
 
     def test_ogr_classifies_clean_after_dedup(self) -> None:
-        """After dedup, the 3 Case 3 OGR rows classify as clean Derivatives (review_required=False).
+        """After dedup, the 3 Case C OGR rows classify as clean Derivatives (not Ambiguous).
 
         With the dedup removing the 3 CG counterparts for 2025-01-24 USDT
-        ByBit, the OGR classifier sees zero CG matches and routes the
-        OGR rows as clean Derivatives (cg_matches == 0) instead of
-        Ambiguous. This is the same contract as
-        ``TestByBitCase3Trace#test_derivatives_entries_clean_for_2025_01_24``
-        but expressed at the integration level: assert the
-        ``derivatives_entries`` field carries the LOSS row with
-        review_required=False.
+        Demo Futures, the OGR classifier sees zero CG matches and routes the
+        OGR rows as clean Derivatives (cg_matches == 0) instead of Ambiguous.
+        Because ``Demo Futures`` is unmapped, the row carries
+        review_required=True from the platform-mapping signal; this test
+        asserts the classification KIND (Derivatives LOSS present, review_reason
+        has no Ambiguous text) rather than the review flag.
         """
         report = _load_with_separation(separate_derivatives=True)
-        if report is None:
-            pytest.skip("load_koinly_crypto_report returned None for koinly2025 fixtures")
 
         case3_derivatives = [
             e
@@ -955,20 +961,20 @@ class TestPipelineIntegration:
             "All derivatives_entries: "
             f"{[(e.date, e.asset, e.platform, e.pnl_eur) for e in report.derivatives_entries]}"
         )
-        flagged = [e for e in case3_derivatives if e.review_required]
-        assert not flagged, (
-            "No Case 3 derivatives entry should carry review_required=True after the dedup "
-            "(the OGR classifier should see zero CG counterparts and classify as clean "
-            "Derivatives, not Ambiguous). Flagged entries: "
-            f"{[(e.event_type, e.pnl_eur, e.review_reason) for e in flagged]}"
-        )
+        for entry in case3_derivatives:
+            assert "matches CG disposal" not in entry.review_reason, (
+                "No Case C derivatives entry should carry the Ambiguous classification reason "
+                "after the dedup (the OGR classifier should see zero CG counterparts and "
+                "classify as clean Derivatives, not Ambiguous). "
+                f"review_reason={entry.review_reason!r}"
+            )
 
 
 class TestDerivativesE2E:
     """E2E characterization for the 10-column Derivatives P&L sheet layout.
 
     Covers Task 5 of the 2026-06-15 derivatives P&L columns plan: the
-    example data run (koinly2025 fixtures, separate_derivatives_reporting=True)
+    synthetic data run (koinly2025 fixture, separate_derivatives_reporting=True)
     must render the Derivatives P&L tab with a 10-column header plus a row-2
     detail line carrying the constant Annex hint, Operation code, and Legal
     Category fields, and populate operator_country for every derivatives row
@@ -983,13 +989,10 @@ class TestDerivativesE2E:
     _EXPECTED_NUM_COLUMNS = 10
     _HEADER_ROW = 3
 
-    def setup_method(self) -> None:
-        _skip_if_fixtures_missing()
-
     def test_derivatives_sheet_has_ten_columns(self) -> None:
         """The Derivatives P&L sheet has 10 populated header cells in row 3.
 
-        Renders the production sheet from the real koinly2025 report and
+        Renders the production sheet from the synthetic koinly2025 report and
         counts populated header cells in row 3 (column population per
         development_lessons.md #96, not hardcoded value exclusions). The
         last populated header cell must sit at column 10 and read "Review".
@@ -999,8 +1002,6 @@ class TestDerivativesE2E:
         constants across all derivatives rows.
         """
         report = _load_with_separation(separate_derivatives=True)
-        if report is None:
-            pytest.skip("load_koinly_crypto_report returned None for koinly2025 fixtures")
 
         wb = openpyxl.Workbook()
         write_derivatives_sheet(wb, report)
@@ -1026,20 +1027,18 @@ class TestDerivativesE2E:
     def test_derivatives_rows_operator_country_is_valid_or_unknown(self) -> None:
         """Every derivatives row's operator_country is a valid Tabela X code or 'UNKNOWN'.
 
-        For the example data run, ``resolve_operator_origin`` populates
+        For the synthetic data run, ``resolve_operator_origin`` populates
         ``operator_country`` from the production platform map. Valid values
         are either an ISO 3166-1 alpha-2 code in the Portuguese Tabela X
         list (validated via the production ``_is_valid_tabela_x_country``
         helper) or the literal sentinel ``"UNKNOWN"`` for unmapped
-        platforms. When ``operator_country == "UNKNOWN"``, the row must
+        platforms. The synthetic ``Demo Futures`` wallet is deliberately
+        unmapped, so ``operator_country == "UNKNOWN"`` and the row must
         carry review_required=True (Task 2 wiring), so the Review cell at
         column 10 starts with ``"YES:"``. This is a structural assertion
-        that survives fixture platform changes (the test does not depend
-        on a specific fixture row being unmapped).
+        that survives fixture platform changes.
         """
         report = _load_with_separation(separate_derivatives=True)
-        if report is None:
-            pytest.skip("load_koinly_crypto_report returned None for koinly2025 fixtures")
 
         assert report.derivatives_entries, (
             "Expected at least one derivatives entry from the koinly2025 fixture; "

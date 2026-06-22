@@ -27,7 +27,7 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 - When an optional field from external input is absent, use a type-safe sentinel (e.g. `"0"` for numeric fields) rather than `""`. See `coding_guidelines.md` #4.
 - Data-loss conditions (unmatched items, dropped records) must be logged at warning+, never debug. See `coding_guidelines.md` #5.
 - All-or-nothing validation for required file sets: none present -> skip gracefully; partial set -> raise `FileProcessingError` listing missing files; all present -> proceed. See `development_lessons.md` #51.
-- Verification/hygiene guards that read a manifest/patterns file must fail closed when the manifest is absent: `grep -f <missing>` exits non-zero, so a `cmd && echo BAD || echo GOOD` form reports GOOD (a false pass) exactly when the guard cannot run, which is the default in CI when the manifest is gitignored. See `development_lessons.md` #126.
+- Verification/hygiene guards that read a manifest/patterns file must fail closed when the manifest is absent (`grep -f <missing>` exits non-zero, so `cmd && echo BAD || echo GOOD` false-passes when the guard cannot run, the default in CI when the manifest is gitignored). See `development_lessons.md` #126.
 - Validation that depends on complete state runs post-aggregation, not per-row. Mid-accumulation state can be temporarily invalid (e.g. reversal arrives before dividend).
 - When reusing a validation/security pattern, inherit the guards (symlink rejection, size limit) but recalibrate exception handling (degrade vs raise) to the cost of silent failure at the new call site. See `development_lessons.md` #105.
 - Unmatched items from matching algorithms must never be silently discarded; apply an explicit fallback and log a warning.
@@ -81,6 +81,7 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 - The Platform Assumptions tab is a complete manifest of ALL platforms. Do not filter to only platforms with assumption text. Use `platform_review_required=True` (plus red fill, sorted first) to highlight platforms needing resolution; keep all others visible.
 - Tests verifying "YES:"/"NO" rendering must set `review_required` / `review_reason` explicitly on the fixture entry; do not delegate to `origin.review_required`. See lesson #42.
 - When a downstream consumer synthesises a `review_reason` from a flag that multiple distinct upstream cases can set (e.g., `review_required=True` from unknown-platform vs temporal-validity), branch on the discriminator (sentinel/enum) the upstream sets rather than collapsing cases into one message. RED tests must exercise each cause. See lesson #117.
+- When migrating a test off a real fixture to synthetic data whose unmapped identifiers flip an orthogonal signal (e.g. `review_required=True` from unmapped synthetic platforms), re-scope the assertion to the behavior under test (classification kind / routing path), not the incidental flag value; do not delete the load-bearing assertion. See lesson #143.
 - Crypto capital gains statistics must be computed via `CryptoCapitalGainStats.from_entries()` and rendered as the "1b. CAPITAL GAINS STATISTICS" section. Grand total EUR amounts come from the full entries list, not per-period subtotals (so unrecognized holding periods don't produce inconsistent statistics).
 - Token origin resolution uses `TokenOriginResolver` and implicit `(date, asset, wallet)` correlation with the Koinly transaction history. The resolver never guesses; unmatched rows return `unknown` (blank in the workbook). Do not reintroduce same-day disposal-context matching.
 - Token origin resolution supports LP operations and airdrops: `AIRDROP`, `LIQUIDITY_WITHDRAWAL`, `LIQUIDITY_PROVISION`, `DIRECT_PURCHASE`.
@@ -95,6 +96,8 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 - Cross-asset FIFO carry-over matches by TH transaction identifier, never by day-level date alone.
 - Any excluded asset yielding zero FIFO output must log at warning+.
 - Crypto derivatives/futures liquidations reporting losses are disposals of collateral even when liquidating at a loss; this is correct tax treatment (alienação onerosa), not an error. See `development_lessons.md` #67.
+- Crypto tests MUST read committed synthetic data under `resources/source/example/koinly<year>_<scenario>/`; never reference gitignored personal data. See `crypto_implementation_guidelines.md`.
+
 
 ### 4. Agent Workflow Rules
 
@@ -104,10 +107,10 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 - Test string sanitization/validation/parsing for edge cases: empty, whitespace-only, multi-byte, control chars, multi-char prefixes, padded. See `development_lessons.md` #6.
 - Test error paths including double-failure (e.g. aggregation fails AND workbook.close fails). See `development_lessons.md` #6.
 - Examine existing source data files (`resources/source/koinly*/`) directly before asking for samples. Use Glob/Read.
-- Commits are allowed by default; never push (or open PRs) without explicit instruction (per global Git Push Policy). `~/Projects/myrepos` personal repos stay local-only.
+- Commits allowed by default; never push/PR without instruction (Git Push Policy). `~/Projects/myrepos` stay local-only.
 - Always use `uv run pytest`, not `uvx pytest`.
-- `valid_from` = audit-only; `service_start_date` = matching. See `development_lessons.md` #17.
-- Never write to `docs/review/` (singular); convention is `docs/history/reviews/` (plural). See `development_lessons.md` #95.
+- `valid_from` = audit-only; `service_start_date` = matching. See `development_lessons.md` #139.
+- Never write to `docs/review/` (singular); use `docs/history/reviews/` (plural). See `development_lessons.md` #95.
 - **Never introduce a hardcoded value (asset ticker, constant set, threshold, magic string, fixed ordering) without first flagging it and asking the user.** Applies to plans, implementation, and code review.
 - Verification-first task ordering for "is X handled correctly?": code inspection, test execution, doc review before implementation. Skip implementation if verification shows correctness. See `development_lessons.md` #71.
 - **CRITICAL:** Code inspection alone is INSUFFICIENT for "is X handled correctly?". Perform data trace verification: trace the user's specific case from source CSV to final output, verify output matches source classifications, and validate across ALL source reports (TH, CG, Other Gains). See `development_lessons.md` #72, #73.
@@ -130,9 +133,10 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 - Two-pointer sliding-window matcher with tolerance proportional to window size: recompute tolerance after every shrink (stale tolerance admits invalid windows), use `left < right` (not `<=`) as the shrink bound so single-element window stays a candidate. See `development_lessons.md` #108.
 - Multi-phase matching with phase 1 (exact-match) before phase 2 (contiguous-range fallback): re-run brute-force feasibility for phase-2 predictions against the POST-phase-1 input set, not the original full set. Phase 1 removes items and changes the candidate count/sum. See `development_lessons.md` #110.
 - When a task changes data flow semantics (filter/dedup/transformation split), grep ALL test files (`tests/`) for assertions referencing the affected data identity tuple, not just current task's file scope. Stale assertions in sibling files survive focused runs. See `development_lessons.md` #111.
-- Verification-only tasks inspecting `git diff <base>..HEAD`: when an expected file is missing from the cumulative diff, first run `git log --oneline <base>..HEAD -- <file>` to check whether a prior same-session commit already applied the planned change before reporting a scope violation. See `development_lessons.md` #116.
-- For "compare tool output against the committed baseline" (linter/formatter), pipe the committed blob (`git show HEAD:<path> | <tool> -`) or use `git worktree add`; never `git stash` to get a transient clean tree; in this repo's docs-branch state it dropped tracked files from the working tree. See `development_lessons.md` #122.
-- Before `execute-plan` Step 1.1 on a plan authored before the doc-hierarchy migration: grep the plan body for the migration's moved prefixes (`docs/tax/`, `docs/domain/`, `docs/plans/`, `docs/personal/`, `docs/reviews/`) and translate every hit (including segmented code-path literals and `## Validation Commands` grep targets) to its migrated location, as a standalone pre-Phase-1 commit. Untranslated, sub-agents write to dead paths and validation commands false-pass against nothing. See `development_lessons.md` #129 and `execute-plan` Step 0.4b.
+- For verification-only tasks inspecting `git diff <base>..HEAD` with missing expected files, check if a prior same-session commit already applied the change. See `development_lessons.md` #116.
+- For comparing tool output against the committed baseline (linter/formatter), pipe the committed blob or use `git worktree add`; never use `git stash`. See `development_lessons.md` #122.
+- Before `execute-plan` Step 1.1 on a pre-migration plan, grep and translate moved path prefixes (`docs/tax/`, etc.) to their migrated locations in the plan body. See `development_lessons.md` #129 and `execute-plan` Step 0.4b.
+- When validating branch compliance (e.g. for em dashes), do not rely on working-tree filters like "touched" or "unstaged" if changes have already been committed; diff explicitly against the target branch. See `development_lessons.md` #144.
 
 ### 5. Domain Knowledge References
 
@@ -140,6 +144,7 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 - Before processing Koinly exports or changing Koinly-related code, read `docs/maintenance/koinly_guidelines.md` (loan repayment disposal treatment, wrapped-asset repair, Other Gains Report relevance, required settings).
 - Before discussing crypto tax treatment, proposing architecture, or advising on Koinly settings, check `docs/maintenance/tax/decision_points/` first.
 - Before changing cross-cutting report-generation behavior, read `docs/maintenance/tax_reporting_guidelines.md` (also documents Excel report sections) and cite SRG IDs.
+- Before changing cross-cutting logic or implementing features that prior incidents cover, consult the root-cause principle catalog (`coding_guidelines.md` #17-#25) and `docs/maintenance/principle-index.md` to recall relevant lessons by problem shape rather than re-deriving them (see the `generalize` skill).
 - Before writing implementation plans, read `docs/maintenance/plan_quality_guidelines.md`.
 - Before writing/revising repository walkthroughs or presentation artifacts, read `docs/maintenance/plan_quality_guidelines.md` (presentation-artifact structure and placement).
 - When a crypto presentation makes legal/filing claims, verify the current source set in `docs/maintenance/tax/laws/pt/crypto-tax/sources.md` and cite mirrored official documents.
@@ -154,11 +159,11 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 - **Dependencies:** `uv` (local, not on PyPI). Tests: `uv run pytest`.
 - **Architecture:** Layered (domain -> application -> infrastructure -> presentation). Full walkthrough in `README.md`; discover the source tree directly.
 - **Excel report sections** (Capital Gains, Crypto Gains, Loan Activity, Dividend Income, Report Structure): documented in `docs/maintenance/tax_reporting_guidelines.md`.
-- **Data flow:** Input CSVs in `resources/source/` -> domain-driven transform with currency conversion and ISIN mapping -> Excel reports + rollover CSV in `resources/result/`. If `shares-leftover.csv` sits alongside the export, it is merged (enriched with current-year security info, ordered before current trades for FIFO); see `README.md`.
+- **Data flow:** Input CSVs in `resources/source/` -> domain-driven transform (currency conversion, ISIN mapping) -> Excel reports + rollover CSV in `resources/result/`. If `shares-leftover.csv` sits alongside the export, it is merged (enriched with current-year security info, ordered before current trades for FIFO); see `README.md`.
 
 ## Configuration
 
-- `configparser` INI files: `config.ini` (prod), `tests/config.ini` (test). Four sections: `[COMMON]`, `[EXCHANGE RATES]`, `[SECURITY]`, `[TAX JURISDICTION]` (`TAX_COUNTRY`, `FISCAL_YEAR`, `ZERO_BASIS_REVIEW_THRESHOLD`, `ZERO_BASIS_REVIEW_MIN_PROCEEDS`, `IANA_TIMEZONE`); the four scalar fields default to PT/2025/50/10 and `IANA_TIMEZONE` defaults to Europe/Lisbon for PT (None otherwise). Update exchange rates annually (e.g. from your national central bank).
+- `configparser` INI files: `config.ini` (prod), `tests/config.ini` (test). Four sections: `[COMMON]`, `[EXCHANGE RATES]`, `[SECURITY]`, `[TAX JURISDICTION]` (fields `TAX_COUNTRY`, `FISCAL_YEAR`, `ZERO_BASIS_REVIEW_THRESHOLD`, `ZERO_BASIS_REVIEW_MIN_PROCEEDS`, `IANA_TIMEZONE`; defaults PT/2025/50/10, `IANA_TIMEZONE` auto-Europe/Lisbon for PT). Update exchange rates annually.
 - `IANA_TIMEZONE`: auto-deduces `Europe/Lisbon` for `TAX_COUNTRY=PT`; REQUIRED for other countries with crypto data, else fails fast (`development_lessons.md` #135).
 - **Law-driven flags** (e.g. `exclude_loan_repayment_gains`) live in `docs/maintenance/tax/decision_points/<fiscal_year>.toml`, NOT `config.ini` (user preferences only); update the `.md` and `.toml` sidecar together.
 - TOML schema: `[meta].fiscal_year` (integer) + `[countries.XX]` boolean tables; copy `2025.toml` for a new year. Missing TOML raises `MissingDecisionPointsError` (a `ConfigurationError` subclass); invalid `[TAX JURISDICTION]` raises `ConfigurationError`; both surface unwrapped from `main()`.
@@ -168,27 +173,23 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 - 3-tier: `tests/unit/` (401 unit-marked), `tests/integration/` (10), `tests/end_to_end/` (26 e2e-marked); 451 unmarked (888 total).
 - **Do not import pytest fixtures**; they are injected by name (`tmp_path`, `capsys`, `caplog`, `monkeypatch`, `request`).
 - Remove unused imports (Ruff F401). Only import `Path` when instantiating or type-annotating.
-- Test meaningful business logic and real edge cases; avoid duplicating coverage. High-value: complex IB CSV formats, tax calculations, error handling. Low-value: zero amounts, trivial parsing.
-- Excel output tests: add visual structure tests (row placement, cell merging, blank rows, header structure) when modifying layouts. See `development_lessons.md` #69, #70, #81, #82, #83, #96. Use structural identification (column population, font attributes), not hardcoded value exclusions. Default-empty cell assertions must accept both `None` and `""` (openpyxl normalizes empty-string writes); see `development_lessons.md` #114. When a test asserts a value satisfies a domain-validity predicate defined in production (country code list, enum, regex), reuse the production validator rather than duplicating the valid-set inline; see `development_lessons.md` #115.
+- Test meaningful business logic and real edge cases; avoid duplicating coverage. High-value: complex IB CSV formats, tax calculations, error handling; low-value: zero amounts, trivial parsing.
+- Excel output tests: add visual structure tests (row placement, cell merging, blank rows, header structure) when modifying layouts. Use structural identification (column population, font attributes), not hardcoded value exclusions. Default-empty cell assertions must accept both `None` and `""` (openpyxl normalizes empty-string writes). When a test asserts a value satisfies a domain-validity predicate defined in production (country code list, enum, regex), reuse the production validator rather than duplicating the valid-set inline. See `development_lessons.md` #69, #70, #81, #82, #83, #96, #114, #115.
 
 ## Code Quality
 
-- **Ruff** is primary linter/formatter (`pyproject.toml`): Python 3.14, line length 120, Google-style docstrings. Rulesets: `E`, `F`, `UP`, `B`, `SIM`, `I`, `N`, `ARG`, `FA`, `DTZ`, `PTH`, `TD`, `FIX`, `RSE`, `S`, `C4`, `PT`, `D`, `PL`. Do not run `ruff check --fix` on modules that re-export for backward compat (e.g. `crypto_reporting.py`); `F401` removes re-exported names tests depend on. See `development_lessons.md` #121.
-- Type hints: modern syntax (`X | Y`) with `from __future__ import annotations`. Datetime: `datetime.UTC`. Paths: `pathlib.Path`. Logging: lazy format. Exceptions: f-strings. Magic numbers: named constants (except tests). Never default essential identifiers/indices to 0. Refactor high-complexity functions; `# noqa: PLR0912` with comment if too risky.
+- **Ruff** is primary linter/formatter (`pyproject.toml`: Python 3.14, line length 120, full ruleset). Do not run `ruff check --fix` on modules that re-export for backward compat (e.g. `crypto_reporting.py`); `F401` removes re-exported names tests depend on. See `development_lessons.md` #121.
+- Type hints: modern syntax (`X | Y`) with `from __future__ import annotations`; `datetime.UTC`, `pathlib.Path`, lazy logging, f-string exceptions, named-constant magic numbers (except tests). Never default essential identifiers/indices to 0. Refactor high-complexity functions; `# noqa: PLR0912` with comment if too risky.
 - Docstrings: always for public modules/classes/`__init__`/complex functions; skip trivial getters/setters/`__repr__`/clear private methods/test functions. Google convention.
 - **Code review checklist:** required params truly required; error messages have row context; exception chaining preserves originals; logging parameterized; fail-fast vs missing-data distinction correct; no pytest fixture imports; no unused imports.
 
 ## Data Handling
 
-See `docs/maintenance/project-guidelines.md` #5 for the full missing-vs-invalid rules. Missing data: warn, keep a visible sentinel (`"MISSING_ISIN_REQUIRES_ATTENTION"`, `"UNKNOWN_COUNTRY"`), highlight in Excel, never lose monetary amounts. Internal resolution sentinels (e.g. `UNKNOWN_OPERATOR_REVIEW_REQUIRED`) must NOT leak to user-facing fields - use the raw input value (`development_lessons.md` #113). Invalid data: fail fast with `FileProcessingError` (row, field, expected format) via `from e`.
+Missing-vs-invalid: see `docs/maintenance/project-guidelines.md` #5 for the full rules. Incremental: internal resolution sentinels (e.g. `UNKNOWN_OPERATOR_REVIEW_REQUIRED`) must NOT leak to user-facing fields - use the raw input value. See `development_lessons.md` #113.
 
-## Error Handling
 
-- Include row number, symbol, and specific issue in error messages.
-- Use `from e` exception chaining.
-- Logging: parameterised (`logger.error("Row %d: bad value %s", row, val)`).
-- Exceptions: f-strings (`raise ValueError(f"Row {row}: bad value {val}")`).
 
 ## Lessons Learned
 
 Full details, pre-commit checklist, and QA commands: `docs/maintenance/development_lessons.md`.
+

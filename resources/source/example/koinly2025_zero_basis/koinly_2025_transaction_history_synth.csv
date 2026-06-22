@@ -1,0 +1,6 @@
+Transaction report 2025
+
+Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),TxSrc,TxDest,TxHash,Description
+2025-06-15 10:00:00 UTC,crypto_withdrawal,,Demo Spot,"1,00000000",FEE,"0,00",,,,,,,"0,00","0,00","0,00",,,,FEE token disposal (zero-cost zero-proceeds)
+2025-07-20 12:00:00 UTC,crypto_withdrawal,,Demo Spot,"0,50000000",RWD,"0,00",,,,,,,"5,00","5,00","0,00",,,,Small reward disposal (zero-cost small proceeds)
+2025-08-10 14:00:00 UTC,crypto_withdrawal,,Demo Spot,"1,00000000",ZBX,"0,00",,,,,,,"75,00","75,00","0,00",,,,Larger zero-cost disposal above threshold

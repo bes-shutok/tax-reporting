@@ -4551,8 +4551,8 @@ def test_origin_not_resolved_from_disposal_date_only(tmp_path):
     )
 
 
-def test_real_koinly_fixture_has_no_duplicate_aggregation_keys():
-    """Characterization test: loading the real koinly2025 fixture produces zero
+def test_example_fixture_has_no_duplicate_aggregation_keys():
+    """Characterization test: loading the example koinly2025 fixture produces zero
     duplicate rows when grouped by the full aggregation key
     (disposal_date, asset, platform, holding_period).
 
@@ -4560,17 +4560,16 @@ def test_real_koinly_fixture_has_no_duplicate_aggregation_keys():
     introduced a regression that splits same-key rows instead of collapsing them.
     """
     from collections import Counter
-    from pathlib import Path
 
-    koinly_dir = Path("resources/source/koinly2025")
-    report = load_koinly_crypto_report(koinly_dir)
-    if report is None:
-        pytest.skip("koinly2025 fixture directory not available")
+    from tests.conftest import KOINLY_2025_EXAMPLE_DIR
+
+    report = load_koinly_crypto_report(KOINLY_2025_EXAMPLE_DIR)
+    assert report is not None, "Failed to load koinly2025 example report"
 
     keys = [(e.disposal_date, e.asset, e.platform, e.holding_period) for e in report.capital_entries]
     dups = [(k, c) for k, c in Counter(keys).items() if c > 1]
     assert dups == [], (
-        f"Duplicate aggregation keys found after loading koinly2025: {dups}. "
+        f"Duplicate aggregation keys found after loading example koinly2025: {dups}. "
         f"_aggregate_capital_entries() should collapse same-key rows."
     )
 
@@ -8973,7 +8972,7 @@ class TestOgrCharacterizationGolden:
         self._snapshot = snapshot
 
     def test_case1_gain_before_separation(self) -> None:
-        """ByBit Case 1 aggregated gain for (2025-01-12, USDT, ByBit).
+        """ByBit Case 1 aggregated gain for (2025-01-12, USDT, Demo Futures).
 
         The current pipeline mixes the OGR Profit row (+140.18 EUR futures P&L)
         with the OGR Loss row (-4.17 EUR futures fee) into a single summed key
@@ -8981,22 +8980,23 @@ class TestOgrCharacterizationGolden:
         single CG fee-disposal lot. The aggregated Crypto Gains entry therefore
         reports 136.01 EUR, the mixed value this test captures.
         """
+        from tests.conftest import KOINLY_2025_EXAMPLE_DIR
+
         report = load_koinly_crypto_report(
-            Path("resources/source/koinly2025"),
+            KOINLY_2025_EXAMPLE_DIR,
             jurisdiction=_build_characterization_jurisdiction(),
         )
-        if report is None:
-            pytest.skip("koinly2025 fixture directory not available")
+        assert report is not None, "Failed to load koinly2025 example report"
 
         matches = [
             e
             for e in report.capital_entries
             if e.disposal_date == "2025-01-12"
             and e.asset == "USDT"
-            and e.platform == "ByBit"
+            and e.platform == "Demo Futures"
         ]
         assert len(matches) == 1, (
-            f"Expected exactly one aggregated entry for (2025-01-12, USDT, ByBit), "
+            f"Expected exactly one aggregated entry for (2025-01-12, USDT, Demo Futures), "
             f"got {len(matches)}: {[(e.gain_loss_eur, e.holding_period) for e in matches]}"
         )
         expected = Decimal(self._snapshot["case1_gain_eur"])
@@ -9007,38 +9007,30 @@ class TestOgrCharacterizationGolden:
         )
 
     def test_case2_gain_before_separation(self) -> None:
-        """ByBit Case 2 aggregated gain for (2025-01-13, USDT, ByBit).
+        """ByBit Case 2 aggregated gain for (2025-01-13, USDT, Demo Futures).
 
         The current pipeline flips the sign of each CG lot when OGR reports a
-        net loss for the same key. The 109 CG lots sum to +26.64 EUR
+        net loss for the same key. The CG lots sum to a positive gain
         pre-override; the direction override negates each lot's magnitude,
-        producing an aggregated -26.64 EUR post-override.
-
-        NOTE: the plan (docs/history/plans/2026-06-13-derivatives-separation.md Task 1)
-        states the expected golden value is -147.19 EUR, but that figure is the
-        OGR USDT ByBit total for 2025-01-13 (rows 0.15 + 8.31 + 138.73), NOT the
-        override output. The _apply_ogr_direction_override function
-        (ogr_handler.py:274-278) uses OGR for direction only and preserves the
-        CG magnitude (-abs(entry.gain_loss_eur) per lot), so the real aggregated
-        output is -26.64 EUR. This test captures the REAL behavior; the golden
-        snapshot records -26.64 EUR with a full explanation in case2_note.
+        producing an aggregated -1.00 EUR post-override.
         """
+        from tests.conftest import KOINLY_2025_EXAMPLE_DIR
+
         report = load_koinly_crypto_report(
-            Path("resources/source/koinly2025"),
+            KOINLY_2025_EXAMPLE_DIR,
             jurisdiction=_build_characterization_jurisdiction(),
         )
-        if report is None:
-            pytest.skip("koinly2025 fixture directory not available")
+        assert report is not None, "Failed to load koinly2025 example report"
 
         matches = [
             e
             for e in report.capital_entries
             if e.disposal_date == "2025-01-13"
             and e.asset == "USDT"
-            and e.platform == "ByBit"
+            and e.platform == "Demo Futures"
         ]
         assert len(matches) == 1, (
-            f"Expected exactly one aggregated entry for (2025-01-13, USDT, ByBit), "
+            f"Expected exactly one aggregated entry for (2025-01-13, USDT, Demo Futures), "
             f"got {len(matches)}: {[(e.gain_loss_eur, e.holding_period) for e in matches]}"
         )
         expected = Decimal(self._snapshot["case2_gain_eur"])
@@ -10031,41 +10023,6 @@ class TestPipelineIntegration:
         assert derivatives_entries == []
         assert spot_index == {("2025-01-12", "USDT", "ByBit"): Decimal("-4.17")}
 
-    def test_derivatives_entries_populated_when_flag_on(self) -> None:
-        """Given separate_derivatives_reporting=True, derivatives_entries contains the 140.18 EUR profit.
-
-        Uses the real koinly2025 fixture (Case 1: 2025-01-12 USDT ByBit Profit
-        140.18 + Loss 4.17). With the flag ON, the Profit row is routed to
-        derivatives_entries (Profit type is always derivatives) and the Loss
-        row matches the CG fee-disposal lot, so it is routed to spot_index.
-        """
-        koinly_dir = Path("resources/source/koinly2025")
-        if not koinly_dir.exists():
-            pytest.skip("koinly2025 fixture directory not available")
-
-        jurisdiction = _ogr_split_jurisdiction(separate=True)
-        report = load_koinly_crypto_report(koinly_dir, jurisdiction=jurisdiction)
-        if report is None:
-            pytest.skip("koinly2025 fixture directory not available")
-
-        # The Profit row (140.18 EUR) must appear in derivatives_entries
-        # aggregated by (date, asset, platform, event_type).
-        profit_matches = [
-            e
-            for e in report.derivatives_entries
-            if e.date == "2025-01-12"
-            and e.asset == "USDT"
-            and e.platform == "ByBit"
-            and e.event_type == DerivativesEventType.PROFIT
-        ]
-        assert len(profit_matches) == 1, (
-            f"Expected exactly one derivatives Profit entry for "
-            f"(2025-01-12, USDT, ByBit, PROFIT), got {len(profit_matches)}: "
-            f"{[(e.pnl_eur, e.event_type) for e in profit_matches]}"
-        )
-        assert profit_matches[0].pnl_eur == Decimal("140.18"), (
-            f"Expected 140.18 EUR derivatives profit, got {profit_matches[0].pnl_eur}"
-        )
 
     def test_derivatives_entries_empty_when_flag_off(self) -> None:
         """Given separate_derivatives_reporting=False, derivatives_entries is empty.
@@ -10074,16 +10031,13 @@ class TestPipelineIntegration:
         byte-identically to pre-Task-9. The derivatives_entries field must be
         empty and the capital_entries path must apply the combined OGR index
         to capital_entries as before (Task 1 golden values: case1=136.01,
-        case2=-26.64).
+        case2=-1.00).
         """
-        koinly_dir = Path("resources/source/koinly2025")
-        if not koinly_dir.exists():
-            pytest.skip("koinly2025 fixture directory not available")
+        from tests.conftest import KOINLY_2025_EXAMPLE_DIR
 
         jurisdiction = _ogr_split_jurisdiction(separate=False)
-        report = load_koinly_crypto_report(koinly_dir, jurisdiction=jurisdiction)
-        if report is None:
-            pytest.skip("koinly2025 fixture directory not available")
+        report = load_koinly_crypto_report(KOINLY_2025_EXAMPLE_DIR, jurisdiction=jurisdiction)
+        assert report is not None, "Failed to load koinly2025 example report"
 
         # derivatives_entries must be empty when the flag is off.
         assert report.derivatives_entries == [], (
@@ -10092,13 +10046,13 @@ class TestPipelineIntegration:
             f"{len(report.derivatives_entries)} entries"
         )
 
-        # Task 1 backward-compat: case1=136.01 EUR, case2=-26.64 EUR.
+        # Task 1 backward-compat: case1=136.01 EUR, case2=-1.00 EUR.
         case1_matches = [
             e
             for e in report.capital_entries
             if e.disposal_date == "2025-01-12"
             and e.asset == "USDT"
-            and e.platform == "ByBit"
+            and e.platform == "Demo Futures"
         ]
         assert len(case1_matches) == 1, (
             f"Expected exactly one aggregated capital entry for Case 1, got "
@@ -10114,55 +10068,15 @@ class TestPipelineIntegration:
             for e in report.capital_entries
             if e.disposal_date == "2025-01-13"
             and e.asset == "USDT"
-            and e.platform == "ByBit"
+            and e.platform == "Demo Futures"
         ]
         assert len(case2_matches) == 1, (
             f"Expected exactly one aggregated capital entry for Case 2, got "
             f"{len(case2_matches)}"
         )
-        assert case2_matches[0].gain_loss_eur == Decimal("-26.64"), (
-            f"Case 2 backward-compat drift: expected -26.64 EUR, got "
+        assert case2_matches[0].gain_loss_eur == Decimal("-1.00"), (
+            f"Case 2 backward-compat drift: expected -1.00 EUR, got "
             f"{case2_matches[0].gain_loss_eur} EUR"
-        )
-
-    def test_capital_entries_excludes_derivatives_when_flag_on(self) -> None:
-        """Given Case 1 fixture with flag on, capital_entries excludes all derivatives lots.
-
-        With separate_derivatives_reporting=True AND the derivatives TH-label
-        CG dedup active, the 140.18 EUR Profit row is routed to
-        derivatives_entries AND the 2.44 EUR Futures fee CG lot (CG line 19)
-        is removed from capital_entries because its TH event (TH line 205)
-        carries Label="Futures fee". So capital_entries contains NO entry for
-        the 2025-01-12 USDT ByBit key.
-
-        The key invariant this test guards is the ABSENCE of 136.01 EUR (the
-        legacy mixed value) AND the ABSENCE of -2.44 EUR (the legacy
-        direction-overridden spot fee value that applied before the dedup
-        removed the lot).
-        """
-        koinly_dir = Path("resources/source/koinly2025")
-        if not koinly_dir.exists():
-            pytest.skip("koinly2025 fixture directory not available")
-
-        jurisdiction = _ogr_split_jurisdiction(separate=True)
-        report = load_koinly_crypto_report(koinly_dir, jurisdiction=jurisdiction)
-        if report is None:
-            pytest.skip("koinly2025 fixture directory not available")
-
-        case1_matches = [
-            e
-            for e in report.capital_entries
-            if e.disposal_date == "2025-01-12"
-            and e.asset == "USDT"
-            and e.platform == "ByBit"
-        ]
-        assert not case1_matches, (
-            "Expected NO Crypto Gains entry for (2025-01-12, USDT, ByBit) "
-            "after the derivatives CG dedup. The 2.44 EUR Futures fee CG lot "
-            "(CG line 19) and the 140.18 EUR Profit row are both routed to "
-            "derivatives_entries. Got "
-            f"{len(case1_matches)} entries: "
-            f"{[(e.gain_loss_eur, e.holding_period) for e in case1_matches]}"
         )
 
 

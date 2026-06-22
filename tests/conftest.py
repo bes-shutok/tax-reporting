@@ -165,3 +165,58 @@ def make_operator_origin(**overrides: object):
     defaults = _OPERATOR_ORIGIN_DEFAULTS.copy()
     defaults.update(overrides)
     return OperatorOrigin(**defaults)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Committed synthetic Koinly 2025 example fixture directories.
+#
+# Crypto e2e/unit tests read these committed synthetic exports (never the
+# gitignored personal ``resources/source/koinly2025/``). Each directory is
+# isolated to one scenario family (derivatives separation / zero-basis
+# materiality / payment-proceeds) per Design Invariant #8 of the
+# 2026-06-22-crypto-tests-off-local-fixtures plan.
+# ---------------------------------------------------------------------------
+KOINLY_2025_EXAMPLE_DIR = Path("resources/source/example/koinly2025")
+KOINLY_2025_ZERO_BASIS_EXAMPLE_DIR = Path("resources/source/example/koinly2025_zero_basis")
+KOINLY_2025_PAYMENT_EXAMPLE_DIR = Path("resources/source/example/koinly2025_payment")
+
+
+def build_koinly_jurisdiction(**overrides: object):
+    """Build a PT/2025 TaxJurisdictionConfig for the committed Koinly 2025 examples.
+
+    Produces the standard PT 2025 crypto jurisdiction mirroring the production
+    decision-point flags. Callers pass keyword overrides for the flags their
+    scenario toggles (``separate_derivatives_reporting``,
+    ``use_other_gains_report``, ``infer_payment_proceeds``,
+    ``zero_basis_review_threshold``, ``zero_basis_review_min_proceeds``,
+    ``exclude_loan_repayment_gains``, ``futures_derivatives_taxable``,
+    ``timezone``). This consolidates the per-file ``_build_jurisdiction``
+    duplicates across the crypto test suite.
+
+    Import is deferred to avoid circular dependency at conftest load time.
+
+    Args:
+        **overrides: Keyword arguments forwarded to ``TaxJurisdictionConfig``;
+            unknown keys raise ``TypeError`` from the dataclass constructor.
+
+    Returns:
+        A configured ``TaxJurisdictionConfig`` instance.
+    """
+    from zoneinfo import ZoneInfo
+
+    from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+
+    defaults: dict[str, object] = {
+        "country": "PT",
+        "fiscal_year": 2025,
+        "exclude_loan_repayment_gains": True,
+        "zero_basis_review_threshold": Decimal("500"),
+        "zero_basis_review_min_proceeds": Decimal("10"),
+        "futures_derivatives_taxable": True,
+        "use_other_gains_report": True,
+        "separate_derivatives_reporting": True,
+        "infer_payment_proceeds": False,
+        "timezone": ZoneInfo("Europe/Lisbon"),
+    }
+    defaults.update(overrides)
+    return TaxJurisdictionConfig(**defaults)  # type: ignore[arg-type]

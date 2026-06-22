@@ -66,12 +66,44 @@ Exclude loan repayment capital gains at the code level. See `../../../../plans/c
 
 ---
 
-## 2. Required Koinly Settings for Portuguese Reporting
+## 2. Recommended Koinly Settings for Portuguese Reporting
 
-| Setting | Required value | Legal basis |
-|---------|---------------|-------------|
+| Setting | Recommended value | Legal basis |
+|---------|------------------|-------------|
 | Realize gains on crypto-to-crypto trades? | **DISABLED** | CIRS art. 10(20): crypto-to-crypto is deferred |
 | Realize gains on liquidity transactions? | **DISABLED** | LP operations are not taxable disposals |
-| Realize gains on transfer fees? | **ENABLED** | Gas fees dispose of crypto with no consideration |
-| Treat transfer fees as deductible costs? | **ENABLED** | Allows gas fee deduction |
+| Realize gains on transfer fees? | **DISABLED** | Transfer fees are utility costs, not "alienações onerosas" (no consideration received). Koinly then adjusts cost basis of the transferred asset by the fee value, achieving the correct CIRS art. 10(4)(a) deductibility implicitly. |
+| Treat transfer fees as deductible costs? | **N/A** (greyed out when above is OFF) | Koinly UI disables this option when "Realize gains on transfer fees?" is OFF. Fee deductibility is achieved via the cost-basis adjustment mechanism instead. |
 | Cost basis method | **FIFO** | CIRS art. 43(8)(g): FIFO is mandatory |
+
+---
+
+## 3. Transfer Fees Treated as Taxable Disposal (Realized Gains)
+
+### Portuguese position
+
+Paying a transfer fee in crypto-assets to move your own tokens between wallets/exchanges is a utility expense, not an exchange or sale. It does not match the definition of a taxable event under Portuguese law:
+- Under **CIRS art. 10(1)(k)**, capital gains are only triggered by *"alienação onerosa"* (onerous disposal).
+- Onerous disposal requires an exchange where the taxpayer receives valuable consideration (such as fiat currency or other property).
+- Paying a transfer fee to a platform or blockchain network results in no received consideration, so it is a non-taxable consumption/loss of crypto-assets.
+- Treating this consumption as a taxable disposal is incorrect under Portuguese law and leads to "phantom gains" on transfer fees.
+- Under **CIRS art. 10(4)(a)**, such fees are necessary expenses that should reduce taxable gains (by adjusting cost basis or as direct deductions), rather than triggering immediate capital gains.
+
+### Koinly's treatment
+
+If the portfolio setting `"Realize gains on transfer fees?"` is enabled (`ON`), Koinly treats each transfer fee as a taxable disposal of the fee token. If the fee token has appreciated since it was acquired, Koinly calculates a capital gain based on FIFO cost basis and includes it in the "Crypto Gains" report.
+
+### Investigated Examples (FY2025 Data: 2025-02-02)
+
+1. **JUP wallet-to-wallet transfer:** fee token had appreciated since acquisition; Koinly
+   realized a short-term capital gain on the fee amount. Under DP-006, this is excluded.
+2. **BTC wallet-to-wallet transfer:** fee token had a near-zero cost basis; Koinly
+   realized a short-term capital gain equal to FMV of the fee. Under DP-006, this is excluded.
+
+### Workarounds
+
+- **Option A -- Disable "Realize gains on transfer fees?" in Koinly settings (Recommended):**
+  Disabling this option prevents Koinly from realizing capital gains on transfer fees. Koinly will adjust the cost basis of the transferred asset by adding the fee value, treating it correctly as a non-taxable cost.
+- **Option B -- Pipeline-Level Filter:**
+  Exclude Koinly Capital Gains rows where the `Notes` field is `"Fee"` at the reporting pipeline level (custom Python code filter).
+

@@ -3,9 +3,9 @@
 Verifies that the ``zero_basis_review_min_proceeds`` threshold (DP-013,
 default 10 EUR via ``ZERO_BASIS_REVIEW_MIN_PROCEEDS`` in ``config.ini``)
 correctly suppresses the zero-basis review flag for FEE token disposals
-and small rewards when the production ``koinly2025`` fixtures are run
-through the full pipeline, and that the backward-compat escape hatch
-(``min_proceeds=0``) restores the prior flag-everything behavior.
+and small rewards when the committed synthetic ``koinly2025_zero_basis``
+fixtures are run through the full pipeline, and that the backward-compat escape
+hatch (``min_proceeds=0``) restores the prior flag-everything behavior.
 
 Per docs/history/plans/2026-06-15-zero-basis-review-materiality.md Task 5 and
 development_lessons.md #72, #73: assertions are grounded in source data
@@ -15,17 +15,15 @@ rather than internal pipeline constants wherever possible.
 from __future__ import annotations
 
 from decimal import Decimal
-from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pytest
 
 from tax_reporting.application.crypto_reporting import load_koinly_crypto_report
-from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+from tests.conftest import KOINLY_2025_ZERO_BASIS_EXAMPLE_DIR, build_koinly_jurisdiction
 
 pytestmark = pytest.mark.e2e
 
-_FIXTURE_DIR = Path("resources/source/koinly2025")
+_FIXTURE_DIR = KOINLY_2025_ZERO_BASIS_EXAMPLE_DIR
 _ZERO_COST_REASON_MARKER = "Zero acquisition cost"
 _MIN_PROCEEDS_DEFAULT = Decimal("10")
 
@@ -36,116 +34,38 @@ _MIN_PROCEEDS_DEFAULT = Decimal("10")
 # test_larger_zero_cost_disposals_above_threshold_flagged.
 _SYNTHETIC_ZERO_COST_PROCEEDS = Decimal("75")
 _SYNTHETIC_ZERO_COST_ASSET = "ZBX"
-_SYNTHETIC_ZERO_COST_WALLET = "Kraken"
-_SYNTHETIC_ZERO_COST_DATE_SOLD = "15/06/2025 10:00"
+_SYNTHETIC_ZERO_COST_WALLET = "Demo Spot"
+_SYNTHETIC_ZERO_COST_DATE_SOLD = "10/08/2025 14:00"
 _SYNTHETIC_ZERO_COST_DATE_ACQUIRED = "01/01/2024 00:00"
-
-
-def _build_jurisdiction(*, min_proceeds: Decimal) -> TaxJurisdictionConfig:
-    """Build a PT/2025 jurisdiction mirroring production decision-point flags.
-
-    ``zero_basis_review_min_proceeds`` is the only knob varied between the
-    default-threshold run and the backward-compat escape-hatch run.
-
-    ``zero_basis_review_threshold`` is set to 500 EUR (ten times the production value of 50)
-    to isolate the ``min_proceeds`` behavior from the gain/loss-magnitude flag. These two
-    thresholds gate independent flags: ``zero_basis_review_threshold`` controls the Excel
-    red-fill presentation flag triggered by gain/loss magnitude, while ``min_proceeds``
-    controls the ``review_required`` field set at parse time. Raising the gain/loss
-    threshold keeps the test population observable in ``capital_entries`` (the PT-C-028
-    materiality filter would otherwise drop sub-50-EUR-gain entries before the assertions
-    run) without coupling this test's pass/fail to the gain-magnitude flag's behavior.
-    """
-    return TaxJurisdictionConfig(
-        country="PT",
-        fiscal_year=2025,
-        exclude_loan_repayment_gains=True,
-        zero_basis_review_threshold=Decimal("500"),
-        zero_basis_review_min_proceeds=min_proceeds,
-        futures_derivatives_taxable=True,
-        use_other_gains_report=True,
-        separate_derivatives_reporting=True,
-        timezone=ZoneInfo("Europe/Lisbon"),
-    )
-
-
-def _skip_if_fixtures_missing() -> None:
-    """Skip the calling test gracefully when the koinly2025 directory is absent."""
-    if not _FIXTURE_DIR.exists() or not _FIXTURE_DIR.is_dir():
-        pytest.skip(f"koinly2025 fixture directory not available at {_FIXTURE_DIR}")
 
 
 def _load_report(*, min_proceeds: Decimal):
     report = load_koinly_crypto_report(
-        _FIXTURE_DIR, jurisdiction=_build_jurisdiction(min_proceeds=min_proceeds)
+        _FIXTURE_DIR,
+        jurisdiction=build_koinly_jurisdiction(zero_basis_review_min_proceeds=min_proceeds)
     )
-    if report is None:
-        pytest.skip("load_koinly_crypto_report returned None for koinly2025 fixtures")
+    assert report is not None, f"load_koinly_crypto_report returned None for synthetic fixture under {_FIXTURE_DIR}"
     return report
 
 
-def _write_synthetic_zero_cost_fixture(dest_dir: Path) -> Path:
-    """Write a minimal three-file Koinly export containing one zero-cost disposal.
+def test_synthetic_fixture_contains_zero_basis_scenarios() -> None:
+    """Guard against fixture content drift: assert the synthetic CSVs carry the zero-basis scenarios.
 
-    The production ``koinly2025`` fixtures contain no zero-cost disposal with
-    proceeds >= 10 EUR (the condition under DP-013 that must trigger the
-    zero-basis review flag). Rather than perturb the shared fixtures - which
-    many other e2e tests assert on - this writes a tiny, self-contained
-    directory into ``dest_dir`` containing exactly one such disposal plus the
-    minimal income and transaction-history reports the pipeline requires.
-
-    The disposal row:
-    - ``Cost (EUR) == 0``  -> cost_eur == Decimal("0")
-    - ``Proceeds (EUR) == 75`` -> above the 10 EUR min_proceeds gate
-    - ``Gain / loss == 75``  -> |gain| >= 1 EUR, survives PT-C-028 materiality
-
-    Returns the directory path.
+    Parses the committed example CSVs and asserts each zero-basis scenario is
+    present.
     """
-    proceeds = _SYNTHETIC_ZERO_COST_PROCEEDS
-    capital_csv = (
-        "Capital gains report 2025\n"
-        "\n"
-        "Date Sold,Date Acquired,Asset,Amount,Cost (EUR),Proceeds (EUR),Gain / loss,"
-        "Notes,Wallet Name,Holding period\n"
-        f"{_SYNTHETIC_ZERO_COST_DATE_SOLD},{_SYNTHETIC_ZERO_COST_DATE_ACQUIRED},"
-        f"{_SYNTHETIC_ZERO_COST_ASSET},\"1,00000000\",0.0,{proceeds},{proceeds},"
-        f"\"Airdrop\",{_SYNTHETIC_ZERO_COST_WALLET},Short term\n"
-    )
-    income_csv = (
-        "Income report 2025\n"
-        "\n"
-        "Date,Asset,Amount,Value (EUR),Type,Description,Wallet Name\n"
-    )
-    transaction_history_csv = (
-        "Transaction report 2025\n"
-        "\n"
-        "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,"
-        "Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,"
-        "Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),"
-        "TxSrc,TxDest,TxHash,Description\n"
-    )
-    (dest_dir / "koinly_2025_capital_gains_report_synth.csv").write_text(capital_csv, encoding="utf-8")
-    (dest_dir / "koinly_2025_income_report_synth.csv").write_text(income_csv, encoding="utf-8")
-    (dest_dir / "koinly_2025_transaction_history_synth.csv").write_text(
-        transaction_history_csv, encoding="utf-8"
-    )
-    return dest_dir
-
-
-def _load_synthetic_report(*, min_proceeds: Decimal, fixture_dir: Path):
-    report = load_koinly_crypto_report(
-        fixture_dir, jurisdiction=_build_jurisdiction(min_proceeds=min_proceeds)
-    )
-    if report is None:
-        pytest.skip("load_koinly_crypto_report returned None for synthetic fixture")
-    return report
+    cg_path = _FIXTURE_DIR / "koinly_2025_capital_gains_report_synth.csv"
+    assert cg_path.exists(), f"Zero-basis CG report not found: {cg_path}"
+    with cg_path.open(encoding="utf-8") as f:
+        content = f.read()
+    # Check for FEE, RWD, ZBX
+    assert "FEE" in content, "FEE token entry missing from zero-basis synthetic CG report"
+    assert "RWD" in content, "RWD token entry missing from zero-basis synthetic CG report"
+    assert "ZBX" in content, "ZBX token entry missing from zero-basis synthetic CG report"
 
 
 class TestZeroBasisMaterialityE2E:
     """Covers the zero-basis materiality rule and the backward-compat escape hatch."""
-
-    def setup_method(self) -> None:
-        _skip_if_fixtures_missing()
 
     def test_fee_token_disposals_not_flagged(self) -> None:
         """Zero-cost zero-proceeds (FEE token) entries are never flagged under the default threshold.
@@ -184,8 +104,10 @@ class TestZeroBasisMaterialityE2E:
             if e.cost_eur == Decimal("0")
             and Decimal("0") < e.proceeds_eur < _MIN_PROCEEDS_DEFAULT
         ]
-        if not small_rewards:
-            pytest.skip("No zero-cost entries with 0 < proceeds < 10 EUR in koinly2025 fixtures")
+        assert small_rewards, (
+            f"Expected at least one zero-cost entry with 0 < proceeds < {_MIN_PROCEEDS_DEFAULT} "
+            "in zero-basis fixture, got none"
+        )
 
         wrong_zero_basis = [
             e for e in small_rewards if _ZERO_COST_REASON_MARKER in (e.review_reason or "")
@@ -196,17 +118,14 @@ class TestZeroBasisMaterialityE2E:
             f"{[(e.asset, e.platform, e.proceeds_eur, e.review_reason) for e in wrong_zero_basis]}"
         )
 
-    def test_larger_zero_cost_disposals_above_threshold_flagged(self, tmp_path) -> None:
+    def test_larger_zero_cost_disposals_above_threshold_flagged(self) -> None:
         """Zero-cost entries with proceeds >= threshold are flagged with the zero-basis reason.
 
-        The production ``koinly2025`` fixtures contain no zero-cost disposal with
-        proceeds >= 10 EUR, so this test drives a dedicated synthetic fixture (one
-        such disposal, cost_eur == 0 and proceeds == 75 EUR) through the full
-        pipeline. The disposal survives the PT-C-028 |gain| >= 1 EUR materiality
-        filter (gain == 75 EUR) and MUST carry the zero-basis review reason.
+        Loads the committed synthetic zero-basis fixture. The ZBX disposal
+        survives the PT-C-028 |gain| >= 1 EUR materiality filter (gain == 75 EUR)
+        and MUST carry the zero-basis review reason.
         """
-        fixture_dir = _write_synthetic_zero_cost_fixture(tmp_path)
-        report = _load_synthetic_report(min_proceeds=_MIN_PROCEEDS_DEFAULT, fixture_dir=fixture_dir)
+        report = _load_report(min_proceeds=_MIN_PROCEEDS_DEFAULT)
 
         larger = [
             e
@@ -261,8 +180,9 @@ class TestZeroBasisMaterialityE2E:
             for e in report.capital_entries
             if e.cost_eur == Decimal("0") and e.proceeds_eur > Decimal("0")
         ]
-        if not zero_cost:
-            pytest.skip("No zero-cost entries with non-zero proceeds in koinly2025 fixtures")
+        assert zero_cost, (
+            "Expected zero-cost entries with non-zero proceeds in zero-basis fixture, got none"
+        )
 
         unflagged = [
             e

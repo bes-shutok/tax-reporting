@@ -6,8 +6,13 @@ Agents should read this alongside the main instruction rules in CLAUDE.md.
 ---
 
 ## 1. Code Quality and Duplication
+
+**Principle:** Family D (Single source of truth)
+
 - Always check for duplicate test methods or functions before adding new code.
 - Command: `grep -n "def method_name" . -r`
+
+**See also (principle cluster D):** #59 (same family, distinct angle: general duplicate-detection seed (#1) vs frozenset cross-section (#59)).
 
 ## 2. Type Safety and Annotations
 - Add `@override` to methods overriding base class methods.
@@ -41,11 +46,19 @@ error_message = (
 - Required vs Optional: use required parameters for essential data; only use defaults when a sensible default exists.
 
 ## 5. Dependencies and Imports
+
+**Principle:** Family F (Layering / dependency direction)
+
 - Check all imports against declared dependencies before submitting.
 - Import from public `__all__` exports; avoid `_private` imports in tests unless necessary.
 - Run tests early to catch missing imports.
 
+**See also (principle cluster F):** #28 (same family, distinct angle: broad import-hygiene seed (#5) vs focused private-boundary principle with remediation (#28). Cross-link. (If the fresh-agent finds #5's other bullets irrelevant and only the private-import bullet matters, this could tighten to a true-duplicate; default is overlapping.)).
+
 ## 6. Testing Best Practices
+
+**Principle:** Family A (Equivalence-class coverage)
+
 - 3-tier structure: unit (`tests/unit/`) → integration (`tests/integration/`) → e2e (`tests/end_to_end/`).
 - Markers: `@pytest.mark.unit`, `@pytest.mark.integration`, `@pytest.mark.e2e`.
 - Unit tests may access internal functions; integration/e2e use only public APIs.
@@ -58,6 +71,9 @@ error_message = (
 - Error path coverage: Test double-failure scenarios where multiple error conditions occur together (e.g., aggregation fails AND workbook.close fails).
 
 ## 7. Excel Output Security
+
+**Principle:** Family A (Equivalence-class coverage)
+
 - All external data string fields (from any provider: Koinly, IB, etc.) must be wrapped with `safe_cell_value()` before writing to Excel cells. Formula injection vulnerabilities exist if even one field is unprotected.
 - Check consistency: if most fields in a section use `safe_cell_value()`, any unprotected field is likely a bug.
 - Common unprotected fields to watch: `review_reason`, `description`, chain names, wallet labels, platform names.
@@ -68,9 +84,14 @@ error_message = (
 - When the type is imported only for annotations, keep it inside `TYPE_CHECKING` block.
 
 ## 9. Exception Handler Specificity
+
+**Principle:** Family B (Error-policy propagation)
+
 - Catch specific exception types (`FileProcessingError`, `ValueError`) instead of broad `Exception`.
 - Broad exception handlers mask programming errors and make debugging harder.
 - When a function documents raising a specific exception, catch that exact type in callers.
+
+**See also (principle cluster B):** #38 (same family, distinct angle: write-side (catch specific not broad, #9) vs escape-side (convert the specific type so it evades the broad handler, #38)).
 
 ## 10. Refactoring and Maintenance
 - Make small incremental changes and run `uv run pytest` after each one.
@@ -82,6 +103,9 @@ error_message = (
 - Logging: parameterised format (`%s`). Exceptions: f-strings. See §1 Instruction Rules for full detail.
 
 ## 12. API Design for Production vs Testing
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
 - Do not add features or parameters solely to satisfy tests; adjust tests to match production patterns instead.
 - When tests need special handling, first try to make tests reflect real usage before adding complexity to production code.
 
@@ -108,6 +132,9 @@ def test_file(tmp_path: Path) -> Path:
 - The crypto sheet auto-width block has a missing `default=0` in `max()` that raises `ValueError` on empty columns; always provide `default=0` when calling `max()` on a generator.
 
 ## 16. Test Real Behavior, Not Implementation Details
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
 - Verify that a feature works end-to-end, not just that it returns a certain value.
 - Use realistic test data; check that integrated components produce correct outputs.
 
@@ -116,26 +143,34 @@ def test_file(tmp_path: Path) -> Path:
 See `~/Projects/.ai-playbook/python_guidelines.md` #1 for full prevention rules.
 Repo context: Koinly `_TH_HEADER` has 20 columns; hand-counting commas is the biggest source of wasted debug iterations.
 
-## 15. Post-Extraction Cleanup
+## 137. Post-Extraction Cleanup
 
 See `~/Projects/.ai-playbook/python_guidelines.md` #2 for full cleanup procedure.
 Repo context: past extractions (crypto_reporting.py → token_origin.py + koinly_parser.py) left unused imports and dead code.
 
-## 16. Aggregation Logic: Test Both Directions
+## 138. Aggregation Logic: Test Both Directions
+
+**Principle:** Family A (Equivalence-class coverage)
 
 See `~/Projects/.ai-playbook/agent_workflow_guidelines.md` #1.
 Repo context: LP liquidity operations; fixing "in" direction broke "out" because liquidity out produces multiple outputs from one input.
 
-## 17. Operator Mapping Field Semantics (`service_start_date` / `valid_from`)
+## 139. Operator Mapping Field Semantics (`service_start_date` / `valid_from`)
+
+**Principle:** Family D (Single source of truth)
 
 See `~/Projects/.ai-playbook/agent_workflow_guidelines.md` #3 for the generic field-semantics lesson.
 Repo-specific constraint: `valid_from` is audit-only (when the mapping was verified from source docs). `service_start_date` is for transaction matching (when the platform started offering this service). Never use `valid_from` as a matching gate. When both are known, `service_start_date <= valid_from`.
+
+**See also (principle cluster D):** #80 (same family, distinct angle: field-semantics determine strategy (#80) vs field-identity (#139)).
 
 ## 18. Review Agent False Positives
 
 See `~/Projects/.ai-playbook/agent_workflow_guidelines.md` #2.
 
 ## 19. Descriptive Output Labels
+
+**Principle:** Family C (Representation: sentinel vs None vs exception)
 
 See `~/Projects/.ai-playbook/coding_guidelines.md` #9 for the canonical rule.
 Repo context: crypto gains sheet headers renamed from terse Koinly CSV names to self-explanatory terms (e.g. "Quantity" not "Amount", "Acquisition Cost (EUR)" not "Cost (EUR)").
@@ -146,15 +181,25 @@ A frozen dataclass cannot assign to its own fields in `__post_init__`. Use `obje
 
 ## 21. Date Comparison Must Use Date Objects, Not Strings
 
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
 Comparing ISO date strings with `<` / `>=` works for same-length same-format strings but silently produces wrong results when formats differ (e.g. `"2025-3-5" < "2025-12-01"` is `True` but `"2025-3-5" < "2025-10-01"` is `False` because `"3"` > `"1"`). Always parse to `date` objects before comparison.
 
+**See also (principle cluster H):** #132 (same family, distinct angle: datetime representation traps.).
+
 ## 22. ISO Date Validation Must Enforce Zero-Padding
+
+**Principle:** Family A (Equivalence-class coverage)
 
 `map(int, "2025-3-5".split("-"))` succeeds, but `YYYY-MM-DD` requires two-digit month and day. Validate each component's string length: year 4 digits, month 2 digits, day 2 digits. Same applies to `HH:MM:SS` time components.
 
 ## 23. Three-Way Doc Sync: Code, Registry, Decision Log
 
+**Principle:** Family D (Single source of truth)
+
 When a feature uses both code-based mappings and canonical documentation (e.g. operator origin registry, mapping decision log), any field change must be applied to all three in the same commit. Code review consistently catches doc drift as a finding. Add a verification step to the plan: "grep for changed field names in registry and decision log."
+
+**See also (principle cluster D):** #58, #68, #94 (same family, distinct angle: multi-authority synchronization; #94 is the test-enforced variant of #23's manual grep.).
 
 ## 24. Consult Decision Points Before Tax-Treatment Assumptions
 
@@ -162,9 +207,13 @@ Before discussing, proposing, or implementing any crypto tax treatment (cost-bas
 
 ## 25. Integration Test Fixture Consistency for Computed Fields
 
+**Principle:** Family D (Single source of truth)
+
 When adding a computed field to a data class used in integration tests, update ALL construction sites to compute the field from actual test data, not from a zero-valued or empty placeholder. Using `CryptoCapitalGainStats.from_entries([])` while `capital_entries` has real data produces inconsistent output (statistics section shows all zeros next to non-zero capital gains). Search for all construction sites with `grep -n "DataClass("` before committing; each site must derive the new field from its own test data.
 
 ## 26. Atomic File Replacement: No Pre-Deletion
+
+**Principle:** Family E (Temporal / ordering invariants)
 
 Never call `safe_remove_file(target)` before `temp_path.replace(target)`. On POSIX, `Path.replace()` atomically replaces the target file. The "remove then replace" sequence breaks atomicity: if `replace()` fails after the removal, the old report is permanently lost and the new file is stranded in `.tmp`. Correct pattern:
 
@@ -179,6 +228,8 @@ temp_path.replace(target)
 ```
 
 ## 27. Default Value Assignment Before Derived Computation
+
+**Principle:** Family E (Temporal / ordering invariants)
 
 Always apply defaults to source variables before computing derived values from them. Anti-pattern:
 
@@ -196,9 +247,13 @@ Any variable that depends on another must be computed after all defaults are app
 
 ## 28. Don't Use `_private` Constants Across Module Boundaries
 
+**Principle:** Family F (Layering / dependency direction)
+
 Constants prefixed with `_` are module-private by convention. When a constant is needed in another module (e.g., `crypto_reporting.py` needs `_DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD` from `config.py`), rename it to a public name first. Importing private names across modules violates the API boundary and creates hidden coupling. Apply the same rule that lesson #5 states for tests.
 
 ## 29. AT Guidance May Cite Pre-Amendment Paragraph Numbers
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
 
 See `docs/maintenance/project-guidelines.md` #3 for the full rule.
 Concrete instance: AT folheto 2026-01-12 (published after Lei n.º 31/2024) still cited CIRS art. 43 as "(n.º 6)(g)" and "(n.º 7)"; the old numbers before the June 2024 amendment renumbered them to n.8(g) and n.9 respectively. The stale numbers had silently propagated into `sources.md` and `platform-divergences.md`. The discrepancy was only caught by cross-checking the folheto against the consolidated CIRS PDF (which shows inline annotations like `(Anterior n.º 7 - Lei n.º 31/2024)`).
@@ -208,6 +263,8 @@ Prevention: whenever consulting AT guidance that cites a CIRS paragraph number, 
 ---
 
 ## 33. Plan Edge Case Behavior Must Be Traced to Correctness Outcome
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
 
 When writing a plan's Gist & Examples section, trace every described "edge case" or "behavior change" outcome to its user-facing result and verify it satisfies the project's correctness requirements, not just that it differs from the previous behavior.
 
@@ -221,6 +278,8 @@ A common failure mode: comparing the new behavior to the old one ("better than X
 
 ## 30. Verify Warning/Guard Path Reachability Before Writing Tests
 
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
 Before writing a test for an existing warning, guard, or defensive code path, verify that the path can actually be triggered with current production code. Trace every condition that must be true simultaneously for the code to reach that branch.
 
 If the path is unreachable via real data (e.g., a placeholder mechanism always fires before the guard condition can be met), the test must either: (a) use a mock/patch to inject the edge case directly, or (b) first amend the implementation to make the path reachable.
@@ -229,11 +288,15 @@ Claiming "implementation is already complete" for an untested path without first
 
 ## 31. Read Full Dataclass Definition Before Describing Fields in a Plan
 
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
 When a plan task describes the fields of a dataclass (e.g., listing fields to be moved or created), always read the actual class definition in source code to obtain the complete, current field list, including fields with default values that are easy to miss.
 
 Omitting a field from a plan that is then used downstream (e.g., `partial_carryover_tx_keys` consumed by `resolve_cross_asset_exchanges`) silently changes behaviour and is not caught until runtime.
 
 ## 32. Distinguish Code Comments from Observed Data
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
 
 When describing data behaviours (e.g., "this swap direction occurs"), explicitly distinguish between: (a) a behaviour observed in actual source data files, and (b) a behaviour described in a code comment or docstring.
 
@@ -252,11 +315,15 @@ Repo context: `AcquisitionContext`/`ConsumptionContext` wrappers were introduced
 
 ## 37. Monkeypatch Module-Level Path Constants in Unit Tests
 
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
 See `~/Projects/.ai-playbook/python_guidelines.md` #4 for the canonical rule.
 Repo context: `_DECISION_POINTS_DIR = _REPO_ROOT / "docs/maintenance/tax/decision_points"` in `config.py` is resolved at import time. Tests in `TestLoadTaxJurisdictionConfig` that called `_load_tax_jurisdiction_config()` without patching this constant silently read the real `2025.toml` from the working tree. They passed because the real file existed and had PT=True; any rename, move, or fiscal-year change would cause a cryptic `FileNotFoundError` rather than a meaningful test failure.
 Fix: monkeypatch `_DECISION_POINTS_DIR` to a `tmp_path`-based directory with a minimal TOML fixture, identical to the pattern in `TestLoadDecisionPointsFlags`.
 
 ## 38. Decision Points TOML Missing Must Raise `ConfigurationError`, Not Bare `FileNotFoundError`
+
+**Principle:** Family B (Error-policy propagation)
 
 `_load_decision_points_flags()` must convert `FileNotFoundError` (missing TOML for the configured fiscal year) to `ConfigurationError` before it reaches `main.py`. The `main.py` exception handler has a separate `(FileNotFoundError, OSError)` branch for a missing `config.ini`, which logs "Config file not found; crypto pipeline will run without jurisdiction filters" and continues. If the TOML-not-found error reaches that branch, the pipeline silently proceeds with `exclude_loan_repayment_gains=False`; loan repayment disposals are incorrectly included in capital gains with no error raised.
 
@@ -271,12 +338,18 @@ except FileNotFoundError as e:
     ) from e
 ```
 
+**See also (principle cluster B):** #9 (same family, distinct angle: write-side (catch specific not broad, #9) vs escape-side (convert the specific type so it evades the broad handler, #38)).
+
 ## 39. Resource-Release Flag Must Be Set After Successful Release Only
+
+**Principle:** Family E (Temporal / ordering invariants)
 
 See `~/Projects/.ai-playbook/python_guidelines.md` #5 for the canonical rule.
 Repo context: `workbook_builder.py` set `workbook_closed = True` unconditionally after a `try/except` that swallowed `workbook.close()` exceptions. The `finally` block then skipped the fallback `workbook.close()` call because the flag was already `True`, leaking the file handle whenever both the crypto sheet rendering and the subsequent close both raised.
 
 ## 40. Defensive Warnings Must Also Record Items in the Failure-Tracking Structure
+
+**Principle:** Family G (Data-loss observability)
 
 When a defensive branch fires because a row cannot be fully processed (e.g. "both sides loan-affected"), always append the untracked item to `parse_failures_by_asset`; do not rely on a `logger.warning` alone. A logged warning is invisible to the workbook consumer; only items recorded in the failure-tracking structure surface as `review_required` flags in the output.
 
@@ -284,13 +357,21 @@ Example: in `_classify_th_row`, when both the sent and received currencies are l
 
 General principle: "Unmatched items must never be silently discarded" (see CLAUDE.md §1) applies to defensive-path items too; logging is necessary but insufficient when a failure-tracking collection exists.
 
+**See also (principle cluster G):** #61 (same family, distinct angle: structure-recording (#40) vs baseline log-it (#61)).
+
 ## 41. Extracted Helpers Need Direct Unit Tests for Key Invariants
+
+**Principle:** Family A (Equivalence-class coverage)
 
 When refactoring extracts a private helper from a large orchestrator, add direct unit tests covering the key behavioral invariants (exact-match, partial consume, exhaustion, empty input, non-taxable path). Relying only on orchestrator-level coverage means a future regression in the helper requires tracing through the orchestrator before the failure is localized.
 
 Example: extracting `_consume_against_pool_inplace` from the FIFO orchestrator prompted adding six focused tests in `TestConsumeAgainstPoolInplace`, reducing the blast-radius of future regressions to a single function.
 
+**See also (principle cluster A):** #91 (same family, distinct angle: the audit's only true-duplicate candidate, overturned to OVERLAPPING by the fresh-agent challenge. Canonical = #91 (domain-neutral control-flow taxonomy), See-also #41 (incident-anchored FIFO witness). Full record in `### true-duplicate candidates` and `## Precision gate`.).
+
 ## 42. Failing Tests: Distinguish Stale Expectation from Production Bug
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
 
 When a test fails, first determine whether the test expectation became stale (design changed) or whether production code regressed. Changing production code to make a stale test pass is the wrong fix; it re-introduces the removed behavior.
 
@@ -300,17 +381,25 @@ Rule: tests that verify rendering or display behavior (e.g. "YES: ..." vs "NO" i
 
 ## 43. Two-Level Review Flags: Separate Platform-Level from Row-Level
 
+**Principle:** Family C (Representation: sentinel vs None vs exception)
+
 When a dataclass field serves two semantically different purposes, introduce a second explicitly named field rather than overloading the first.
 
 Example: `OperatorOrigin.review_required` was used for both (a) per-transaction issues (temporal validity failure, unknown platform) that should color transaction rows, and (b) platform-level concerns (e.g. account-region ambiguity) that should only appear on a summary tab. Adding `platform_review_required: bool = False` as a distinct field removed the conflation cleanly. See CRG-016.
 
+**See also (principle cluster C):** #79 (same family, distinct angle: platform-vs-row flags (#43) vs independent-validation-vs-entry flags (#79, cites #43)).
+
 ## 44. Summary Sheets Should Be Complete Manifests, Not Filtered Lists
+
+**Principle:** Family G (Data-loss observability)
 
 A summary/manifest sheet (e.g. Platform Assumptions) should list ALL items in the dataset with metadata columns, not only items that satisfy a filter condition. Filtering by flag omits clean items that a reviewer may still want to audit, and hides the total scope of the data.
 
 Use flag columns (e.g. "Review Required = YES/NO", sort review-required first) to draw attention to items needing action, while preserving the complete manifest for auditability. Apply red row fill only to the flagged rows.
 
 ## 45. Deduplication Key Must Capture Minimum Sufficient Identity
+
+**Principle:** Family G (Data-loss observability)
 
 When deduplicating domain events by a hash/key, verify that the chosen key uniquely
 identifies each *distinct event*, not just each distinct source row. A single external row
@@ -326,6 +415,8 @@ distinct consumption events are produced before assuming single-field dedup is s
 
 ## 46. Fiscal Year Filter in FIFO Pipeline Must Apply to Disposals Only, Post-FIFO
 
+**Principle:** Family G (Data-loss observability)
+
 When filtering FIFO pipeline output to the reporting fiscal year, filter *only disposal /
 realization records*, never the acquisition records. Prior-year acquisitions must remain
 in the FIFO pool so cost-basis carry-over is correct; filtering them by year would produce
@@ -336,6 +427,8 @@ them, before converting to `CryptoCapitalGainEntry`. Do not pre-filter `acquisit
 `consumptions` inputs to the FIFO engine.
 
 ## 35. CSV Test Fixture Column Alignment Must Be Verified
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
 
 When writing CSV test fixture rows for multi-column formats (e.g. Koinly TH rows), verify each value is at the correct column index by counting quoted fields as single units (quoted content containing commas counts as one field).
 
@@ -362,13 +455,19 @@ When a background agent is actively writing to source modules, running tests aga
 
 ## 48. Inlining Helpers That Use `defaultdict`: Update Tests That Pass Plain Dicts
 
+**Principle:** Family C (Representation: sentinel vs None vs exception)
+
 When inlining a helper that switches internal state from `{}` to `defaultdict(list)`, any test that directly calls the helper with a plain dict `{}` will silently get a `KeyError` on first missing key. Update such tests to pass `defaultdict(list)` directly, or update the inlined code to use `.setdefault(key, [])` instead of relying on defaultdict auto-init so plain-dict callers still work.
 
 ## 49. `TaxJurisdictionConfig` Lives in `domain/jurisdiction.py`
 
+**Principle:** Family F (Layering / dependency direction)
+
 `TaxJurisdictionConfig` was moved from `infrastructure/config.py` to `domain/jurisdiction.py`. `config.py` re-exports it for backward compat. All new code should import from `domain.jurisdiction` directly; infrastructure imports are for backward compat only.
 
 ## 50. Run-Determining Parameters Belong in the Output Artifact, Not in Logs
+
+**Principle:** Family D (Single source of truth)
 
 When a pipeline run produces different results depending on dynamically-discovered inputs (e.g. which assets are loan-affected, which platforms are active, which years are in scope), expose those inputs in the output report itself, as a dedicated worksheet section, a named range, or a metadata tab, rather than relegating them to log lines or ephemeral sidecar files.
 
@@ -378,6 +477,8 @@ Example: `CryptoTaxReport.fifo_rebuild_assets` (which assets were rebuilt from T
 
 ## 51. All-or-Nothing File Set Validation for External Exports
 
+**Principle:** Family G (Data-loss observability)
+
 When a subsystem requires a complete set of N files from an external tool export (e.g. Koinly's capital gains, income, and transaction history), validate with all-or-nothing semantics:
 
 - **None present** → skip gracefully (no-op mode; the external data source is simply not configured for this run).
@@ -385,6 +486,8 @@ When a subsystem requires a complete set of N files from an external tool export
 - **All N present** → proceed normally.
 
 The silent-data-loss case that triggered this lesson: `income_file = None` was handled as `reward_entries = []` with no warning or error, so Wirex EUR lending interest vanished from the Crypto Rewards tab without any indication. The user attributed the disappearance to a code change, but the actual cause was a missing export file. Fail-fast on partial sets eliminates this class of confusion.
+
+**See also (principle cluster G):** #63 (same family, distinct angle: total-failure fail-fast (#63) vs partial-file-set fail-fast (#51)).
 
 ## 52. Suspicious Asset Detection via Non-Latin Script Characters
 
@@ -430,19 +533,27 @@ Koinly uses prefixes/suffixes for tracked or staked tokens (e.g., **TSTON**, **T
 
 ## 55. Verify Staged Diff Matches Implementation Before Finalizing
 
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
 When finalizing work for code review or commit, the staged diff (`git diff master...HEAD`) must match the actual implementation in the working directory. Untracked files that are part of the implementation create a discrepancy; reviewers evaluate stale code while the working directory has different logic.
 
 **Check before finalizing**: Run `git status` and verify no files that are part of the implementation appear as untracked (`??`). If a new source file or test exists in the working directory but is not staged, add it with `git add <file>` before considering the work ready for review.
 
 **Why**: Code reviews evaluate staged changes. If staged code differs from working directory, review findings may be obsolete or the review may miss issues that exist only in untracked files.
 
+**See also (principle cluster H):** #116, #122, #128, #129 (same family, distinct angle: the git/docs-state verification cluster.).
+
 ## 56. Try/Finally Resource-Cleanup Scope Must Cover All Raising Operations
+
+**Principle:** Family E (Temporal / ordering invariants)
 
 When using try/finally for resource cleanup (e.g., `workbook.close()`, `file.close()`), ensure all operations that can raise exceptions before the finally block are covered by the same try block. If an operation outside the try/finally raises, the cleanup never runs.
 
 **Fix by**: Either (1) start the try block early enough to cover all operations that can raise, or (2) wrap early operations in their own try/except with explicit cleanup before re-raising.
 
 **Example**: In workbook_builder.py, `aggregate_taxable_rewards()` was called before the try/finally that closes the workbook. If aggregation raised, the workbook was never closed. Fixed by moving aggregation inside the try block so any exception triggers workbook cleanup.
+
+**See also (principle cluster E):** #106 (same family, distinct angle: try/finally cleanup scope (#56) vs reuse-parsed-value-in-try (#106)).
 
 ## 57. When Removing Functions, Remove Their Tests
 
@@ -452,11 +563,17 @@ When removing or deleting a function from a module, check for and remove any tes
 
 ## 58. Update Documentation When Code Structure Changes
 
+**Principle:** Family D (Single source of truth)
+
 When restructuring code (changing sheet layouts, renaming components, merging or splitting modules), update all documentation that describes the structure in the same session. README files, walkthough documents, and project overviews that describe the old structure become misleading and cause confusion.
 
 **Scope**: Check README.md, any walkthrough or presentation docs, and any architectural decision documents that mention the changed components.
 
+**See also (principle cluster D):** #23, #68, #94 (same family, distinct angle: multi-authority synchronization; #94 is the test-enforced variant of #23's manual grep.).
+
 ## 59. Hardcoded Set Maintenance: Check Across All Sections for Duplicates
+
+**Principle:** Family D (Single source of truth)
 
 When maintaining multi-section hardcoded collections (like `_POPULAR_CRYPTO_TOKENS`, `_INCOME_CODE_DESCRIPTIONS`), items can legitimately belong to multiple categories. Before adding an item to one section, grep across all sections to verify it doesn't already exist elsewhere in the same collection.
 
@@ -465,6 +582,8 @@ When maintaining multi-section hardcoded collections (like `_POPULAR_CRYPTO_TOKE
 **Check pattern**: `grep -n '"ITEM_NAME"' src/tax_reporting/application/crypto_reporting.py` before adding a new token.
 
 **Example**: "ARB", "OP", "MATIC" appeared in both "Layer 1 / Major chains" and "Layer 2 / Scaling" sections; keep each token in its most appropriate category only.
+
+**See also (principle cluster D):** #1 (same family, distinct angle: general duplicate-detection seed (#1) vs frozenset cross-section (#59)).
 
 ## 60. Document Tradeoffs for Fuzzy Matching in Docstrings
 
@@ -479,6 +598,8 @@ When implementing fuzzy matching (substring matching, regex patterns, glob patte
 **Example** (from `_contains_popular_token`): "Tradeoff: Substring matching may cause false positives for tickers that coincidentally contain popular token names as substrings (e.g., 'MATICAL' matches 'MATIC'). This is acceptable because the consequence is merely flagging for review rather than incorrectly skipping a legitimate zero-value reward."
 
 ## 61. Add Logging to Silent Exception Handlers
+
+**Principle:** Family G (Data-loss observability)
 
 When using `except Exception: continue` or similar graceful degradation patterns, add warning-level logging before continuing. Silent failures hide real issues (file corruption, permission problems, malformed data) and make debugging impossible.
 
@@ -504,6 +625,8 @@ except Exception as e:
 
 **Why**: When the function fails silently, you can't tell whether the empty result is correct (no data) or caused by a bug (file couldn't be read). Logging makes the difference visible.
 
+**See also (principle cluster G):** #40 (same family, distinct angle: structure-recording (#40) vs baseline log-it (#61)).
+
 ## 62. Review Documents Are Temporary Artifacts
 
 Code review documents in `docs/history/reviews/` are temporary staging artifacts for the review workflow, not permanent documentation. They serve as:
@@ -518,6 +641,8 @@ Code review documents in `docs/history/reviews/` are temporary staging artifacts
 **Do not**: Accumulate stale review documents in `docs/history/reviews/`. After the branch is merged, these documents have no further purpose.
 
 ## 63. Fail Fast for Data-Completeness Operations
+
+**Principle:** Family G (Data-loss observability)
 
 For scan/aggregation functions that populate lookup sets used for validation or classification, fail fast when ALL inputs fail rather than returning empty results that cause incorrect downstream behavior. Partial success with warning is acceptable; total failure should raise an error.
 
@@ -549,6 +674,8 @@ def _collect_known_assets(files):
 ```
 
 **Why**: When the function returns empty due to total failure, downstream code incorrectly treats valid known assets as unknown, causing data loss. Raising an error surfaces the root cause (file format/parse errors) prominently.
+
+**See also (principle cluster G):** #51 (same family, distinct angle: total-failure fail-fast (#63) vs partial-file-set fail-fast (#51)).
 
 ## 64. Context Managers for Resource Cleanup
 
@@ -617,6 +744,8 @@ def _parse_file(path, context: ParsingContext):
 
 ## 66. Externalize Frequently-Changing Lists
 
+**Principle:** Family D (Single source of truth)
+
 Hardcoded lists that change frequently (popular tokens, supported exchanges, asset tickers) should be externalized to data files, not embedded in source code. Use cached loading for performance.
 
 **Pattern**:
@@ -652,6 +781,8 @@ A leveraged futures position (e.g., SOL/USDT with USDT as collateral) creates a 
 
 ## 68. Decision Point Flags Require TaxJurisdictionConfig Field
 
+**Principle:** Family D (Single source of truth)
+
 When adding a new boolean decision point flag to `docs/maintenance/tax/decision_points/<year>.toml`,
 you must also add the corresponding field to `TaxJurisdictionConfig` in `src/tax_reporting/domain/jurisdiction.py`.
 
@@ -673,7 +804,11 @@ validation error until the field was added to the domain model.
 
 ---
 
+**See also (principle cluster D):** #23, #58, #94 (same family, distinct angle: multi-authority synchronization; #94 is the test-enforced variant of #23's manual grep.).
+
 ## 69. Excel Output Visual Structure Tests
+
+**Principle:** Family A (Equivalence-class coverage)
 
 When adding or modifying Excel report layouts, add visual structure tests to verify row placement, cell merging, blank rows, and header structure, not just data values. This prevents regressions where structural changes accidentally modify layout.
 
@@ -707,6 +842,8 @@ def test_sale_header_merged_across_4_columns(self, sheet):
 
 ## 70. Structural Change Verification for Absolute-Position Code
 
+**Principle:** Family A (Equivalence-class coverage)
+
 When modifying table structures (adding/removing columns), verify that all downstream code using those positions is correct. Distinguish between:
 
 - **Absolute-position code** (writes to specific column numbers): needs manual verification after structural changes
@@ -733,6 +870,8 @@ uv run pytest -m integration   # Before committing
 
 ## 71. Validation-First Investigation Pattern
 
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
 When a plan investigates "is X handled correctly?" or "does the system correctly handle Y?", structure the plan with verification tasks before implementation tasks:
 
 1. **Start with verification:** Code inspection, test execution, and documentation review
@@ -745,7 +884,11 @@ This pattern prevents unnecessary work when the current implementation is alread
 
 **See also:** plan_quality_guidelines.md for plan structure guidance on verification-before-implementation task ordering.
 
+**See also (principle cluster H):** #72, #97 (same family, distinct angle: investigation pattern / data-trace / characterization-test.).
+
 ## 72. Data Trace Verification Requirement
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
 
 When a plan investigates "is X handled correctly?" or "does the system correctly handle Y?", code inspection alone is INSUFFICIENT. The investigation must include ACTUAL data trace verification:
 
@@ -756,7 +899,11 @@ When a plan investigates "is X handled correctly?" or "does the system correctly
 
 **Example:** The 2026-06-07 futures/derivatives loss treatment investigation concluded "no code changes needed" based on code inspection alone. However, data trace verification revealed that Koinly's Other Gains Report classified entries as "Loss" while the Excel output showed them as "Gain", a clear discrepancy that code inspection missed.
 
+**See also (principle cluster H):** #71, #97 (same family, distinct angle: investigation pattern / data-trace / characterization-test.).
+
 ## 73. Cross-Report Validation for Multi-Report Systems
+
+**Principle:** Family G (Data-loss observability)
 
 When investigating systems that process data from multiple source reports (e.g., Koinly Transaction History, Capital Gains Report, Other Gains Report), verify classifications match across ALL reports before concluding correctness:
 
@@ -771,6 +918,8 @@ When investigating systems that process data from multiple source reports (e.g.,
 
 ## 74. Cross-Module Function Dependencies Require Complete Imports
 
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
 When adding a function in one module that calls a function from another module, verify the import is complete. Unit tests that don't exercise the full code path (e.g., only test helper functions but not the file-discovery wrapper) can miss import errors that would cause runtime `NameError`.
 
 **Verification:** After adding cross-module function calls, run `uv run python -c "from module import function"` to verify imports resolve at import time, not just at call time.
@@ -778,6 +927,8 @@ When adding a function in one module that calls a function from another module, 
 **Example:** `_find_and_parse_other_gains_file()` in `koinly_parser.py` called `_find_report_path()` from `crypto_reporting.py` without importing it. Unit tests for the helper functions (`_extract_ogr_gain_loss`, `_parse_other_gains_row`) passed because they didn't call the file-discovery function. A full import check would have revealed the missing dependency before runtime.
 
 ## 75. Authoritative Source Overrides Must Precede Aggregation
+
+**Principle:** Family D (Single source of truth)
 
 When applying overrides from an authoritative source (e.g., OGR) to calculated data (e.g., CG), the override must happen BEFORE aggregation when working with lot-level entries.
 
@@ -792,6 +943,8 @@ When applying overrides from an authoritative source (e.g., OGR) to calculated d
 **Example:** In `crypto_reporting.py`, `_apply_ogr_overrides()` is called after `_parse_capital_gains_file` but BEFORE `_aggregate_capital_entries()`. This ensures that when OGR reports an authoritative per-disposal loss, each individual FIFO lot for that disposal is overridden with that authoritative value before being summed. If aggregation happened first, the lot-level detail would be lost and the override could not be traced back to specific lots.
 
 **See also:** Lesson #73 (Cross-Report Validation), AGENTS.md constraint on OGR override timing
+
+**See also (principle cluster D):** #78, #85 (same family, distinct angle: OGR/CG authority -- override ordering (#75) vs split by aspect (#78) vs aggregate-then-validate (#85)).
 
 ## 76. TDD for Bug Fixes
 
@@ -816,6 +969,8 @@ When investigating and fixing bugs, follow the TDD approach: create a failing te
 
 ## 77. Duplicate Key Handling in Index Building
 
+**Principle:** Family D (Single source of truth)
+
 When building an index from source data where multiple entries may share the same key, handle duplicate keys explicitly by summing (or another appropriate aggregation). Never silently overwrite previous entries with new ones.
 
 **Why this matters:** Silent data loss occurs when duplicate keys overwrite previous values. This is especially dangerous when the index is used for authoritative values in calculations.
@@ -837,6 +992,8 @@ result[key] = result.get(key, ZERO) + value  # All values summed
 
 ## 78. OGR Directional Authority vs Wholesale Replacement (Completed)
 
+**Principle:** Family D (Single source of truth)
+
 **Status:** Completed; see `docs/history/plans/2026-06-10-ogr-validation-design.md`
 
 The OGR (Other Gains Report) feature uses **directional authority semantics**, not wholesale replacement. OGR provides authoritative DIRECTION (gain vs loss) while CG (Capital Gains) provides MAGNITUDE via standard FIFO calculation.
@@ -857,7 +1014,11 @@ The OGR (Other Gains Report) feature uses **directional authority semantics**, n
 
 **See also:** Lesson #75 (Authoritative Source Overrides Timing), Lesson #79 (Independent Validation Fields), CRG-017 in crypto_reporting_guidelines.md
 
+**See also (principle cluster D):** #85 (same family, distinct angle: OGR/CG authority -- override ordering (#75) vs split by aspect (#78) vs aggregate-then-validate (#85)).
+
 ## 79. Independent Validation Fields vs Entry-Level Review Flags
+
+**Principle:** Family C (Representation: sentinel vs None vs exception)
 
 When adding validation-related fields to a dataclass that already has `review_required`/`review_reason` fields, distinguish between:
 - **Entry-level review flags**: domain-specific validations that apply to the entry itself
@@ -877,6 +1038,8 @@ When adding validation-related fields to a dataclass that already has `review_re
 
 ## 80. Field Aggregation Strategy Depends on Semantics
 
+**Principle:** Family D (Single source of truth)
+
 When aggregating grouped entries (e.g., FIFO lots into sale events), field aggregation strategy depends on field semantics, not all fields should be summed.
 
 **Pattern:** For each field in the aggregated result, choose the strategy based on what the field represents:
@@ -894,7 +1057,11 @@ When aggregating grouped entries (e.g., FIFO lots into sale events), field aggre
 
 **See also:** Lesson #75 (Authoritative Source Overrides Timing)
 
+**See also (principle cluster D):** #139 (same family, distinct angle: field-semantics determine strategy (#80) vs field-identity (#139)).
+
 ## 81. Excel Conditional Formatting Priority Matters
+
+**Principle:** Family E (Temporal / ordering invariants)
 
 When applying multiple conditional fill conditions to Excel rows, implement explicit priority ordering. Highest-priority conditions should be checked first and return early, preventing lower-priority conditions from masking important issues.
 
@@ -916,12 +1083,13 @@ When applying multiple conditional fill conditions to Excel rows, implement expl
 
 **Implementation notes:**
 - Fill colors should be defined as module-level constants for consistency and to avoid repeating color codes
-- When adding columns, update the column count constant AND the conditional formatting loop range
 - Add helper functions for fill assertions (e.g., `_is_yellow_fill()`) to keep tests consistent
 
-**See also:** Lesson #7 (Excel Output Security), Lesson #15 (Excel Column Width), Lesson #69 (Excel Output Visual Structure Tests)
+**See also:** Lesson #7 (Excel Output Security), Lesson #15 (Excel Column Width), Lesson #69 (Excel Output Visual Structure Tests), Lesson #82 (Adding Excel Columns Requires Constant Updates)
 
 ## 82. Adding Excel Columns Requires Constant Updates
+
+**Principle:** Family D (Single source of truth)
 
 When adding new columns to an Excel sheet output, update all related constants and ranges in the same commit. A single new column typically requires updates in multiple places.
 
@@ -954,6 +1122,8 @@ When adding new columns to an Excel sheet output, update all related constants a
 
 ## 83. Test Blank/Null Handling Explicitly for New Optional Columns
 
+**Principle:** Family A (Equivalence-class coverage)
+
 When adding columns that can be blank/None (e.g., when validation data is absent), add dedicated tests for that state. Do not assume "no data" works correctly based on "with data" tests.
 
 **Pattern:**
@@ -968,6 +1138,8 @@ When adding columns that can be blank/None (e.g., when validation data is absent
 **See also:** Lesson #81 (Excel Conditional Formatting Priority), Lesson #82 (Adding Excel Columns Requires Constant Updates)
 
 ## 84. Backward Compatibility Testing for Flag-Controlled Features
+
+**Principle:** Family A (Equivalence-class coverage)
 
 When adding a new feature controlled by a boolean flag (like `use_other_gains_report`), create dedicated backward compatibility tests that verify the "disabled" state preserves existing behavior, not just that the "enabled" state works correctly.
 
@@ -984,6 +1156,8 @@ When adding a new feature controlled by a boolean flag (like `use_other_gains_re
 **Implementation trade-off note:** When a plan specifies a cosmetic constraint (e.g., "Excel has no OGR columns when disabled"), but the implementation uses a fixed column structure with blank cells, prefer verifying behavioral correctness over cosmetic compliance. A consistent column structure is often a reasonable engineering trade-off.
 
 ## 85. Recalculate Validation Metrics from Aggregated Values
+
+**Principle:** Family D (Single source of truth)
 
 When validating aggregated data against an external source (OGR, statements, etc.), compute validation metrics from the **aggregated totals**, not from individual pre-aggregation rows.
 
@@ -1006,7 +1180,11 @@ When validating aggregated data against an external source (OGR, statements, etc
 
 **See also:** CRG-017 (Other Gains Report Validation), Lesson #78 (OGR Directional Authority vs Wholesale Replacement)
 
+**See also (principle cluster D):** #75 (same family, distinct angle: OGR/CG authority -- override ordering (#75) vs split by aspect (#78) vs aggregate-then-validate (#85)).
+
 ## 86. Avoid Circular Dependencies During Module Extraction
+
+**Principle:** Family F (Layering / dependency direction)
 
 When extracting a function to a new module, check what constants and functions it references from the source module. Circular imports occur when the new module imports from the source, and the source still needs to import from the new module.
 
@@ -1018,6 +1196,8 @@ When extracting a function to a new module, check what constants and functions i
 **Example from Task 8:** Extracting `_extract_loan_activity()` from `crypto_reporting.py` to `crypto/loan_activity.py` required handling the `ZERO` constant. Defining `ZERO = Decimal('0')` locally in the new module avoided a circular import, since the constant is only used for loan balance calculations.
 
 ## 87. Module and Class Size Limits
+
+**Principle:** Family F (Layering / dependency direction)
 
 Large modules and classes become difficult to understand, test, and maintain. They accumulate unrelated responsibilities over time ("god class" or "god object" anti-pattern).
 
@@ -1036,6 +1216,8 @@ Large modules and classes become difficult to understand, test, and maintain. Th
 **Example from crypto_reporting refactor:** The original `crypto_reporting.py` was 3,372 lines with 40+ functions handling parsing, validation, classification, aggregation, FIFO processing, and orchestration. After DDD-based extraction into focused modules (`crypto/entities.py`, `crypto/classification.py`, `crypto/validation.py`, `crypto/parsing.py`, `crypto/aggregation.py`, `crypto/ogr_handler.py`, `crypto/loan_activity.py`, `crypto/chain_derivation.py`, `crypto/operator_origin.py`, `crypto/fifo_helpers.py`), the orchestration layer reduced to 757 lines (~65% reduction), with each specialized module under 500 lines.
 
 ## 88. Single Responsibility Principle for Modules
+
+**Principle:** Family F (Layering / dependency direction)
 
 Each module should have one clear reason to change. When a module's name or purpose cannot be described succinctly, or when it contains multiple independent subsystems, extraction is needed.
 
@@ -1073,6 +1255,8 @@ Each module has a single, clear responsibility and can be understood independent
 
 ## 89. Read Implementation Before Writing Test Expectations
 
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
 When adding edge case tests for existing functions, read the actual implementation first to understand what patterns it supports before writing expected results.
 
 **Anti-pattern:** Writing test expectations based on function name, documentation, or assumptions about what the function "should" do, then debugging failures when expectations don't match reality.
@@ -1086,6 +1270,8 @@ When adding edge case tests for existing functions, read the actual implementati
 **Example from chain derivation tests:** Initial tests expected "Ledger Nano X (SOL)" → "Solana" and "0x1234...abcd.eth" → "Ethereum", but the actual `_derive_chain` implementation returns "Unknown" for both patterns. Reading the implementation first would have revealed: the function only matches chains in a predefined `_KNOWN_CHAINS` set after normalization, it doesn't guess from ticker suffixes or address patterns.
 
 ## 90. Edge Case Coverage for Validation Functions
+
+**Principle:** Family A (Equivalence-class coverage)
 
 Validation functions with conditional logic need comprehensive edge case coverage for all validation branches.
 
@@ -1108,6 +1294,8 @@ Validation functions with conditional logic need comprehensive edge case coverag
 
 ## 91. Direct Unit Testing for Extracted Helper Functions
 
+**Principle:** Family A (Equivalence-class coverage)
+
 When a complex function is extracted into a helper, add direct unit tests for the helper rather than relying only on indirect testing through integration tests.
 
 **What to test directly:**
@@ -1118,6 +1306,8 @@ When a complex function is extracted into a helper, add direct unit tests for th
 - Edge cases (multiple items requiring min/max selection)
 
 **Example from FIFO helpers:** `_apply_phantom_lot_flags` was extracted but initially only tested indirectly through FIFO integration. Added direct unit tests covering: empty phantom_transfers (early return), mismatching asset/platform (no effect), realizations before vs after earliest_phantom date (conditional flagging), appending phantom reason to existing review_reason (concatenation), and preserving carryover/partial tx keys (state preservation).
+
+**See also (principle cluster A):** #41 (same family, distinct angle: the audit's only true-duplicate candidate, overturned to OVERLAPPING by the fresh-agent challenge. Canonical = #91 (domain-neutral control-flow taxonomy), See-also #41 (incident-anchored FIFO witness). Full record in `### true-duplicate candidates` and `## Precision gate`.).
 
 ## 92. Fix In-Scope Refactoring Findings in the Same Branch
 
@@ -1139,6 +1329,8 @@ When a branch is created for refactoring, any code review findings that result f
 **Example from god class refactor:** The refactoring extracted `crypto_reporting.py` into 12 modules. Code review found Medium-severity issues in the extracted modules (validation complexity in `__post_init__`, missing edge case tests). These were in-scope because they touched files created by the refactoring and addressed test coverage gaps exposed by the extraction. All were fixed in the same branch.
 
 ## 93. Early Returns Can Skip Mandatory Sections
+
+**Principle:** Family E (Temporal / ordering invariants)
 
 When a function renders multiple independent sections (e.g., Excel sheet writers with platform data + methodology documentation), an early return in an optional-data branch can skip mandatory sections that must always render.
 
@@ -1167,6 +1359,8 @@ render_mandatory_section()  # Always executes
 ---
 
 ## 94. Verification Tests for Canonical Source Synchronization
+
+**Principle:** Family D (Single source of truth)
 
 When a system has a canonical source of truth (decision points document, feature flags config, etc.) that must be reflected in derived output (Excel methodology, UI text, API responses), add a verification test that enforces synchronization between the source and the output.
 
@@ -1197,6 +1391,8 @@ def test_all_decision_points_documented(self):
 
 ---
 
+**See also (principle cluster D):** #23, #58, #68 (same family, distinct angle: multi-authority synchronization; #94 is the test-enforced variant of #23's manual grep.).
+
 ## 95. Use the resolve-vars Utility Skill for Path Discovery
 
 Skills that need project-specific paths (reviews, plans, tmp, etc.) should use the `resolve-vars` utility skill rather than implementing their own discovery logic or guessing from system context.
@@ -1221,6 +1417,8 @@ tmp_dir = resolve_var("tmp_dir", ["**/tmp/", "docs/tmp"])
 ---
 
 ## 96. Structural Identification for Excel Output Tests
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
 
 When testing Excel output, identify data items by their structural properties (column population, font attributes) rather than hardcoded value exclusions. Tests using hardcoded values from test fixtures break when fixture defaults change.
 
@@ -1259,6 +1457,8 @@ for row_idx in range(1, 200):
 
 ## 97. Characterization Tests Can Reveal Plan-Assumption Errors Between Related Quantities
 
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
 When a characterization (golden-value) test captures the actual current behavior and the captured value disagrees with the plan's stated expected value, the disagreement is itself a finding. Investigate the root cause before any implementation task proceeds, because downstream tasks often depend on the incorrect assumed value.
 
 **Why this happens:** Plan authors writing expected values for characterization tests may conflate two related but distinct quantities when one is a downstream authoritative total and the other is the post-transformation output. The override/transformation in question may apply directional authority (sign) while preserving the other quantity's magnitude, so the expected value the author wrote (the authoritative total) is NOT the value the pipeline actually emits.
@@ -1278,6 +1478,8 @@ When a characterization (golden-value) test captures the actual current behavior
 ---
 
 ## 98. Probe the Canonical URL Before Assuming an Official Source Is Unavailable
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
 
 When a plan or task assumes an authoritative document (statute amendment, binding ruling, official circular) is "not publicly indexed", "request-specific", or otherwise unreachable, do NOT treat that assumption as ground truth. Probe the issuing authority's canonical URL pattern directly (HTTP HEAD or ranged GET) before falling back to secondary sources or skipping archival.
 
@@ -1300,6 +1502,8 @@ When a plan or task assumes an authoritative document (statute amendment, bindin
 
 ## 99. Trace the Fixture When Plan Pseudocode Compares Same-Unit Fields by Name
 
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
 When plan pseudocode compares two fields by name and those fields share a unit (EUR, count, timestamp) but live on different domain objects or different fields of the same dataclass, do not translate the pseudocode literally. Trace the fixture first to confirm the two fields represent the same economic quantity. Field names like `gain_loss_eur` suggest "the EUR value" but the field's actual semantic may be a derived quantity (realized gain = proceeds − cost) that is structurally different from another EUR field (disposal proceeds) even though both live on the same dataclass.
 
 **Why this happens:** Plan authors writing pseudocode for a comparison operation may pick the field whose name sounds closest to the intent ("gain_loss_eur" sounds like the EUR magnitude), without checking whether the field's actual semantic matches the quantity the comparison requires. When multiple EUR-denominated fields coexist on the same dataclass with distinct economic meanings (proceeds, cost, realized gain, fee), the field-name conflation is invisible until the comparison runs against real numbers.
@@ -1318,7 +1522,11 @@ When plan pseudocode compares two fields by name and those fields share a unit (
 
 **See also:** Lesson #97 (characterization tests revealing magnitude-vs-direction conflation), Lesson #72 (data trace verification), Lesson #89 (read implementation before writing edge-case tests), CLAUDE.md §4 Agent Workflow Rules (verification-first task ordering).
 
+**See also (principle cluster H):** #100, #101 (same family, distinct angle: general plan-claim rule (#100) and its two specific witnesses.).
+
 ## 100. Verify Plan-Time Claims About Production Code Before Writing Tasks
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
 
 When a plan task, design invariant, or gist example makes a claim about production code (field semantics, file paths, line numbers, function behavior, return shape), the plan author must verify the claim against the actual source BEFORE writing plan tasks that depend on it. A single Read call per claim eliminates an entire class of plan-review Blockers. The same duty applies when RECEIVING code review: a finding's diagnosis and its proposed remediation are themselves claims about production code (how many sites duplicate a pattern, which module a symbol lives in, what a function returns), and both must be verified against source before the finding is applied or routed.
 
@@ -1341,7 +1549,11 @@ When a plan task, design invariant, or gist example makes a claim about producti
 
 **See also:** Lesson #71 (verification-first task ordering), Lesson #72 (data trace verification), Lesson #99 (trace fixture when comparing same-unit fields by name), CLAUDE.md §4 Agent Workflow Rules.
 
+**See also (principle cluster H):** #101 (same family, distinct angle: general plan-claim rule (#100) and its two specific witnesses.).
+
 ## 101. Trace Each Affected OGR Row to Its Originating TH Type Before Designing a Type-Filtered Scanner
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
 
 When designing a scanner that filters TH rows by Type (e.g., `crypto_withdrawal` only), trace each OGR row on the affected date back to its originating TH source row and confirm which Type that TH row carries. OGR rows on the same date, same asset, same wallet may originate from different TH Types; only the OGR rows sourced from matching TH Types are affected by the scanner.
 
@@ -1359,7 +1571,11 @@ When designing a scanner that filters TH rows by Type (e.g., `crypto_withdrawal`
 
 **See also:** Lesson #72 (data trace verification), Lesson #99 (trace fixture when comparing same-unit fields by name), CLAUDE.md §3 Repository Constraints (derivatives separation).
 
+**See also (principle cluster H):** #100 (same family, distinct angle: general plan-claim rule (#100) and its two specific witnesses.).
+
 ## 102. Add a Count-Matched-Items-Per-Event Safety Check When Matching by Non-Unique Keys
+
+**Principle:** Family G (Data-loss observability)
 
 When a dedup or matching algorithm uses a key tuple that does not include a globally unique identifier (e.g., `(date, asset, wallet, amount)` without a transaction hash or row ID), add a count-matched-target-items-per-source-event safety check that logs a warning when one source event matches more than one target item. The warning surfaces two distinct cases for review: legitimate FIFO splits (one disposal split into N lots, all expected to match) and coincidental amount collisions (two unrelated events on the same date with the same amount, an over-removal risk).
 
@@ -1381,6 +1597,8 @@ When a dedup or matching algorithm uses a key tuple that does not include a glob
 
 ## 103. Audit for Shared Identifiers Across Reports When Separating a Previously-Merged Tax Category
 
+**Principle:** Family D (Single source of truth)
+
 When introducing a separation between two tax categories that previously shared a single pipeline (e.g., splitting a unified crypto-gains flow into spot vs derivatives), audit whether the same disposal event appears in **both** source reports that feed the separated paths. Without an explicit deduplication step removing the now-derivatives-classified items from the spot path, those items are double-counted: once in the new derivatives aggregate, once in the legacy spot aggregate. The trigger for the audit is the **introduction of the separation itself**, not a later data-quality or cross-report validation check.
 
 **Why this happens:** Koinly (and similar exporters) emit one row per disposal event in each report that references it. A derivatives Futures-fee disposal appears both as an OGR `Loss` row (because it has no cost basis, so Koinly routes it to Other Gains) and as a CG lot (because Koinly also records it as a disposal of the fee asset against its acquisition lot). Before the separation, only the CG path was read, so the duplication was invisible. The moment a plan introduces a derivatives path that reads OGR, both paths light up for the same disposal, and the spot CG total silently inflates.
@@ -1401,6 +1619,8 @@ When introducing a separation between two tax categories that previously shared 
 
 ## 104. Trace ALL Branches of a Multi-Branch Conditional When Implementing a Tiered Rule
 
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
 When a plan modifies a multi-branch conditional (e.g., an `if cost == 0: ... if proceeds == 0: ...` block) to implement a new tiered rule, the plan author MUST trace every input combination through ALL branches before finalizing the implementation steps. A common failure mode: changing one branch's condition to suppress an input, while leaving the sibling branch unchanged, which still fires on that same input and contradicts the stated design invariant.
 
 **Why this happens:** When reading a conditional like `if cost == 0: flag_A()` followed by `if proceeds == 0: flag_B()`, the author focuses on the branch they intend to modify (the cost branch) and overlooks that the sibling branch (proceeds branch) has no guard against the same input. For the input `cost=0, proceeds=0`, both branches evaluate True and both fire. The plan's design invariant ("zero-zero never flags") is then unachievable as written.
@@ -1419,7 +1639,11 @@ When a plan modifies a multi-branch conditional (e.g., an `if cost == 0: ... if 
 
 **See also:** Lesson #100 (verify plan claims against source), CLAUDE.md §4 Agent Workflow Rules (TDD approach), the r1 Blocker 1 trace in the zero-basis plan review r1 (local).
 
+**See also (principle cluster H):** #120, #109 (same family, distinct angle: plan pseudocode vs tests vs invariants.).
+
 ## 105. Calibrate Exception Handling Strategy to the Cost of Silent Failure When Reusing a Helper Pattern
+
+**Principle:** Family B (Error-policy propagation)
 
 When reusing a security/validation pattern from another module (symlink rejection, size limit, JSON parsing), do NOT blindly inherit the source module's exception-handling strategy. The right behavior for malformed input depends on the cost of silent failure at the NEW call site, not at the source. A non-critical feature may gracefully degrade (return empty on malformed input); a correctness-critical feature MUST raise.
 
@@ -1440,7 +1664,11 @@ When reusing a security/validation pattern from another module (symlink rejectio
 
 **See also:** Lesson #61 (log silent exception handlers), Lesson #51 (all-or-nothing validation for file sets), CLAUDE.md §1 Instruction Rules (data-loss at warning+, fail clearly), CLAUDE.md §3 Repository Constraints (no silent drops).
 
+**See also (principle cluster B):** #124, #135 (same family, distinct angle: recalibrate policy on reuse (#105) vs raise-not-sentinel + ordering (#124) vs propagate through wrappers (#135)).
+
 ## 106. Reuse the Parsed Value Inside the Existing Try Block When Extracting a Second Derived Value
+
+**Principle:** Family E (Temporal / ordering invariants)
 
 When a plan asks you to compute a second derived value from an input that is already parsed inside a `try ... except ValueError` block (for example, adding a minute-precision `timestamp_str` alongside an existing day-level `date_str`, both derived from the same source date string), reuse the already-parsed object inside the SAME try block. Do NOT re-invoke the parser outside the block to compute the second value.
 
@@ -1464,6 +1692,8 @@ When a plan asks you to compute a second derived value from an input that is alr
 
 ## 107. Use an Ordered Queue Per Non-Unique Key When Multiple Source Events May Share a Key With Multiple Target Items
 
+**Principle:** Family E (Temporal / ordering invariants)
+
 When a matching algorithm pairs N source events against M target items by a key tuple that is NOT globally unique (e.g., `(timestamp, asset, wallet, amount)` without a transaction hash or row ID), and multiple source events can share the same key with multiple target items, build a `dict[key] -> deque[target_items]` (or any FIFO queue) and pop exactly one item per source event. Do NOT use `dict[key] = item` assignment, which silently overwrites earlier items when two targets share a key, and do NOT use `dict[key] = item` followed by `del dict[key]`, which loses the second target if a second event arrives for the same key.
 
 **Why this matters:** Without a queue per key, a same-key collision is no longer deterministic. With a dict-of-scalars, the second target item overwrites the first and the first source event matches nothing. With a dict-of-lists plus naive indexing, the matching order depends on iteration order, which is not the acquisition order the algorithm intends. A per-key deque (a) preserves target order (the order items were appended, typically acquisition-date-sorted), (b) ensures each source event consumes exactly one target, and (c) makes "items left over after all events consumed" observable as a separate surplus signal.
@@ -1484,7 +1714,11 @@ When a matching algorithm pairs N source events against M target items by a key 
 
 **See also:** Lesson #45 (deduplication key identity), Lesson #102 (count-matched-items-per-event warning), CLAUDE.md §3 Repository Constraints (no silent drops).
 
+**See also (principle cluster E):** #108, #110 (same family, distinct angle: the matcher temporal-invariant triple.).
+
 ## 108. Recompute Window-Relative Tolerance After Every Shrink Step in a Two-Pointer Sliding-Window Matcher
+
+**Principle:** Family E (Temporal / ordering invariants)
 
 When implementing a two-pointer sliding-window matcher that finds a contiguous range of items whose summed amount equals a target within tolerance, and the tolerance scales with the window size (`tolerance = scale * range_size`), recompute the tolerance after every shrink step. Use `left < right` (not `left <= right`) as the shrink-loop bound so the single-item window is preserved as a candidate match.
 
@@ -1526,7 +1760,11 @@ return None
 
 **See also:** Lesson #107 (per-key deques for exact match), Lesson #102 (count-matched-items-per-event warning), CLAUDE.md §3 Repository Constraints (no silent drops).
 
+**See also (principle cluster E):** #110 (same family, distinct angle: the matcher temporal-invariant triple.).
+
 ## 109. Re-Read RED Test Assertions Against Revised Design Invariants Before Flipping to GREEN
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
 
 When an implementation plan is revised between the RED phase (writing the failing test) and the GREEN phase (implementing the fix), the RED test may still assert the pre-revision contract. Flipping it GREEN without re-reading it against the current design invariants lets a stale assertion pass against the wrong implementation, or forces the implement sub-agent to patch the test silently during the GREEN flip without flagging that the contract changed.
 
@@ -1546,7 +1784,11 @@ When an implementation plan is revised between the RED phase (writing the failin
 
 **See also:** Lesson #76 (TDD RED-then-GREEN ordering), Lesson #100 (verify plan-time claims before writing tasks, the plan-authoring counterpart), Lesson #120 (reconcile plan pseudocode against tests and design invariants before GREEN).
 
+**See also (principle cluster H):** #104 (same family, distinct angle: plan pseudocode vs tests vs invariants.).
+
 ## 110. Re-Run Phase-N Feasibility Scans on the Post-Phase-(N-1) State, Not the Original Input Set
+
+**Principle:** Family E (Temporal / ordering invariants)
 
 When a multi-phase matching (or removal) algorithm runs phase 1 (e.g., exact-match consumption) before phase 2 (e.g., contiguous-range fallback), any brute-force feasibility scan the plan author runs to predict phase-2 behavior MUST run against the POST-phase-1 input set, not the original full input set. Phase 1 consumes target items, which changes both the candidate count and the candidate sum seen by phase 2. A "no contiguous range sums to X" claim derived from the full set does not survive phase-1 consumption and will be falsified by the implementation.
 
@@ -1573,7 +1815,11 @@ When a multi-phase matching (or removal) algorithm runs phase 1 (e.g., exact-mat
 
 **See also:** Lesson #100 (verify plan-time claims about production code), Lesson #108 (sliding-window tolerance recomputation), Lesson #109 (re-read RED tests against revised invariants), CLAUDE.md §4 Agent Workflow Rules.
 
+**See also (principle cluster E):** #107 (same family, distinct angle: the matcher temporal-invariant triple.).
+
 ## 111. Grep Across ALL Test Files for Stale Assertions When a Task Changes Data Flow Semantics
+
+**Principle:** Family A (Equivalence-class coverage)
 
 When a task changes data flow semantics (adds a filter that removes items, adds a dedup step, changes a transformation output, splits one pipeline into two), assertions on the affected data may exist in multiple test files at different test tiers (unit, integration, e2e). Each task's "update affected tests" scope must include a grep across ALL test files for assertions that reference the changed data, not just the tests the task author listed as in-scope. A stale assertion in a sibling test file survives a focused update of the task's listed files and only surfaces during full regression, by which point the implement sub-agent has already moved on, forcing a cleanup commit.
 
@@ -1595,7 +1841,11 @@ When a task changes data flow semantics (adds a filter that removes items, adds 
 
 **See also:** Lesson #92 (fix in-scope refactoring findings in the same branch), Lesson #109 (re-read RED tests against revised invariants), CLAUDE.md §4 Agent Workflow Rules.
 
+**See also (principle cluster A):** #112 (same family, distinct angle: cross-file stale assertions (#111) vs within-file name-vs-body scope (#112)).
+
 ## 112. Test Method Names Must Reflect Their Actual Coverage Scope
+
+**Principle:** Family A (Equivalence-class coverage)
 
 When a test method's name implies coverage of N pathways (e.g., `test_*_propagate_timestamp` for a function with 5 emitter sites, or `test_all_branches_handle_*` for a 4-branch conditional) but the body exercises only 1, reviewers reading the test list will assume the implied coverage exists. A later refactor that breaks an unexercised pathway will pass the existing test suite because the suite never tested that pathway; the misleading name delayed the discovery.
 
@@ -1622,6 +1872,8 @@ When a test method's name implies coverage of N pathways (e.g., `test_*_propagat
 
 ## 113. Internal Placeholder Sentinels From Resolution Functions Must Not Leak to User-Facing Output Fields
 
+**Principle:** Family C (Representation: sentinel vs None vs exception)
+
 When a resolution/lookup function (operator-origin resolver, ISIN resolver, country resolver) returns an internal placeholder sentinel as one of its fields (e.g., `operator_entity="UNKNOWN_OPERATOR_REVIEW_REQUIRED"`, indicating "data could not be resolved automatically"), callers must NOT propagate that sentinel value directly into user-facing output fields (Excel cells, report columns, API responses). The sentinel is a programmatic "data missing, review required" marker intended for internal branching and review-flag logic, not for display. Propagating it verbatim produces output like `UNKNOWN_OPERATOR_REVIEW_REQUIRED` in a taxpayer-facing Excel cell, confusing, unactionable, and indistinguishable from a real operator name to a non-technical reviewer.
 
 **Why this matters:** User-facing output must use self-explanatory terminology (see `coding_guidelines.md` #6). Internal sentinels are terse programmatic identifiers designed for code-side `if` checks, not for humans. The two concerns, "signal missing data to the code" and "display something useful to the human", require different values at the same call site. Reusing the internal sentinel for display collapses them into one bad value.
@@ -1640,7 +1892,11 @@ When a resolution/lookup function (operator-origin resolver, ISIN resolver, coun
 
 **See also:** `coding_guidelines.md` #6 (user-facing labels use self-explanatory terminology), CRG-016 (review flag conflation), CLAUDE.md "Data Handling" (visible sentinels vs internal placeholders).
 
+**See also (principle cluster C):** #131, #114 (same family, distinct angle: sentinel string leak (#113) vs `None`-value interpolation (#131) vs test-expectation `None`/`""` (#114)).
+
 ## 114. Default-Empty Excel Cell Assertions Must Accept Both None and Empty String
+
+**Principle:** Family C (Representation: sentinel vs None vs exception)
 
 When a test asserts that an Excel cell is "empty by default" (e.g., an optional field like `notes` that was never set on the entry, written via `safe_cell_value(entry.notes)` where `entry.notes` resolves to `""`), the read-back value from openpyxl may be EITHER `None` OR `""`. openpyxl normalizes empty-string writes to `None` in some code paths and preserves the empty string in others, depending on whether the cell had prior content, the write went through `Worksheet.cell()` vs direct attribute assignment, and the version of openpyxl in use.
 
@@ -1659,7 +1915,11 @@ When a test asserts that an Excel cell is "empty by default" (e.g., an optional 
 
 **See also:** Lesson around line 957 (add dedicated blank/None tests), `coding_guidelines.md` #4 (type-safe sentinels for absent optional fields), CLAUDE.md "Data Handling".
 
+**See also (principle cluster C):** #113, #131 (same family, distinct angle: sentinel string leak (#113) vs `None`-value interpolation (#131) vs test-expectation `None`/`""` (#114)).
+
 ## 115. Reuse the Production Validator When a Test Asserts Against a Domain-Validity Predicate
+
+**Principle:** Family D (Single source of truth)
 
 When a test asserts that an output value satisfies a domain-validity predicate (a fixed enumeration of valid codes, a country list, a regex pattern, or any "is this value one of the allowed values?" check) where the valid set is defined in production code, the test MUST import and reuse the production validator rather than duplicate the valid-set list inline in the test.
 
@@ -1694,6 +1954,8 @@ assert country == "UNKNOWN" or _is_valid_tabela_x_country(country)
 
 ## 116. Check Prior Same-Session Commits Before Reporting a Verification-Time Scope Violation
 
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
 When a verification-only task (e.g., a regression sweep, a "diff scope" check, a Phase 2 final validation) asserts that the cumulative diff should contain a specific file but `git diff <base>..HEAD -- <file>` shows the file is NOT in the diff, first check whether a prior same-session commit already applied the planned change to that file before reporting a scope violation.
 
 **Why this matters:** Execute-plan sessions commit after each completed task. When a plan lists a source file as expected-modified and an earlier task's commit already included the edit (because the edit was naturally bundled with that task's primary change), the file will NOT appear in a later task's incremental diff even though the work was done. Reporting this as a "scope violation" or "missing change" is a false positive; the change exists in the cumulative history, just not in the latest task's incremental slice.
@@ -1711,7 +1973,11 @@ When a verification-only task (e.g., a regression sweep, a "diff scope" check, a
 
 **See also:** Lesson #100 (verify plan-time claims about production code), `execute-plan` skill (Phase 2 final validation), CLAUDE.md §4 Agent Workflow Rules.
 
+**See also (principle cluster H):** #55, #122, #128, #129 (same family, distinct angle: the git/docs-state verification cluster.).
+
 ## 117. Branch on the Discriminator When Synthesising a Reason for a Multi-Cause Flag
+
+**Principle:** Family A (Equivalence-class coverage)
 
 When a downstream consumer observes a boolean flag (e.g., `review_required=True`) that MULTIPLE distinct upstream cases can set, and the consumer synthesises a single human-facing reason/message from that flag, the consumer MUST branch on the discriminator (a sentinel, enum, category field, or secondary attribute) the upstream sets to distinguish which case fired, rather than collapsing all cases into one message.
 
@@ -1735,9 +2001,11 @@ When a downstream consumer observes a boolean flag (e.g., `review_required=True`
 
 **Example:** Finding #1 (Medium) of the 2026-06-16 derivatives-pnl-columns code review r1 found that `_split_ogr_index` in `src/tax_reporting/application/crypto/ogr_handler.py` synthesised an "Unknown platform" message (with wording like `add this platform to resolve_operator_origin() before filing`) whenever `operator_origin.review_required` was True. But `resolve_operator_origin()` sets `review_required=True` for TWO distinct cases: (a) truly-unknown platform (sets `operator_entity="UNKNOWN_OPERATOR_REVIEW_REQUIRED"`), and (b) temporal-validity failure, a known platform whose `service_start_date` postdates the transaction (keeps the real mapped `operator_entity` and sets a specific `review_reason` mentioning the date and service period). The synthesised message misled reviewers for case (b): the platform IS mapped, but the message told them to add it. The fix branches on the `UNKNOWN_OPERATOR_REVIEW_REQUIRED` sentinel: for the truly-unknown case it synthesises the actionable fix-path message; for the temporal-validity case it surfaces `operator_origin.review_reason` verbatim (which carries the specific date and "service period" wording the reviewer needs). The new RED test `test_derivatives_entry_for_known_platform_outside_service_period_carries_temporal_reason` exercises case (b) explicitly and asserts the temporal reason is present while the "Unknown platform" message is absent. See the derivatives-pnl-columns code review r1 (local) Finding #1 and the implementation log (local).
 
-**See also:** Lesson #113 (internal sentinels must not leak to display fields), Lesson #112 (test names must reflect their coverage scope; the missing temporal-validity test is a #112 instance), CLAUDE.md §1 "Partial or uncertain results must carry an explicit indicator" and "Review flags must include specific actionable explanations, not bare booleans".
+**See also:** Lesson #113 (internal sentinels must not leak to display fields), Lesson #112 (test names must reflect their coverage scope; the missing temporal-validity test is a #112 instance), Lesson #119 (sibling aggregators mirror byte-identical patterns -- distinct sibling-ness unit: aggregators in one module), Lesson #136 (centralized helper across callers with divergent policies -- distinct sibling-ness unit: callers of one helper), CLAUDE.md §1 "Partial or uncertain results must carry an explicit indicator" and "Review flags must include specific actionable explanations, not bare booleans".
 
 ## 118. Guard "Take From First Entry" Fields Against Silent Heterogeneity
+
+**Principle:** Family G (Data-loss observability)
 
 Lesson #80 documents the "lookup value fields - take from first entry" aggregation strategy, premised on the assumption that all entries in the group share an identical value for the field. That assumption is a design invariant, not a guaranteed runtime property. When the assumption silently fails (e.g., a future code path lets two group members carry different `annex_hint` / `operation_code` / `legal_category` values for the same disposal group), the renderer or aggregator that takes `entries[0]` will silently pick one value and discard the others, with no log or warning to flag the drift. The output looks correct (it has a value) but is wrong (it has the wrong value).
 
@@ -1762,6 +2030,8 @@ Lesson #80 documents the "lookup value fields - take from first entry" aggregati
 
 ## 119. Mirror Byte-Identical Aggregation Patterns Across Aggregators in the Same Module
 
+**Principle:** Family A (Equivalence-class coverage)
+
 When two aggregation functions in the same module perform the same conceptual operation on different domain types (e.g., `aggregate_capital_entries` and `aggregate_derivatives_entries` both merging per-group narrative text fields), they MUST use byte-identical merge patterns. Diverging patterns (one takes `first.notes`, the other joins unique notes with `"; "`) silently drops data in the diverging aggregator: notes that should have been preserved across group members disappear from the output with no error or warning.
 
 **Why this matters:** Aggregators in the same module are read together by reviewers comparing behavior. A divergence between them is invisible at the diff level (both look like reasonable implementations) but produces inconsistent output for the same kind of operation. The capital-entries aggregator preserves all notes; the derivatives-entries aggregator that takes only `first.notes` discards every other member's notes. The bug surfaces only when a fixture has two group members with distinct notes AND the reviewer notices the discrepancy.
@@ -1785,13 +2055,19 @@ The `dict.fromkeys(...)` preserves insertion order while deduping; the `if e.not
 
 **Distinguishing from #80 (aggregation strategy per field type):** Lesson #80 catalogs WHICH strategy to use per field type ("narrative text fields - join unique values with delimiter and deduplicate"). This lesson #119 says: when that strategy is implemented in two aggregators in the same module, the implementations must agree byte-for-byte. #80 says "use the join-dedupe strategy"; #119 says "use the SAME join-dedupe implementation as the sibling aggregator".
 
+**Distinguishing from #136 (centralized helper across callers with divergent policies):** Lesson #119 and Lesson #136 both govern sibling code, but address different units of sibling-ness with OPPOSITE prescriptions. #119 is about sibling IMPLEMENTATIONS that should produce the SAME output (two aggregators in one module): they must mirror byte-identical patterns; a divergence silently drops data. #136 is about sibling CALLERS of a centralized seam that have INTENTIONALLY DIVERGENT policies for the same failure kind (one raises, another degrades): each caller's policy arm must be pinned individually; mirroring one caller's policy into another is precisely the bug (it flips a required raise to a silent degrade). #119 says siblings must be identical; #136 says sibling callers must keep their distinct arms pinned and must NOT be copied wholesale.
+
 **General form:** Sibling aggregators that perform the same operation must use the same implementation. Diverging implementations silently produce inconsistent output. The fix is byte-identical mirroring or extraction to a shared helper.
 
 **Example:** Finding #2 (Medium) of the 2026-06-16 derivatives-pnl-columns code review r1 found that `aggregate_derivatives_entries` in `src/tax_reporting/application/crypto/aggregation.py` set `notes=first.notes` while the sibling `aggregate_capital_entries` (same module, lines 283-287) used the `"; ".join(dict.fromkeys(...)) or ""` pattern. For a group with two members carrying notes "manual annotation A" and "manual annotation B", the derivatives aggregator silently dropped "manual annotation B". The fix replaced `first.notes` with `merged_notes = "; ".join(dict.fromkeys(e.notes for e in group if e.notes)) or ""` (byte-identical to the capital-entries pattern). The RED tests `test_aggregate_derivatives_merges_notes_across_group_members`, `test_aggregate_derivatives_notes_empty_when_no_member_has_notes`, and `test_aggregate_derivatives_notes_deduped_and_order_preserved` exercise the merge, empty-input, and dedupe+ordering cases. See the derivatives-pnl-columns branch review r1 (local) Finding #2 and the implementation log (local) Medium 2.
 
 **See also:** Lesson #80 (field aggregation strategy per field type), Lesson #77 (handle duplicate keys by summing, not silent overwrite), CLAUDE.md §1 "Data-loss conditions must be logged at warning+, never debug".
 
+**See also (principle cluster A):** #117 (same family, distinct angle: multi-cause flag within one function (#117) vs sibling aggregators mirror patterns (#119) vs centralized helper across callers (#136). Each body distinguishes itself.).
+
 ## 120. Reconcile Plan Pseudocode Against Plan Tests and Design Invariants Before GREEN
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
 
 When a plan body contains both executable pseudocode AND RED-test expectations that purport to verify that pseudocode, the author must trace each pseudocode branch against the test inputs and the design invariants BEFORE handing the plan to the implementer. The pseudocode and the tests must agree on every input combination. If they disagree, the implementer will either (a) follow the pseudocode and fail a RED test that encodes the invariant, or (b) silently extend the logic beyond the pseudocode to satisfy the tests, producing a defensible but undocumented deviation.
 
@@ -1811,9 +2087,15 @@ When a plan body contains both executable pseudocode AND RED-test expectations t
 
 Design Invariant 4 required "when min_proceeds=0, prior flag-everything behavior is preserved", and a RED test `test_min_proceeds_zero_flags_all_zero_cost` asserted `cost=0, proceeds=0, min_proceeds=0 -> review_required=True`. Neither branch matches that input (tier 3 requires `proceeds_eur > 0`; tier 4 requires `cost_eur > 0`), so the implementer added a third branch (`cost_eur == 0 AND proceeds_eur == 0 AND min_proceeds == 0 -> fire`) to satisfy the invariant. The deviation is correct; the plan pseudocode was simply incomplete. A pre-GREEN decision-table trace would have caught the gap and folded the third branch into the plan body.
 
+**Second example (2026-06-22 crypto-tests-off-local-fixtures plan, Task 1.5 - literal instruction vs design invariant):** Task 1.5's literal bullet asserted "identical derivatives_entries and capital_entries counts per `(date, asset, platform)` case key" between the real and synthetic fixtures, but Design Invariant #2 stated the synthetic fixture is deliberately a smaller, controlled lot set. The literal bullet would false-fail (real=26 capital entries vs synth=2; no shared case keys by design). The task's HEADER ("shape parity") and Invariant #2 were authoritative; the implementer read the invariant's intent (code-path/dedup-phase + case-structure parity, not numeric count-equality) and recorded the reconciliation in the implement log rather than blocking or retro-editing the fixtures. Same family as the first example, distinct trigger: a literal assertion INSTRUCTION (no pseudocode branch table) whose wording contradicts a stated invariant. The fix is the same - reconcile to the invariant's intent and document - but the detection cue is "the task's literal bullet and its own design invariant cannot both be true," not "pseudocode branches miss an input combination."
+
 **See also:** Lesson #100 (verify plan-time claims about production code), Lesson #109 (re-read RED tests against revised invariants after plan revision), CLAUDE.md §4 Agent Workflow Rules.
 
+**See also (principle cluster H):** #104 (same family, distinct angle: plan pseudocode vs tests vs invariants.).
+
 ## 121. Do Not Run `ruff check --fix` on Modules That Re-Export for Backward Compat
+
+**Principle:** Family F (Layering / dependency direction)
 
 When a module deliberately re-exports symbols (via plain `from X import Y` without `__all__` gating, or via an `__all__` that `ruff` cannot fully see) for backward-compat consumers, including tests that import from the re-export module rather than the canonical source; do not run `ruff check --fix` on the whole module. The unused-import heuristic (`F401`) frequently flags and removes re-exported names, silently breaking downstream imports. Apply targeted manual edits to the import block instead.
 
@@ -1833,6 +2115,8 @@ When a module deliberately re-exports symbols (via plain `from X import Y` witho
 
 ## 122. Do Not `git stash` for Baseline Comparisons in the docs-branch State
 
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
 This repo carries a docs/orphan-branch workflow (`docs-branch` skill) and at times a working tree with staged deletions (files marked `D` in the index but still present on disk). In that combined state, using `git stash` to get a transient clean tree for a baseline tool comparison is unsafe: the stash records the staged deletions and the subsequent `git stash pop` did not restore the on-disk content, leaving all affected tracked files missing from the working tree.
 
 **What happened (2026-06-17):** During the zero-basis-review-materiality review-fix session, three `git stash` / `git stash pop` cycles were used to compare `ruff` diagnostics on the edited tree versus the committed baseline. The working tree had 10 tracked files staged as deletions (`D`) but present on disk. The stash cycles dropped all 10 files from the working tree. Recovery was via `git fsck --lost-found` to locate the dangling commit from the last dropped stash, then `git checkout <sha> -- <files>` and `git reset HEAD -- <files>` to unstage. All edits were recovered intact because the stash had captured them before being dropped.
@@ -1848,7 +2132,11 @@ This repo carries a docs/orphan-branch workflow (`docs-branch` skill) and at tim
 
 **See also:** `docs-branch` skill, shared `agent_workflow_guidelines.md` #55, CLAUDE.md/AGENTS.md git-safety bullets.
 
+**See also (principle cluster H):** #116, #128, #129 (same family, distinct angle: the git/docs-state verification cluster.).
+
 ## 123. Decision-Point Doc Prose Enumerations Must Match Implemented Code Branches
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
 
 When a decision-point record (or any spec doc) describes a rule as an enumerated list, "N-tier rule", "N-step", or cases (1)-(N), every enumerated item must map to a code branch and every code branch must appear in the enumeration. Count mismatches and missing cases survive code review because each individual bullet reads plausibly in isolation; only a branch-by-branch cross-check catches the drift.
 
@@ -1865,6 +2153,8 @@ When a decision-point record (or any spec doc) describes a rule as an enumerated
 
 ## 124. In a Per-Row Matching/Correction Loop, Run the Fallible Resolution Before Mutating the Match Structure (and Make It Raise, Not Sentinel)
 
+**Principle:** Family B (Error-policy propagation)
+
 A per-row matching or correction loop typically does two things per row: resolve a fallible value (rate lookup, parse, derived field) and mutate a shared match structure (`deque.popleft`, index pop, counter decrement). If the mutation runs before the fallible resolution, or the resolution returns a sentinel instead of raising, a single bad row either corrupts shared state or escapes the per-row boundary, defeating the "one bad row must not abort the batch" guarantee from #6.
 
 **What happened (2026-06-18):** In the crypto payment-proceeds plan (DP-014), `correct_payment_proceeds` matches each zero-proceeds CG row to a Payment-tagged TH row via a per-key `deque` and infers stablecoin-FMV proceeds through a caller-supplied `rate_fn`. The premortem review agent found that if `rate_fn` returned a sentinel (`None`) when a peg currency had no configured rate, `_infer_proceeds_fmv` would evaluate `amount * None`, raising `TypeError`, which is NOT in the orchestrator's per-row `except (ValueError, KeyError)`, so one missing rate would abort the entire correction loop and every later Payment row would silently keep its phantom loss. Separately, the quality agent verified the safe ordering requirement: the FMV must be computed BEFORE `popleft`, so a caught exception leaves the deque entry unconsumed.
@@ -1878,7 +2168,11 @@ A per-row matching or correction loop typically does two things per row: resolve
 
 **See also:** CLAUDE.md/AGENTS.md "Repository Constraints" (FIFO / partially-matched rules), `development_lessons.md` #6 (row-level catch), #102/#107 (deque matching), coding_guidelines.md sealed-class sentinel variants.
 
+**See also (principle cluster B):** #105, #135 (same family, distinct angle: recalibrate policy on reuse (#105) vs raise-not-sentinel + ordering (#124) vs propagate through wrappers (#135)).
+
 ## 125. Discriminating Tests: Assert Properties That FAIL Under the Wrong Implementation
+
+**Principle:** Family A (Equivalence-class coverage)
 
 A RED test that passes against the intended implementation AND against a plausible wrong implementation does not discriminate; it gives a false GREEN. Two recurring shapes: (1) a behavioral property that holds regardless of WHERE a cross-cutting mechanism is attached, and (2) a single OR'd case that lets an implementer exercise one of several independent guards and skip the rest.
 
@@ -1893,7 +2187,11 @@ A RED test that passes against the intended implementation AND against a plausib
 
 **See also:** CLAUDE.md/AGENTS.md "Agent Workflow Rules" and "Testing", `development_lessons.md` #6 (edge cases), #90 (validation coverage), #91 (extracted-helper coverage), #133 (empirically confirm a guard-binding test discriminates by disabling the guard and observing RED).
 
+**See also (principle cluster A):** #134 (same family, distinct angle: principle (#125) vs procedure (#133) vs restore/undo variant (#134). Each body distinguishes itself.).
+
 ## 126. Verification Guards That Read a Manifest File Must Fail Closed When the Manifest Is Absent
+
+**Principle:** Family G (Data-loss observability)
 
 A guard command (leak detector, lint check, coverage gate) that reads an external manifest/patterns file and is written as `cmd && echo BAD || echo GOOD` reports GOOD when the manifest is missing. The command exits non-zero on a missing `-f` input (grep: exit 2 "cannot read patterns"), the `&&` branch is skipped, and the `|| GOOD` branch fires: a false pass exactly when the guard cannot run. When the manifest is gitignored (absent in fresh checkouts and CI), that missing-input state is the default outside the author's working tree.
 
@@ -1906,7 +2204,11 @@ A guard command (leak detector, lint check, coverage gate) that reads an externa
 
 **See also:** `development_lessons.md` #5 (data-loss at warning+, never silent), #113 (internal sentinels must not leak as user-facing values), #125 (discriminating tests).
 
+**See also (principle cluster G):** #127 (same family, distinct angle: guard-fail-closed (#126) vs guard-scan-coverage (#127)).
+
 ## 127. Static Guards Must Cover Code Paths Skipped in CI (No Runtime Backstop)
+
+**Principle:** Family G (Data-loss observability)
 
 A test that `pytest.skip`s when its real fixture is absent (common when the fixture is gitignored personal data) is never executed in CI. A defect that would only surface by running that test, for example a hardcoded real identifier or magic value baked into the test, therefore has no runtime backstop in CI. The only thing that can catch it is a static guard (grep/scan), so the static guard's scan list MUST include those skipped test files. A guard that scans only the "obvious" doc/config files and omits the fixture-driven tests leaves the highest-risk files with no protection at all.
 
@@ -1921,6 +2223,8 @@ A test that `pytest.skip`s when its real fixture is absent (common when the fixt
 
 ## 128. `git mv <src> <dest>` Nests When `<dest>` Exists; the doc-hierarchy `full` Gate Does Not Catch Intra-Tree Nesting
 
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
 `git mv <src> <dest>` renames `src` to `dest` only when `dest` does not already exist. When `dest` is already a directory, git moves `src` **into** it, producing `dest/<src-basename>/` one level deeper than intended. The doc-hierarchy `full` verify gate does not catch this: its rogue-path scan flags only `docs/<not-allowed>/` top-level trees, so anything under an allowed tree (`docs/history/`, `docs/maintenance/`) passes regardless of how its internal directories are shaped. Files dropped at `docs/history/plans/plans/` instead of `docs/history/plans/` are invisible to the gate.
 
 **What happened (2026-06-19):** During the doc-hierarchy migration, `git mv docs/plans docs/history/plans` ran after `docs/history/plans/` already existed, so all 31 plan files moved to `docs/history/plans/plans/...` (and `completed/` to `plans/plans/completed/`), with nothing at the intended top level. The `full` gate still passed because the nested path sits under the allowed `docs/history/` tree. The defect surfaced only when `bootstrap-ai-playbook` ran next: the hand-authored `plans_completed_dir = "docs/history/plans/completed/"` pointed at a path that did not exist, and bootstrap's on-disk check (does each `facts.md` key's target exist on disk?) rejected it. (The migration-map Step 2 special cases guard this for `reviews/` but not for `plans/` or other directory moves.)
@@ -1932,7 +2236,11 @@ A test that `pytest.skip`s when its real fixture is absent (common when the fixt
 
 **See also:** `development_lessons.md` #116 (verification-first: inspect actual git state before reporting), #122 (docs-branch / git working-tree hazards), #126 (verification guards must fail closed).
 
+**See also (principle cluster H):** #55, #129 (same family, distinct angle: the git/docs-state verification cluster.).
+
 ## 129. Translate Stale Doc Paths in Plans Authored Before a doc-hierarchy Migration, Before execute-plan
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
 
 A plan written before a doc-hierarchy migration keeps the pre-migration prefixes in three load-bearing places: task `Files:` lists, prose code-path literals (e.g. `_REPOSITORY_ROOT / "docs" / "tax" / ...`), and `## Validation Commands` grep targets. Executing such a plan untranslated produces two silent failure modes: sub-agents write to non-existent old locations (`docs/tax/popular_crypto_tokens.json`), and the plan's own validation commands grep against nothing - a false pass with no signal that the gate did not actually run against the migrated tree.
 
@@ -1946,7 +2254,11 @@ A plan written before a doc-hierarchy migration keeps the pre-migration prefixes
 
 **See also:** `development_lessons.md` #100 (verify cited paths/line numbers against current source before depending on them), #116 (verification-first git-state inspection), #128 (sibling doc-hierarchy migration hazard: `git mv` nesting). Skill home: `execute-plan` Step 0.4b.
 
+**See also (principle cluster H):** #55, #122 (same family, distinct angle: the git/docs-state verification cluster.).
+
 ## 130. Pre-Bind Every Local Referenced After a Try Whose Except Continues Rather Than Re-Raises
+
+**Principle:** Family B (Error-policy propagation)
 
 When a `try ... except` block logs and CONTINUES (warn-and-continue, graceful degradation) rather than re-raising, and code after the try reads a local that is assigned only inside the `try`, the local must be PRE-BOUND to a safe default BEFORE the try opens. Otherwise the except path runs to completion without binding the local, and the post-try reference raises `NameError` on exactly the failure path that the warn-and-continue was meant to survive.
 
@@ -1969,6 +2281,8 @@ When a `try ... except` block logs and CONTINUES (warn-and-continue, graceful de
 
 ## 131. F-Strings Interpolating a `str | None` Into User-Facing Output Must Degrade Explicitly for `None` (Especially When `None` Is Reached via a Warn-Only Config-Drift Path)
 
+**Principle:** Family C (Representation: sentinel vs None vs exception)
+
 When an f-string interpolates a value typed `str | None` (or `Optional[str]`) into a user-facing string (review reason, Excel cell, log line addressed to the operator), and `None` is REACHABLE through a config-drift path the loader only warns about (does not refuse) - for example, an asset listed in `stablecoins` but absent from `stablecoin_pegs`, so the lookup returns `None` and execution continues to the reason builder - the f-string `f"...{peg}..."` emits the literal Python repr `"None"` into the output (`"no None->EUR rate in config"`), which is nonsensical, unactionable, and indistinguishable from a real value to a non-technical reviewer.
 
 **Why this matters:** The bug is silent and ships correct-looking output. Happy-path tests (peg present) all pass; the `None` branch fires only under config drift, which the loader treats as non-fatal. No exception is raised, so per-row error handling does not catch it. The user sees a reason containing the word `None` and has no idea what to do.
@@ -1988,7 +2302,11 @@ When an f-string interpolates a value typed `str | None` (or `Optional[str]`) in
 
 **See also:** `development_lessons.md` #113 (internal sentinels must not leak), #125 (discriminating tests), #130 (pre-bind locals on degradation paths), #105 (inherit the guards when reusing a pattern). `payment_proceeds.py::_non_eur_stablecoin_no_rate_reason` (the mirrored-degradation idiom: `peg_phrase` and `rate_phrase` both branch on `None`).
 
+**See also (principle cluster C):** #114 (same family, distinct angle: sentinel string leak (#113) vs `None`-value interpolation (#131) vs test-expectation `None`/`""` (#114)).
+
 ## 132. A Literal Timezone Token in a `strptime` Format Does Not Populate `tzinfo`; Naive Datetimes from External Reports Are LOCAL Time, Not UTC
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
 
 `datetime.strptime(value, fmt)` sets `tzinfo` only when the format uses `%z`. A literal token in the format string, such as the text `UTC` in `%Y-%m-%d %H:%M:%S UTC`, is matched against the input but does NOT populate `tzinfo`; the result is `tzinfo=None` (naive) for that format too. Code that then unconditionally calls `.replace(tzinfo=UTC)` to "fill in the assumed zone" is correct ONLY for inputs whose format actually declares UTC; applying it to formats that carry a wall-clock LOCAL time stamps the wrong instant.
 
@@ -2006,7 +2324,11 @@ When an f-string interpolates a value typed `str | None` (or `Optional[str]`) in
 
 **See also:** `development_lessons.md` #105 (reusing a pattern: inherit the guards, recalibrate exception handling), #100 (verify plan claims against source before dependent tasks). `koinly_parser.py::parse_koinly_datetime` (the single normalization point). `docs/maintenance/koinly_guidelines.md` (Koinly export semantics).
 
+**See also (principle cluster H):** #21 (same family, distinct angle: datetime representation traps.).
+
 ## 133. Confirm a Strengthened Guard-Binding Test Discriminates by Disabling the Guard and Confirming RED
+
+**Principle:** Family A (Equivalence-class coverage)
 
 When you STRENGTHEN (or add) a test that claims to bind a defensive guard (a non-finite check, a `None`-guard, a bounds/branch guard), the test passing against today's code is NOT proof it binds the guard. A guard's load-bearing case is often a narrow input (e.g. a stablecoin for a stablecoin-only fallback guard); if the strengthened test exercises only a non-load-bearing input, removing the guard changes nothing observable and the test passes either way. The test then gives false confidence - exactly the failure mode of a guard "covered" by a case it does not protect.
 
@@ -2026,7 +2348,11 @@ When you STRENGTHEN (or add) a test that claims to bind a defensive guard (a non
 
 ---
 
+**See also (principle cluster A):** #134 (same family, distinct angle: principle (#125) vs procedure (#133) vs restore/undo variant (#134). Each body distinguishes itself.).
+
 ## 134. A Restore/Undo Final-State Test Cannot Distinguish "Fired Then Restored" from "Never Fired"; Assert the Intermediate Mutation
+
+**Principle:** Family A (Equivalence-class coverage)
 
 A test that verifies an undo/restore mechanism by asserting the FINAL state is back to its expected value gives a false GREEN when the mechanism never ran in the first place: the final state is identical whether (a) the mutation fired and was correctly restored, or (b) the mutation never fired at all. This is the restore/undo analogue of a guard-binding test that exercises a non-load-bearing input (#133): the assertion shape alone cannot tell you the mechanism is live.
 
@@ -2043,6 +2369,8 @@ A test that verifies an undo/restore mechanism by asserting the FINAL state is b
 
 ## 135. A Fail-Fast Exception Raised Inside a Degrade-to-None Wrapper Is Swallowed Unless Explicitly Propagated
 
+**Principle:** Family B (Error-policy propagation)
+
 A fail-fast guard that raises a specific exception (e.g. `ConfigurationError`) does NOT fail the run if the call site is wrapped by a tolerant handler that catches `Exception` (or a broad ancestor) and degrades to a safe default (logs "continuing without X", returns `None`). The degrading wrapper turns the fail-fast raise into a silent skip - the exact incorrect-by-default behavior the guard was added to prevent. The guard is only as strong as the narrowest handler between it and `main()`.
 
 **Concrete incident (2026-06-20/21, crypto timezone fail-fast):** to stop silently treating naive Koinly CG/OGR/Income dates as UTC, the crypto-loading boundary `_load_crypto_tax_report` in `main.py` was given a STRICT guard that raises `ConfigurationError` when crypto data is present and the jurisdiction timezone cannot be resolved (a configured jurisdiction with `timezone is None`, OR no config loaded at all -> `jurisdiction is None`). The guard sits BEFORE the helper's own `try ... except FileProcessingError ... except Exception` (which degrades data/parse errors to "Continuing without crypto data" -> `None`), so it is not swallowed by THAT block. But `_load_crypto_tax_report` is itself called inside `_main`'s report-generation `try ... except Exception as e: raise ReportGenerationError(...) from e`, so without intervention the propagated `ConfigurationError` would be wrapped into a `ReportGenerationError` (wrong type; the contract says config problems surface as `ConfigurationError`). The fix is `except ConfigurationError: raise` clauses placed BEFORE every broader handler on the path: one in `_main`'s report-generation block (essential - stops the `ReportGenerationError` wrapping) and one defensively in `_load_crypto_tax_report` (so any future loader-side `ConfigurationError` is not degraded to a silent skip). Without the `_main` clause the guard still "fired" but the application surfaced a `ReportGenerationError`, masking the config cause; the lesson is that the guard must be traced to `main()`, not just to the nearest function boundary.
@@ -2056,3 +2384,153 @@ A fail-fast guard that raises a specific exception (e.g. `ConfigurationError`) d
 4. Keep the low-level loader a pure function (testable in isolation with the invalid input) and enforce the application contract at the orchestration boundary; this avoids coupling every parser test to the configuration requirement while still failing the real run.
 
 **See also:** `development_lessons.md` #76 (TDD RED-first; this guard's first RED traced only to the loader, masking the wrapper swallow), #9 (catch specific exceptions, not broad `Exception`), #126 (guards that fail closed when a dependency is absent), #109 (re-read RED tests against current invariants when the design is revised between RED and GREEN - this guard moved loader -> helper and targeted -> strict mid-stream). CLAUDE.md §3 Repository Constraints (optional crypto ingestion is non-blocking - that contract is for DATA errors, not config errors) and `docs/maintenance/project-guidelines.md` rule #6.
+
+**See also (principle cluster B):** #105, #124 (same family, distinct angle: recalibrate policy on reuse (#105) vs raise-not-sentinel + ordering (#124) vs propagate through wrappers (#135)).
+
+## 136. When Centralizing a Shared Helper Across Callers With Divergent Policies, Pin EACH Caller's Policy Arm for the Safety-Critical Kind (Coverage Fixes Are Symmetric)
+
+**Principle:** Family A (Equivalence-class coverage)
+
+When a refactor extracts a shared helper (e.g. a guarded-JSON loader: symlink reject + size cap + `json.load`) that N callers previously duplicated, and those callers have DIVERGENT policies for the same failure kind (one RAISES, another DEGRADES, a third has a mixed raise/degrade split), a characterization test that pins caller A's policy arm for a failure kind does NOT protect caller B's or C's copy of that arm. When a review (or your own audit) finds caller A lacks a characterization test for failure kind K, the same gap exists for B and C: fix it for all of them in the same pass, pinning the MOST SAFETY-CRITICAL kind first (the one whose silent wrong-policy corrupts an aggregate, e.g. a `stat_error` that DEGRADES to empty where the caller must RAISE, leaving a double-counted P&L).
+
+**Why this matters:** centralization is the moment per-caller policies that used to live inline move behind a callback/strategy seam, and the implementer routinely copies one caller's `_on_error`/policy as the template for the next. If caller A's degrade-policy is the obvious template and caller B must raise for the same kind, an unguarded copy flips B's raise to a silent degrade, and EVERY characterization test for B still passes, because no test ever pinned B's raise arm. The bug is latent until the failure kind actually fires in production. Coverage gaps surfaced by centralization are symmetric across the sibling callers; a fix applied to only the caller a reviewer happened to spot leaves the siblings open.
+
+**Qualification gate (when this rule applies):**
+- A refactor extracts/centralizes a behavior (guard sequence, parse, validate) that 2+ callers previously duplicated.
+- The callers do NOT share one policy: at least two differ on raise-vs-degrade (or raise-vs-skip, warn-vs-fail) for the SAME failure kind.
+- At least one failure kind is "safety-critical" in some caller: its silent wrong-policy corrupts an aggregate or drops/double-counts records (not merely degrades a cosmetic default).
+
+**Required behavior:**
+1. Enumerate the failure kinds the shared helper can surface (e.g. `symlink`, `oversize`, `stat_error`, `invalid_json`, `bad_shape`, `missing`).
+2. Build the caller x kind matrix; for EACH cell decide raise-or-degrade and add a characterization test pinning that arm, prioritizing the raise arm of the safety-critical kind in every caller that must raise.
+3. When a review or audit finds a missing characterization test for one caller's kind, immediately check every SIBLING caller for the same kind before closing the finding. A coverage fix is symmetric, not local.
+4. For the most safety-critical kind (silent corruption on wrong policy), prefer a test that asserts the raise happens in raise-callers, paired with a test that a degrade-caller yields its documented empty/default with no aggregate corruption, so a wrong-policy copy goes RED in the caller it would harm.
+
+**Distinguishing from #119 (sibling aggregators mirror byte-identical patterns):** #119 is about sibling IMPLEMENTATIONS agreeing when they SHOULD produce the same output. This lesson is about sibling CALLERS of a centralized seam having INTENTIONALLY DIVERGENT policies, where the characterization-test plan must pin each one: here the callers must NOT be byte-identical, so mirroring the wrong one is precisely the bug.
+
+**Distinguishing from #117 (branch on discriminator for a multi-cause flag):** #117 is multiple CAUSES within one function setting one flag. This is multiple CALLERS of one helper, each with its own raise/degrade policy for the same failure kind.
+
+**General form:** Whenever a refactor moves a per-caller policy behind a shared seam, build the caller x failure-kind matrix and pin the raise/degrade arm for each cell, prioritizing the cell whose wrong policy silently corrupts output. A test gap is not a property of one caller: it is a property of the matrix, and the fix must cover the matrix.
+
+**Example (2026-06-21 payment-proceeds refactor plan, DP-014 #6):** the plan centralizes a guarded-JSON loader used by three `application/crypto/` modules that previously each reimplemented the symlink/size/JSON guards, with DIVERGENT policies over the same failure kinds: `payment_proceeds` DEGRADES on every kind (warn + defaults); `derivatives_dedup` RAISES on every kind except `missing` (a silent empty on `stat_error` would leave derivatives P&L double-counted - the exact hazard the raise exists to prevent); `classification` has a mixed split (raises on symlink/oversize/invalid_json/bad_shape, degrades on `missing` and `stat_error`). Review r1 found `classification` lacked a `stat_error` characterization test and the plan was amended to add `test_stat_error_degrades_to_empty`, pinning classification's DEGRADE arm. But the SYMMETRIC gap on `derivatives_dedup` - whose `stat_error` arm is the MOST safety-critical (RAISE, nearest the double-counting hazard) - was missed until review r3 (Medium #1): no test pinned derivatives' `stat_error` raise, so an implementer copying classification's degrade-on-stat_error policy into derivatives' `_on_error` would flip the raise to a silent empty and every Task-6 test would stay green. The fix adds `TestDerivativesLabelsConfig#test_stat_error_raises` alongside classification's degrade test, pinning the arm of the most safety-critical kind in each caller. See the payment-proceeds refactor plan review r3 (local) Medium #1 and r1 Medium #2.
+
+**See also:** `development_lessons.md` #91 (extracted helpers need direct unit tests, not just indirect), #119 (sibling aggregators mirror byte-identical patterns), #117 (branch on discriminator for a multi-cause flag), #111 (grep ALL test files when data-flow semantics change). `docs/maintenance/plan_quality_guidelines.md` Testing Requirements.
+
+## 140. When Renumbering a Colliding Numeric ID in a Doc Corpus, Disambiguate Each Cross-Ref by Context, Not by the Number Alone
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
+When a numeric heading (`## N.`) or ID is not unique (a collision: the same number appears on two headings), renumbering ONE of the occurrences is not the end of the work. Every cross-reference that names that number elsewhere (`See ... #N`, `development_lessons.md #N`, `Lesson #N (...)`) must be re-audited, and the audit must decide PER REF whether it intended the FIRST or the SECOND occurrence. The number alone is ambiguous under a collision; the deciding signal is the surrounding text (keywords in the referring sentence, a parenthetical that names a title verbatim, or field/term context).
+
+**Why this matters:** after renumbering, a cross-ref left pointing at the old number is not necessarily DANGLING (the number still exists, on the FIRST occurrence), so a "no dangling refs" check passes clean. But the ref may now point at the WRONG lesson: the one whose keywords the referring text does NOT match. The ref silently re-targets to a lesson it never meant, and no automated check catches it, because the number is still valid. A reader who follows the ref lands on a topically-unrelated lesson and trusts it.
+
+**Required behavior:**
+1. Before renumbering, find the collisions: `grep -oE '^## [0-9]+\.' <file> | sort | uniq -d`.
+2. For each colliding number N, grep the WHOLE corpus (all `docs/` + `AGENTS.md` + instruction files) for refs to `#N` (in multiple ref forms: `Lesson #N`, `see also #N`, `development_lessons.md #N`, `Merged into #N`, `Distinguishing from #N`, bare `#N` in prose).
+3. For EACH ref, classify FIRST vs SECOND by inspecting the referring context: does the surrounding text name the SECOND-occurrence title, its keywords, or its domain terms? A parenthetical naming a title verbatim pins one occurrence. Keywords absent/present is the disambiguator.
+4. Re-point only the refs classified as SECOND-occurrence; leave FIRST-occurrence refs untouched. Record the re-pointed COUNT per number.
+5. After renumbering, run BOTH a no-duplicate check (`uniq -d` is empty) AND a no-dangling check (every referenced `#N` resolves to a heading). Neither check alone is sufficient: `uniq -d` empty proves uniqueness; no-dangling proves every number exists; NEITHER proves each ref points at the lesson its text intends. The per-ref disambiguation in step 3 is what makes the corpus semantically correct.
+
+**Shape trigger (when to suspect this family):** a maintenance task says "renumber duplicate/relocating headings", "resolve ID collisions", or "deduplicate numbered anchors"; OR a grep for `uniq -d` on `## N.` headings is non-empty; OR a refactor splits/merges numbered guidance and cross-refs exist by number across files.
+
+**General form:** Whenever a numbered or named anchor is not unique and you renumber/relocate one copy, the set of refs to that anchor is not a single homogeneous target. Each ref must be disambiguated against the surviving copies by the CONTEXT of the referring site, then re-pointed only where the context matches the moved copy. Uniqueness and no-dangling are necessary but not sufficient; semantic re-targeting is the actual fix.
+
+**Example (2026-06-21 principle-generalization-system plan, Task 4):** `development_lessons.md` had `## 15.`, `## 16.`, `## 17.` each appearing TWICE (139 headings, 136 unique numbers). The SECOND occurrences were renumbered to #137/#138/#139. Two cross-refs to the colliding numbers existed: `AGENTS.md:109 "See development_lessons.md #17"` whose surrounding text cited `valid_from` audit-only and `service_start_date` matching (the SECOND-occurrence title's keywords) - re-pointed to #139; and `development_lessons.md:922 "Lesson #15 (Excel Column Width)"` whose parenthetical names the FIRST-occurrence title verbatim - left as #15. A no-dangling check passed either way; only the per-ref keyword audit (1 re-pointed, 1 left) made the refs semantically correct. No #16 refs existed. See the principle-generalization-system plan Task 4 implement log.
+
+**See also:** `development_lessons.md` #122 (compare against committed blob, not a stashed transient tree), #111 (grep ALL test files when data-flow semantics change - the doc analog: grep ALL docs when a doc ID moves).
+
+## 141. A Mechanical `str.replace`/`sed` Pass Whose Search String Is a Substring of a Larger Token Silently Corrupts at the Wrong Offset; Verify With a Byte-Level Diff, Not a Match Count
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
+When you run a mechanical text-replacement pass (`str.replace`, `sed s/.../.../`, a regex `sub`) over many lines, and the SEARCH string is a SUBSTRING of a larger token that also appears in the text, the engine matches at the FIRST (wrong) occurrence inside the larger token, not at the boundary you intended. The replacement "succeeds" (the count of matches is nonzero, the target substring is gone from the line), but it produced a different string than you meant, silently corrupting data. A pass that counts matches changed, or asserts the search string no longer appears, reports success on a corrupt result.
+
+**Why this matters:** the natural verification for a bulk text edit is "did the search string disappear / did the replacement appear N times". Both pass when the engine matched at the wrong offset, because the substring you searched for WAS consumed - just from the wrong position, leaving the real target intact and the surrounding token mangled. The corruption is invisible to any check that operates on substring presence rather than the exact resulting bytes. The only reliable verification is a byte-level (or line-level exact) diff of the changed lines against the intended result.
+
+**Qualification gate (when this rule applies):**
+- You are running a bulk text replacement (string method, sed, regex sub) over multiple sites.
+- The search string is a substring of a LARGER token that also appears at the edit sites (e.g. the search is `).)` and the line contains `(#NN).).` where the inner `)` of `(#NN)` precedes the search).
+- There is no word-boundary or suffix anchor forcing the match at the intended offset.
+
+**Required behavior:**
+1. Before trusting the result, anchor the search to a boundary that forces the intended offset: a line-end anchor (`s/pattern$/replacement/`, or match a SUFFIX of the line rather than an interior substring), a word boundary (`\b`), or a longer search string that is UNIQUE to the intended offset (match `).).$` as a suffix, not `).)` as a substring).
+2. After the pass, do NOT verify by "search string count is zero" or "replacement string count is N". Verify with a byte-level / exact-line diff: for each changed line, confirm the resulting bytes equal the intended output (e.g. `od -c` of a representative line tail, or diff the line against a hand-computed expected form).
+3. When the replacement is mass-applied and a wrong-offset corruption would compound across sites, sample-verify MORE than one site (the corruption is uniform, so one sample catches it, but confirm the sample is representative of the edit class, not the single site you happened to author the search for).
+4. If the first attempt corrupts, revert (`git checkout`) before retrying - do not layer a "corrective" replacement on top of corrupted bytes, which itself can substring-alias.
+
+**Shape trigger (when to suspect this family):** a bulk text edit is described as "normalize N trailing-punctuation sites", "strip a suffix from M lines", "collapse doubled characters"; the search string is short (1-4 chars) and a common punctuation/bracket run; the verification plan is a grep/count rather than a byte diff; the edit sites contain the search string embedded inside a larger token (parenthesized numbers, quoted strings, bracketed refs).
+
+**General form:** Whenever a bulk replacement's search string is a substring of a larger recurring token, the match lands at the wrong offset and every presence/count-based check passes on the corrupt result. Anchor the search to a boundary (suffix, word-boundary, unique longer match) and verify the EXACT resulting bytes, not substring presence.
+
+**Example (2026-06-21 principle-generalization-system plan, review r1 Step 3.3, Finding 5):** normalizing 23 `**See also**` lines that ended with doubled trailing punctuation `).).` (close-inner-paren, stray inner period, close-outer-paren, final period). The first attempt used `str.replace(").)", ")).")`. That search string `).)` matches starting at the inner `)` of the `(#NN)` citation, not at the trailing `).)` suffix, so each line became `(#NN))..` (citation closed early, then two trailing periods) rather than the intended `(#NN)).`. The "replacement happened on all 23 lines" check passed. The corruption was caught only by a byte-level `od -c` of a changed line tail showing `(#59))..` instead of `(#59)).`. Reverted via `git checkout`; the correct fix anchored to the SUFFIX `).).$ -> )).` (unique to the intended offset). See the principle-generalization-system plan review r1 receiving-code-review log, Finding 5.
+
+**See also:** `development_lessons.md` #122 (compare against the committed blob via `git show`/worktree, not a transient stashed tree - the byte-diff analog: a stash-based presence check misleads the same way a match-count check does), #104 (plan pseudocode must be reconciled against plan tests, not the abstraction), #126 (a guard that reads a manifest must fail closed when absent - presence-based checks mislead in a different failure mode, same Family-H theme: verify the real thing), #61 (baseline log the structure - Family G data-loss observability, the observability counterpart to this verification rule).
+
+## 142. A Validation Command That Scans a Shared Parent Directory to Enforce a NEW Convention Will False-Fail on Pre-Existing Legacy Entries; Scope the Assertion to New Work or Explicitly Accept the Legacy Pattern
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
+When a plan introduces or tightens a convention (a filename-token suffix, a header shape, a naming pattern) and expresses its validation as a `find`/`grep` over a SHARED parent directory that already contains entries written under the OLD convention, the validator reports failures caused by the legacy entries, not by any defect in the new work. The validator's exit code does not distinguish "the new files violate the convention" from "old files that predate the convention still exist in the same tree." A broad-scope command that PASSES today becomes a FALSE failure the moment the convention is extended and old entries are deliberately left in place (out of scope for this plan).
+
+**Why this matters:** the implementer of the new-convention task runs the plan's validation command, sees `BAD FILENAME TOKEN` (or the equivalent), and faces a false failure whose cause is pre-existing data outside the task's scope. Two wrong responses follow: (1) treat it as a real failure and block the task; (2) "fix" it by retro-editing the legacy entries to satisfy the new convention, silently expanding scope into files the plan declared out of scope. The correct response is to scope the assertion to the NEW entries (or to add an explicit accept-list for the legacy token), so the validator measures only what the task is responsible for.
+
+**Required behavior:**
+1. When authoring a plan task that introduces/tightens a convention over a shared directory, audit whether that directory already contains entries written under the prior convention (e.g. `ls` the parent, or `git log --oneline -- <parent>` to see which entries predate this plan).
+2. If legacy entries exist and are explicitly out of scope, scope the validation command to the NEW entries: target the new subdirectory/path (e.g. `find resources/source/example/koinly2025* -name '*.csv'`) rather than the shared parent (`find resources/source/example/ -name '*.csv'`); OR extend the accept-pattern to include the legacy token (e.g. `grep -v -E '(_synth\.csv|_example\.csv|<legacy_token>\.csv)$'`).
+3. State the scoping decision in the plan body so the implementer runs the NARROW command, not the broad one. A validation command is only authoritative for the task whose scope it matches.
+4. If the broad command must remain (e.g. as a repo-wide guard), separate it from the per-task gate: the per-task task PASSES on the narrow scope; the broad command is a known-pre-existing-condition item tracked separately, not a blocker for the new-work task.
+
+**Shape trigger (when to suspect this family):** a plan task says "add new fixtures/files under `<shared-dir>/` following convention X", "assert all `<shared-dir>/*.csv` match pattern Y", "run a hygiene check that files in `<shared-dir>` are synthetic"; AND `<shared-dir>` already contains sibling entries from earlier plans/years/exports that were authored before convention X existed. The trigger is the combination of a NEW convention + a SHARED directory + LEGACY siblings.
+
+**General form:** Whenever a validator scans a container that mixes new-convention entries with legacy entries written under a prior convention, a blanket scan conflates the two populations. The validator must be scoped to the population it is meant to judge (the new entries), or must explicitly enumerate the legacy accept-set; an unscoped scan over the mixed container reports legacy as failure.
+
+**Example (2026-06-22 crypto-tests-off-local-fixtures plan, Task 1 implement, finding flagged for Task 2):** Task 1 authors 10 new synthetic Koinly 2025 fixtures under `resources/source/example/koinly2025*/` with a `_synth.csv` filename-token suffix (Design Invariant #1: synthesis not sanitization). The plan's filename-token hygiene command runs `find resources/source/example/ -name 'koinly_*.csv' | grep -v -E '(_synth\.csv|_example\.csv)$'` across ALL of `example/`. This reports `BAD FILENAME TOKEN` because the pre-existing `resources/source/example/koinly2024/` files use a legacy 10-char token (`xY9kLm2pQr`, `aB3cDn5oEf`) - the exact pattern the new invariant forbids. koinly2024 is out of scope (an established pattern this plan extends), so all 10 NEW `koinly2025*` files pass the narrow `_synth.csv` check while the broad command false-fails on the legacy 2024 siblings. Task 2 must scope its hygiene assertion to the new dirs OR accept the koinly2024 legacy token. See the crypto-tests-off-local-fixtures plan Task 1 implement log, Findings to flag for downstream tasks #1.
+
+**See also:** `development_lessons.md` #111 (grep ALL test files when data-flow semantics change - the inverse scoping hazard: there you must WIDEN scope to catch stale siblings; here you must NARROW scope to avoid false-failing on legacy siblings; both are Family-H "verify the real thing, at the right population"), #100 (verify plan claims against actual source before dependent tasks - the plan-time analog: the plan AUTHOR should catch the mixed-directory hazard before the implementer runs the broad command).
+
+## 143. When Migrating a Test Off a Real Fixture to Synthetic Data, Narrow Assertions to the Behavior Under Test, Not Orthogonal Flags the Fixture's Synthetic Identifiers Incidentally Flip
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
+When a test is migrated off a personal/gitignored fixture to committed synthetic data, the synthetic fixture uses deliberately unmapped or generic identifiers (fabricated wallet/platform names not in any operator map, placeholder tokens). Unmapped identifiers flip orthogonal downstream signals that the real-fixture version never exercised: a platform-mapping resolver returns `review_required=True` / `UNKNOWN_...` for every unmapped platform, so every row under the synthetic fixture carries a review flag that the real-fixture version (with mapped platforms like ByBit) set to `False`. If the migrated test keeps asserting the OLD flag value verbatim, it fails for a reason unrelated to what the test is verifying; if the implementer then "fixes" it by deleting the assertion entirely, the load-bearing invariant the assertion protected is lost.
+
+The migrated assertion must be RE-SCOPED to the property the test actually exists to verify (the classification KIND, the routing path, the dedup phase), expressed in a form that is independent of the orthogonal signal the synthetic fixture flips. Assert the classification kind ("the row is routed as Derivatives, so the Ambiguous-classification reason text is absent from `review_reason`") rather than the unrelated flag ("`review_required` is False"). Record why the flag flips under synthetic data and why the re-scoped assertion still proves the original invariant, so a future reader does not mistake the relaxation for a weakened check.
+
+**Qualification gate (when this rule applies):**
+- You are migrating a test that read personal/real fixture data to committed synthetic data with deliberately unmapped or generic identifiers.
+- The synthetic fixture causes a downstream signal (review flag, sentinel value, resolver status, validation warning) to flip relative to the real fixture because the identifiers are unmapped/placeholder.
+- The pre-existing assertion checked that orthogonal signal as a side property, not as the test's primary purpose.
+
+**Required behavior:**
+1. Before copying an old assertion verbatim into the migrated test, identify which downstream signals the synthetic fixture's unmapped identifiers will flip (run the test once under the synthetic fixture and inspect every field the assertion reads).
+2. For each flipped signal, decide: is this signal what the test is VERIFYING (keep, recompute against synthetic data), or an orthogonal side property (re-scope to the primary invariant, do not assert the flag value).
+3. Express the re-scoped assertion on a discriminator that the primary behavior sets independently of the orthogonal flag (e.g. assert a classification-specific reason string is absent, or a routing-path log message fires, rather than asserting the review flag is False).
+4. Document the re-scoping in a test comment: name the orthogonal signal, name the synthetic-identifier cause, and state the primary invariant the narrowed assertion still proves. A silent relaxation reads as a weakened check; a documented one reads as a correct migration.
+
+**Shape trigger (when to suspect this family):** a test migration off a real/personal fixture to synthetic data; the synthetic data uses obviously-fabricated identifiers (wallet names like "Demo ...", placeholder tokens); an old assertion on a `review_required` / validation / resolver-status flag starts failing after the migration; the test's NAME or docstring describes a classification/routing/dedup behavior, not the flag itself.
+
+**General form:** Whenever a fixture change causes an orthogonal downstream signal to flip and a test asserts that signal as a side property, the migrated assertion must be re-scoped to the primary behavior under test, not weakened by deletion. The discriminator the primary behavior sets (independent of the flipped signal) is the correct assertion target.
+
+**Example (2026-06-22 crypto-tests-off-local-fixtures plan, Task 3):** `TestByBitCase2Trace` and sibling classes in `tests/end_to_end/test_crypto_derivatives_separation.py` asserted `review_required=False` (and absence of `"YES:"`) on derivatives rows, which held under the real fixture because `ByBit` is a mapped operator platform. The synthetic fixture uses `Demo Futures` / `Demo Spot` wallets, deliberately unmapped, so `resolve_operator_origin` returns `review_required=True` (the CRG-016 platform-mapping signal) for every row. The tests' PURPOSE is derivatives-vs-spot CLASSIFICATION (the OGR classifier routes as clean Derivatives, not Ambiguous), not the platform-mapping flag. The migration relaxed `assert not entry.review_required` to `assert "matches CG disposal" not in entry.review_reason` (the Ambiguous-classification reason text is absent), asserting the classification KIND without conflating it with the platform-mapping flag. The OGR-handler log message `"routed to derivatives by row type; no CG counterpart"` (fires only on clean Derivatives classification with `cg_matches == 0`) confirms the post-dedup state. No production change was needed. See the crypto-tests-off-local-fixtures plan Task 3 implement log, Decision A.
+
+**See also:** `development_lessons.md` #117 (branch on the discriminator when a flag has multiple causes - the production-side analog: here the discriminator is used in the TEST assertion, there in production message synthesis), #113 (sentinel/`UNKNOWN_...` must not leak into display fields - the synthetic fixture flipping this signal is exactly the case #113 guards against in production; the test must not assert around it by hard-coding the flag), #42 (tests verifying "YES:"/"NO" rendering must set `review_required` / `review_reason` explicitly on the fixture entry - the fixture-authoring counterpart: when you DO want to assert the flag, set it explicitly rather than relying on the fixture's incidental value), #109 (re-read each RED test against current design invariants before flipping GREEN - the re-scoping decision belongs in that re-read pass).
+
+## 144. check-no-em-dash.sh "touched" Only Checks Unstaged/Untracked Files; Verify Committed Files by Diffing Against the Target Branch
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
+When using incremental check/lint scripts (such as `check-no-em-dash.sh` or local pre-commit checks) during code review or branch validation, invoking them with a `"touched"` mode (which typically queries git for unstaged, staged, or untracked changes) only scans files currently modified in the working tree or index. If files have already been committed to the feature branch, they are no longer considered "touched" by these commands. Running the check-in-touched mode on a clean working tree will result in a false green pass, silently skipping validation for all changes introduced in the branch's commits.
+
+**Why this matters:** When a branch review or validation is performed on a clean branch, running a touched-only check runs on zero files, exiting with success. A reviewer or automated process might assume the branch is compliant, when in fact none of the branch's changes were scanned. This leads to style or formatting violations (like U+2014 em dashes) being merged into the target branch.
+
+**Required behavior:**
+1. When validating a branch that may have committed changes (especially in review or post-commit gates), do not rely on `"touched"` or `"unstaged"` filters.
+2. Query git to get the list of all files changed relative to the target branch (e.g. `git diff --name-only master...HEAD` or relative to origin/master) and filter to the appropriate extensions.
+3. Pass this list of files explicitly to the checker tool (e.g. `check-no-em-dash.sh file $(git diff --name-only master...HEAD)`).
+4. For automated or final check tasks in a plan, ensure the plan specifies diffing against the base branch rather than relying on current working-tree state.
+
+**General form:** Incremental checks that filter by working tree state must be widened to diff-against-target when running on committed branch histories. A validation check must run on the actual population of files changed on the branch, not the subset of files currently in flight in the index.
+
+**Example (2026-06-22 crypto-tests-off-local-fixtures plan, review step):** The branch review flagged low-severity em-dash findings in several committed files. Running `check-no-em-dash.sh touched` reported no issues because the changes had already been committed. Explicitly running `check-no-em-dash.sh file $(git diff --name-only master...HEAD)` correctly scanned the committed files and surfaced the em dashes, allowing them to be replaced.
+
+**See also:** `development_lessons.md` #111 (grep ALL test files when data flow changes), #122 (compare against committed blob, not stashed tree), #142 (scope assertions to new work). CLAUDE.md §4 Agent Workflow Rules / No em dash scan.

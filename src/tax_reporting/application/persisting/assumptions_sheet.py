@@ -206,14 +206,22 @@ def write_assumptions_and_methodology_sheet(
                 ),
                 (
                     "Transfer Fees",
-                    "DP-006, PT-C-004",
+                    "DP-006",
                     (
-                        "Gas/network fees are crypto consumed (tiny disposals) and are taxable events. "
-                        "Gain = fair market value at consumption minus FIFO cost. "
-                        "Koinly setting: 'Realize gains on transfer fees?' = ON. "
-                        "Source: AT folheto 2026-01-12 on alienação onerosa."
+                        "Transfer fees (gas/network fees paid in crypto to move assets between wallets) are NOT "
+                        "taxable disposals under Portuguese law. Paying a network fee yields no received "
+                        "consideration, so it does not constitute 'alienação onerosa' under CIRS art. 10(1)(k). "
+                        "Koinly's default (ON) incorrectly realizes a capital gain on the fee token (phantom gain). "
+                        "Setting 'Realize gains on transfer fees?' = OFF causes Koinly to instead add the fee value "
+                        "to the cost basis of the transferred asset, which is the correct "
+                        "treatment per CIRS art. 10(4)(a) "
+                        "('despesas necessárias e efetivamente praticadas, inerentes à aquisição e alienação'). "
+                        "Verified against FY2025 wallet-to-wallet transfer data. "
+                        "Source: CIRS art. 10(1)(k) (narrow taxable-event definition), "
+                        "CIRS art. 10(4)(a) (expense deductibility)."
                     ),
                 ),
+
             ],
         ),
         # Section 2: Holding Period & Exemptions
@@ -291,9 +299,13 @@ def write_assumptions_and_methodology_sheet(
                     "Fee Deductibility",
                     "DP-007",
                     (
-                        "Transfer fees are deductible from gains. CIRS art. 10(4)(a) specifies 'líquidos' "
-                        "(net of costs); fees are a cost of disposal. "
-                        "Koinly setting: 'Treat transfer fees as deductible costs?' = ON. "
+                        "Transfer fees are deductible from gains under CIRS art. 10(4)(a) "
+                        "('despesas necessárias e efetivamente praticadas, inerentes à aquisição e alienação'). "
+                        "With DP-006 = OFF (Koinly setting 'Realize gains on transfer fees?' disabled), "
+                        "Koinly achieves this automatically by folding the fee value into the cost basis "
+                        "of the transferred asset. The 'Treat transfer fees as deductible costs?' option "
+                        "is greyed out in the Koinly UI when the realize-gains setting is OFF: "
+                        "it is not needed because deductibility is handled implicitly via cost-basis adjustment. "
                         "Source: CIRS art. 10(4)(a)."
                     ),
                 ),

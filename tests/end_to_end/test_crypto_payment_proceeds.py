@@ -1,25 +1,17 @@
 """End-to-end data-trace verification for the DP-014 payment-proceeds correction.
 
 Verifies (per docs/history/plans/2026-06-18-crypto-payment-proceeds.md Task 6 and
-development_lessons.md #72, #73) that the real motivating case in
-``resources/source/koinly2025/`` - a Koinly Payment disposal of an EUR-pegged
-stablecoin (EUROC) whose CG ``Proceeds (EUR) == 0`` because Koinly's price DB had
-no match for the imported ticker - no longer carries a phantom full-cost loss
-after the correction is wired into ``load_koinly_crypto_report``.
+development_lessons.md #72, #73) that the committed synthetic example case in
+``resources/source/example/koinly2025_payment/`` - a Koinly Payment disposal of
+an EUR-pegged stablecoin (EUROC) whose CG ``Proceeds (EUR) == 0`` because Koinly's
+price DB had no match for the imported ticker - no longer carries a phantom
+full-cost loss after the correction is wired into ``load_koinly_crypto_report``.
 
-Real motivating case (discovered via glob, never hardcoded here):
-  - CG: a Payment disposal of EUROC on Wirex with proceeds=0, cost>0,
-    amount>0, gain = -cost (the phantom full-cost loss).
-  - TH: a matching ``Payment``-tagged row with ``Net Value (EUR) == 0``
-    (Koinly could not price the imported EUROC ticker).
-  - EUROC is an EUR-pegged stablecoin (Circle; renamed from EUROC to EURC in
-    2024), so the correction sets proceeds = amount at par (1:1 EUR).
-
-Assertions are STRUCTURAL (no phantom full-cost loss on the matched row; a
-correction review entry exists), never hardcoded real disposal amounts/wallets,
-per the personal-data hygiene rule. The expected proceeds (amount at par) and
-the resulting immaterial gain are DERIVED at runtime from the parsed fixture so
-the test anchors to source data, not literals.
+Asserts STRUCTURAL properties (no phantom full-cost loss on the matched row; a
+correction review entry exists), never hardcoded real disposal amounts/wallets.
+The expected proceeds (amount at par) and the resulting immaterial gain are
+derived at runtime from the parsed fixture so the test anchors to source data, not
+literals.
 """
 
 from __future__ import annotations
@@ -30,59 +22,60 @@ from pathlib import Path
 import pytest
 
 from tax_reporting.application.crypto_reporting import load_koinly_crypto_report
-from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+from tests.conftest import KOINLY_2025_PAYMENT_EXAMPLE_DIR, build_koinly_jurisdiction
 
 pytestmark = pytest.mark.e2e
 
-_FIXTURE_DIR = Path("resources/source/koinly2025")
+_FIXTURE_DIR = KOINLY_2025_PAYMENT_EXAMPLE_DIR
 
 
-def _find_fixture(pattern: str) -> Path | None:
-    """Find a Koinly fixture CSV by glob pattern.
+def _find_fixture(pattern: str) -> Path:
+    """Find a synthetic Koinly fixture CSV by glob pattern.
 
-    The koinly2025 directory contains real exports with account-specific tokens
-    in their filenames. Discovery via glob keeps those tokens out of tracked
-    test code (personal-data hygiene).
+    The committed synthetic example directory uses the fixed ``_synth.csv``
+    filename token, so glob discovery resolves exactly one file per pattern.
     """
     matches = sorted(_FIXTURE_DIR.glob(pattern))
-    return matches[0] if matches else None
-
-
-def _skip_if_fixtures_missing() -> None:
-    """Skip the calling test gracefully when the koinly2025 directory is absent."""
-    if not _FIXTURE_DIR.exists() or not _FIXTURE_DIR.is_dir():
-        pytest.skip(f"koinly2025 fixture directory not available at {_FIXTURE_DIR}")
+    assert matches, f"Expected exactly one synthetic fixture matching {pattern!r} under {_FIXTURE_DIR}"
+    return matches[0]
 
 
 def _require_payment_pair() -> tuple[Path, Path, dict[str, str]]:
-    """Return (cg_path, th_path, payment_th_row) for the real Payment disposal.
+    """Return (cg_path, th_path, payment_th_row) for the synthetic Payment disposal.
 
-    Discovers the real CG and TH CSVs via glob and locates the ``Payment``-tagged
+    Discovers the synthetic CG and TH CSVs via glob and locates the ``Payment``-tagged
     TH disposal row. Returns the matched TH row as a dict so the test can derive
-    expected values at runtime. Skips when any fixture is absent or no Payment
-    row exists in TH. Uses ``read_koinly_rows`` so the Koinly title/blanks are
-    handled (raw ``csv.DictReader`` would treat the title as the header).
+    expected values at runtime.
     """
     from tax_reporting.infrastructure.koinly_parser import read_koinly_rows
 
     cg_path = _find_fixture("koinly_2025_capital_gains_report_*.csv")
     th_path = _find_fixture("koinly_2025_transaction_history_*.csv")
-    if cg_path is None or th_path is None:
-        pytest.skip("koinly2025 CG or TH fixture not available")
 
     # Locate the Payment-tagged TH disposal row (the motivating case).
     th_rows = read_koinly_rows(th_path)
     payment_rows = [row for row in th_rows if (row.get("Tag") or "").strip().lower() == "payment"]
-    if not payment_rows:
-        pytest.skip("No Payment-tagged TH row in the koinly2025 fixture; cannot exercise the correction")
+    assert payment_rows, f"No Payment-tagged TH row found in {th_path}"
     return cg_path, th_path, payment_rows[0]
 
 
-class TestPaymentProceedsE2E:
-    """E2E data-trace for the DP-014 payment-proceeds correction on real fixtures."""
+def test_synthetic_fixture_contains_payment_scenarios() -> None:
+    """Guard against fixture content drift: assert the synthetic CSVs carry the payment scenarios.
 
-    def setup_method(self) -> None:
-        _skip_if_fixtures_missing()
+    Parses the committed example CSVs and asserts the payment scenario is
+    present.
+    """
+    cg_path = _FIXTURE_DIR / "koinly_2025_capital_gains_report_synth.csv"
+    assert cg_path.exists(), f"Payment CG report not found: {cg_path}"
+    with cg_path.open(encoding="utf-8") as f:
+        content = f.read()
+    # Check for EUROC
+    assert "EUROC" in content, "EUROC token entry missing from payment synthetic CG report"
+    assert "Wirex" in content, "Wirex wallet missing from payment synthetic CG report"
+
+
+class TestPaymentProceedsE2E:
+    """E2E data-trace for the DP-014 payment-proceeds correction on synthetic fixtures."""
 
     def test_payment_row_not_carrying_phantom_full_cost_loss(self) -> None:
         """The matched Payment disposal no longer carries a phantom full-cost loss.
@@ -90,7 +83,7 @@ class TestPaymentProceedsE2E:
         Before the correction: CG proceeds=0, gain = -cost (the full cost basis
         surfaces as a phantom loss). After the correction: proceeds is recovered
         from the TH Net Value (primary) or the EUR-par fallback (for an unpriced
-        EUR-pegged stablecoin), and gain = proceeds - cost. For the real
+        EUR-pegged stablecoin), and gain = proceeds - cost. For the synthetic
         EUROC/Wirex case the TH Net Value is 0 and EUROC is EUR-pegged, so
         proceeds = amount at par and gain = amount - cost (sub-EUR, filtered by
         the materiality filter, so the row is absent from capital_entries).
@@ -118,22 +111,11 @@ class TestPaymentProceedsE2E:
             if normalize_asset_ticker(row.get("Asset", "")) == asset
             and parse_koinly_decimal(row.get("Proceeds (EUR)", "0")) == Decimal("0")
         ]
-        if not phantom_cg_rows:
-            pytest.skip(
-                f"No zero-proceeds CG row for asset {asset} in the fixture; "
-                "the motivating case is absent."
-            )
+        assert phantom_cg_rows, f"No zero-proceeds CG row for asset {asset} in the fixture"
 
-        jurisdiction = TaxJurisdictionConfig(
-            country="PT",
-            fiscal_year=2025,
-            exclude_loan_repayment_gains=True,
-            zero_basis_review_threshold=Decimal("500"),
-            infer_payment_proceeds=True,
-        )
+        jurisdiction = build_koinly_jurisdiction(infer_payment_proceeds=True)
         report = load_koinly_crypto_report(_FIXTURE_DIR, jurisdiction=jurisdiction)
-        if report is None:
-            pytest.skip("load_koinly_crypto_report returned None for koinly2025 fixtures")
+        assert report is not None, "load_koinly_crypto_report returned None for synthetic payment fixtures"
 
         # STRUCTURAL assertion: no surviving capital_entries row for the Payment
         # asset carries the phantom full-cost loss (proceeds==0 AND gain==-cost).
@@ -163,9 +145,6 @@ class TestPaymentProceedsE2E:
         # The review reason must reference the expected at-par proceeds magnitude
         # derived from the fixture (anchors the reason to source data, not a literal).
         review_text = correction_reviews[0].review_reason or ""
-        # The always-true "EUR" disjunct is dropped: _eur_par_reason always
-        # contains "EUR", so it masked a regression that dropped the numeric
-        # magnitude. The reason must now carry the fixture-derived amount.
         mentions_proceeds = (
             str(expected_proceeds) in review_text
             or f"{expected_proceeds:.2f}" in review_text
@@ -198,22 +177,11 @@ class TestPaymentProceedsE2E:
             if normalize_asset_ticker(row.get("Asset", "")) == asset
             and parse_koinly_decimal(row.get("Proceeds (EUR)", "0")) == Decimal("0")
         ]
-        if not phantom_cg_rows:
-            pytest.skip(
-                f"No zero-proceeds CG row for asset {asset} in the fixture; "
-                "the motivating case is absent."
-            )
+        assert phantom_cg_rows, f"No zero-proceeds CG row for asset {asset} in the fixture"
 
-        jurisdiction = TaxJurisdictionConfig(
-            country="PT",
-            fiscal_year=2025,
-            exclude_loan_repayment_gains=True,
-            zero_basis_review_threshold=Decimal("500"),
-            infer_payment_proceeds=False,
-        )
+        jurisdiction = build_koinly_jurisdiction(infer_payment_proceeds=False)
         report = load_koinly_crypto_report(_FIXTURE_DIR, jurisdiction=jurisdiction)
-        if report is None:
-            pytest.skip("load_koinly_crypto_report returned None for koinly2025 fixtures")
+        assert report is not None, "load_koinly_crypto_report returned None for synthetic payment fixtures"
 
         # The phantom-loss row must survive with flag off (proceeds==0, gain==-cost).
         phantom_survivors = [

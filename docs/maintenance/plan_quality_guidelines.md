@@ -220,6 +220,7 @@ Before finalizing tasks that involve data processing, calculations, or external 
 | **Zero-cost propagation** | Zero-cost entries flagged with `review_required` | Distinguishing exhaustion from legitimate zero-cost (airdrops, gifts) |
 | **Fee/completeness** | All cost components included in calculations | Disposal fee missing from gain; tax withheld from net proceeds |
 | **Error scope** | Row-level parse errors caught per-row | One bad row crashes entire pipeline |
+| **Policy-arm coverage symmetry** | When centralizing a shared helper across callers with divergent raise/degrade policies, pin each caller's policy arm for every failure kind; a test gap found for one caller must be audited across siblings, starting with the safety-critical kind (wrong policy silently corrupts an aggregate). See `development_lessons.md` #136 | Guarded-JSON loader: one caller must RAISE on stat_error (double-counting hazard), another degrades; copying the degrade policy flips the raise to a silent empty |
 
 **How to apply:** When writing a task that processes external data or performs calculations, mentally walk through each item's lifecycle and verify:
 - What happens when a field is empty, zero, or max value?
@@ -227,6 +228,12 @@ Before finalizing tasks that involve data processing, calculations, or external 
 - What happens when a pool/set is exhausted?
 - Are all components (principal, fee, tax) accounted for?
 - Does one bad item crash the pipeline or get skipped with a warning?
+
+**Naming the root cause:** When a pre-computation or invariant check above addresses a
+recurring failure shape, name the family (A to H) from the principle catalog
+(`coding_guidelines.md` #17-#25) and consult `docs/maintenance/principle-index.md` to
+recall prior incidents by problem shape rather than re-deriving the lesson (see the
+`generalize` skill).
 
 ### Test Specification Format
 

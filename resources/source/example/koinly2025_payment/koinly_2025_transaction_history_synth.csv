@@ -1,0 +1,5 @@
+Transaction report 2025
+
+Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),TxSrc,TxDest,TxHash,Description
+2025-05-01 10:00:00 UTC,crypto_deposit,,,,,,Wirex,"100,00000000",EUROC,"100,00",,,"0,00","100,00","0,00",,,,EUROC purchase at par
+2025-06-15 12:00:00 UTC,crypto_withdrawal,Payment,Wirex,"100,00000000",EUROC,"100,00",,,,,,,"-100,00","0,00","0,00",,,,Payment disposal (Koinly could not price EUROC)

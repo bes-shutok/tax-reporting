@@ -7,6 +7,8 @@ capital events, crypto rewards, and Token origin resolution via transaction hist
 
 from __future__ import annotations
 
+import csv
+import io
 import re
 from decimal import Decimal
 from pathlib import Path
@@ -26,6 +28,50 @@ from tax_reporting.domain.collections import TradeCyclePerCompany
 EXAMPLE_DIR = Path("resources", "source", "example")
 EXAMPLE_IB_EXPORT = EXAMPLE_DIR / "ib_export.csv"
 EXAMPLE_KOINLY_DIR = EXAMPLE_DIR / "koinly2024"
+
+# Directories created by the crypto-tests-off-local-fixtures plan (2026-06-22) that ship
+# committed, fully-synthetic Koinly exports. The synthetic-data hygiene checks below are
+# scoped to these directories only: the legacy example/koinly2024/ files predate the
+# _synth.csv filename convention and use real-looking wallet names (Kraken, Binance) and
+# non-empty TxHash/TxSrc/TxDest values, so applying the checks globally would false-fail on
+# pre-existing legacy data (lesson #142: scope a new-convention validator to new work, or
+# accept-list the legacy token).
+SYNTHETIC_KOINLY_2025_DIRS = [
+    EXAMPLE_DIR / "koinly2025",
+    EXAMPLE_DIR / "koinly2025_zero_basis",
+    EXAMPLE_DIR / "koinly2025_payment",
+]
+# Fixed, obviously-synthetic filename token suffixes permitted for the new example CSVs.
+SYNTHETIC_FILENAME_SUFFIXES = ("_synth.csv", "_example.csv")
+# Blockchain/personal-detail columns that must be empty in synthetic data.
+SENSITIVE_COLUMN_NAMES = ("TxHash", "TxSrc", "TxDest")
+# Wallet-bearing columns whose values must come from a small synthetic allowlist.
+WALLET_COLUMN_NAMES = ("Sending Wallet", "Receiving Wallet", "Wallet Name")
+# Wallet labels permitted in synthetic example data (Design Invariant #1). Empty string is
+# allowed because Koinly leaves these blank for non-wallet-scoped rows (e.g. fiat legs).
+SYNTHETIC_WALLET_ALLOWLIST = {"Demo Spot", "Demo Futures", "Demo Payment", "Wirex", ""}
+
+
+def _read_koinly_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    """Read a Koinly CSV, skipping the leading title/blank lines before the header row.
+
+    Koinly exports start with a title line (e.g. "Capital gains report 2025") and, in some
+    report variants, a trailing blank line before the column header. The header row is the
+    first line that both contains a comma and mentions a known column keyword
+    (Date/Asset/Type). Returns (fieldnames, data_rows) using csv.DictReader semantics.
+    """
+    with path.open(newline="") as f:
+        lines = f.readlines()
+    header_idx: int | None = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and "," in stripped and any(kw in stripped for kw in ("Date", "Asset", "Type")):
+            header_idx = i
+            break
+    if header_idx is None:
+        return [], []
+    reader = csv.DictReader(io.StringIO("".join(lines[header_idx:])))
+    return list(reader.fieldnames or []), list(reader)
 
 
 @pytest.mark.e2e
@@ -180,6 +226,71 @@ def test_example_data_is_synthetic():
     assert "xY9kLm2pQr" in koinly_filename
     koinly_income = sorted(EXAMPLE_KOINLY_DIR.glob("*income_report*.csv"))[0]
     assert "aB3cDn5oEf" in koinly_income.name
+
+    # --- Synthetic-data hygiene for the new committed koinly2025* example fixtures ---
+    # (Design Invariant #1: synthesis, not sanitization; Evaluation Criteria
+    # "Synthetic-data hygiene"). Scoped to the directories created by the
+    # crypto-tests-off-local-fixtures plan: the legacy example/koinly2024/ files use a
+    # 10-char token, real wallet names (Kraken/Binance), and non-empty TxHash/TxSrc/TxDest,
+    # so a global check would false-fail on pre-existing legacy data (lesson #142).
+    scanned_csvs: list[Path] = []
+    for synth_dir in SYNTHETIC_KOINLY_2025_DIRS:
+        scanned_csvs.extend(sorted(synth_dir.glob("koinly_*.csv")))
+    assert scanned_csvs, (
+        "Pre-condition failed: no koinly_*.csv files found under the synthetic koinly2025* "
+        "directories; the hygiene checks cannot run."
+    )
+
+    # Sub-check 1: filename suffix. Every new example CSV must end in a fixed, obviously
+    # synthetic suffix (_synth.csv or _example.csv), never a 10-char mixed-case token.
+    bad_filenames = [
+        csv_path
+        for csv_path in scanned_csvs
+        if not csv_path.name.endswith(SYNTHETIC_FILENAME_SUFFIXES)
+    ]
+    assert not bad_filenames, (
+        "Synthetic example CSVs must end in a fixed synthetic suffix "
+        f"({SYNTHETIC_FILENAME_SUFFIXES}); offending files: "
+        f"{[p.name for p in bad_filenames]}"
+    )
+
+    # Sub-checks 2 and 3 run per-file. Both gracefully skip columns that are absent from a
+    # given report type (only transaction_history carries TxHash/TxSrc/TxDest; wallet
+    # columns differ between report types).
+    sensitive_violations: list[str] = []
+    wallet_violations: list[str] = []
+    for csv_path in scanned_csvs:
+        columns, rows = _read_koinly_csv(csv_path)
+        present_sensitive = [c for c in SENSITIVE_COLUMN_NAMES if c in columns]
+        present_wallets = [c for c in WALLET_COLUMN_NAMES if c in columns]
+
+        for row_num, row in enumerate(rows, start=1):
+            # Sub-check 2: sensitive blockchain/personal columns must be empty for every row.
+            for col in present_sensitive:
+                value = (row.get(col) or "").strip()
+                if value:
+                    sensitive_violations.append(
+                        f"{csv_path} row {row_num} column {col!r} must be empty, got {value!r}"
+                    )
+            # Sub-check 3: wallet columns must only use the synthetic allowlist.
+            for col in present_wallets:
+                value = (row.get(col) or "").strip()
+                if value not in SYNTHETIC_WALLET_ALLOWLIST:
+                    wallet_violations.append(
+                        f"{csv_path} row {row_num} column {col!r} has non-synthetic wallet "
+                        f"{value!r}; allowed {sorted(SYNTHETIC_WALLET_ALLOWLIST - {''})}"
+                    )
+
+    assert not sensitive_violations, (
+        "Synthetic example data must not carry real blockchain/personal details; "
+        "TxHash/TxSrc/TxDest must be empty for every row. Violations:\n  - "
+        + "\n  - ".join(sensitive_violations)
+    )
+    assert not wallet_violations, (
+        "Synthetic example data must use only synthetic wallet labels "
+        f"({sorted(SYNTHETIC_WALLET_ALLOWLIST - {''})}); real exchange/wallet names are "
+        "forbidden. Violations:\n  - " + "\n  - ".join(wallet_violations)
+    )
 
 
 def _count_csv_data_rows(path: Path) -> int:

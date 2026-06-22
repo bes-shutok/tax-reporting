@@ -1,0 +1,22 @@
+Transaction report 2025
+
+Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),TxSrc,TxDest,TxHash,Description
+2025-01-12 15:22:00 UTC,crypto_withdrawal,Futures fee,Demo Futures,"4,27180510",USDT,"4,17",,,,,,,"4,17","4,17","0,00",,,,Case A futures fee disposal
+2025-01-12 15:22:00 UTC,crypto_deposit,Realized gain,,,,,Demo Futures,"143,75200000",USDT,"140,18",,,"140,18","140,18","0,00",,,,Case A realized P&L (profit)
+2025-01-13 08:00:00 UTC,crypto_withdrawal,Funding fee,Demo Futures,"0,50000000",USDT,"0,50",,,,,,,"0,00","0,50","0,00",,,,Case B funding fee (exact match)
+2025-01-13 13:01:00 UTC,crypto_withdrawal,Realized gain,Demo Futures,"5,00000000",USDT,"5,00",,,,,,,"0,00","5,00","0,00",,,,Case B realized gain (contiguous range target)
+2025-01-24 20:00:00 UTC,crypto_withdrawal,Funding fee,Demo Futures,"0,08838575",USDT,"0,08",,,,,,,"0,00","0,08","0,00",,,,Case C funding fee
+2025-01-24 23:40:00 UTC,crypto_withdrawal,Futures fee,Demo Futures,"0,41424953",USDT,"0,40",,,,,,,"0,00","0,40","0,00",,,,Case C futures fee
+2025-01-24 23:40:00 UTC,crypto_withdrawal,Realized gain,Demo Futures,"40,75540000",USDT,"39,14",,,,,,,"0,00","39,14","0,00",,,,Case C realized gain
+2025-02-15 10:00:00 UTC,exchange,,Demo Spot,"20,00",EUR,"0,00",Demo Spot,"0,01000000",BTC,"20,00","0,00",EUR,"0,00","20,00","0,00",,,,Preserved spot BTC purchase 1
+2025-02-15 11:00:00 UTC,exchange,,Demo Spot,"15,00",EUR,"0,00",Demo Spot,"0,00750000",ETH,"15,00","0,00",EUR,"0,00","15,00","0,00",,,,Preserved spot ETH purchase 1
+2025-03-10 12:00:00 UTC,exchange,,Demo Spot,"0,00500000",BTC,"10,00",Demo Spot,"30,00",EUR,"12,00","0,00",EUR,"2,00","12,00","0,00",,,,Preserved spot BTC disposal (gain 2)
+2025-03-10 13:00:00 UTC,exchange,,Demo Spot,"0,00300000",ETH,"6,00",Demo Spot,"20,00",EUR,"9,50","0,00",EUR,"3,50","9,50","0,00",,,,Preserved spot ETH disposal (gain 3.50)
+2025-01-01 09:00:00 UTC,exchange,,Demo Spot,"4,17",EUR,"0,00",Demo Spot,"4,27180510",USDT,"4,17","0,00",EUR,"0,00","4,17","0,00",,,,Spot USDT purchase (Case A fee-lot basis)
+2025-01-05 09:00:00 UTC,exchange,,Demo Spot,"0,50",EUR,"0,00",Demo Spot,"0,50000000",USDT,"0,50","0,00",EUR,"0,00","0,50","0,00",,,,Spot USDT purchase (Case B funding-fee basis)
+2025-01-01 09:00:00 UTC,exchange,,Demo Spot,"1,50",EUR,"0,00",Demo Spot,"1,50000000",USDT,"1,50","0,00",EUR,"0,00","1,50","0,00",,,,Spot USDT purchase (Case B range lot 1)
+2025-01-02 09:00:00 UTC,exchange,,Demo Spot,"1,50",EUR,"0,00",Demo Spot,"1,50000000",USDT,"1,50","0,00",EUR,"0,00","1,50","0,00",,,,Spot USDT purchase (Case B range lot 2)
+2025-01-03 09:00:00 UTC,exchange,,Demo Spot,"2,00",EUR,"0,00",Demo Spot,"2,00002500",USDT,"2,00","0,00",EUR,"0,00","2,00","0,00",,,,Spot USDT purchase (Case B range lot 3)
+2025-01-20 09:00:00 UTC,exchange,,Demo Spot,"0,08",EUR,"0,00",Demo Spot,"0,08838575",USDT,"0,08","0,00",EUR,"0,00","0,08","0,00",,,,Spot USDT purchase (Case C funding basis)
+2025-01-22 09:00:00 UTC,exchange,,Demo Spot,"0,40",EUR,"0,00",Demo Spot,"0,41424953",USDT,"0,40","0,00",EUR,"0,00","0,40","0,00",,,,Spot USDT purchase (Case C futures basis)
+2025-01-23 09:00:00 UTC,exchange,,Demo Spot,"39,14",EUR,"0,00",Demo Spot,"40,75540000",USDT,"39,14","0,00",EUR,"0,00","39,14","0,00",,,,Spot USDT purchase (Case C realized basis)

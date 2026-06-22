@@ -578,6 +578,24 @@ Multi-agent review found critical implementation bugs that single-reviewer passe
 
 Multiple review iterations were necessary: fixes in one pass revealed new issues. Always verify findings against actual code, not assumptions from prior iterations.
 
+### Committed Synthetic Fixtures & CI Independence
+
+To ensure tests execute reliably in Continuous Integration (CI) and are not coupled to user-specific exports, all crypto tests MUST read committed synthetic data instead of gitignored personal exports:
+- **Zero Local-Data Dependency**: Tests must never load files from gitignored personal directories like `resources/source/koinly<year>/` or check for their presence. All test fixtures must reside under `resources/source/example/koinly<year>_<scenario>/`.
+- **Enforcement Mechanisms**:
+  - The `test_example_data_is_synthetic` hygiene assertion scans all committed example CSVs to verify filenames end in `_synth.csv` or `_example.csv`, sensitive transaction fields are empty, and wallets match a strict synthetic allowlist.
+  - The validation script (moving personal `koinly2025` aside using a trap) ensures no tests implicitly read local folders.
+
+### Synthetic Example Data Generation & Maintenance Workflow
+
+When creating or updating example files (e.g., under `resources/source/example/koinly2025/`):
+1. **Fabricate Details**: Use fictional wallet/exchange labels (e.g. `Demo Spot`, `Demo Futures`, `Demo Payment`, `Wirex`) and simulated asset quantities.
+2. **Clear Sensitive Data**: All blockchain-specific unique identifiers (`TxHash`, `TxSrc`, `TxDest`) must be completely empty (empty strings) in every row of the transaction history CSV.
+3. **Decouple Scenarios**: Keep distinct test behaviors (e.g., derivatives separation, zero-basis materiality, payment-proceeds correction) in separate subdirectories to avoid test pollution or unintended lot matching.
+4. **Filing / Materiality Check**: Remember that `_filter_immaterial_entries()` drops any lot with `|gain/loss| < 1 EUR`. If a synthetic row is intended to survive and be asserted, ensure its recomputed cost and proceeds result in a gain/loss of at least `1.00 EUR`, or that OGR overrides bring it over the threshold.
+5. **Document Fixtures**: Place a `README.md` inside the example directory detailing the scenario details, the transaction rows, and the tests they back.
+
+
 ## Aggregation Grouping Invariants
 
 ### Expected Repeated Dates vs Forbidden Duplicate Aggregation Keys
@@ -621,7 +639,7 @@ function has a regression. The durable regression test
 | `test_aggregate_never_emits_duplicate_keys` | No duplicate aggregation keys in `_aggregate_capital_entries()` output |
 | `test_same_timestamp_different_holding_period_stays_split` | Same-date rows with different holding periods stay separate (PT-C-011) |
 | `test_same_disposal_date_allowed_when_other_grouping_dims_differ` | Same disposal date with different asset/platform/holding_period stays separate |
-| `test_real_koinly_fixture_has_no_duplicate_aggregation_keys` | Real koinly2025 fixture has zero duplicate keys after full pipeline |
+| `test_example_fixture_has_no_duplicate_aggregation_keys` | Committed example koinly2025 fixture has zero duplicate keys after full pipeline |
 | `test_acquisition_date_repeat_is_not_a_disposal_grouping_issue` | Shared acquisition date across multiple disposals is not a bug |
 
 ## Koinly Export Files
