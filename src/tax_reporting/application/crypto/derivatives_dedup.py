@@ -31,7 +31,6 @@ Design notes
 from __future__ import annotations
 
 import dataclasses
-import json
 import logging
 from collections import deque
 from decimal import Decimal
@@ -39,6 +38,7 @@ from pathlib import Path
 
 from ...domain.exceptions import FileProcessingError
 from ...domain.jurisdiction import TaxJurisdictionConfig
+from ...infrastructure.json_loader import DEGRADED, load_guarded_json
 from ...infrastructure.koinly_parser import (
     normalize_asset_ticker,
     normalize_platform_name,
@@ -51,9 +51,50 @@ from .entities import CryptoCapitalGainEntry
 
 logger = logging.getLogger(__name__)
 
-# Max size of a derivatives-labels config file (1 MiB). Mirrors the size guard
-# in classification._load_popular_crypto_tokens to bound the JSON read.
+# Max size of a derivatives-labels config file (1 MiB). Bound for the JSON read
+# performed by infrastructure.json_loader.load_guarded_json.
 _MAX_LABELS_FILE_SIZE = 1 * 1024 * 1024
+
+
+def _on_error(failed_path: Path, kind: str, detail: str) -> object:
+    """Policy callback for :func:`load_guarded_json`.
+
+    Mirrors the degrade-vs-raise policy that previously lived inline in
+    ``_load_derivatives_labels_config_from_path`` (repo lesson #105: inherit the
+    guards, recalibrate exception handling to the cost of silent failure). A
+    *missing* config degrades silently (the caller owns the single WARNING); a
+    *malformed* config is a correctness hazard (silent skip leaves
+    double-counting in place), so every other kind raises
+    :class:`FileProcessingError` embedding the path.
+
+    Note: ``load_guarded_json`` catches ``OSError``/``json.JSONDecodeError``
+    internally and passes ``str(exc)`` as ``detail``; the original exception is
+    not available here, so the ``stat_error`` and ``invalid_json`` arms embed
+    ``detail`` (the str) in the message rather than chaining ``from e``.
+    """
+    if kind == "missing":
+        return DEGRADED
+    if kind == "symlink":
+        raise FileProcessingError(
+            f"Derivatives labels config at {failed_path} is a symlink - "
+            "only regular files are accepted for security"
+        )
+    if kind == "oversize":
+        raise FileProcessingError(
+            f"Derivatives labels config exceeds size limit ({detail}): {failed_path}"
+        )
+    if kind == "stat_error":
+        raise FileProcessingError(
+            f"Could not stat derivatives labels config {failed_path}: {detail}"
+        )
+    if kind == "invalid_json":
+        raise FileProcessingError(
+            f"Derivatives labels config {failed_path} contains invalid JSON: {detail}"
+        )
+    # Defensive: unknown kind token from the helper is itself a config hazard.
+    raise FileProcessingError(
+        f"Derivatives labels config {failed_path} failed to load ({kind}): {detail}"
+    )
 
 
 def _load_derivatives_labels_config_from_path(path: Path) -> frozenset[str]:
@@ -70,39 +111,19 @@ def _load_derivatives_labels_config_from_path(path: Path) -> frozenset[str]:
             size limit, the JSON is malformed, the ``derivatives_th_labels``
             key is missing, or its value is not a list of strings.
     """
-    # Security check: reject symlinks (mirrors classification._load_popular_crypto_tokens).
-    if path.is_symlink():
-        raise FileProcessingError(
-            f"Derivatives labels config at {path} is a symlink - "
-            "only regular files are accepted for security"
-        )
+    # Symlink / existence / size / json.load guards live in the shared helper;
+    # _on_error owns the degrade-vs-raise policy (missing -> DEGRADED silent,
+    # all other kinds -> raise). No path.exists() pre-check here: the helper
+    # checks symlink before missing so a dangling symlink still raises.
+    data = load_guarded_json(
+        path, size_limit=_MAX_LABELS_FILE_SIZE, on_error=_on_error
+    )
 
-    if not path.exists():
+    if data is DEGRADED:
         # Silent return; the apply_derivatives_dedup caller emits a single
         # WARNING with the actionable remediation hint when labels is empty.
         # Logging here would double-warn for the same condition.
         return frozenset()
-
-    # Security check: size validation, mirrors classification._load_popular_crypto_tokens.
-    try:
-        file_size = path.stat().st_size
-        if file_size > _MAX_LABELS_FILE_SIZE:
-            raise FileProcessingError(
-                f"Derivatives labels config exceeds size limit ({file_size} bytes, "
-                f"max {_MAX_LABELS_FILE_SIZE} bytes): {path}"
-            )
-    except OSError as e:
-        raise FileProcessingError(
-            f"Could not stat derivatives labels config {path}: {e}"
-        ) from e
-
-    try:
-        with path.open(encoding="utf-8") as f:
-            data = json.load(f)
-    except json.JSONDecodeError as e:
-        raise FileProcessingError(
-            f"Derivatives labels config {path} contains invalid JSON: {e}"
-        ) from e
 
     if not isinstance(data, dict):
         raise FileProcessingError(

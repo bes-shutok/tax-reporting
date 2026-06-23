@@ -13,6 +13,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from ...infrastructure.logging_config import create_module_logger
+from ...infrastructure.text_sanitize import strip_control_chars
 
 # Column width bounds for auto_column_width
 MAX_CELL_WIDTH = 50  # Maximum character width to measure per cell (caps outliers)
@@ -139,7 +140,7 @@ def safe_cell_value(value: str) -> str:
         The sanitized value safe for Excel cell writing. Empty strings are safe
         and returned as-is (no space prefix needed).
     """
-    cleaned = "".join(ch for ch in value if ch >= " " or ch in ("\t",))
+    cleaned = strip_control_chars(value)
     # Empty strings (after stripping control chars) are safe - no prefix needed
     if cleaned[:1] in ("=", "+", "-", "@"):
         return f" {cleaned}"

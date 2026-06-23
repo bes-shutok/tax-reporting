@@ -161,6 +161,32 @@ class TestDerivativesLabelsConfig:
 
         assert str(link) in str(exc_info.value)
 
+    def test_stat_error_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """Given a config file whose stat() raises OSError, expects
+        FileProcessingError embedding the file path (closes a copy-paste hole
+        where an implementer could degrade the stat_error arm).
+        """
+        from tax_reporting.application.crypto.derivatives_dedup import Path as DedupPath
+        from tax_reporting.application.crypto.derivatives_dedup import (
+            _load_derivatives_labels_config_from_path,
+        )
+
+        config = tmp_path / "stat_fails.json"
+        config.write_text(
+            json.dumps({"derivatives_th_labels": ["Funding fee"]}),
+            encoding="utf-8",
+        )
+
+        def raise_oserror(self: Path) -> object:
+            raise OSError("simulated stat failure")
+
+        monkeypatch.setattr(DedupPath, "stat", raise_oserror)
+
+        with pytest.raises(FileProcessingError) as exc_info:
+            _load_derivatives_labels_config_from_path(config)
+
+        assert str(config) in str(exc_info.value)
+
 
 class TestDisposalTimestamp:
     """Tests for the disposal_timestamp field added in Task 3 of the plan.

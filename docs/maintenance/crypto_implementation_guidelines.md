@@ -1127,9 +1127,12 @@ provider or year requires only a new JSON file under
 
 The loader `_load_derivatives_labels_config(provider, year)` resolves the
 path as `_REPOSITORY_ROOT / "docs" / "tax" / "derivatives_labels" /
-f"{provider}_{year}.json"` and reuses two security patterns from
-`classification._load_popular_crypto_tokens`: symlink rejection and a
-file size limit of 1 MiB (`_MAX_LABELS_FILE_SIZE`). A malformed config
+f"{provider}_{year}.json"` and routes the secure-load
+guards (symlink rejection and a file size limit of 1 MiB via
+`_MAX_LABELS_FILE_SIZE`) through the shared
+`infrastructure.json_loader.load_guarded_json`, supplying its own
+`_on_error` policy callback (repo lesson #105: inherit the guards,
+recalibrate exception handling). A malformed config
 file (invalid JSON, missing `derivatives_th_labels` key, wrong value
 type) raises `FileProcessingError` at startup; only a missing file
 degrades gracefully.
@@ -1513,14 +1516,15 @@ Required-key invariants enforced by `_load_payment_proceeds_config_from_path`:
 
 ### Loader degrades, never raises (lesson #105)
 
-`_load_payment_proceeds_config_from_path()` mirrors the SECURITY guards of
-`classification._load_popular_crypto_tokens` (symlink rejection, 1 MiB size
-limit via `_MAX_TOKEN_FILE_SIZE`) but RECALIBRATES exception handling to
+`_load_payment_proceeds_config_from_path()` routes the secure-load guards
+(symlink rejection, 1 MiB size limit via `_MAX_TOKEN_FILE_SIZE`) through the
+shared `infrastructure.json_loader.load_guarded_json` and supplies its own
+`_on_error` policy callback that RECALIBRATES exception handling to
 DEGRADE never raise. A corrupt token file must never abort report generation.
 On ANY failure mode (missing, symlink, oversize, malformed JSON, missing keys,
-drift) the loader logs a WARNING naming the path and the specific failure, then
-returns the defaults: empty stablecoin set, empty peg map, the canonical
-payment tag pair `["payment", "card payment"]`. This is the deliberate
+drift) the policy callback logs a WARNING naming the path and the specific
+failure, then returns the defaults: empty stablecoin set, empty peg map, the
+canonical payment tag pair `["payment", "card payment"]`. This is the deliberate
 recalibration called for by lesson #105: reuse the guards but weigh the cost
 of silent failure at the new call site (a missing peg map means EUR-par and
 peg-rate tiers never fire - visible as unchanged zero-proceeds rows with the

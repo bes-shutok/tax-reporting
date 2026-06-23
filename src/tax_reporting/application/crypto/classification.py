@@ -7,7 +7,6 @@ and validating country codes for Portuguese tax filing.
 
 from __future__ import annotations
 
-import json
 import logging
 from decimal import Decimal
 from functools import lru_cache
@@ -16,6 +15,7 @@ from pathlib import Path
 import pycountry
 
 from ...domain.exceptions import FileProcessingError
+from ...infrastructure.json_loader import DEGRADED, load_guarded_json
 from .entities import CryptoCapitalGainEntry, DerivativesClassification, ParsedOgrRow, RewardTaxClassification
 
 
@@ -200,7 +200,76 @@ _POPULAR_CRYPTO_TOKENS_FILE = (
     _REPOSITORY_ROOT / "docs" / "maintenance" / "tax" / "popular_crypto_tokens.json"
 )
 
+# Strict size cap for popular crypto tokens JSON (1 MiB). Mirrors
+# payment_proceeds._MAX_TOKEN_FILE_SIZE; the file is the same config genre.
+# Files of exactly this size pass; strictly larger files are rejected.
+_MAX_TOKEN_FILE_SIZE = 1 * 1024 * 1024
+
 logger = logging.getLogger(__name__)
+
+
+def _on_error(failed_path: Path, kind: str, detail: str) -> object:
+    """Policy callback for :func:`load_guarded_json`.
+
+    Preserves the original MIXED policy of ``_load_popular_crypto_tokens``:
+    symlink and oversize are security/data-integrity failures that raise
+    ``FileProcessingError`` (the file is untrusted at that point); missing,
+    stat errors, and invalid JSON degrade to a WARNING + ``DEGRADED`` so that
+    token loading never aborts report generation.
+
+    Args:
+        failed_path: The path that failed (embedded in messages).
+        kind: Failure kind from the closed set ``{"symlink", "missing",
+            "oversize", "stat_error", "invalid_json"}``.
+        detail: Helper-supplied detail string (``str(exc)`` for OSError/JSON
+            errors, byte f-string for oversize).
+
+    Returns:
+        ``DEGRADED`` for the degrade kinds; never returns for symlink/oversize
+        (those raise).
+
+    Raises:
+        FileProcessingError: For ``symlink`` and ``oversize`` kinds.
+    """
+    if kind == "symlink":
+        raise FileProcessingError(
+            f"Popular crypto tokens file at {failed_path} is a symlink: "
+            "only regular files are accepted for security"
+        )
+    if kind == "oversize":
+        raise FileProcessingError(
+            f"Popular crypto tokens file exceeds size limit ({detail}): {failed_path}"
+        )
+    if kind == "missing":
+        logger.warning(
+            "Popular crypto tokens file not found at %s. Zero-value rewards for known assets "
+            "may not be flagged for review. Using empty token set.",
+            failed_path,
+        )
+        return DEGRADED
+    if kind == "stat_error":
+        logger.warning(
+            "Could not stat popular crypto tokens file %s: %s. Using empty token set.",
+            failed_path,
+            detail,
+        )
+        return DEGRADED
+    if kind == "invalid_json":
+        logger.warning(
+            "Failed to load popular crypto tokens from %s: %s. Using empty token set. "
+            "Zero-value rewards for known assets may not be flagged for review.",
+            failed_path,
+            detail,
+        )
+        return DEGRADED
+    # Defensive: unknown kind still degrades rather than propagating.
+    logger.warning(
+        "Unknown loader failure kind '%s' for popular crypto tokens file %s: %s. Using empty token set.",
+        kind,
+        failed_path,
+        detail,
+    )
+    return DEGRADED
 
 
 @lru_cache(maxsize=1)
@@ -218,75 +287,38 @@ def _load_popular_crypto_tokens() -> frozenset[str]:
     """
     tokens: set[str] = set()
 
-    # Security check: reject symlinks
-    if _POPULAR_CRYPTO_TOKENS_FILE.is_symlink():
+    data = load_guarded_json(
+        _POPULAR_CRYPTO_TOKENS_FILE, size_limit=_MAX_TOKEN_FILE_SIZE, on_error=_on_error
+    )
+    if data is DEGRADED:
+        return frozenset()
+
+    # No try/except: json.load lives in the helper (failures surface via _on_error
+    # as invalid_json); isinstance guards make AttributeError unreachable here.
+    if not isinstance(data, dict):
         raise FileProcessingError(
-            f"Popular crypto tokens file at {_POPULAR_CRYPTO_TOKENS_FILE} is a symlink: "
-            "only regular files are accepted for security"
+            f"Popular crypto tokens file must contain a JSON object, got {type(data).__name__}: "
+            f"{_POPULAR_CRYPTO_TOKENS_FILE}"
         )
 
-    if not _POPULAR_CRYPTO_TOKENS_FILE.exists():
-        logger.warning(
-            "Popular crypto tokens file not found at %s. Zero-value rewards for known assets "
-            "may not be flagged for review. Using empty token set.",
-            _POPULAR_CRYPTO_TOKENS_FILE,
+    if "tokens" not in data:
+        raise FileProcessingError(
+            f"Popular crypto tokens file must contain a 'tokens' key: {_POPULAR_CRYPTO_TOKENS_FILE}"
         )
-        return frozenset()
 
-    # Security check: file size validation (max 1MB for token list JSON)
-    max_token_file_size = 1 * 1024 * 1024  # 1MB
-    try:
-        file_size = _POPULAR_CRYPTO_TOKENS_FILE.stat().st_size
-        if file_size > max_token_file_size:
-            raise FileProcessingError(
-                f"Popular crypto tokens file exceeds size limit ({file_size} bytes, "
-                f"max {max_token_file_size} bytes): {_POPULAR_CRYPTO_TOKENS_FILE}"
-            )
-    except OSError as e:
-        logger.warning(
-            "Could not stat popular crypto tokens file %s: %s. Using empty token set.",
-            _POPULAR_CRYPTO_TOKENS_FILE,
-            e,
+    tokens_obj = data["tokens"]
+    if not isinstance(tokens_obj, dict):
+        raise FileProcessingError(
+            f"Popular crypto tokens 'tokens' value must be an object, got {type(tokens_obj).__name__}: "
+            f"{_POPULAR_CRYPTO_TOKENS_FILE}"
         )
-        return frozenset()
 
-    try:
-        with _POPULAR_CRYPTO_TOKENS_FILE.open(encoding="utf-8") as f:
-            data = json.load(f)
+    for category_tokens in tokens_obj.values():
+        if isinstance(category_tokens, list):
+            tokens.update(category_tokens)
 
-        # Validate JSON structure
-        if not isinstance(data, dict):
-            raise FileProcessingError(
-                f"Popular crypto tokens file must contain a JSON object, got {type(data).__name__}: "
-                f"{_POPULAR_CRYPTO_TOKENS_FILE}"
-            )
-
-        if "tokens" not in data:
-            raise FileProcessingError(
-                f"Popular crypto tokens file must contain a 'tokens' key: {_POPULAR_CRYPTO_TOKENS_FILE}"
-            )
-
-        tokens_obj = data["tokens"]
-        if not isinstance(tokens_obj, dict):
-            raise FileProcessingError(
-                f"Popular crypto tokens 'tokens' value must be an object, got {type(tokens_obj).__name__}: "
-                f"{_POPULAR_CRYPTO_TOKENS_FILE}"
-            )
-
-        for category_tokens in tokens_obj.values():
-            if isinstance(category_tokens, list):
-                tokens.update(category_tokens)
-
-        logger.debug("Loaded %d popular crypto tokens from %s", len(tokens), _POPULAR_CRYPTO_TOKENS_FILE)
-        return frozenset(tokens)
-    except (json.JSONDecodeError, OSError, AttributeError) as e:
-        logger.warning(
-            "Failed to load popular crypto tokens from %s: %s. Using empty token set. "
-            "Zero-value rewards for known assets may not be flagged for review.",
-            _POPULAR_CRYPTO_TOKENS_FILE,
-            e,
-        )
-        return frozenset()
+    logger.debug("Loaded %d popular crypto tokens from %s", len(tokens), _POPULAR_CRYPTO_TOKENS_FILE)
+    return frozenset(tokens)
 
 
 # Cached accessor for popular tokens

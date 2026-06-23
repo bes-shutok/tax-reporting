@@ -1,6 +1,6 @@
 # Proposal: DP-014 payment-proceeds refactor options (#6, #12)
 
-- **Status:** DEFERRED (options record; not active work - choose before implementing)
+- **Status:** IMPLEMENTED (2026-06-21, branch `2026-06-21-crypto-payment-proceeds-refactor`). Both findings resolved via their Option B. See "Resolution" below.
 - **Date:** 2026-06-20
 - **Branch:** 2026-06-19-doc-hierarchy-migration
 - **Related:** review findings #6, #12 in
@@ -143,6 +143,32 @@ neutral util's home is `infrastructure/` (a generic text helper) or
 `application/` (if we consider it application-shared) - `infrastructure/` fits the
 "cross-cutting, no domain logic" reading, but the package choice is the user's
 call (no hardcoded new package path without sign-off).
+
+## Resolution (2026-06-21)
+
+Both findings landed via their recommended Option B (extract to a shared helper,
+caller owns the policy). The implemented code matches the Option B descriptions:
+the shared guards live once, each caller keeps its own return shape and degrade
+vs raise policy.
+
+- **Finding #6 (shared guarded JSON loader)** - resolved by
+  `src/tax_reporting/infrastructure/json_loader.py::load_guarded_json` plus the
+  `DEGRADED` sentinel and the `on_error(path, kind, detail)` policy seam. The
+  three readers route through it with caller-owned policy callbacks:
+  `classification._load_popular_crypto_tokens`,
+  `payment_proceeds._load_payment_proceeds_config_from_path`, and
+  `derivatives_dedup._load_derivatives_labels_config_from_path`.
+  Commits: `ba39637` (shared helper),
+  `41c284a` (payment_proceeds),
+  `0e0e701` (derivatives_dedup),
+  `3c8919d` (classification).
+- **Finding #12 (split `safe_cell_value` sanitizer)** - resolved by extracting
+  the layer-agnostic control-char strip to
+  `src/tax_reporting/infrastructure/text_sanitize.py::strip_control_chars`;
+  the Excel sigil defusal stays in `persisting/excel_utils.py`, and
+  `payment_proceeds._sanitize_substring` now calls `strip_control_chars`
+  directly with no presentation dependency.
+  Commit: `9e80869`.
 
 ## Why these are deferred (not done on the migration branch)
 

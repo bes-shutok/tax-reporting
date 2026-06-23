@@ -33,19 +33,19 @@ so a corrupt token file never aborts report generation.
 from __future__ import annotations
 
 import dataclasses
-import json
 import logging
 from collections import deque
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from ...application.persisting.excel_utils import safe_cell_value
 from ...infrastructure.config import ConversionRate
+from ...infrastructure.json_loader import DEGRADED, load_guarded_json
 from ...infrastructure.koinly_parser import (
     normalize_asset_ticker,
     normalize_platform_name,
     parse_koinly_decimal,
 )
+from ...infrastructure.text_sanitize import strip_control_chars
 from .classification import _REPOSITORY_ROOT
 from .derivatives_dedup import _quantize_amount_6dp
 from .entities import CryptoCapitalGainEntry, CryptoReviewEntry
@@ -107,17 +107,19 @@ def _default_config() -> PaymentProceedsConfig:
     )
 
 
-def _load_payment_proceeds_config_from_path(  # noqa: PLR0911, PLR0912
-    path: Path,
-) -> PaymentProceedsConfig:
+def _load_payment_proceeds_config_from_path(path: Path) -> PaymentProceedsConfig:  # noqa: PLR0911 - one degrade return per schema/drift branch is clearer than collapsing
     """Load ``PaymentProceedsConfig`` from ``path`` (testable path-arg reader).
 
-    Mirrors the security guards of ``classification._load_popular_crypto_tokens``
-    (symlink rejection, 1 MiB size limit) but RECALIBRATES exception handling
-    to DEGRADE never raise (lesson #105): a corrupt token file must never
-    abort report generation. On any failure mode (missing, symlink, oversize,
-    malformed JSON, missing keys, drift) the loader logs a WARNING naming the
-    path and the specific failure, then returns the defaults.
+    Delegates the mechanical file guards (symlink rejection, existence check,
+    1 MiB size cap, ``json.load``) to
+    :func:`tax_reporting.infrastructure.json_loader.load_guarded_json`. The
+    helper recalibrates exception handling to DEGRADE never raise (lesson #105):
+    a corrupt token file must never abort report generation. On any failure
+    mode (missing, symlink, oversize, malformed JSON, missing keys, drift) the
+    loader logs a WARNING naming the path and the specific failure, then
+    returns the defaults. Schema validation (``tokens.stablecoins``,
+    ``stablecoin_pegs``, ``payment_tags``) and the peg/tokens drift guard stay
+    caller-side here.
 
     Args:
         path: Absolute path to ``popular_crypto_tokens.json``.
@@ -126,54 +128,51 @@ def _load_payment_proceeds_config_from_path(  # noqa: PLR0911, PLR0912
         A ``PaymentProceedsConfig``. Either the parsed config or, on any
         failure, the defaults (empty stablecoin set, default payment tags).
     """
-    # Security check: reject symlinks BEFORE opening (short-circuits so the
-    # target body is never read - a symlink to malformed JSON must fire the
-    # symlink warning, not the invalid-JSON warning).
-    if path.is_symlink():
-        logger.warning(
-            "Payment proceeds config at %s is a symlink - only regular files are "
-            "accepted for security. Using defaults (no stablecoin pegs).",
-            path,
-        )
-        return _default_config()
 
-    if not path.exists():
-        logger.warning(
-            "Payment proceeds config not found at %s - using defaults (no stablecoin pegs).",
-            path,
-        )
-        return _default_config()
+    def _on_error(failed_path: Path, kind: str, detail: str) -> object:
+        """Log the existing-style WARNING for a loader failure, then degrade.
 
-    # Security check: size validation. Degrades (warns) rather than raising,
-    # unlike the classification loader.
-    try:
-        file_size = path.stat().st_size
-    except OSError as e:
-        logger.warning(
-            "Could not stat payment proceeds config %s: %s - using defaults.",
-            path,
-            e,
-        )
-        return _default_config()
+        The human phrase ("symlink" / "not found" / "could not stat" /
+        "exceeds size limit" / "invalid JSON") is embedded in the WARNING
+        format string itself (NOT only in ``detail``), because for
+        ``invalid_json`` ``detail`` is ``str(exc)`` and for ``oversize`` it is
+        the byte f-string - neither contains the phrase - and the
+        characterization tests grep the captured messages for those substrings.
+        """
+        if kind == "symlink":
+            logger.warning(
+                "Payment proceeds config at %s is a symlink - only regular files "
+                "are accepted for security (%s). Using defaults (no stablecoin pegs).",
+                failed_path,
+                detail,
+            )
+        elif kind == "missing":
+            logger.warning(
+                "Payment proceeds config not found at %s - using defaults (no stablecoin pegs).",
+                failed_path,
+            )
+        elif kind == "stat_error":
+            logger.warning(
+                "Could not stat payment proceeds config %s: %s - using defaults.",
+                failed_path,
+                detail,
+            )
+        elif kind == "oversize":
+            logger.warning(
+                "Payment proceeds config exceeds size limit (%s): %s - using defaults.",
+                detail,
+                failed_path,
+            )
+        elif kind == "invalid_json":
+            logger.warning(
+                "Payment proceeds config %s contains invalid JSON: %s - using defaults.",
+                failed_path,
+                detail,
+            )
+        return DEGRADED
 
-    if file_size > _MAX_TOKEN_FILE_SIZE:
-        logger.warning(
-            "Payment proceeds config exceeds size limit (%s bytes, max %s bytes): %s - using defaults.",
-            file_size,
-            _MAX_TOKEN_FILE_SIZE,
-            path,
-        )
-        return _default_config()
-
-    try:
-        with path.open(encoding="utf-8") as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning(
-            "Payment proceeds config %s contains invalid JSON: %s - using defaults.",
-            path,
-            e,
-        )
+    data = load_guarded_json(path, size_limit=_MAX_TOKEN_FILE_SIZE, on_error=_on_error)
+    if data is DEGRADED:
         return _default_config()
 
     if not isinstance(data, dict):
@@ -475,13 +474,14 @@ def _derive_peg_to_eur_rates(
 def _sanitize_substring(value: str) -> str:
     """Sanitize an external-derived substring for embedding in reasons/logs.
 
-    Routes the value through :func:`safe_cell_value` to strip control chars
-    and neutralize a leading formula sigil (``= + - @``). Used for EVERY
-    external-derived substring (asset, wallet) embedded in a review reason
-    or warning message so a malicious asset string cannot ship a live
-    spreadsheet formula.
+    Routes the value through :func:`strip_control_chars` to strip control
+    characters (NUL, BEL, newline, ...). Used for EVERY external-derived
+    substring (asset, wallet) embedded in a review reason or warning message
+    so embedded control characters cannot corrupt cell rendering or log
+    output. Formula-sigil defusal is the Excel layer's responsibility and is
+    applied separately when the reason is written to a worksheet cell.
     """
-    return safe_cell_value(value)
+    return strip_control_chars(value)
 
 
 def _net_value_reason(asset_safe: str, proceeds: Decimal) -> str:
