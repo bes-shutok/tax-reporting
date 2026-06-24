@@ -12,9 +12,9 @@ This service exposes **no HTTP API**. It is a CLI tool (`uv run tax-reporting`) 
 `docs/maintenance/tax/decision_points/<fiscal_year>.toml`:
 
 - `[meta]` - integer `fiscal_year`, optional `source_decision_file`, `last_verified`.
-- `[countries.XX]` - boolean law-driven flags (e.g. `exclude_loan_repayment_gains`).
+- `[countries.XX]` - law-driven decision-point values. Each value may be a **boolean** flag (e.g. `exclude_loan_repayment_gains`) or a **`dict[str, Decimal]`** subtable (e.g. `exclude_transaction_fee_max_eur_per_asset`; DP-015 is the first non-boolean field type). The loader type-dispatches over `get_type_hints(TaxJurisdictionConfig)`: `hint is bool` -> boolean validation; `get_args(hint) == (str, Decimal)` -> dict validation + `Decimal(str(value))` conversion (the `str()` round-trip avoids binary-float noise). A `dict[str, Decimal]` field is declared as a TOML subtable `[countries.XX.<field_name>]` whose keys are the eligibility set and values are per-asset ceilings.
 
-Adding a boolean flag to the `.md` requires the corresponding field on `TaxJurisdictionConfig` (`domain/jurisdiction.py`). A missing TOML for the configured `FISCAL_YEAR` raises `MissingDecisionPointsError` at startup; the `.md` and `.toml` sidecars are updated together.
+Adding a flag (bool or `dict[str, Decimal]`) to the `.md` requires the corresponding field on `TaxJurisdictionConfig` (`domain/jurisdiction.py`). A missing TOML for the configured `FISCAL_YEAR` raises `MissingDecisionPointsError` at startup; the `.md` and `.toml` sidecars are updated together.
 
 ## config.ini schema
 

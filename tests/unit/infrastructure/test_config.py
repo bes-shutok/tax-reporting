@@ -161,7 +161,10 @@ class TestConfigValidation:
 class TestLoadTaxJurisdictionConfig:
     """Tests for TaxJurisdictionConfig parsing from config file."""
 
-    _PT_TOML = "[meta]\nfiscal_year = 2025\n[countries.PT]\nexclude_loan_repayment_gains = true\n"
+    _PT_TOML = (
+    "[meta]\nfiscal_year = 2025\n[countries.PT]\n"
+    "exclude_loan_repayment_gains = true\nexclude_transaction_fees = true\n"
+)
     _NO_COUNTRY_TOML = "[meta]\nfiscal_year = 2025\n"
 
     def _make_config(self, section_entries: dict | None) -> configparser.ConfigParser:
@@ -203,6 +206,58 @@ class TestLoadTaxJurisdictionConfig:
         result = _load_tax_jurisdiction_config(cp, logger)
         assert result.country == "US"
         assert result.exclude_loan_repayment_gains is False
+
+    def test_non_pt_country_missing_subtable_defaults_to_empty_dict(self, tmp_path, monkeypatch) -> None:
+        """A non-PT country whose TOML omits the per-asset subtable gets an empty dict (no error).
+
+        The dict field defaults via the dataclass default_factory=dict when absent
+        from flag_kwargs; the loader never adds it. Asserts isinstance(dict) and empty.
+        """
+        import tax_reporting.infrastructure.config as config_module
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(self._NO_COUNTRY_TOML)
+        cp = self._make_config({"TAX_COUNTRY": "US", "FISCAL_YEAR": "2025"})
+        logger = logging.getLogger(__name__)
+        result = _load_tax_jurisdiction_config(cp, logger)
+        assert isinstance(result.exclude_transaction_fee_max_eur_per_asset, dict)
+        assert result.exclude_transaction_fee_max_eur_per_asset == {}
+
+    def test_pt_subtable_loaded_into_config(self, tmp_path, monkeypatch) -> None:
+        """The PT per-asset subtable in 2025.toml is loaded into TaxJurisdictionConfig with Decimal values."""
+        import tax_reporting.infrastructure.config as config_module
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(
+            "[meta]\nfiscal_year = 2025\n[countries.PT]\n"
+            "exclude_loan_repayment_gains = true\nexclude_transaction_fees = true\n"
+            "[countries.PT.exclude_transaction_fee_max_eur_per_asset]\n"
+            "ETH = 1.0\nSOL = 0.5\n"
+        )
+        cp = self._make_config({"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025"})
+        logger = logging.getLogger(__name__)
+        result = _load_tax_jurisdiction_config(cp, logger)
+        per_asset = result.exclude_transaction_fee_max_eur_per_asset
+        assert per_asset["ETH"] == Decimal("1.0")
+        assert per_asset["SOL"] == Decimal("0.5")
+        assert all(isinstance(v, Decimal) for v in per_asset.values())
+
+    def test_exclude_transaction_fees_defaults_to_false(self) -> None:
+        """TaxJurisdictionConfig defaults exclude_transaction_fees to False when not provided."""
+        config = TaxJurisdictionConfig(
+            country="US", fiscal_year=2025, exclude_loan_repayment_gains=False, zero_basis_review_threshold=Decimal("50")
+        )
+        assert config.exclude_transaction_fees is False
+
+    def test_load_tax_jurisdiction_config_pt_excludes_transaction_fees(self, tmp_path, monkeypatch) -> None:
+        """PT jurisdiction config loaded from the 2025.toml decision points has exclude_transaction_fees == True."""
+        import tax_reporting.infrastructure.config as config_module
+
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(self._PT_TOML)
+        cp = self._make_config({"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025"})
+        logger = logging.getLogger(__name__)
+        result = _load_tax_jurisdiction_config(cp, logger)
+        assert result.country == "PT"
+        assert result.exclude_transaction_fees is True
 
     def test_tax_jurisdiction_config_country_code_normalized_to_upper(self, tmp_path, monkeypatch):
         import tax_reporting.infrastructure.config as config_module
@@ -593,6 +648,108 @@ class TestLoadDecisionPointsFlags:
         logger = logging.getLogger(__name__)
         with pytest.raises(ValueError, match="must be an integer"):
             _load_decision_points_flags("PT", 2025, logger)
+
+    def test_dict_subtable_parsed_with_decimal_str_conversion(self, tmp_path, monkeypatch) -> None:
+        """A dict[str, Decimal] subtable is parsed and values are Decimal(str(value)).
+
+        Includes a non-round ceiling (0.1) so the test pins the exact Decimal
+        representation Decimal("0.1") rather than a binary-float-noisy value.
+        """
+        import tax_reporting.infrastructure.config as config_module
+        from tax_reporting.infrastructure.config import _load_decision_points_flags
+
+        dp_dir = tmp_path / "decision_points"
+        _write_toml(
+            dp_dir,
+            _MINIMAL_VALID_TOML
+            + "[countries.PT]\n"
+            + "[countries.PT.exclude_transaction_fee_max_eur_per_asset]\n"
+            + "ETH = 1.0\nSOL = 0.5\nX = 0.1\n",
+        )
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
+
+        logger = logging.getLogger(__name__)
+        flags = _load_decision_points_flags("PT", 2025, logger)
+
+        per_asset = flags["exclude_transaction_fee_max_eur_per_asset"]
+        assert isinstance(per_asset, dict)
+        # Decimal(str(value)) - binary-float-noise-free. 0.1 is the load-bearing
+        # discriminator: Decimal(0.1) would yield 0.1000000000000000055511151231...
+        assert per_asset["ETH"] == Decimal("1.0")
+        assert per_asset["SOL"] == Decimal("0.5")
+        assert per_asset["X"] == Decimal("0.1")
+        assert all(isinstance(v, Decimal) for v in per_asset.values())
+
+    def test_invalid_dict_value_raises(self, tmp_path, monkeypatch) -> None:
+        """A non-numeric value in a dict[str, Decimal] subtable raises a clear ValueError."""
+        import tax_reporting.infrastructure.config as config_module
+        from tax_reporting.infrastructure.config import _load_decision_points_flags
+
+        dp_dir = tmp_path / "decision_points"
+        _write_toml(
+            dp_dir,
+            _MINIMAL_VALID_TOML
+            + "[countries.PT]\n"
+            + "[countries.PT.exclude_transaction_fee_max_eur_per_asset]\n"
+            + 'ETH = "not-a-number"\n',
+        )
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
+
+        logger = logging.getLogger(__name__)
+        with pytest.raises(ValueError, match="non-numeric"):
+            _load_decision_points_flags("PT", 2025, logger)
+
+    def test_non_bool_dict_value_for_dict_field_raises_table_error(self, tmp_path, monkeypatch) -> None:
+        """A scalar value where a dict[str, Decimal] is expected raises ValueError naming the table requirement."""
+        import tax_reporting.infrastructure.config as config_module
+        from tax_reporting.infrastructure.config import _load_decision_points_flags
+
+        dp_dir = tmp_path / "decision_points"
+        _write_toml(
+            dp_dir,
+            _MINIMAL_VALID_TOML
+            + "[countries.PT]\nexclude_transaction_fee_max_eur_per_asset = 1.0\n",
+        )
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
+
+        logger = logging.getLogger(__name__)
+        with pytest.raises(ValueError, match="must be a TOML table"):
+            _load_decision_points_flags("PT", 2025, logger)
+
+    def test_known_bool_flags_and_known_dict_points_both_nonempty(self) -> None:
+        """Both _KNOWN_BOOL_FLAGS and _KNOWN_DICT_POINTS are non-empty at import.
+
+        Guards against a broken type-detection check silently populating empty sets:
+        the dict-set membership relies on get_args(hint) == (str, Decimal) detection.
+        """
+        from tax_reporting.infrastructure.config import _KNOWN_BOOL_FLAGS, _KNOWN_DICT_POINTS
+
+        assert _KNOWN_BOOL_FLAGS  # non-empty
+        assert _KNOWN_DICT_POINTS  # non-empty
+        # exclude_transaction_fees is bool-typed; the new field is dict-typed.
+        assert "exclude_transaction_fees" in _KNOWN_BOOL_FLAGS
+        assert "exclude_transaction_fee_max_eur_per_asset" in _KNOWN_DICT_POINTS
+        # The sets are disjoint by construction.
+        assert _KNOWN_BOOL_FLAGS.isdisjoint(_KNOWN_DICT_POINTS)
+
+    def test_loads_decimal_decision_points(self, tmp_path, monkeypatch) -> None:
+        """A decimal decision point is parsed into a Decimal value."""
+        import tax_reporting.infrastructure.config as config_module
+        from tax_reporting.infrastructure.config import _load_decision_points_flags
+
+        dp_dir = tmp_path / "decision_points"
+        _write_toml(
+            dp_dir,
+            _MINIMAL_VALID_TOML
+            + "[countries.PT]\nexclude_transaction_fee_default_max_eur = 0.5\n",
+        )
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
+
+        logger = logging.getLogger(__name__)
+        flags = _load_decision_points_flags("PT", 2025, logger)
+
+        assert isinstance(flags["exclude_transaction_fee_default_max_eur"], Decimal)
+        assert flags["exclude_transaction_fee_default_max_eur"] == Decimal("0.5")
 
 
 @pytest.mark.unit

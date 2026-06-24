@@ -1604,6 +1604,108 @@ EUR-par proceeds, and the row flows into aggregation and the materiality
 filter. (Real disposal amounts and dates live only in the gitignored personal
 trace at `docs/maintenance/personal/payment-proceeds-trace.md`.)
 
+## Transaction Fee Filtering (DP-015)
+
+Legal basis: CIRS art. 10(1)(k). A standalone network/transaction fee is a
+non-taxable utility cost without received consideration, so it is not an
+*alienação onerosa*. Koinly tags network/gas fee withdrawals with `Cost` or
+`Loan fee` and by default realizes a gain/loss on the disposed fee token; those
+realized disposals must be filtered out of the capital gains worksheets when
+`exclude_transaction_fees` is set (PT FY2025). This is the implementation-rule
+companion to PT-C-036.
+
+### TxHash co-occurrence correlation guard
+
+Some service payments (card fees, subscriptions) are also tagged `Cost` by
+Koinly and ARE taxable. To distinguish a non-taxable network fee from a taxable
+service payment, BOTH identification paths require the fee event's non-empty
+`TxHash` to appear at least twice in the Transaction History CSV (a network fee
+shares its transaction id with the main transfer it accompanies; a standalone
+service payment does not). Withdrawals with an empty or unique `TxHash` are left
+taxable. The guard applies to fees AND suspects.
+
+The scanner makes two passes over the materialized TH row list (Pass 1: count
+each non-empty `TxHash` into a frequency map; Pass 2: classify each
+`crypto_withdrawal` against the map). Each row body is wrapped in
+`try...except (ValueError, KeyError, InvalidOperation)` (per repo Rule #9) so a
+malformed row is skipped with a warning without aborting the pass.
+
+### Two-prong identification
+
+1. **Tagged**: any `crypto_withdrawal` whose tag is `Cost` or `Loan fee`. The
+   explicit tag is trusted; NO EUR amount threshold is applied. The fiat
+   `Net Value (EUR)` cell is parsed inside a separate nested
+   `try...except ValueError` that degrades to `Decimal("0")` on failure (so a
+   corrupted fiat string on a tagged row does NOT drop the tagged fee - the tag
+   is the authority).
+2. **Untagged-whitelist**: an untagged `crypto_withdrawal` (empty tag) whose
+   `Sent Currency` is a key in `exclude_transaction_fee_max_eur_per_asset`
+   (the dict keys ARE the eligibility whitelist) AND whose TH `Net Value (EUR)`
+   is `<=` that asset's per-token ceiling. The fiat string guard uses a
+   `"MISSING"` sentinel (NOT `""`) so an explicit CSV value of `"0"` / `"0.00"`
+   (a valid zero-priced gas fee) is NOT skipped - a whitelisted asset at 0.0 IS
+   filtered.
+
+Per-token ceilings (confirmed values): ETH = 1.0 (ETH gas can reach ~0.70 EUR);
+SOL/SUI/BNB/MATIC/TON = 0.5. The fee scanner resolves the ceiling as
+`per_asset[asset]` (membership already checked; no `"default"` fallback).
+
+### Unlisted-asset suspect surfacing (NOT removed)
+
+An untagged, TxHash-co-occurring `crypto_withdrawal` whose `Sent Currency` is
+NOT a dict key AND whose `Net Value (EUR) <= max(per_asset.values())` is a
+*suspect*. It stays taxable (over-taxing on uncertainty is the safe direction)
+and is surfaced three ways so a legitimate gas token missing from the config
+(e.g. BERA) can be discovered and added as one config line:
+
+- a `review_required=True` flag on the CG-matched lot (a red "YES: \<reason\>"
+  Crypto Gains row when the aggregated `|gain_loss| >= 1` EUR; below that,
+  materiality drops it from Crypto Gains);
+- a `CryptoReviewEntry` appended to the threaded `review_entries` list
+  (`source_section="capital_gains"` when the suspect matched a CG lot, else the
+  new `"transaction_history"`), rendered in the Crypto Supplementary "Review
+  required" section (SRG-009 already covers this section - no new SRG needed);
+- a `logger.warning` naming the asset and its `Net Value (EUR)`.
+
+The suspect pass is run LATE in the pipeline (after `correct_payment_proceeds`,
+before aggregation) so any proceeds corrections are complete when the flag is
+set, avoiding reason-joining or clobbering in `payment_proceeds.py`.
+
+### Empty-dict no-op
+
+When `exclude_transaction_fees` is enabled but
+`exclude_transaction_fee_max_eur_per_asset` is empty (a country that enables
+the flag without listing tokens, or a misconfiguration): the suspect branch is
+skipped entirely via an explicit `if per_asset:` guard (no `max()` call on an
+empty dict); the untagged-whitelist branch finds nothing (no keys); the TAGGED
+`Cost`/`Loan fee` path is dict-INDEPENDENT and STILL filters. The filter
+DEGRADES to tagged-only under an empty dict - it is NOT a full no-op.
+
+### Matching, removal, and per-lot logging
+
+Fee events are matched to Capital Gains lots by the shared two-phase matcher
+(`th_lot_matcher`, extracted from `derivatives_dedup`; rule #119) keyed by
+`(disposal_timestamp, asset, wallet, amount_6dp)` where `wallet` is the
+normalized Sending Wallet name (NOT `platform`, which is the institution).
+Matched lots are removed; suspects are matched in a match-only mode (no
+removal). The per-lot log records the removed lot's identity tuple
+`(disposal_timestamp, asset, wallet, amount)` plus the fee event's `TxHash`:
+tagged removals log at INFO (trusted); untagged-whitelisted removals log at
+WARNING (an untagged-whitelisted withdrawal CAN be a genuine dust disposal, so
+it must not be silent). Exactly one aggregate summary WARNING is emitted per
+fee pass via the caller-passed logger (`domain_label="fee"`).
+
+### Accepted risk: cross-tx match
+
+The correlation guard validates the fee EVENT's TxHash multiplicity, NOT the
+correspondence between the fee's TxHash and the matched CG lot's origin
+(`CryptoCapitalGainEntry` carries no TxHash). A tagged fee sharing a TxHash
+with a transfer while an UNRELATED same-minute/wallet/amount disposal exists
+could match the wrong lot (silent lost tax). Enforcing correspondence requires
+plumbing TxHash onto CG lots (out of scope). Mitigation: the per-lot INFO log
+records the removed lot's identity tuple alongside the fee's TxHash so a
+cross-transaction match is visible during the release-gate spot-check.
+
 ## References
 
 - Plan: `docs/history/plans/2026-06-18-crypto-payment-proceeds.md` (DP-014)

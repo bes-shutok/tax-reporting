@@ -58,6 +58,7 @@ from .crypto.entities import (
     OperatorOrigin,  # noqa: F401
     RewardTaxClassification,
 )
+from .crypto.fee_filter import flag_fee_suspects, remove_transaction_fees
 from .crypto.fifo_helpers import (
     _build_zero_basis_review_reason,
     _rebuild_fifo_for_loan_affected_assets,
@@ -252,6 +253,20 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
         year=year,
     )
 
+    # DP-015 fee removal runs EARLY, after derivatives dedup and BEFORE the
+    # OGR/re-zero/payment-proceeds/aggregation steps (Design Invariant 4,
+    # Option D pipeline: dedup -> fee_removal -> OGR -> re-zero ->
+    # payment_proceeds -> fee_suspect_flagging -> aggregation -> materiality).
+    # Removed fee lots must NOT be summed/aggregated (they are not taxable
+    # alienacoes onerosas under PT CIRS Art. 10(1)(k)). Fee classification is
+    # year-agnostic, so no ``year`` argument is threaded. Suspect events
+    # captured here are consumed by the late ``flag_fee_suspects`` pass below.
+    capital_entries, suspect_events = remove_transaction_fees(
+        capital_entries=capital_entries,
+        transaction_history_file=transaction_history_file,
+        jurisdiction=jurisdiction,
+    )
+
     # CRITICAL: OGR split + override must happen BEFORE _aggregate_capital_entries
     # because CG rows are individual FIFO lots that get summed in aggregation.
     # OGR contains the correct total gain/loss for the disposal event.
@@ -345,6 +360,19 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
             loan_affected_assets=loan_affected_assets,
             review_entries=review_entries,
         )
+
+    # DP-015 fee suspect flagging runs LATE, after payment-proceeds and BEFORE
+    # aggregation (Design Invariant 4, Option D). This ensures any proceeds
+    # corrections / OGR overrides are already complete when we flag suspects,
+    # preventing payment-proceeds zero-basis overwrites from clobbering the
+    # fee-suspect flags or leaving obsolete parse-time zero-proceeds reasons.
+    # Aggregation then propagates the lot-level ``review_required`` flag into
+    # the aggregated entry via ``any()`` (aggregation.py:300).
+    capital_entries = flag_fee_suspects(
+        capital_entries=capital_entries,
+        suspect_events=suspect_events,
+        review_entries=review_entries,
+    )
 
     capital_entries = _aggregate_capital_entries(capital_entries)
     pre_filter_count = len(capital_entries)

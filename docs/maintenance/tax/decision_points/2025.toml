@@ -58,5 +58,42 @@ separate_derivatives_reporting = true
 # treatment, tracked follow-up that will reuse the CG<->TH correlation).
 infer_payment_proceeds = true
 
+# DP-015: Filter standalone transaction/network fee disposals out of the
+# capital gains worksheets. Koinly tags network/gas fees with `Cost` or
+# `Loan fee`; under PT law a standalone transaction fee is a non-taxable
+# utility cost without received consideration.
+# Legal basis: CIRS art. 10(1)(k) - a standalone network/transaction fee is
+# not an alienação onerosa (no consideration is received), so Koinly's
+# default realization of gains on the fee token must be filtered out.
+# TWO identification paths (both gated by a TxHash co-occurrence guard: the
+# fee event's non-empty TxHash must appear >= 2 times in the TH CSV, so
+# standalone service payments remain taxable. EXCEPTION: events whose tag is
+# `Cost` or `Loan fee` bypass the TxHash guard, treating embedded exchange
+# and transfer fees as standalone without requiring multiple TH rows):
+#   1. Tagged: any crypto_withdrawal tagged `Cost` or `Loan fee` - the explicit
+#      tag is trusted, no EUR amount threshold is applied. Removed.
+#   2. Untagged-whitelist: an untagged crypto_withdrawal whose Sent Currency
+#      is a key in `layer_1_major_chains` (from popular_crypto_tokens.json)
+#      AND whose TH Net Value (EUR) is <= the default 0.5 EUR fallback OR
+#      its explicit ceiling in `exclude_transaction_fee_max_eur_per_asset`.
+#      Removed. The per-token ceilings are ETH = 1.0 (ETH gas can reach
+#      ~0.70 EUR) and BERA = 0.1, with all other whitelisted assets using
+#      the default 0.5 EUR.
+# Unlisted-asset surfacing (NOT removed): an untagged, TxHash-co-occurring
+# crypto_withdrawal whose asset is NOT in the whitelist AND whose Net Value
+# (EUR) <= the default ceiling (0.5 EUR) is a *suspect* - it stays taxable
+# but is surfaced via a Crypto Gains review flag (red "YES: <reason>" row),
+# a Crypto Supplementary "Review required" row, and a log WARNING, so
+# legitimate gas tokens missing from the config can be discovered and added.
+exclude_transaction_fees = true
+exclude_transaction_fee_default_max_eur = 0.5
+
+# DP-015 per-token EUR ceilings for the untagged-whitelist path. Keys are the
+# explicit overrides for assets that need a higher or lower ceiling than the
+# default 0.5 EUR fallback.
+[countries.PT.exclude_transaction_fee_max_eur_per_asset]
+ETH = 1.0
+BERA = 0.1
+
 [countries.US]
 exclude_loan_repayment_gains = false

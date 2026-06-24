@@ -6,11 +6,11 @@ families (A to H) are defined authoritatively in `coding_guidelines.md` #18 thro
 first, then scan those lessons for the closest shape before opening a new entry.
 
 - Audit date: 2026-06-21.
-- Corpus: `docs/maintenance/development_lessons.md`, 141 uniquely-numbered lessons
+- Corpus: `docs/maintenance/development_lessons.md`, 142 uniquely-numbered lessons
   (Task 4 of the principle-generalization-system plan resolved the #15/#16/#17 collisions;
   the `uniq -d` heading gate is empty).
 - Each non-excluded lesson is assigned to exactly one family below. The union of the eight
-  family lists plus the excluded set equals the full set {1..141} (verified by the
+  family lists plus the excluded set equals the full set {1..142} (verified by the
   accounting check at the end of each family section and in `## Precision gate`).
 
 The catalog's illustrative anchors (`coding_guidelines.md` #18-#25) are a small witness
@@ -344,9 +344,10 @@ Lessons: Lesson #12, Lesson #16, Lesson #21, Lesson #29, Lesson #30, Lesson #31,
 Lesson #32, Lesson #33, Lesson #35, Lesson #37, Lesson #42, Lesson #55, Lesson #71,
 Lesson #72, Lesson #74, Lesson #89, Lesson #96, Lesson #97, Lesson #98, Lesson #99,
 Lesson #100, Lesson #101, Lesson #104, Lesson #109, Lesson #116, Lesson #120, Lesson #122,
-Lesson #123, Lesson #128, Lesson #129, Lesson #132, Lesson #140, Lesson #141. (33 lessons)
+Lesson #123, Lesson #128, Lesson #129, Lesson #132, Lesson #140, Lesson #141, Lesson #149,
+Lesson #158. (35 lessons)
 
-This is the over-represented family (~30% of mapped lessons, 33/112). Consolidation yields the most recall
+This is the over-represented family (~30% of mapped lessons, 35/113). Consolidation yields the most recall
 value here, but most of these lessons are genuinely distinct angles (the corpus author
 explicitly "Distinguishes from" siblings in the body); the value is in cross-linking, not
 collapsing.
@@ -362,7 +363,9 @@ Clusters:
   writing tasks), Lesson #99 (trace the fixture when plan pseudocode compares same-unit
   fields by name), Lesson #101 (trace each affected OGR row to its originating TH Type).
   Overlapping; Lesson #99 and Lesson #101 are specific witnesses of Lesson #100's general
-  rule.
+  rule. Lesson #158 (a refactor clause instructing net-new behavior conflicts with the same
+  plan's byte-identical non-regression criterion) is a plan-vs-existing-behavior witness of
+  the same family.
 - Don't trust the test surface / mock / name: Lesson #30 (verify warning/guard path
   reachability before writing the test), Lesson #33 (trace plan edge-case behavior to a
   correctness outcome, not just "differs from before"), Lesson #42 (distinguish stale
@@ -403,7 +406,7 @@ Clusters:
 - Doc cross-ref disambiguation: Lesson #140 (when renumbering a colliding numeric ID,
   disambiguate each cross-ref by context, not by the number alone). Standalone-ish.
 
-Accounting: 33 lessons.
+Accounting: 35 lessons.
 
 ---
 
@@ -647,7 +650,7 @@ All same-family pairs are classified OVERLAPPING in `## Duplicate clusters`.
 
 ## Accounting check
 
-Union of all family `Lesson #N` lists plus the excluded set equals {1..141}:
+Union of all family `Lesson #N` lists plus the excluded set equals {1..142}:
 
 - A: 19 (Lesson #6, #7, #22, #41, #69, #70, #83, #84, #90, #91, #111, #112, #117, #119,
   #125, #133, #134, #136, #138)
@@ -658,10 +661,10 @@ Union of all family `Lesson #N` lists plus the excluded set equals {1..141}:
 - E: 10 (Lesson #26, #27, #39, #56, #81, #93, #106, #107, #108, #110)
 - F: 7 (Lesson #5, #28, #49, #86, #87, #88, #121)
 - G: 12 (Lesson #40, #44, #45, #46, #51, #61, #63, #73, #102, #118, #126, #127)
-- H: 33 (Lesson #12, #16, #21, #29, #30, #31, #32, #33, #35, #37, #42, #55, #71, #72, #74,
+- H: 34 (Lesson #12, #16, #21, #29, #30, #31, #32, #33, #35, #37, #42, #55, #71, #72, #74,
   #89, #96, #97, #98, #99, #100, #101, #104, #109, #116, #120, #122, #123, #128, #129,
-  #132, #140, #141)
+  #132, #140, #141, #149)
 - Excluded: 29 (Lesson #2, #3, #4, #8, #10, #11, #13, #14, #15, #17, #18, #20, #24, #34,
   #36, #47, #52, #53, #54, #57, #60, #62, #64, #65, #67, #76, #92, #95, #137)
 
-Total accounted: 19 + 6 + 7 + 18 + 10 + 7 + 12 + 33 + 29 = 141.
+Total accounted: 19 + 6 + 7 + 18 + 10 + 7 + 12 + 34 + 29 = 142.

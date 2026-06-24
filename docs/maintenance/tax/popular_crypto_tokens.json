@@ -5,13 +5,13 @@
     "maintenance_note": "Update this list when new major tokens gain adoption. The list is used for zero-value reward detection in crypto reporting. BEHAVIOR SIDE-EFFECT: tickers listed under tokens.stablecoins are also flattened by classification._load_popular_crypto_tokens, so adding an EUR-pegged stablecoin (EURC/EUROC/EURT) here enlarges the set used for zero-value reward flagging - a zero-value reward for one of those stablecoins is now FLAGGED for review (previously it was not). The stablecoin_pegs keys MUST stay a subset of tokens.stablecoins (enforced by a consistency guard in _load_payment_proceeds_config_from_path that warns on drift)."
   },
   "tokens": {
-    "layer_1_major_chains": ["BTC", "ETH", "BNB", "SOL", "ADA", "AVAX", "LINK", "ATOM", "NEAR", "APT", "SUI", "SEI", "TON", "ARB", "OP", "MATIC", "FTM", "INJ", "STRK", "XSTRK"],
+    "layer_1_major_chains": ["BTC", "ETH", "BNB", "SOL", "ADA", "AVAX", "LINK", "ATOM", "NEAR", "APT", "SUI", "SEI", "TON", "ARB", "OP", "MATIC", "FTM", "INJ", "STRK", "BERA"],
     "layer_2_scaling": ["IMX", "METIS"],
     "defi_blue_chips": ["UNI", "AAVE", "COMP", "MKR", "SNX", "CRV", "YFI", "SUSHI", "HYPER"],
     "stablecoins": ["USDT", "USDC", "DAI", "USDD", "TUSD", "FRAX", "USDV", "USDE", "PYUSD", "FDUSD", "EURC", "EUROC", "EURT"],
     "cex_tokens": ["KCS", "CRO", "GT", "HT", "OKB", "LEO", "CETUS"],
     "popular_memecoins_gaming": ["DOGE", "SHIB", "PEPE", "FLOKI", "BONK", "WIF", "MEME"],
-    "restaking_lrt_depin": ["EZ", "PENDLE", "RETH", "RPL", "LDO", "STRK", "EIGEN", "PTE", "WEETH"],
+    "restaking_lrt_depin": ["EZ", "PENDLE", "RETH", "RPL", "LDO", "STRK", "EIGEN", "PTE", "WEETH", "XSTRK"],
     "berachain_ecosystem": ["BERA", "HONEY", "BGT", "PBERA"],
     "exchange_platform_tokens": ["OSBGT", "IBGT", "LBGT", "IBERA", "DEEP", "STBGT", "SWBERA"],
     "wrapped_tokens": ["WBTC", "WETH", "LBTC"],

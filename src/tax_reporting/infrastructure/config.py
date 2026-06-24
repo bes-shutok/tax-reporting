@@ -10,7 +10,7 @@ import tomllib
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import NamedTuple, get_type_hints
+from typing import Any, NamedTuple, get_args, get_type_hints
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..domain.exceptions import MissingDecisionPointsError
@@ -44,16 +44,29 @@ DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD = Decimal("50")
 _DEFAULT_PT_TIMEZONE = "Europe/Lisbon"
 
 # Derived at import time from TaxJurisdictionConfig field types so it stays in sync
-# automatically when new bool flags are added to the dataclass + TOML schema.
-# Non-bool fields (country, fiscal_year, zero_basis_review_threshold) are excluded.
-_KNOWN_DECISION_FLAGS: frozenset[str] = frozenset(
+# automatically when new decision-point fields are added to the dataclass + TOML schema.
+# Non-decision fields (country, fiscal_year, zero_basis_review_threshold,
+# zero_basis_review_min_proceeds, timezone) are excluded because they are not bool-typed
+# nor dict[str, Decimal]-typed.
+_CONFIG_FIELDS_AND_HINTS = [
+    (f, get_type_hints(TaxJurisdictionConfig)[f.name])
+    for f in dataclasses.fields(TaxJurisdictionConfig)
+]
+_KNOWN_BOOL_FLAGS: frozenset[str] = frozenset(
+    f.name for f, hint in _CONFIG_FIELDS_AND_HINTS if hint is bool
+)
+# dict[str, Decimal]-typed decision-point fields. Detected via get_args == (str, Decimal)
+# (NOT get_origin is dict) so a future dict[K, V]-typed field with non-Decimal values is
+# not admitted into the Decimal-conversion branch.
+_KNOWN_DICT_POINTS: frozenset[str] = frozenset(
     f.name
-    for f, hint in zip(
-        dataclasses.fields(TaxJurisdictionConfig),
-        get_type_hints(TaxJurisdictionConfig).values(),
-        strict=True,
-    )
-    if hint is bool
+    for f, hint in _CONFIG_FIELDS_AND_HINTS
+    if get_args(hint) == (str, Decimal)
+)
+_KNOWN_DECIMAL_POINTS: frozenset[str] = frozenset(
+    f.name
+    for f, hint in _CONFIG_FIELDS_AND_HINTS
+    if hint is Decimal and f.name not in ("zero_basis_review_threshold", "zero_basis_review_min_proceeds")
 )
 
 
@@ -78,12 +91,13 @@ class Config:
 
 def _load_decision_points_flags(
     country: str, fiscal_year: int, logger: logging.Logger
-) -> dict[str, bool]:
+) -> dict[str, bool | Decimal | dict[str, Decimal]]:
     """Load law-driven decision flags from the per-year TOML decision points file.
 
-    The TOML file is keyed by country ISO code and contains boolean flags that
-    encode jurisdiction-specific tax decisions (e.g. whether loan repayment
-    disposals are taxable events).
+    The TOML file is keyed by country ISO code and contains jurisdiction-specific tax
+    decisions. Two field types are supported, derived from ``get_type_hints`` of
+    ``TaxJurisdictionConfig``: boolean flags (e.g. whether loan repayment disposals are
+    taxable events) and ``dict[str, Decimal]`` subtables (e.g. per-token fee ceilings).
 
     Args:
         country: ISO 3166-1 alpha-2 country code (e.g. 'PT', 'US').
@@ -91,13 +105,16 @@ def _load_decision_points_flags(
         logger: Logger for diagnostics.
 
     Returns:
-        Dict of flag name → bool for the requested country. Empty dict if the
-        country section is absent in the TOML file.
+        Dict of flag name to its typed value (``bool``, ``Decimal``, or ``dict[str, Decimal]``) for the
+        requested country. Empty dict if the country section is absent in the TOML file.
+        ``Decimal`` and ``dict[str, Decimal]`` values are converted from the raw TOML float/int values via
+        ``Decimal(str(value))`` for binary-float-noise-free comparisons.
 
     Raises:
         FileNotFoundError: If no TOML file exists for the requested fiscal year.
-        ValueError: If the TOML is malformed, the [meta].fiscal_year mismatches,
-            or any flag value is not a TOML boolean.
+        ValueError: If the TOML is malformed, the [meta].fiscal_year mismatches, a bool
+            flag value is not a TOML boolean, a dict flag value is not a table or holds a
+            non-numeric value, or a flag name is unknown.
     """
     raw_path = _DECISION_POINTS_DIR / f"{fiscal_year}.toml"
     if raw_path.is_symlink():
@@ -137,19 +154,59 @@ def _load_decision_points_flags(
     flags = countries.get(country, {})
     if not isinstance(flags, dict):
         raise ValueError(f"Decision points file {path}: [countries.{country}] must be a table")
+    known_flags = _KNOWN_BOOL_FLAGS | _KNOWN_DICT_POINTS | _KNOWN_DECIMAL_POINTS
+    validated: dict[str, bool | Decimal | dict[str, Decimal]] = {}
     for flag_name, flag_value in flags.items():
+        validated[flag_name] = _validate_and_convert_flag(flag_name, flag_value, path, known_flags)
+    logger.info("Loaded decision points flags for country %s from %s: %s", country, path, validated)
+    return validated
+
+
+def _validate_and_convert_flag(
+    flag_name: str, flag_value: object, path: Path, known_flags: frozenset[str]
+) -> bool | Decimal | dict[str, Decimal]:
+    """Validate and convert a single decision-points flag value by type-dispatching.
+
+    Returns the validated bool or the Decimal-converted dict (overwriting any raw TOML
+    float/int values via ``Decimal(str(value))`` so downstream comparisons are binary-float-
+    noise-free). Raises ``ValueError`` for an unknown flag name, a non-bool bool-flag value,
+    a non-table dict-flag value, or a non-numeric dict-flag value.
+    """
+    if flag_name in _KNOWN_BOOL_FLAGS:
         if not isinstance(flag_value, bool):
+            raise ValueError(f"Decision points flag {flag_name!r} in {path} must be a TOML boolean")
+        return flag_value
+    if flag_name in _KNOWN_DICT_POINTS:
+        if not isinstance(flag_value, dict):
             raise ValueError(
-                f"Decision points flag {flag_name!r} in {path} must be a TOML boolean"
+                f"Decision points flag {flag_name!r} in {path} must be a TOML table "
+                f"(dict[str, Decimal])"
             )
-        if flag_name not in _KNOWN_DECISION_FLAGS:
+        try:
+            return {k: Decimal(str(v)) for k, v in flag_value.items()}
+        except InvalidOperation as e:
             raise ValueError(
-                f"Unknown decision points flag {flag_name!r} in {path} "
-                f"(known flags: {sorted(_KNOWN_DECISION_FLAGS)}). "
-                f"Add it to _KNOWN_DECISION_FLAGS in config.py and TaxJurisdictionConfig if intentional."
+                f"Decision points flag {flag_name!r} in {path} contains a non-numeric "
+                f"value (raw={flag_value!r}): {e}"
+            ) from e
+    if flag_name in _KNOWN_DECIMAL_POINTS:
+        if not isinstance(flag_value, (int, float)):
+            raise ValueError(
+                f"Decision points flag {flag_name!r} in {path} must be a TOML number"
             )
-    logger.info("Loaded decision points flags for country %s from %s: %s", country, path, flags)
-    return flags  # type: ignore[return-value]
+        try:
+            return Decimal(str(flag_value))
+        except InvalidOperation as e:
+            raise ValueError(
+                f"Decision points flag {flag_name!r} in {path} contains a non-numeric "
+                f"value (raw={flag_value!r}): {e}"
+            ) from e
+    raise ValueError(
+        f"Unknown decision points flag {flag_name!r} in {path} "
+        f"(known flags: {sorted(known_flags)}). "
+        f"Add it to _KNOWN_BOOL_FLAGS/_KNOWN_DICT_POINTS in config.py and "
+        f"TaxJurisdictionConfig if intentional."
+    )
 
 
 class JurisdictionSectionFields(NamedTuple):
@@ -267,8 +324,14 @@ def _load_tax_jurisdiction_config(
             f"in [countries.PT] section (required per CIRS art. 10(20))"
         )
     config_field_names = {f.name for f in dataclasses.fields(TaxJurisdictionConfig)}
-    flag_kwargs = {k: v for k, v in flags.items() if k in config_field_names}
-    for flag_name in _KNOWN_DECISION_FLAGS:
+    # flag_kwargs holds heterogeneous decision-point values (bool flags and dict[str, Decimal]
+    # subtables); per-key types are guaranteed by _load_decision_points_flags' type-dispatching
+    # validation, so Any is the honest element type for the **-unpack into the dataclass ctor.
+    flag_kwargs: dict[str, Any] = {k: v for k, v in flags.items() if k in config_field_names}
+    # Only bool-typed decision-point fields default to False when absent from TOML.
+    # dict[str, Decimal]-typed fields are non-bool and naturally excluded; when absent
+    # they are NOT added to flag_kwargs, so the dataclass default_factory=dict supplies {}.
+    for flag_name in _KNOWN_BOOL_FLAGS:
         if flag_name in config_field_names:
             flag_kwargs.setdefault(flag_name, False)
 

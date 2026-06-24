@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -53,6 +53,40 @@ class TaxJurisdictionConfig:
             fallbacks are ``review_required=True`` approximations of the disposal-date
             FMV; (3) review flag for non-EUR stablecoins whose peg has no config rate
             and for non-stablecoins. See decision point DP-014.
+        exclude_transaction_fees: Whether standalone network/transaction fee disposals
+            (Koinly tag ``Cost`` or ``Loan fee``) are filtered out of the capital gains
+            worksheets (e.g., True for PT). Legal basis: CIRS art. 10(1)(k) - a standalone
+            transaction/network fee is a non-taxable utility cost without received
+            consideration, so it is not an *alienação onerosa* and Koinly's default
+            realization of gains on it must be filtered out. Fee events are identified via
+            TWO paths, both gated by a TxHash co-occurrence guard (the fee event's
+            non-empty ``TxHash`` must appear at least twice in the Transaction History CSV,
+            so standalone service payments remain taxable): (1) tagged - any
+            ``crypto_withdrawal`` whose tag is ``Cost`` or ``Loan fee`` (the explicit tag is
+            trusted; no EUR amount threshold); (2) untagged-whitelist - any untagged
+            ``crypto_withdrawal`` whose ``Sent Currency`` is a key in
+            ``exclude_transaction_fee_max_eur_per_asset`` AND whose TH ``Net Value (EUR)``
+            is ``<=`` that asset's per-token ceiling. Unlisted-asset withdrawals are NEVER
+            auto-filtered: an untagged, TxHash-co-occurring withdrawal of an asset NOT in
+            the dict whose ``Net Value (EUR) <= max(per_asset.values())`` is surfaced as a
+            *suspect* (NOT removed) - a ``review_required`` flag on its CG lot (a red "YES:
+            <reason>" Crypto Gains row, when the lot exists), a ``CryptoReviewEntry`` row in
+            the Crypto Supplementary "Review required" section (SRG-009), and a log WARNING -
+            so legitimate gas tokens missing from the config can be discovered. Note:
+            ``CryptoCapitalGainEntry.platform`` is the normalized wallet name, not the
+            blockchain. See decision point DP-015.
+        exclude_transaction_fee_max_eur_per_asset: Per-token EUR ceiling map for the
+            untagged-whitelist identification path. The KEYS are the whitelist of gas-token
+            assets eligible for untagged-path filtering (membership already checked; the fee
+            scanner resolves the ceiling as ``per_asset[asset]`` with no ``"default"``
+            fallback); the VALUES are the per-token ``Net Value (EUR)`` ceilings
+            (inclusive ``<=``). Default ``{}`` means the untagged path is a no-op (no dict
+            keys to match, and the suspect branch is skipped entirely via an explicit
+            ``if per_asset:`` guard so ``max()`` is never called on an empty dict) and ONLY
+            tagged ``Cost``/``Loan fee`` withdrawals are filtered - it is NOT a full no-op.
+            Values are loaded from the decision-points TOML via ``Decimal(str(value))`` for
+            binary-float-noise-free comparisons (not ``Decimal(value)``). See decision point
+            DP-015 and rule PT-C-036.
         timezone: Resolved IANA timezone (``ZoneInfo``) of the jurisdiction, used to localize
             naive Koinly dates (CG/OGR/Income, which are mainland-Portugal local time per
             WET/WEST) to a true-UTC instant at ingestion so cross-report match keys agree.
@@ -71,4 +105,7 @@ class TaxJurisdictionConfig:
     use_other_gains_report: bool = False
     separate_derivatives_reporting: bool = False
     infer_payment_proceeds: bool = False
+    exclude_transaction_fees: bool = False
+    exclude_transaction_fee_default_max_eur: Decimal = Decimal("0.5")
+    exclude_transaction_fee_max_eur_per_asset: dict[str, Decimal] = field(default_factory=dict)
     timezone: ZoneInfo | None = None

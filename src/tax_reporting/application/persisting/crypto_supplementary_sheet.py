@@ -107,7 +107,10 @@ def _write_review_rows(
         return row_no + 1
 
     for entry in review_entries:
-        source_label = "Capital Gains" if entry.source_section == "capital_gains" else "Income"
+        source_label = {
+            "capital_gains": "Capital Gains",
+            "transaction_history": "Transaction History",
+        }.get(entry.source_section, "Income")
         worksheet.cell(row_no, 1, source_label)
         worksheet.cell(row_no, 2, entry.date)
         asset_cell = worksheet.cell(row_no, 3, safe_cell_value(entry.asset))

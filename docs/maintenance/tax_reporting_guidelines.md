@@ -1,10 +1,10 @@
-# Shares Reporting Guidelines
+# Tax Reporting Guidelines
 
 Cross-cutting reporting guidelines for this repository outside the narrow tax-law rule set.
 
 ## Terminology
 
-- `SRG-xxx`: numbered tax-reporting guideline for this repository.
+- `SRG-xxx`: Structure Reporting Guideline (historically Shares Reporting Guideline) - numbered tax-reporting guideline for this repository.
 - Core report: the main Interactive Brokers capital-gains / dividend output.
 - Auxiliary dataset: optional supporting input such as Koinly crypto exports.
 
@@ -71,3 +71,6 @@ The generated workbook contains the following sections. Detail lives here so `AG
 - **Conditional Formatting**: Priority-based fill ordering for validation issues. See `development_lessons.md` #81.
 - **Column Additions**: When adding columns, update all related constants. See `development_lessons.md` #82, #83.
 - **Multi-section Rendering**: When rendering multiple independent sections, avoid early returns in optional-data branches that would skip mandatory sections. Use if/else blocks instead. See `development_lessons.md` #93.
+
+**SRG-009**
+The Crypto Supplementary "Review required" section displays warning rows for transactions flagged for manual review. Sourced rows may originate from "Capital Gains" (FIFO realization issues), "Income" (rewards/yield), or "Transaction History" (suspected untagged transaction fees for unlisted assets).

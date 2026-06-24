@@ -10839,3 +10839,462 @@ def test_payment_proceeds_eurc_reward_now_flagged_by_tokens_extension(tmp_path):
     assert eurc_rewards[0].review_required is True
     wxt_rewards = [e for e in report.reward_entries if e.asset == "WXT"]
     assert wxt_rewards, "Control: the non-zero WXT reward must still be parsed"
+
+
+# --- DP-015 fee filtering integration tests ---
+#
+# These tests exercise the wiring of ``remove_transaction_fees`` (early pass,
+# after derivatives dedup, before OGR/aggregation) and ``flag_fee_suspects``
+# (late pass, after payment-proceeds, before aggregation) into
+# ``load_koinly_crypto_report`` (Design Invariant 4, Option D pipeline). See
+# docs/history/plans/2026-06-23-filter-transaction-fees.md Task 4.
+
+_FEE_PER_ASSET = {
+    "ETH": Decimal("1.0"),
+    "SOL": Decimal("0.5"),
+    "SUI": Decimal("0.5"),
+    "BNB": Decimal("0.5"),
+    "MATIC": Decimal("0.5"),
+    "TON": Decimal("0.5"),
+}
+
+
+def _fee_jurisdiction(
+    *,
+    exclude_fees: bool = True,
+    use_ogr: bool = False,
+    infer_payment: bool = False,
+    timezone: ZoneInfo | None = _LISBON_TZ,
+):
+    """Build a PT/2025 jurisdiction with the fee filter flag toggled.
+
+    ``use_ogr`` enables the OGR override path (r7 L4 test: a suspect lot that
+    also matches an OGR spot-index entry must STILL end up flagged).
+    ``infer_payment`` enables the payment-proceeds path (r11 Blocker Option D
+    test: late suspect flagging runs after payment-proceeds resolution).
+    """
+    from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+
+    return TaxJurisdictionConfig(
+        country="PT",
+        fiscal_year=2025,
+        exclude_loan_repayment_gains=False,
+        zero_basis_review_threshold=Decimal("50"),
+        exclude_transaction_fees=exclude_fees,
+        exclude_transaction_fee_max_eur_per_asset=dict(_FEE_PER_ASSET),
+        use_other_gains_report=use_ogr,
+        infer_payment_proceeds=infer_payment,
+        timezone=timezone,
+    )
+
+
+def _th_fee_row(**fields) -> str:  # noqa: PLR0913
+    """Build a single ``crypto_withdrawal`` TH CSV row matching ``_TH_HEADER``.
+
+    TxHash is populated so the co-occurrence guard can fire (callers ensure the
+    same TxHash appears on at least one other row, e.g. a ``transfer`` row, so
+    the count is >= 2). Decimal fields are QUOTED to survive the European
+    decimal comma.
+    """
+    f: dict[str, str] = {
+        "date_utc": "2025-01-13 13:01:00 UTC",
+        "tag": "",
+        "wallet": "MetaMask",
+        "amount": "0,00267371",
+        "currency": "ETH",
+        "net_value_eur": '"0,50"',
+        "tx_hash": "0xfee1",
+    }
+    f.update(fields)
+    return ",".join([
+        f["date_utc"],
+        "crypto_withdrawal",
+        f["tag"],
+        f["wallet"],
+        f'"{f["amount"]}"',
+        f["currency"],
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        f["net_value_eur"],
+        "",
+        "",
+        "",
+        f["tx_hash"],
+        "",
+    ])
+
+
+def _th_transfer_row(**fields) -> str:
+    """Build a non-withdrawal TH row sharing a TxHash (co-occurrence partner)."""
+    f: dict[str, str] = {
+        "date_utc": "2025-01-13 13:01:00 UTC",
+        "wallet": "MetaMask",
+        "tx_hash": "0xfee1",
+    }
+    f.update(fields)
+    return ",".join([
+        f["date_utc"],
+        "transfer",
+        "",
+        f["wallet"],
+        "",
+        "",
+        "",
+        "Ledger",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        f["tx_hash"],
+        "",
+    ])
+
+
+def _write_fee_fixture(
+    koinly_dir: Path,
+    *,
+    cg_rows: list[str],
+    th_rows: list[str],
+    ogr_rows: list[str] | None = None,
+    income_rows: list[str] | None = None,
+) -> None:
+    """Write a minimal Koinly export set exercising the fee filter."""
+    (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(
+        "\n".join(["Capital gains report 2025", "", _CG_HEADER, *cg_rows]),
+        encoding="utf-8",
+    )
+    default_income = ["01/01/2025 00:01,WXT,1,1.00,Reward,,Wirex"]
+    (koinly_dir / "koinly_2025_income_report.csv").write_text(
+        "\n".join(["Income report 2025", "", _INCOME_HEADER, *(income_rows or default_income)]),
+        encoding="utf-8",
+    )
+    (koinly_dir / "koinly_2025_transaction_history.csv").write_text(
+        "\n".join(["Transaction report 2025", "", _TH_HEADER, *th_rows]),
+        encoding="utf-8",
+    )
+    if ogr_rows is not None:
+        (koinly_dir / "koinly_2025_other_gains_report.csv").write_text(
+            "\n".join(["Other gains report 2025", "", _OGR_HEADER, *ogr_rows]),
+            encoding="utf-8",
+        )
+
+
+@pytest.mark.unit
+def test_load_koinly_crypto_report_applies_fee_filter(tmp_path):
+    """Flag on: a tagged Cost fee withdrawal co-occurring with a transfer removes the matching CG lot."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+    tx_hash = "0xaabbcc"
+    _write_fee_fixture(
+        koinly_dir,
+        cg_rows=[
+            _cg_row(
+                asset="ETH",
+                amount="0,00267371",
+                cost="0,50",
+                proceeds="1,50",
+                gain="1,00",
+                wallet="MetaMask",
+            ),
+        ],
+        th_rows=[
+            _th_transfer_row(tx_hash=tx_hash),
+            _th_fee_row(tag="Cost", currency="ETH", tx_hash=tx_hash),
+        ],
+    )
+
+    report = load_koinly_crypto_report(koinly_dir, jurisdiction=_fee_jurisdiction(exclude_fees=True))
+    assert report is not None
+
+    eth_entries = [e for e in report.capital_entries if e.asset == "ETH"]
+    assert eth_entries == [], (
+        "The tagged Cost fee lot must be REMOVED from capital_entries when "
+        "exclude_transaction_fees is True"
+    )
+
+
+@pytest.mark.unit
+def test_load_koinly_crypto_report_skips_fee_filter_when_disabled(tmp_path):
+    """Flag off: the fee CG lot is unchanged (no-op, lesson #84)."""
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+    tx_hash = "0xaabbcc"
+    _write_fee_fixture(
+        koinly_dir,
+        cg_rows=[
+            _cg_row(
+                asset="ETH",
+                amount="0,00267371",
+                cost="0,50",
+                proceeds="1,50",
+                gain="1,00",
+                wallet="MetaMask",
+            ),
+        ],
+        th_rows=[
+            _th_transfer_row(tx_hash=tx_hash),
+            _th_fee_row(tag="Cost", currency="ETH", tx_hash=tx_hash),
+        ],
+    )
+
+    report = load_koinly_crypto_report(koinly_dir, jurisdiction=_fee_jurisdiction(exclude_fees=False))
+    assert report is not None
+
+    eth_entries = [e for e in report.capital_entries if e.asset == "ETH"]
+    assert len(eth_entries) == 1, (
+        "The fee lot must be RETAINED when exclude_transaction_fees is False (no-op)"
+    )
+
+
+@pytest.mark.unit
+def test_fee_suspect_flag_propagates_to_aggregated_cg_row(tmp_path, caplog):
+    """Design Invariant 4: a CG-matched unlisted-asset suspect propagates end-to-end.
+
+    Two branches are asserted in one test to discriminate a propagation break
+    from a materiality drop:
+
+    - MATERIAL branch (aggregated |gain_loss_eur| >= 1 EUR): the suspect lot
+      survives materiality and the aggregated ``capital_entries`` row carries
+      ``review_required=True`` + a non-None ``review_reason``. The PRIMARY
+      assertion is the ``CryptoReviewEntry`` in ``report.review_entries``
+      (it survives materiality regardless).
+    - SUB-1-EUR branch (aggregated |gain_loss_eur| < 1 EUR): the lot is
+      dropped by ``_filter_immaterial_entries`` so it appears ONLY in
+      Supplementary (review_entries) + the log, NOT in ``capital_entries``.
+    """
+    tx_hash = "0xsuspect1"
+
+    # MATERIAL branch: gain 2 EUR (>= 1).
+    material_dir = tmp_path / "koinly_material"
+    material_dir.mkdir()
+    _write_fee_fixture(
+        material_dir,
+        cg_rows=[
+            _cg_row(
+                asset="XSTRK",
+                amount="1,00000000",
+                cost="1,00",
+                proceeds="3,00",
+                gain="2,00",
+                wallet="MetaMask",
+            ),
+        ],
+        th_rows=[
+            _th_transfer_row(tx_hash=tx_hash),
+            _th_fee_row(currency="XSTRK", amount="1,00000000", net_value_eur='"0,30"', tx_hash=tx_hash),
+        ],
+    )
+    with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto.fee_filter"):
+        material_report = load_koinly_crypto_report(material_dir, jurisdiction=_fee_jurisdiction(exclude_fees=True))
+    assert material_report is not None
+
+    # PRIMARY assertion: the CryptoReviewEntry survives materiality (always).
+    material_review = [
+        r for r in material_report.review_entries if r.asset == "XSTRK"
+    ]
+    assert material_review, (
+        "The BERA suspect must append a CryptoReviewEntry (PRIMARY assertion, survives materiality)"
+    )
+    # Material branch: the lot also survives in capital_entries with the flag.
+    material_capital = [e for e in material_report.capital_entries if e.asset == "XSTRK"]
+    assert material_capital, (
+        "Material branch: the BERA suspect lot must survive materiality (|gain| 2 EUR >= 1)"
+    )
+    assert material_capital[0].review_required is True, (
+        "Material branch: the aggregated CG row must carry review_required=True"
+    )
+    assert material_capital[0].review_reason is not None, (
+        "Material branch: the aggregated CG row must carry a non-None review_reason"
+    )
+
+    # SUB-1-EUR branch: gain 0.50 EUR (< 1).
+    tx_hash2 = "0xsuspect2"
+    sub_dir = tmp_path / "koinly_sub"
+    sub_dir.mkdir()
+    _write_fee_fixture(
+        sub_dir,
+        cg_rows=[
+            _cg_row(
+                asset="XSTRK",
+                amount="1,00000000",
+                cost="1,00",
+                proceeds="1,50",
+                gain="0,50",
+                wallet="MetaMask",
+            ),
+        ],
+        th_rows=[
+            _th_transfer_row(tx_hash=tx_hash2),
+            _th_fee_row(currency="XSTRK", amount="1,00000000", net_value_eur='"0,30"', tx_hash=tx_hash2),
+        ],
+    )
+    sub_report = load_koinly_crypto_report(sub_dir, jurisdiction=_fee_jurisdiction(exclude_fees=True))
+    assert sub_report is not None
+    sub_capital = [e for e in sub_report.capital_entries if e.asset == "XSTRK"]
+    assert sub_capital == [], (
+        "Sub-1-EUR branch: the suspect lot is dropped by materiality, NOT in capital_entries"
+    )
+    sub_review = [r for r in sub_report.review_entries if r.asset == "XSTRK"]
+    assert sub_review, (
+        "Sub-1-EUR branch: the suspect appears ONLY in Supplementary (review_entries)"
+    )
+
+
+@pytest.mark.unit
+def test_fee_suspect_flag_survives_ogr_override(tmp_path):
+    """r7 L4: a suspect lot also matching an OGR spot-index entry stays flagged.
+
+    OGR's ``replace(...)`` (ogr_handler.py:494-501) omits ``review_required``/
+    ``review_reason``; a future edit adding those would clobber the suspect
+    flag. With the Option D ordering (suspect flagging AFTER OGR), the flag is
+    applied last and survives. The aggregated entry must carry the fee-SUSPECT
+    reason (not an OGR reason).
+    """
+    tx_hash = "0xogrsuspect"
+    koinly_dir = tmp_path / "koinly_ogr"
+    koinly_dir.mkdir()
+    # CG gain 2 EUR (material) so the lot survives materiality.
+    _write_fee_fixture(
+        koinly_dir,
+        cg_rows=[
+            _cg_row(
+                asset="XSTRK",
+                amount="1,00000000",
+                cost="1,00",
+                proceeds="3,00",
+                gain="2,00",
+                wallet="MetaMask",
+            ),
+        ],
+        th_rows=[
+            _th_transfer_row(tx_hash=tx_hash),
+            _th_fee_row(currency="XSTRK", amount="1,00000000", net_value_eur='"0,30"', tx_hash=tx_hash),
+        ],
+        ogr_rows=[
+            _ogr_row("13/01/2025 13:01", "XSTRK", "1,00000000", "2,00", "Profit", "MetaMask"),
+        ],
+    )
+
+    report = load_koinly_crypto_report(
+        koinly_dir,
+        jurisdiction=_fee_jurisdiction(exclude_fees=True, use_ogr=True),
+    )
+    assert report is not None
+
+    xstrk_capital = [e for e in report.capital_entries if e.asset == "XSTRK"]
+    assert xstrk_capital, "The BERA suspect lot must survive materiality + OGR"
+    entry = xstrk_capital[0]
+    assert entry.review_required is True, (
+        "The OGR-matched suspect lot must STILL be review_required=True"
+    )
+    assert entry.review_reason is not None
+    assert "unlisted asset" in entry.review_reason, (
+        "The reason must be the fee-SUSPECT reason, not an OGR reason"
+    )
+
+
+@pytest.mark.unit
+def test_fee_suspect_flagging_runs_after_payment_proceeds(tmp_path):
+    """r11 Blocker Option D: late flagging runs after payment-proceeds.
+
+    A CG-matched suspect lot with ``proceeds_eur == 0`` that matches a
+    Payment-tagged TH bucket: payment-proceeds resolution runs first and sets
+    its own payment-specific reason; the late suspect pass then OVERRIDES the
+    flag with the fee-suspect reason on the final aggregated entry.
+    """
+    # Use USDT (a payment-proceeds stablecoin) as the suspect asset: it is NOT
+    # in _FEE_PER_ASSET, so an untagged USDT withdrawal classifies as an
+    # unlisted-asset suspect. MetaMask wallet is used so the raw CG lot wallet
+    # equals the fee event's normalized Sending Wallet (the raw-vs-normalized
+    # asymmetry only bites for ByBit-style suffixed wallets).
+    tx_hash = "0xppsuspect"
+    koinly_dir = tmp_path / "koinly_pp"
+    koinly_dir.mkdir()
+    _write_fee_fixture(
+        koinly_dir,
+        cg_rows=[
+            _cg_row(
+                asset="USDT",
+                amount="50,00000000",
+                cost="100,00",
+                proceeds="0,0",
+                gain="-100,00",
+                wallet="MetaMask",
+            ),
+        ],
+        th_rows=[
+            # Co-occurrence partner (a transfer sharing the TxHash so the
+            # suspect's TxHash count is >= 2).
+            _th_transfer_row(tx_hash=tx_hash, wallet="MetaMask"),
+            # Payment-tagged withdrawal sharing the SAME TxHash so it ALSO drives
+            # the payment-proceeds correction on this lot (proceeds 0 -> 120).
+            # Emitted inline because _th_payment_row hardcodes an empty TxHash.
+            ",".join([
+                "2025-01-13 13:01:00 UTC",
+                "crypto_withdrawal",
+                "Payment",
+                "MetaMask",
+                '"50,00000000"',
+                "USDT",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                '"120,00"',
+                "",
+                "",
+                "",
+                tx_hash,
+                "",
+            ]),
+            # Untagged USDT withdrawal (the suspect source). Same TxHash so the
+            # co-occurrence guard passes; USDT is unlisted (not a dict key) so it
+            # classifies as a suspect, NOT a removed fee.
+            _th_fee_row(
+                currency="USDT",
+                amount="50,00000000",
+                net_value_eur='"0,30"',
+                wallet="MetaMask",
+                tx_hash=tx_hash,
+            ),
+        ],
+    )
+
+    report = load_koinly_crypto_report(
+        koinly_dir,
+        jurisdiction=_fee_jurisdiction(exclude_fees=True, infer_payment=True),
+    )
+    assert report is not None
+
+    usdt_capital = [e for e in report.capital_entries if e.asset == "USDT"]
+    assert usdt_capital, "The USDT lot must survive (corrected proceeds 120 - cost 100 = +20 EUR, material)"
+    entry = usdt_capital[0]
+    assert entry.proceeds_eur == Decimal("120.00"), (
+        "Control: payment-proceeds DID run and correct proceeds to the TH Net Value"
+    )
+    assert entry.review_required is True, (
+        "Late suspect flagging must set review_required=True after payment-proceeds"
+    )
+    assert entry.review_reason is not None
+    assert "unlisted asset" in entry.review_reason, (
+        "The final reason must carry the fee-SUSPECT reason set by the late pass "
+        "(the fee module JOINS it onto the payment-proceeds reason; the suspect "
+        "reason must be present so the late pass is proven to have run after "
+        "payment-proceeds resolution)"
+    )

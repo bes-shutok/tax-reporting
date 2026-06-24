@@ -47,8 +47,8 @@ from ...infrastructure.koinly_parser import (
 )
 from ...infrastructure.text_sanitize import strip_control_chars
 from .classification import _REPOSITORY_ROOT
-from .derivatives_dedup import _quantize_amount_6dp
 from .entities import CryptoCapitalGainEntry, CryptoReviewEntry
+from .th_lot_matcher import _quantize_amount_6dp
 
 logger = logging.getLogger(__name__)
 

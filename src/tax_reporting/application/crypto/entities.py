@@ -10,6 +10,7 @@ import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
+from typing import Literal
 
 from ...domain.entities import OgrValidationResult
 from ...infrastructure.config import DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD
@@ -483,9 +484,29 @@ class CryptoCompletePdfSummary:
 
 @dataclass
 class CryptoReviewEntry:
-    """Entry requiring manual review."""
+    """Entry requiring manual review.
 
-    source_section: str  # "capital_gains" or "income"
+    Attributes:
+        source_section: The report section that produced the review row. One of
+            ``"capital_gains"`` (produced by ``correct_payment_proceeds`` and
+            ``derivatives_dedup`` for CG-side review, and by
+            ``fee_filter.flag_fee_suspects`` when a suspect correlates to a CG
+            lot), ``"income"`` (produced by reward-income side review rows), or
+            ``"transaction_history"`` (produced by
+            ``fee_filter.flag_fee_suspects`` when a suspect has no CG line, so
+            it is surfaced from the Transaction History side).
+        date: ISO-format date (``YYYY-MM-DD``) or minute-precision timestamp.
+        asset: Asset ticker.
+        platform: Platform/wallet name.
+        review_reason: Human-readable, actionable review reason.
+        is_suspicious: True only when the asset contains non-Latin characters
+            (homoglyph scam-token detection via
+            ``contains_non_latin_characters``); applying it to an
+            unlisted-asset fee suspect conflates missing configuration with
+            scam detection and triggers alarming red/bold formatting.
+    """
+
+    source_section: Literal["capital_gains", "income", "transaction_history"]
     date: str
     asset: str
     platform: str

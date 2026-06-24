@@ -4,15 +4,13 @@ Guidance for coding agents (canonical `AGENTS.md`; `CLAUDE.md` is a symlink to i
 
 ## Documentation Hierarchy
 
-This repo follows a three-layer docs layout under `docs/`. Canonical schema: company guideline #48 plus the `doc-hierarchy-migrate` / `doc-hierarchy-upkeep` skills.
-
-- **Start here:** `docs/README.md` (Layer 1 - concise overview; not a file catalog).
-- **Facts / guidelines:** `repo_facts_rel` → `.ai-playbook/facts.md` (gitignored repo agent runtime); `project_guidelines_rel` → `docs/maintenance/project-guidelines.md`.
-- **Shared knowledge (Layer 2):** `docs/architecture/` (seven topic overviews) and `docs/maintenance/` (crypto/tax guidelines, glossary, project decisions, decision-points and the tax-law archive under `docs/maintenance/tax/`). Update in the same session when behavior, contracts, or domain rules change.
-- **Historical context (Layer 3):** `docs/history/` - reference only; active plans under `docs/history/plans/`, completed plans under `docs/history/plans/completed/`.
-- **LLM-only:** `docs/tmp/` at root; gitignored `docs/history/reviews/` (review staging) and `docs/maintenance/personal/` (gitignored personal tax context) - not canonical human Layer 2.
-- **Doc path resolution:** other skills resolve `{plans_dir}`, `{reviews_dir}`, `{tmp_dir}` from `.ai-playbook/facts.md` TOML (via `using-skills` Step 0), not from hardcoded defaults.
-- **Instruction files:** `AGENTS.md` is canonical (`# Instructions`) for all agents; `CLAUDE.md` is a symlink (`ln -sf AGENTS.md CLAUDE.md`).
+This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` skill).
+- **Layer 1:** [README.md](docs/README.md) (concise overview).
+- **Layer 2 (Shared):** `docs/architecture/` and `docs/maintenance/` (guidelines, glossary, decisions, tax-law). Update in the same session when behavior or rules change.
+- **Layer 3 (History):** `docs/history/` (plans, completed plans).
+- **LLM-only / Temporary:** `docs/tmp/` and gitignored `docs/history/reviews/` and `docs/maintenance/personal/`.
+- **Resolution:** Other skills resolve paths (like `{plans_dir}`) from `.ai-playbook/facts.md` (using-skills Step 0).
+- `AGENTS.md` is canonical; `CLAUDE.md` is a symlink.
 
 ## Instruction Rules
 
@@ -22,23 +20,28 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 - Do not classify values with a leading zero integer part (e.g. `0,001`) as thousands-grouped.
 - Treat exactly one dot-grouped triplet (e.g. `1.234`) as ambiguous and raise a clear error. Only multi-group dot patterns (e.g. `1.234.567`) may be stripped as European thousands.
 - Use f-strings in exception constructors; never pass multiple positional args.
-- Catch row-level parse errors per row (warn and skip). Do not let one bad row discard the whole dataset.
-- When extracting a second derived value from an input parsed inside a `try ... except` block, reuse the parsed object inside the same block; re-invoking the parser outside it bypasses row-level handling. See `development_lessons.md` #106.
-- When an optional field from external input is absent, use a type-safe sentinel (e.g. `"0"` for numeric fields) rather than `""`. See `coding_guidelines.md` #4.
+- Catch row-level parse errors per row (warn and skip); do not let one bad row discard the whole dataset.
+- When extracting a second derived value inside a `try...except` block, reuse the parsed object inside the same block. See `development_lessons.md` #106.
+- When a row-processing loop outer `try...except` guard must not prevent a trusted-path branch from completing, wrap the fallible secondary field parse in a separate nested `try...except`. See `development_lessons.md` #154.
+- When an optional field from external input is absent, use a type-safe sentinel (e.g. `"0"` for numeric fields) rather than `""`. See `coding_guidelines.md` #4. When `"0"` is itself a valid observed value, use a non-representable sentinel like `"MISSING"`. See `development_lessons.md` #153.
 - Data-loss conditions (unmatched items, dropped records) must be logged at warning+, never debug. See `coding_guidelines.md` #5.
-- All-or-nothing validation for required file sets: none present -> skip gracefully; partial set -> raise `FileProcessingError` listing missing files; all present -> proceed. See `development_lessons.md` #51.
-- Verification/hygiene guards that read a manifest/patterns file must fail closed when the manifest is absent (`grep -f <missing>` exits non-zero, so `cmd && echo BAD || echo GOOD` false-passes when the guard cannot run, the default in CI when the manifest is gitignored). See `development_lessons.md` #126.
-- Validation that depends on complete state runs post-aggregation, not per-row. Mid-accumulation state can be temporarily invalid (e.g. reversal arrives before dividend).
-- When reusing a validation/security pattern, inherit the guards (symlink rejection, size limit) but recalibrate exception handling (degrade vs raise) to the cost of silent failure at the new call site. See `development_lessons.md` #105.
+- All-or-nothing validation for required file sets: none present -> skip; partial set -> raise `FileProcessingError` listing missing files; all present -> proceed. See `development_lessons.md` #51.
+- Verification/hygiene guards must fail closed when the manifest file is absent; `grep -f <missing>` exits non-zero, so `cmd && echo BAD || echo GOOD` false-passes. See `development_lessons.md` #126.
+- Validation that depends on complete state runs post-aggregation, not per-row (mid-accumulation state can be temporarily invalid).
+- When reusing a validation/security pattern, inherit the guards but recalibrate exception handling (degrade vs raise) to the cost of silent failure at the new call site. See `development_lessons.md` #105.
 - Unmatched items from matching algorithms must never be silently discarded; apply an explicit fallback and log a warning.
-- When an aggregator or detail-line renderer takes `entries[0]` for a field ASSUMED constant across a group (e.g., `annex_hint`, `operation_code`, `legal_category`), add a heterogeneity guard that warns when group members disagree. Silent assumption drift produces output that looks valid but is wrong. See `development_lessons.md` #118.
-- Sibling aggregators in the same module that perform the same conceptual operation (e.g., merging narrative fields) must use byte-identical patterns or call a shared helper. Diverging patterns silently drop data in the diverging aggregator. See `development_lessons.md` #119.
+- When an aggregator takes `entries[0]` for a field assumed constant across a group, add a heterogeneity guard; silent assumption drift produces output that looks valid but is wrong. See `development_lessons.md` #118.
+- Sibling aggregators that merge the same field type must use byte-identical patterns or a shared helper; diverging patterns silently drop data. See `development_lessons.md` #119.
 - Partial or uncertain results must carry an explicit indicator so the user cannot mistake them for complete. Review flags must include specific actionable explanations, not bare booleans.
-- User-facing output labels use self-explanatory terminology, not terse names inherited from source formats. See `coding_guidelines.md` #6. F-strings interpolating a `str | None` into user-facing text (review reasons, Excel cells) must degrade explicitly for `None` when it is reachable via a warn-only config-drift path; see `development_lessons.md` #131.
+- User-facing output labels use self-explanatory terminology, not terse names inherited from source formats. See `coding_guidelines.md` #6. F-strings interpolating `str | None` into user-facing text must degrade explicitly for `None` on warn-only config-drift paths; see `development_lessons.md` #131.
 
 ### 2. Repository Style and Conventions
 
 - Specific type annotations for generic collections (`list[Type] | None`, not `list | None`). See `development_lessons.md` #8.
+- When extracting or using generic collection or matching primitives, use specific type parameterization (TypeVar) to preserve subclass-specific field visibility under static analysis (basedpyright) without type casting. See `development_lessons.md` #151.
+- For type dispatch on generic hints in config loaders use `get_args(hint) == (str, Decimal)` not `get_origin(hint) is dict`; overwrite the validated entry with converted values. See `development_lessons.md` #155.
+- Matching event fields must mirror the normalization of domain entry fields; normalizing one side silently breaks all matching for affected platforms. See `development_lessons.md` #156.
+- Type heterogeneous kwargs dicts as `dict[str, Any]` before `**`-unpack into a dataclass constructor; per-key narrowing doesn't survive a splat. See `development_lessons.md` #157.
 - Catch specific exception types (`FileProcessingError`, `ValueError`), not broad `Exception`. See `development_lessons.md` #9.
 - Koinly source discovery is year-agnostic (`koinly*`) and prefers a year matching parsed IB data.
 - If an inferred IB tax year exists and the selected Koinly directory year differs, skip crypto loading for that run.
@@ -50,17 +53,16 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 - For external source archive provenance and freshness checks, see `docs/maintenance/project-guidelines.md` #1.
 - For fiscal-year versioned tax decision points, see `docs/maintenance/project-guidelines.md` #2.
 - When AT guidance cites a CIRS paragraph number, verify against the consolidated CIRS PDF; AT documents may predate renumbering amendments. See `docs/maintenance/project-guidelines.md` #3.
-- For tax/origin web sources, prefer authoritative PDFs or extracted Markdown/PDF over raw HTML; reuse local mirrors.
+- For tax/origin web sources, prefer authoritative PDFs or extracted Markdown/PDF over raw HTML; reuse local mirrors. If a secondary source conflicts with a locally-archived official source, the official archive wins outright; do not flag a competing "repo conflict." See `development_lessons.md` #171.
 - Before assuming an official source is unavailable, probe the issuing authority's canonical URL with a HEAD request. See `development_lessons.md` #98.
 - Under `docs/maintenance/tax/`, use `laws/<jurisdiction>/crypto-tax/` for tax-law archives and `crypto-origin/` for chain/operator domicile archives.
-- Adding a boolean flag to `docs/maintenance/tax/decision_points/<year>.toml` requires the corresponding field on `TaxJurisdictionConfig` in `domain/jurisdiction.py`. See `development_lessons.md` #68.
+- Adding a decision point configuration flag (bool or complex like dict) to `docs/maintenance/tax/decision_points/<year>.toml` requires the corresponding field on `TaxJurisdictionConfig` in `domain/jurisdiction.py` and type-dispatching support. See `development_lessons.md` #68, #150.
 - When a `docs/maintenance/tax/decision_points/<year>.md` entry enumerates a rule as N-tier/N-case, verify the enumeration (count and cases) matches the implemented code branches; update the prose when a branch is added or changed. See `development_lessons.md` #123.
 - Share crypto `País da Fonte` resolution across rewards and capital gains. Never use taxpayer residence.
 - Keep `docs/maintenance/tax/crypto-origin/` source manifest, registry, and decision log synchronized when changing chain/operator mappings.
 - Chain derivation uses deterministic normalization and validates against trusted sources in `docs/maintenance/tax/crypto-origin/`.
-- Wallet labels are discovery hints only; final chain/country mappings come from archived operator origin documents.
-- When wallet labels don't allow reasonable chain derivation, use `Unknown` explicitly rather than guessing from asset symbols.
-- Operator mapping temporal validity: `service_start_date` = when the platform started offering this service (matching); `valid_from` = when this mapping was verified from source documents (audit). Set `service_start_date` before `valid_from` when both known; for unknown verification dates, set `service_start_date` and leave `valid_from` null.
+- Wallet labels are discovery hints only; final chain/country mappings come from archived operator origin documents. When labels don't allow reasonable chain derivation, use `Unknown` explicitly rather than guessing from asset symbols.
+- Operator mapping temporal validity: `service_start_date` (matching) vs `valid_from` (audit-only); set `service_start_date <= valid_from`, and for unknown verification dates leave `valid_from` null. See `development_lessons.md` #139.
 - Module size: when a module exceeds 1,000 lines or 50 functions/classes, extract cohesive responsibilities into separate modules. See `development_lessons.md` #87, #88.
 - Orchestration layers stay thin (~500 lines max); extract sub-orchestrators or move domain logic to dedicated services when coordination grows. See `development_lessons.md` #87.
 
@@ -91,17 +93,18 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 - `discover_loan_affected_assets()` uses only `"loan"` and `"loan repayment"` tags (not `"loan fee"`); loan fee rows' Sent Currency is the gas/service fee asset, not the loan principal.
 - When IB data has no current-year trades (`tax_year_hint` is None), the Koinly directory year hint falls back to `TaxJurisdictionConfig.fiscal_year`. The configured `FISCAL_YEAR` drives Koinly directory selection for crypto-only runs.
 - Run `_validate_capital_entries_have_valid_countries()`, `_aggregate_capital_entries()`, and `_filter_immaterial_entries()` only after FIFO-derived entries are merged with raw CG rows.
-- OGR overrides apply BEFORE `_aggregate_capital_entries()` when `jurisdiction.use_other_gains_report=True`. CG rows are individual FIFO lots summed in aggregation; OGR contains the correct total for the disposal event. See `development_lessons.md` #75, #78, #80, #85, #97, #99.
+- Keep pipeline stages decoupled: run value corrections and data recovery passes (which modify properties like proceeds) before manual review flags or suspect-identification passes, to prevent clobbering and reason-joining hacks. See `development_lessons.md` #152.
+- OGR overrides apply BEFORE `_aggregate_capital_entries()` when `jurisdiction.use_other_gains_report=True` (OGR holds the disposal-event total; CG rows are FIFO lots summed in aggregation). See `development_lessons.md` #75, #78, #80, #85, #97, #99.
 - When plan pseudocode compares two same-unit fields by name across domain objects, trace the fixture to confirm they represent the same economic quantity before implementing. RED-phase fixtures should set candidate fields to DIFFERENT but realistic values so a field-name conflation (e.g. `gain_loss_eur` vs `proceeds_eur`) fails visibly. See `development_lessons.md` #99.
 - Cross-asset FIFO carry-over matches by TH transaction identifier, never by day-level date alone.
 - Any excluded asset yielding zero FIFO output must log at warning+.
-- Crypto derivatives/futures liquidations reporting losses are disposals of collateral even when liquidating at a loss; this is correct tax treatment (alienação onerosa), not an error. See `development_lessons.md` #67.
+- Crypto derivatives/futures liquidations reporting losses are disposals of collateral even at a loss; this is correct tax treatment, not an error. See `development_lessons.md` #67.
 - Crypto tests MUST read committed synthetic data under `resources/source/example/koinly<year>_<scenario>/`; never reference gitignored personal data. See `crypto_implementation_guidelines.md`.
 
 
 ### 4. Agent Workflow Rules
 
-- Bug fixes follow TDD: failing test first (RED), then fix (GREEN). See `development_lessons.md` #76.
+- Bug fixes follow TDD: failing test first (RED), then fix (GREEN). See `development_lessons.md` #76, #159 (revert a RED break on an untracked file via Edit, not `git checkout`).
 - When a plan is revised between RED and GREEN, re-read each RED test against current design invariants before flipping GREEN. Update changed assertions and cite the invariant. See `development_lessons.md` #109.
 - When building an index from source data, handle duplicate keys by summing, never silent overwrite. See `development_lessons.md` #77.
 - Test string sanitization/validation/parsing for edge cases: empty, whitespace-only, multi-byte, control chars, multi-char prefixes, padded. See `development_lessons.md` #6.
@@ -109,13 +112,14 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 - Examine existing source data files (`resources/source/koinly*/`) directly before asking for samples. Use Glob/Read.
 - Commits allowed by default; never push/PR without instruction (Git Push Policy). `~/Projects/myrepos` stay local-only.
 - Always use `uv run pytest`, not `uvx pytest`.
-- `valid_from` = audit-only; `service_start_date` = matching. See `development_lessons.md` #139.
 - Never write to `docs/review/` (singular); use `docs/history/reviews/` (plural). See `development_lessons.md` #95.
 - **Never introduce a hardcoded value (asset ticker, constant set, threshold, magic string, fixed ordering) without first flagging it and asking the user.** Applies to plans, implementation, and code review.
 - Verification-first task ordering for "is X handled correctly?": code inspection, test execution, doc review before implementation. Skip implementation if verification shows correctness. See `development_lessons.md` #71.
 - **CRITICAL:** Code inspection alone is INSUFFICIENT for "is X handled correctly?". Perform data trace verification: trace the user's specific case from source CSV to final output, verify output matches source classifications, and validate across ALL source reports (TH, CG, Other Gains). See `development_lessons.md` #72, #73.
+- When a user provides multiple examples to investigate, trace and document ALL of them; do not assume the first example's root cause covers the rest. See `development_lessons.md` #161.
+- When verifying a user's claim that a specific amount is missing from the source data, verify whether the report output is an aggregation before concluding it is missing. See `development_lessons.md` #162.
 - When adding cross-module utility calls, verify imports resolve: `uv run python -c "from module import function"`. See `development_lessons.md` #74.
-- Static hygiene/leak guards must scan every file the protected value could realistically reach, including tests that `skip` in CI when their real fixture is absent (they have no runtime backstop there). See `development_lessons.md` #127.
+- Static hygiene/leak guards must scan every file the protected value could realistically reach, including tests that `skip` in CI when their real fixture is absent. See `development_lessons.md` #127.
 - New boolean-flag features need backward-compat tests verifying the "disabled" state preserves existing behavior, not just that "enabled" works. See `development_lessons.md` #84.
 - When extracting a function to a new module, check for dependencies on constants from the source module (circular imports). See `development_lessons.md` #86.
 - On refactoring branches, fix all in-scope code review findings in the same branch, including findings touching changed files or addressing tech debt exposed by the extraction. See `development_lessons.md` #92.
@@ -124,19 +128,23 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 - Extracted helpers need direct unit test coverage, not just indirect integration. Verify early returns, branches, boundaries, state mutation, edge cases. See `development_lessons.md` #91.
 - Discriminating tests assert properties that FAIL under a wrong implementation: to bind where a memo/decorator attaches use `hasattr(fn, 'cache_info')` or mutate-between-calls, and cover N independent guards as N parametrized cases each asserting its own signal, not one OR'd case. See `development_lessons.md` #125, #133.
 - When a plan task, design invariant, or gist example claims something about production code (field semantics, file path, line number, function behavior, return shape), verify against actual source BEFORE writing dependent plan tasks. See `development_lessons.md` #100.
-- When a plan body contains executable pseudocode AND RED-test expectations, trace each pseudocode branch against the tests and design invariants (build the full decision table) before declaring the plan ready. A pseudocode-vs-test contradiction forces the implementer to extend the logic beyond the plan body. See `development_lessons.md` #120.
-- When designing a scanner that filters TH rows by Type, trace each affected OGR row back to its TH source row and confirm the Type. OGR rows on the same date may originate from different Types. See `development_lessons.md` #101.
-- For dedup/matching with a non-unique key tuple (no global ID), add a count-matched-target-items-per-source-event safety check that warns when one source event matches more than one target item. Surfaces amount collisions without blocking FIFO splits. See `development_lessons.md` #102.
-- When introducing a separation between two tax categories that previously shared a pipeline (e.g. spot vs derivatives), audit whether the same disposal appears in both source reports (OGR and CG) and add an explicit dedup step. The trigger is the separation itself, not a later data-quality check. See `development_lessons.md` #103.
+- Resolve pseudocode-vs-test contradictions before implementation. See `development_lessons.md` #120.
+- In a refactor task with a byte-identical non-regression criterion, a clause instructing a net-new side effect the current code does NOT emit is contradictory; verify the behavior exists pre-refactor, else route it to its owning feature task. See `development_lessons.md` #158.
+- Trace filtered TH rows back to their OGR source rows to confirm Type. See `development_lessons.md` #101.
+- Add match-count warnings for non-unique deduplication keys. See `development_lessons.md` #102.
+- Deduplicate overlapping items when splitting shared tax pipelines. See `development_lessons.md` #103.
 - When N source events pair against M target items by non-unique key, use an ordered queue (deque) per key and pop one target per event. Never `dict[key] = item` (silently overwrites on collisions). See `development_lessons.md` #107.
-- In a per-row matching/correction loop, run the fallible resolution (rate lookup, parse) BEFORE mutating the shared match structure (`deque.popleft`), and the resolution must RAISE an exception the per-row boundary catches, not return a sentinel that gets used unconditionally (else `value * None` raises uncaught `TypeError`). See `development_lessons.md` #124.
-- Two-pointer sliding-window matcher with tolerance proportional to window size: recompute tolerance after every shrink (stale tolerance admits invalid windows), use `left < right` (not `<=`) as the shrink bound so single-element window stays a candidate. See `development_lessons.md` #108.
-- Multi-phase matching with phase 1 (exact-match) before phase 2 (contiguous-range fallback): re-run brute-force feasibility for phase-2 predictions against the POST-phase-1 input set, not the original full set. Phase 1 removes items and changes the candidate count/sum. See `development_lessons.md` #110.
+- Run fallible resolutions before mutating shared match structures. See `development_lessons.md` #124.
+- Recompute tolerance after shrinking sliding-window matchers. See `development_lessons.md` #108.
+- Re-run feasibility checks against the mutated post-phase-1 input set. See `development_lessons.md` #110.
 - When a task changes data flow semantics (filter/dedup/transformation split), grep ALL test files (`tests/`) for assertions referencing the affected data identity tuple, not just current task's file scope. Stale assertions in sibling files survive focused runs. See `development_lessons.md` #111.
 - For verification-only tasks inspecting `git diff <base>..HEAD` with missing expected files, check if a prior same-session commit already applied the change. See `development_lessons.md` #116.
 - For comparing tool output against the committed baseline (linter/formatter), pipe the committed blob or use `git worktree add`; never use `git stash`. See `development_lessons.md` #122.
 - Before `execute-plan` Step 1.1 on a pre-migration plan, grep and translate moved path prefixes (`docs/tax/`, etc.) to their migrated locations in the plan body. See `development_lessons.md` #129 and `execute-plan` Step 0.4b.
-- When validating branch compliance (e.g. for em dashes), do not rely on working-tree filters like "touched" or "unstaged" if changes have already been committed; diff explicitly against the target branch. See `development_lessons.md` #144.
+- When validating branch compliance (e.g. for em dashes), do not rely on working-tree filters like "touched" or "unstaged" if changes have already been committed; diff explicitly against the target branch. See development_lessons.md #144.
+- **Never proceed to plan execution or make code changes without explicit user approval when in Planning Mode.** Bypassing the approval gate violates user intent and creates unwanted code churn. See development_lessons.md #149.
+- Request a plan amendment before omitting prescribed behaviors. See `development_lessons.md` #160.
+
 
 ### 5. Domain Knowledge References
 
@@ -148,6 +156,7 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 - Before writing implementation plans, read `docs/maintenance/plan_quality_guidelines.md`.
 - Before writing/revising repository walkthroughs or presentation artifacts, read `docs/maintenance/plan_quality_guidelines.md` (presentation-artifact structure and placement).
 - When a crypto presentation makes legal/filing claims, verify the current source set in `docs/maintenance/tax/laws/pt/crypto-tax/sources.md` and cite mirrored official documents.
+- Before advising on NHR (Residente Não Habitual) foreign-income exemption or Anexo L filing, read the AT RNH folheto mirror at `docs/maintenance/tax/laws/pt/official/at_folheto_rnh_2022-10-19.pdf` (provenance: `docs/maintenance/tax/laws/pt/sources.md`; folder index: `docs/maintenance/tax/laws/pt/README.md`).
 - Use the authority level and source date in `crypto_rules.md` to check whether a rule may be stale for the current tax year.
 - For country-specific tax decision points, see `docs/maintenance/tax/decision_points/`.
 - For private personal tax context supplied by the user, read `docs/maintenance/personal/facts.md` (gitignored; do not copy into tracked docs unless requested).
@@ -166,7 +175,7 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 - `configparser` INI files: `config.ini` (prod), `tests/config.ini` (test). Four sections: `[COMMON]`, `[EXCHANGE RATES]`, `[SECURITY]`, `[TAX JURISDICTION]` (fields `TAX_COUNTRY`, `FISCAL_YEAR`, `ZERO_BASIS_REVIEW_THRESHOLD`, `ZERO_BASIS_REVIEW_MIN_PROCEEDS`, `IANA_TIMEZONE`; defaults PT/2025/50/10, `IANA_TIMEZONE` auto-Europe/Lisbon for PT). Update exchange rates annually.
 - `IANA_TIMEZONE`: auto-deduces `Europe/Lisbon` for `TAX_COUNTRY=PT`; REQUIRED for other countries with crypto data, else fails fast (`development_lessons.md` #135).
 - **Law-driven flags** (e.g. `exclude_loan_repayment_gains`) live in `docs/maintenance/tax/decision_points/<fiscal_year>.toml`, NOT `config.ini` (user preferences only); update the `.md` and `.toml` sidecar together.
-- TOML schema: `[meta].fiscal_year` (integer) + `[countries.XX]` boolean tables; copy `2025.toml` for a new year. Missing TOML raises `MissingDecisionPointsError` (a `ConfigurationError` subclass); invalid `[TAX JURISDICTION]` raises `ConfigurationError`; both surface unwrapped from `main()`.
+- TOML schema: `[meta].fiscal_year` (integer) + `[countries.XX]` boolean tables (multi-type loader also accepts `dict[str, Decimal]` subtables); copy `2025.toml` per year. Missing TOML raises `MissingDecisionPointsError`; invalid `[TAX JURISDICTION]` raises `ConfigurationError`; both surface unwrapped from `main()`.
 
 ## Testing
 
@@ -174,7 +183,7 @@ This repo follows a three-layer docs layout under `docs/`. Canonical schema: com
 - **Do not import pytest fixtures**; they are injected by name (`tmp_path`, `capsys`, `caplog`, `monkeypatch`, `request`).
 - Remove unused imports (Ruff F401). Only import `Path` when instantiating or type-annotating.
 - Test meaningful business logic and real edge cases; avoid duplicating coverage. High-value: complex IB CSV formats, tax calculations, error handling; low-value: zero amounts, trivial parsing.
-- Excel output tests: add visual structure tests (row placement, cell merging, blank rows, header structure) when modifying layouts. Use structural identification (column population, font attributes), not hardcoded value exclusions. Default-empty cell assertions must accept both `None` and `""` (openpyxl normalizes empty-string writes). When a test asserts a value satisfies a domain-validity predicate defined in production (country code list, enum, regex), reuse the production validator rather than duplicating the valid-set inline. See `development_lessons.md` #69, #70, #81, #82, #83, #96, #114, #115.
+- Excel output tests: add visual structure tests (row placement, cell merging, blank rows, header structure) when modifying layouts. Use structural identification (column population, font attributes), not hardcoded value exclusions. Default-empty cell assertions must accept both `None` and `""`. When a test asserts a value satisfies a production-defined domain-validity predicate (country code list, enum, regex), reuse the production validator rather than duplicating the valid-set inline. See `development_lessons.md` #69, #70, #81, #82, #83, #96, #114, #115.
 
 ## Code Quality
 

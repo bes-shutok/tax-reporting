@@ -2610,3 +2610,395 @@ The `done` skill's docs-branch step backs up gitignored docs (`docs/tmp/`, `.ai-
 **General form:** The docs orphan branch is a SEPARATE line of history whose tree is intentionally disjoint from the feature branch (gitignored on feature, tracked on docs). Any git operation that crosses the two - staging feature-gitignored paths onto the feature commit, or overlaying the docs tree onto the feature working tree - corrupts the feature branch. The canonical docs-branch script exists precisely to keep the two disjoint; improvising the crossing is the hazard.
 
 **See also:** `development_lessons.md` #122 (docs-branch `git stash` hazard - same family, distinct angle: stash vs add-A/checkout), #128 (`git mv` nesting in the doc tree), #129 (stale plan paths after doc-hierarchy migration), #116 (verify actual git state before reporting - the "nothing lost" false report is a #116 failure). `docs-branch` skill, `done` skill, `execute-plan` anti-pattern table. CLAUDE.md "Gitignored docs safety".
+
+## 148. Standalone Withdrawals Tagged Cost/Loan Fee Represent Taxable Disposals; Distinguish from Validator/Network Fees Using TxHash Co-occurrence
+
+**Principle:** Family A (Equivalence-class coverage)
+
+When implementing filters to exclude transaction/network fees (Koinly tag `Cost` or `Loan fee`) from capital gains reporting, be careful not to filter out standalone withdrawals that represent taxable disposals for service consideration (e.g. card subscriptions or service fee payments). Under jurisdictions like Portugal, while utility network/gas fees are non-taxable due to lack of direct consideration (CIRS Art. 10(1)(k)), spending crypto to purchase card services or subscriptions is a taxable *alienação onerosa* (PT-C-004) and must remain in the capital gains report.
+
+**Required behavior:**
+1. Do not filter out `Cost`/`Loan fee` rows blindly.
+2. Build a frequency count of all non-empty transaction hashes (`TxHash`) from the Transaction History CSV.
+3. A `Cost` or `Loan fee` withdrawal row is only classified as a utility network/gas fee if it has a non-empty `TxHash` that appears **at least twice** in the Transaction History CSV (co-occurring with a parent transaction, such as a trade, deposit, or transfer).
+4. Standalone rows with unique or empty `TxHash` values must be kept as taxable disposals.
+
+**Shape trigger (when to suspect this family):** filtering transaction fees based on cosmetic tags; the data contains both validator gas fees and service payments; some service payments are wrongly filtered out, creating under-reporting of capital gains.
+
+**General form:** Filter logic targeting transaction costs based on broad tags must verify that the fee is a secondary utility charge co-occurring with a primary trade/transfer rather than a standalone payment. Using transaction ID/hash co-occurrence prevents broad tag matches from filtering taxable service purchases.
+
+## 149. Never Proceed to Plan Execution or Make Code Changes Without Explicit User Approval in Planning Mode
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
+In Planning Mode, once an implementation plan has been written and reviewed (even if it has zero blocker or medium findings and is marked "Ready for execution"), the agent MUST stop and wait for the user's explicit approval before making any code modifications or running execution commands.
+
+**Why this matters:** Planning Mode is designed to align the agent and the user on the technical design and scope before any changes are committed or codebases modified. Assuming execution is authorized just because a plan is complete or marked ready (the abstraction) bypasses the user's control. Only the user's explicit command to proceed (the real instruction) authorizes execution. Bypassing the approval gate violates user intent and creates unwanted code churn or incorrect implementations that must be reverted.
+
+**Required behavior:**
+1. Once a plan has been written and its reviews complete with zero Blocker and Medium findings, present the execution handoff to the user.
+2. Stop tool execution and wait for the user to explicitly say "proceed", "execute the plan", or similar.
+3. Do not run any implementation tasks, write any product code, or modify production files until that explicit approval is received.
+4. If code changes were made prematurely, immediately stash or revert them to return the repository to a clean state matching the approved design base.
+
+**Shape trigger (when to suspect this family):** planning a task under Planning Mode; the plan file is written and reviewed; the next step in the workflow is execution; the user has not yet explicitly authorized execution.
+
+**General form:** The completion of a planning phase (a green review, a ready status) is an abstraction representing preparedness, not an authorization to execute. Authorization requires verifying the real human intent (an explicit command to proceed). Executing code modifications based on the ready state alone violates the gating protocol and introduces code churn.
+
+**Example (2026-06-23 filter-transaction-fees plan):** The agent was tasked with planning transaction fee filtering under Portugal rules. After the plan reviews finished with zero blockers/medium findings, the agent immediately proceeded to execute the tasks (updating config, creating config tests, implementing filtering) without waiting for user approval. The user corrected the agent, requesting that all premature changes be reverted or stashed and that no code changes be made until authorized. The agent stashed/reverted the changes to return HEAD to `5847e2a docs: update plan to reference r2 review` and halted for approval.
+
+**See also:** `development_lessons.md` #116 (verify actual git state before reporting), `development_lessons.md` #100 (verify plan-time claims before writing tasks), `AGENTS.md` "Agent Workflow Rules".
+
+## 150. Multi-Type Configuration Loading in Single-File Schema Requires Explicit Type-Dispatching and Scoped Default Fallbacks
+
+**Principle:** Family D (Single source of truth)
+
+When expanding a configuration loader (such as parsing a flat country-specific TOML config) to support non-boolean fields (e.g. subtable dictionaries `dict[str, Decimal]`), utilize explicit type-dispatching via `get_type_hints` and `get_origin` rather than assuming all values under a section share a single primitive type. Ensure default-value loops are strictly scoped to the matching type hint (e.g. only defaulting boolean fields to `False`) to avoid clobbering or type-checking crashes on missing optional fields.
+
+**Why this is required:** If a config parser loop assumes all config values are booleans, adding a complex type (like a subtable dictionary) will cause the validation step to crash with a `ValueError` or `TypeError`. Furthermore, if the loader's fallback loop unconditionally defaults all absent keys to `False`, it will overwrite the class-level default factory (`default_factory=dict`) of the new dictionary field with `False`, breaking the configuration for any other entry that does not explicitly declare the new subtable.
+
+**Required behavior:**
+1. Retrieve type hints for the target config class using `get_type_hints(ConfigClass)` and determine type groups (e.g., bool-typed fields vs generic dict fields via `get_origin(hint) is dict`).
+2. Rewrite the validation loop to branch explicitly on type groups, performing the correct validation and conversion for each group (e.g., converting dict floats/ints to `Decimal` using `Decimal(str(v))`).
+3. Limit any default fallback logic (e.g., setting unset flags to `False`) strictly to the matching type group (e.g., only iterating over boolean-typed fields), allowing other complex fields to default via their standard dataclass defaults or factories.
+4. Add config unit tests validating both the presence of the new type and its correct fallback to defaults when absent.
+
+**Shape trigger (when to suspect this family):** introducing a non-boolean config flag to an existing flat configuration class that historically assumed all fields are boolean; the parser validation loop or defaults fallback crashes or incorrectly resolves the new field.
+
+**Example (2026-06-23 filter-transaction-fees plan, Task 1):** The TOML config loader in `config.py` was generalized to accept `dict[str, Decimal]` for `exclude_transaction_fee_max_eur_per_asset`. Sibling fields were bools, and the existing validation loop crashed on the dict subtable. Additionally, the default-value loop originally set all missing keys to `False` by default, which collapsed the new dict field to `False` when missing in non-PT country configs. Dispatched bool-specific defaulting strictly to bool-typed fields, allowing dict fields to fall back to `default_factory=dict`.
+
+**See also:** `development_lessons.md` #68 (Decision Point Flags Require TaxJurisdictionConfig Field), #74 (Verify imports on cross-module calls).
+
+## 151. Use Type Parameterization (TypeVar) in Shared Generic Primitives to Preserve Subclass Field Visibility Under Static Analysis
+
+**Principle:** Family B (Type-safe domain logic)
+
+When extracting a shared utility or matcher that operates on polymorphic event models, parameterize input sequences and return structures with generic type variables (`TypeVar("E", bound=ParentProtocol)`) rather than generic parent types. This preserves concrete attribute visibility (like custom fields used only by specific callers) at caller sites under strict static analysis (basedpyright) without needing explicit type-casting or runtime checks.
+
+**Why this is required:** If the shared matcher is typed to accept and return generic parent models (like `ThEvent`), the caller receives the generic type. If the caller then attempts to read subclass-specific fields on the returned results (like `event.label` in derivatives-dedup), the static type checker will raise diagnostic errors because `label` is not part of the generic parent. Using `TypeVar("E", bound=ThEvent)` forces the type checker to bind the return type to the concrete type passed by the caller.
+
+**Required behavior:**
+1. Define a generic type variable bound to the parent protocol/class (e.g., `E = TypeVar("E", bound=ThEvent)`).
+2. Parameterize both the input events sequence (`events: Sequence[E]`) and the generic matcher result structure (`MatcherResult[E]`) with that type variable.
+3. Expose matching functions using this generic parameterization so that basedpyright propagates type inference cleanly back to the caller.
+4. Do not reference subclass-specific attributes (like `event.label`) inside the generic matcher; keep internal algorithms strictly scoped to the parent protocol.
+
+**Shape trigger (when to suspect this family):** extracting a shared algorithm/matcher that processes different subclassed events; caller code reads custom attributes from the matched events; static analysis reports attribute-missing errors at the caller site after extraction.
+
+**Example (2026-06-23 filter-transaction-fees plan, Task 2):** The fee-filter and derivatives-dedup matchers share the exact same two-phase matching algorithm. When extracting `th_lot_matcher.py`, the result structure `MatcherResult` was parameterized with `TypeVar("E", bound=ThEvent)`. This allowed the derivatives caller to access `event.label` (which is specific to `DerivativesThEvent` and absent from the base `ThEvent` protocol) on the returned matched metadata without raising basedpyright diagnostic errors.
+
+**See also:** `development_lessons.md` #8 (Specific type annotations for generic collections), #86 (circular imports during helper extraction), #119 (shared matcher extraction constraint).
+
+## 152. Decouple Pipeline Stages to Keep Correction Modules Single-Responsible and Prevent Flag Clobbering
+
+**Principle:** Family A (Equivalence-class coverage)
+
+In multi-stage data processing pipelines, run data corrections and value recovery (which can change properties like proceeds from zero to non-zero, making parse-time flags/reasons obsolete) *before* applying manual review or auditing flags. Do not introduce complex reason-merging hacks in early processing modules to preserve flags set upstream. Keep modules focused on their single responsibility and run flagging passes last in the pipeline.
+
+**Why this is required:** If a flagging pass runs before a value-recovery pass, the recovery pass (e.g., resolving zero proceeds to non-zero) will either clobber the flag's review reason, or be forced to join it. Unconditionally joining reasons clobbers the clean output by preserving obsolete parse-time reasons (like "Zero disposal proceeds" on a row whose proceeds have now been corrected to a non-zero value), producing self-contradictory output (e.g., "Zero disposal proceeds; proceeds recovered EUR 5").
+
+**Required behavior:**
+1. Structure the processing pipeline so that all value corrections (such as OGR overrides and payment proceeds corrections) execute first.
+2. Execute auditing, manual-review flagging, and suspect-identification passes last (before aggregation and materiality filtering).
+3. This late-flagging approach guarantees that flags are set on clean, final data, eliminating the need to modify correction modules or construct fragile reason-joining strings.
+4. Keep the correction modules strictly decoupled from upstream flagging concepts, preserving single responsibility.
+
+**Shape trigger (when to suspect this family):** a pipeline correction step clobbers an upstream audit flag; you find yourself writing complex string-joining logic inside a value-correction module to preserve a reason set upstream; the joined reason text ends up stating contradictory facts (such as both zero proceeds and recovered non-zero proceeds).
+
+**Example (2026-06-23 filter-transaction-fees plan, Task 4):** In the fee-filter design, running suspect-flagging early meant that `correct_payment_proceeds` (which resolves proceeds on zero-proceeds lots) would overwrite the review reason. An attempt to join reasons unconditionally preserved obsolete parse-time "Zero disposal proceeds" reasons on corrected rows, creating contradictory output. Splitting the pass so that fee removal is early, and suspect-flagging runs late (after `payment_proceeds`, right before aggregation), kept `payment_proceeds.py` completely decoupled from fee-filtering logic and avoided reason-joining entirely.
+
+**See also:** `development_lessons.md` #103 (deduplication of spot vs derivatives), #101 (tracing TH rows to OGR).
+
+## 153. Sentinel for `dict.get` Default Must Exclude All Valid Observed Data Values
+
+**Principle:** Family C (Representation: sentinel vs None vs exception)
+
+When using `dict.get(key, default)` to detect a missing key before passing the value to a parser, the default sentinel must be a value that **cannot appear as a valid, meaningful data value** in that CSV column. Using a value that the data source legitimately emits (e.g., `"0"` for a numeric column that may carry explicitly zero-priced data) conflates "key absent" with "key present with value zero", causing the guard `if raw == sentinel: continue` to incorrectly skip valid rows.
+
+**Why this matters:** `"0"` as a sentinel for `"Net Value (EUR)"` worked at first glance because `parse_koinly_decimal("")` returns `Decimal("0")`. But an explicit CSV cell containing `"0"` or `"0.00"` (a genuine zero-priced gas fee that IS supposed to be filtered) is also `"0"`. The guard `if not raw_val or raw_val == "0": continue` incorrectly skips that valid row, silently retaining a taxable disposal that should have been removed. The string `"MISSING"` cannot appear in a numeric column, so using it as the default unambiguously identifies "key absent from dict" without masking `"0"`.
+
+**Required pattern:**
+```python
+# WRONG: "0" is a valid observed value
+raw_val = row.get("Net Value (EUR)", "0").strip()
+if not raw_val or raw_val == "0":
+    continue  # BUG: also skips genuine zero-priced fees
+
+# CORRECT: "MISSING" cannot appear in a numeric CSV column
+raw_val = row.get("Net Value (EUR)", "MISSING").strip()
+if not raw_val or raw_val == "MISSING":
+    continue  # only skips truly absent/empty cells
+```
+
+**Corollary to AGENTS.md Rule #4:** Rule #4 says "use a type-safe sentinel (e.g. `"0"` for numeric fields) rather than `""`". That rule applies to *output/domain fields* (e.g., `CryptoReviewEntry.proceeds_eur = "0"` when absent). For `dict.get` guards where you must distinguish "key absent" from "key present with value zero", the sentinel must be a *non-representable* value (e.g., `"MISSING"`), not a valid numeric string.
+
+**Shape trigger:** a CSV parser uses `row.get(col, "0")` as a default and the column may contain a legitimate `"0"` value; a pre-parse guard checks `raw == "0"` to skip rows.
+
+**See also:** `development_lessons.md` #4 (type-safe sentinels for absent optional fields), `coding_guidelines.md` #4.
+
+## 154. Outer Row-Level Exception Block Must Not Prevent a Trusted-Branch Operation From Completing
+
+**Principle:** Family B (Fail-safe direction and authority hierarchy)
+
+When a row-processing loop uses an outer `try...except` block to catch per-row errors and skip malformed rows, any operation inside that block that is governed by a higher-authority signal (e.g., an explicit user tag that overrides the fiat value) must be wrapped in a **separate nested `try...except`** for its fallible sub-operations. If the trusted operation depends on a non-authoritative field (like a fiat price cell) that may be corrupted, a `ValueError` from that sub-operation will propagate into the outer except and skip the entire row, including the trusted operation that should have executed regardless.
+
+**Required pattern:**
+```python
+for row in rows:
+    try:
+        label = row.get("Label", "")
+        if label in TRUSTED_TAGS:
+            # fiat value is NOT the authority -- use nested except so corruption
+            # does not abort the trusted-branch FeeThEvent emission
+            try:
+                net_eur = parse_koinly_decimal(row.get("Net Value (EUR)", ""))
+            except ValueError:
+                logger.warning("Corrupted fiat on trusted-tag row %s; defaulting to 0", row)
+                net_eur = Decimal("0")
+            emit_fee_event(...)   # always emits, even if fiat was corrupted
+        else:
+            # non-trusted branch: parse fiat normally; ValueError propagates to outer
+            raw_val = row.get("Net Value (EUR)", "MISSING").strip()
+            if not raw_val or raw_val == "MISSING":
+                continue
+            net_eur = parse_koinly_decimal(raw_val)  # ValueError -> outer except -> skip row
+            ...
+    except (ValueError, KeyError, InvalidOperation):
+        logger.warning("Skipping malformed row: %s", row)
+```
+
+**Shape trigger:** an outer row-level `try...except` exists; a branch inside that block has a "trusted" path (e.g., the tag is the authority) that must complete even if a secondary field raises; the plan says "corrupted data must still raise" but also "the trusted branch still emits the event" -- these two requirements are contradictory without a nested except.
+
+**Why this matters:** Without the inner except, a corrupted fiat string on a tagged `Cost` row causes the outer except to skip the whole row, silently retaining a legitimately-tagged gas fee disposal in the capital gains output (silent over-tax error).
+
+**See also:** `development_lessons.md` #9 (catch specific exception types), `coding_guidelines.md` #5 (warn-and-skip for row-level errors).
+
+## 155. Use `get_args(hint)` Not `get_origin(hint)` for Precise Generic Type Dispatch in Config Loaders
+
+**Principle:** Family D (Single source of truth / precision)
+
+When a config loader needs to discriminate `dict[str, Decimal]` fields from `dict[str, str]` or other dict-typed fields using Python's `typing` reflection, `get_origin(hint) is dict` matches ANY `dict[K, V]` annotation regardless of its type arguments. If a future field of a different dict type (e.g., `dict[str, str]`) is added to the config dataclass, the loader will incorrectly attempt to convert its values to `Decimal`, crashing or silently producing wrong types.
+
+**Use `get_args(hint) == (str, Decimal)` for exact type-argument matching:**
+```python
+from typing import get_args, get_type_hints
+from decimal import Decimal
+
+hints = get_type_hints(TaxJurisdictionConfig)
+_KNOWN_DICT_POINTS = {
+    name for name, hint in hints.items()
+    if get_args(hint) == (str, Decimal)  # precise: only dict[str, Decimal]
+}
+# _KNOWN_BOOL_FLAGS uses: hint is bool
+```
+
+**Corollary:** When the conversion step stores the result back into the dict (which it must -- see lesson #156), explicitly overwrite with the converted values: `flags[flag_name] = {k: Decimal(str(v)) for k, v in flag_value.items()}`. Merely instantiating Decimals during validation without storing them leaves raw TOML floats in the dict.
+
+**Shape trigger:** a config loader type-dispatches on `get_origin(hint) is dict`; a new `dict[K, V]` field with a different value type is added; the loader silently applies the wrong conversion.
+
+**See also:** `development_lessons.md` #68 (decision-point config flag type dispatch), #150 (multi-type config loading requires explicit type-dispatching).
+
+## 156. Matching Event Fields Must Mirror the Normalization Applied to Domain Entry Fields
+
+**Principle:** Family D (Single source of truth / consistency)
+
+When constructing "event" objects whose fields will be matched against "domain entry" objects via a tuple key (e.g., `(timestamp, asset, wallet, amount)`), every field in the event must use the **same normalization** as the corresponding field in the domain entry. Normalizing one side (e.g., stripping " (Spot)" from the wallet name to produce "ByBit") but not the other (which retains the raw "Bybit (Spot)") causes the exact-match key to never equal, silently failing ALL matching for platforms where the raw name differs from the normalized name.
+
+**Required pattern:**
+```python
+# WRONG: normalize_platform_name strips suffixes the CG lot still carries
+event = FeeThEvent(wallet=normalize_platform_name(row.get("Sending Wallet", "")), ...)
+
+# CORRECT: use the raw string to match the CG lot's raw wallet
+event = FeeThEvent(wallet=row.get("Sending Wallet", "").strip(), ...)
+```
+
+**Verification step:** when introducing a new event-vs-domain matcher, grep for how the domain entry's wallet field is populated; if it stores the raw CSV value, the event must too.
+
+**Shape trigger:** a shared matcher is extracted that uses a tuple key to match events against domain entries; the event scanner applies a normalization function to one field; tests using simple fixture data pass because all wallets are plain strings, but production data (with e.g. Koinly's "(Spot)" suffix) silently fails to match.
+
+**Why this matters:** The failure is silent: no error is raised, no warning is emitted, the CG lot simply remains in the output uncorrected. With a 100% miss rate for affected platforms, the over-tax impact is proportional to the number of fee disposals those platforms have.
+
+**See also:** `development_lessons.md` #77 (duplicate key handling in index builders), #102 (collision safety checks in matchers).
+
+## 157. Type Heterogeneous Validated Kwargs Dicts as `dict[str, Any]` to Feed `**`-Unpack Into a Dataclass Constructor Under basedpyright
+
+**Principle:** Family B (Type-safe domain logic)
+
+When a loader builds a kwargs dict whose values are heterogeneous (e.g., some `bool`, some `dict[str, Decimal]`) and then unpacks it into a dataclass constructor (`Config(**flag_kwargs)`), type the kwargs dict as `dict[str, Any]`, NOT as a union like `dict[str, bool | dict[str, Decimal]]`. Per-key type safety is guaranteed by the loader's type-dispatching validation, but basedpyright cannot propagate per-key narrowing through a `**`-splat; a union-typed kwargs dict produces one `reportArgumentType` error per constructor parameter (a value typed `bool | dict[...]` is not assignable to a param typed `bool`), while `dict[str, Any]` admits the splat cleanly.
+
+**Why `Any` is honest here:** the values are validated at load time by the dispatching loader before being placed in the dict. The static element type of a `**`-unpacked mapping is genuinely opaque to the checker; `Any` reflects that opacity rather than hiding a real type hole. Prefer the small set of `reportAny` warnings (on the splat) over a cascade of `reportArgumentType` errors that mis-describe the situation.
+
+**Required pattern:**
+```python
+from typing import Any
+
+def _load_flags(...) -> dict[str, Any]:
+    flag_kwargs: dict[str, Any] = {}
+    for name, value in raw.items():
+        # type-dispatching validation guarantees the per-key type here
+        flag_kwargs[name] = _validate_and_convert_flag(name, value)
+    return flag_kwargs
+
+config = TaxJurisdictionConfig(**flag_kwargs)  # basedpyright: no ArgumentType errors
+```
+
+**When NOT to apply:** if the dict is consumed positionally (e.g., `config = TaxJurisdictionConfig(flags)` where the param itself is typed `dict[str, bool | dict[str, Decimal]]`), keep the precise union type; the splat is the only construct that defeats per-key narrowing.
+
+**Shape trigger (when to suspect this family):** a loader validates heterogeneous values into a kwargs dict and splats them into a constructor; basedpyright emits one `reportArgumentType` per dataclass field; rewriting the dict annotation to a union does not silence them.
+
+**Example (2026-06-23 filter-transaction-fees plan, Task 1):** `_load_decision_points_flags` returns validated bools and `dict[str, Decimal]` maps; the result is splatted into `TaxJurisdictionConfig(**flag_kwargs)`. Typing the dict as `dict[str, bool | dict[str, Decimal]]` produced 10 `reportArgumentType` errors; retyping to `dict[str, Any]` left only acceptable `reportAny` warnings on the splat while the per-key validation is unchanged.
+
+**See also:** `development_lessons.md` #8 (specific type annotations for generic collections), #150 (multi-type config loading requires explicit type-dispatching).
+
+## 158. A Refactor Plan Clause That Instructs a Net-New Behavior Addition Conflicts With the Same Plan's Byte-Identical Non-Regression Criterion; Verify Against Actual Pre-Refactor Behavior Before Implementing
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
+When a plan frames its task as a refactor with an explicit "behavior must be byte-identical to the current implementation" non-regression criterion, ANY clause that instructs the implementer to ADD a net-new side effect (a new log line, a new warning, a new validation, a new field) that the current code does NOT emit is internally contradictory. Implementing the addition breaks characterization/non-regression tests; implementing the byte-identical behavior contradicts the clause. The resolution is mechanical: before implementing any clause that prescribes new observable behavior in a refactor task, grep/trace the pre-refactor source to confirm the behavior already exists. If it does not, the clause is in error: the new behavior belongs in a LATER task (a feature add, not this refactor) or the non-regression criterion must be explicitly relaxed for that one side effect. Do not silently add the behavior; do not silently drop the clause; document the discrepancy and route the behavior to its owning task.
+
+**Why this happens:** Plan authors reasoning about an extraction often think "since the matcher's old home warned for X, the new caller must warn for X too" without confirming the old home actually warned. The shared-helper extraction makes the absence visible (the matcher no longer emits the warning), so the plan tries to restore it everywhere, but the original caller may have intentionally omitted it, or never had it. The extraction did not change behavior; the plan clause would.
+
+**Shape trigger (when to suspect this family):** a refactor/extraction plan task states "behavior byte-identical" AND contains a clause instructing the new caller or new helper to emit a warning/log/validation/field that reads like a restoration ("since X was moved out of the shared matcher, the caller now owns X"). Trace the pre-refactor source for X before writing the loop that emits it.
+
+**Required response when a refactor clause prescribes new observable behavior:**
+1. Trace the pre-refactor source for the prescribed behavior (grep for the log message, the warning call, the validation).
+2. If absent: the clause conflicts with the byte-identical criterion. Do NOT implement the addition in the refactor task.
+3. Route the behavior to its owning task (usually the feature task that follows the refactor), or relax the non-regression criterion for that one side effect with an explicit doc note.
+4. Document the discrepancy in the implementation log so reviewers see the deviation is intentional and not a missed clause.
+
+**Example (2026-06-23 filter-transaction-fees plan, Task 2):** Clause 8 instructed the derivatives caller of the newly-extracted `remove_matched_lots` matcher to warn for each event in `unmatched_events`, "since this warning was moved out of the shared matcher." The pre-refactor `derivatives_dedup` emitted NO unmatched-event warning; a derivatives event with no corresponding CG lot is the expected OGR-only outcome. Adding the warning loop broke 3 tests (2 unit + 1 e2e logger-name/count assertions) and violated the byte-identical non-regression criterion. Resolution: the warning loop was removed; the docstring documents that an unmatched derivatives event is expected. The unmatched-event handling that clause 8 gestured at is owned by Task 3 (the fee filter), which has its own unmatched semantics.
+
+**Distinguishing from #97:** Lesson #97 covers a characterization test whose captured golden value disagrees with the plan's STATED EXPECTED VALUE (a magnitude/direction conflation in captured output). This lesson covers a refactor clause that INSTRUCTS A NET-NEW BEHAVIOR ADDITION the same plan's non-regression criterion forbids. #97 is about a value mismatch in a test; #158 is about a behavior-addition instruction contradicting a non-regression constraint. Both are Family H verification rules but have distinct triggers (golden-value disagreement vs clause-vs-criterion contradiction) and distinct fixes (reconcile narrative vs route the behavior to its owning task).
+
+**See also:** `development_lessons.md` #97 (characterization tests revealing magnitude-vs-direction conflation), #72 (data trace verification), #109 (re-read RED tests against current design invariants when a plan is revised between RED and GREEN), CLAUDE.md §4 Agent Workflow Rules (verification-first task ordering).
+
+## 159. `git checkout -- <file>` Cannot Revert a RED-Phase Break on an Untracked (New) File; Edit It Directly
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
+When a RED sanity check deliberately introduces a break in a NEW, untracked source file (e.g. appending `and False` to a guard so the test suite fails and proves the tests are discriminating), the revert cannot use `git checkout -- <file>` or `git restore <file>`. Those commands restore the working-tree copy from a tracked blob in the index or a commit; an untracked file has NO tracked blob in ANY commit yet, so the restore is a silent no-op (or "pathspec did not match" / "no such ref") and the deliberate break remains on disk. The agent then re-runs the test suite believing the revert succeeded, ships a still-broken file, or layers a "corrective" edit on top of the break.
+
+**Required behavior:**
+1. Before reverting a RED-phase break on a file, check `git status --short` for that path. If it shows as `??` (untracked), do NOT use `git checkout`/`git restore`; the file has no committed baseline.
+2. Revert the break by editing the file directly: re-open it, locate the injected change (the appended `and False`, the swapped operator, the commented guard), and remove it with an Edit. If the entire file is the experiment, delete the file rather than `git checkout`-ing it.
+3. After reverting, re-run the test suite and assert it returns to GREEN as the proof of a clean revert; do not trust the absence of an error from `git checkout`.
+
+**Shape trigger (when to suspect this family):** an agent reports "I broke the tagged path with `and False`, ran `git checkout -- fee_filter.py` to revert, and re-ran the suite" but the suite still fails on the same path; OR `git checkout -- <file>` returns silently with no working-tree change on a file the agent knows it modified. In both cases the file is untracked and the checkout was a no-op.
+
+**Example (2026-06-23 filter-transaction-fees plan, Task 3):** After writing `src/tax_reporting/application/crypto/fee_filter.py` and its test suite, the implementer confirmed the suite was discriminating by temporarily breaking the tagged-fee guard with `and False` (12 tests failed as expected). The attempted revert was `git checkout -- fee_filter.py`; because the file was new and untracked, the checkout could not restore it and the `and False` break remained. The break was removed via a direct Edit, and the suite returned to 42 passing. Existing lessons #121/#122/#147 cover `git checkout` recovery for TRACKED files (re-export modules, stash-pop failures, orphan-branch corruption); this lesson covers the distinct failure mode where there is no tracked blob to restore from at all.
+
+**See also:** `development_lessons.md` #121 (ruff `--fix` recovery via `git checkout` on tracked re-export modules), #122 (`git stash` baseline-comparison hazard), #147 (docs-branch canonical-script-only rule), CLAUDE.md §4 Agent Workflow Rules (RED-before-GREEN TDD), shared `agent_workflow_guidelines.md` #6 (formatting-only commit diff inspection).
+
+## 160. Do Not Explicitly Omit Plan-Prescribed Behavior Without Amending the Plan First
+
+**Principle:** Family C (Plan adherence)
+
+When a plan explicitly prescribes a behavior in its Gist or task steps (such as emitting an aggregate warning or summary after a loop), the implementer must not intentionally omit that behavior based on a local judgment call. If the implementer believes the behavior is redundant, harmful, or incorrect, they must halt and ask the user to amend the plan before proceeding. Explicitly skipping the step creates a contradiction between the plan's authorized design and the implementation, which will be caught in review as a plan-adherence failure.
+
+**Why this matters:** The plan is the authoritative design contract. The reviewer verifies the implementation against that contract. An unauthorized omission forces the reviewer to flag it as a Blocker/High finding because the delivered code is structurally missing a required side effect. The time saved by skipping the step is lost to the subsequent review-and-fix cycle.
+
+**Required behavior:**
+1. Trace every prescribed side effect (logs, warnings, summaries, state mutations) from the plan's Gist and task body into the implementation.
+2. If you intend to omit a prescribed step because you judge it incorrect, do not proceed silently. Surface the disagreement to the user and request a plan amendment.
+3. If the plan remains unchanged, implement the step exactly as prescribed.
+
+**Shape trigger (when to suspect this family):** A plan task instructs "emit an aggregate summary warning when the list is non-empty", but the implementation finishes the method without emitting it; the implementer leaves a comment or just skips it because "it seemed noisy".
+
+**Example (2026-06-23 filter-transaction-fees plan):** The plan's Gist Step 7 required an aggregate summary warning after suspect fee events were surfaced. The implementer explicitly omitted it. The r1 code review caught the omission because it contradicted the plan, recording a High finding. The fix required adding the missing `logger.warning` loop at the end of `_surface_suspects`.
+
+**See also:** `plan_quality_guidelines.md` (adherence to the plan).
+
+---
+
+## 161. Trace All Investigation Examples, Not Just the First One
+
+**Principle:** Family A (Equivalence-class coverage)
+
+When a user provides multiple examples to investigate (e.g., a list of missed transactions or false positives), trace and document **all** of them in the resulting analysis artifact. Do not stop after analyzing the first example.
+
+**Why this matters:** A single example only represents one cell of an equivalence class. If the user provided multiple examples, they often belong to *different* equivalence classes with different root causes. Stopping at the first example assumes the others fail for the exact same reason, leaving the subsequent gaps undiscovered and unfixed until a future iteration.
+
+**Required behavior:**
+1. Read the user's prompt carefully to count how many examples were provided.
+2. In the investigation document or feature note, create a section for each example.
+3. Trace each example through the source data and identify its specific failure mode.
+4. Ensure the proposed fix addresses all identified failure modes, not just the one from the first example.
+
+**Shape trigger (when to suspect this family):** A user asks "why are these 3 transactions doing X?", the agent explains the mechanism for the first transaction, concludes the investigation, and the user responds "but what about the other two?"
+
+**Example (2026-06-24 fee filtering gap):** The user provided three examples (ETH, BNB, TON) of transaction fees not being filtered. The initial investigation traced only the ETH example (an embedded fee in an exchange row) and concluded the analysis. The user had to point out that BNB and TON were missing. A full trace revealed BNB failed due to a co-occurrence guard (`tx_hash >= 2`), and TON failed due to a missing configuration key. All three were distinct gaps requiring different fixes.
+
+**See also:** #72 (data trace verification).
+
+---
+
+## 162. Verify Aggregation Before Concluding Data is Missing
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
+When verifying a user's claim that a specific numerical amount from an output report cannot be found in the source data, verify whether the output report row is an aggregation (e.g., a daily sum) before concluding the data is missing.
+
+**Why this matters:** Searching the unaggregated source data for an exact aggregated sum will always fail. If the agent agrees with the user that the data is missing without checking for aggregation, the investigation chases a phantom bug instead of explaining the correct behavior of the report.
+
+**Required behavior:**
+1. When asked to locate an output amount in the source, first check the reporting pipeline to see if the output level aggregates multiple events (e.g., daily totals, grouped by asset/platform).
+2. If the output is aggregated, do not grep the source for the exact sum.
+3. Instead, find the component rows in the source that share the aggregation keys (date, asset, etc.) and demonstrate how their sum matches the output.
+
+**Shape trigger (when to suspect this family):** A user points to a report output row with an amount (e.g., 1.10 EUR) and says "I don't see a single transaction matching this amount in the source data".
+
+**Example (2026-06-24 fee filtering gap):** The user pointed out a row with 1.1 EUR and said "I don't see a single transaction matching this amount". The agent simply grepped the source for 1.1 and failed. In reality, the 1.1 EUR was a daily aggregate of two 0.55 EUR transactions. Breaking down the aggregate would have correctly explained the provenance of the number rather than falsely agreeing it was untraceable.
+
+**See also:** #101 (trace affected OGR row back to TH source row).
+
+
+## 165. Test Fixtures Must Reflect Domain Defaults to Avoid Masking Bugs
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
+When logic depends on falling back to a default value for generic cases (e.g. `default_ceiling` for generic L1 chains), test fixtures must not provide explicit overrides for the items under test. Doing so bypasses the fallback logic in the test, masking bugs where the production code fails to apply the default correctly.
+
+Test fixtures representing domain configuration should mirror the structural intent of the real configuration: if the real config defines explicit exceptions and relies on the default for everything else, the test fixture should do the same. Tests verifying the default behavior should use an implicit item, not a mock that explicitly overrides it.
+
+## 166. False Positives in AI Code Review: Operator Precedence on Resolved Types
+
+When reviewing for operator precedence bugs involving logical `or` and `and`, verify the exact syntax of the implemented code. A common false positive occurs when the reviewer assumes the code checks for both actual types and string forward references (e.g., `hint is Decimal or hint == "Decimal" and name not in (...)`) and claims missing parentheses cause a precedence bug. If the code relies on `typing.get_type_hints()` to resolve forward references, it likely only checks the actual type (`hint is Decimal and name not in (...)`), making the precedence concern invalid.
+
+## 167. Distinguish Intentional vs Suspicious Ignored Items in Logging
+
+**Principle:** Family G (Data-loss observability)
+
+When a processing pipeline ignores or drops items, distinguish between *intentional/whitelisted* exclusions (e.g., explicitly tagged embedded fees) and *suspicious/unexpected* exclusions.
+Log the intentional exclusions at `logger.info` and reserve `logger.warning` for items that fall outside known safe patterns.
+Logging known, safe exclusions as warnings creates noise and misleads the user into thinking there is a data quality issue or missing data, whereas using `INFO` properly documents the expected behavior.
+
+## 168. Aggregate Fragmented Lots Before Evaluating Ceilings
+
+**Principle:** Family E (Match and aggregate first, calculate second)
+
+When evaluating a value ceiling/threshold against an event that has been split into multiple fragmented lots (e.g., FIFO matching), checking the threshold against individual lot proceeds defeats the ceiling. Always group the matched lots by the underlying event and evaluate the sum of their proceeds against the ceiling, rather than evaluating lots independently.
+
+## 169. Unlisted Exclusion Candidates Must Fall Back to Suspect Surfacing
+
+**Principle:** Family G (Data-loss observability)
+
+When extracting items to exclude them from main processing (e.g., fee filtering), items that fail the exclusion whitelist must not be silently dropped. If they are not processed as normal items and do not qualify for exclusion, they must be yielded as suspect items so the user can review them manually.
+
+## 170. Avoid Brittle Type Hint Zipping in Dataclass Iteration
+
+**Principle:** Family D (Typing and invariants)
+
+Using `zip(..., strict=True)` to pair `dataclasses.fields()` with `typing.get_type_hints().values()` is brittle. `get_type_hints()` includes non-field annotations (like `@property` or other class-level descriptors), which breaks the 1:1 length and ordering assumptions of `zip`. Always use dictionary lookups (`hints.get(field.name)`) when mapping type hints to dataclass fields.
+
+## 171. A Locally-Archived Official Source Outranks a Conflicting External Secondary Source
+
+**Principle:** Family H (verify the real thing, not the abstraction)
+
+When an external or secondary web source appears to CONFLICT with a value the repo already derives from a locally-mirrored official source (an archived AT form, circular, ruling, or statute PDF under `docs/maintenance/tax/.../official/`), the archived official source is authoritative. Do not escalate the discrepancy as a competing "repo conflict" or treat the unarchived secondary claim as a peer; resolve in favour of the official archive, and if the secondary claim was recorded anywhere in the repo, downgrade or remove it. The deeper error is granting a non-archived secondary source equal standing to an archived primary source.
+
+**Example (2026-06-24 FY2025 self-filing walkthrough):** During research, an external web claim asserted that crypto gains held >=365 days (exempt) are reported on Anexo J Quadro 9.4. This contradicted the repo's own `Annex hint = G1`. Rather than weighting the external claim equally, verifying against the repo's archived `modelo3_anexo_g1_2025.pdf` confirmed the repo was correct: >=365-day exempt crypto goes to Anexo G1 Quadro 7, and only <365-day taxable crypto goes to Anexo J Quadro 9.4/9.4A. The "conflict" was a phantom created by trusting a secondary source over the local official archive.
+
+**Distinguishing from #100 and the AGENTS.md source-preference rule:** Lesson #100 mandates verifying a plan-time claim (path, line, field, function shape) against actual source BEFORE depending on it. The AGENTS.md hard rule ("prefer authoritative PDFs over raw HTML; reuse local mirrors") governs what to FETCH and consult. This lesson covers the narrower conflict-resolution decision: what to do once a secondary source already DISAGREES with an archived official source. The fix is a source-authority judgment (official archive wins outright), not a verification step or a fetch preference.
+
+**How to apply:** Before writing "the repo conflicts with source X" or "this is unresolved," check whether the repo already archives an official source for the claim. If it does, the official archive settles it; cite the archived file and form field, and do not record the secondary claim as a competing position.

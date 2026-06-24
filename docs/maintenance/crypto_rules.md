@@ -371,3 +371,32 @@ day-key timezone rationale, loader degrade-never-raise, re-zero snapshot, DP-013
 interaction) is documented in `docs/maintenance/crypto_implementation_guidelines.md`
 "Payment Proceeds Correction (DP-014)". Out of scope: LP-token unstaking is a distinct
 non-taxable-deferred case (DP-005 / PT-C-005).
+
+**PT-C-036** `[IMPLEMENTATION DECISION | 2026-06-23]`
+When the jurisdiction flag `exclude_transaction_fees` is set (PT FY2025, decision point
+DP-015), standalone network/transaction fee disposals that Koinly realizes on the disposed
+fee token are filtered out of the capital gains worksheets rather than left as taxable
+*alienações onerosas*. Legal basis: CIRS art. 10(1)(k) - a standalone transaction/network
+fee is a non-taxable utility cost without received consideration, so it is not a taxable
+disposal and Koinly's default gain/loss realization on the fee token must be removed.
+Identification is two-pronged, both gated by a TxHash co-occurrence correlation guard
+(the fee event's non-empty `TxHash` must appear at least twice in the Transaction History
+CSV, so standalone service payments that share no transaction id remain taxable): (1)
+tagged - any `crypto_withdrawal` whose tag is `Cost` or `Loan fee` is filtered (the explicit
+tag is trusted; no EUR threshold); (2) untagged-whitelist - an untagged `crypto_withdrawal`
+whose `Sent Currency` is a key in `exclude_transaction_fee_max_eur_per_asset` (a
+`dict[str, Decimal]` whose keys are the gas-token whitelist and whose values are per-token
+EUR ceilings: ETH = 1.0, SOL/SUI/BNB/MATIC/TON = 0.5) AND whose TH `Net Value (EUR)` is
+`<=` that asset's ceiling. Unlisted-asset withdrawals are NEVER auto-filtered: an untagged,
+TxHash-co-occurring withdrawal of an asset NOT in the dict whose `Net Value (EUR)` is
+`<= max(per_asset.values())` is surfaced as a *suspect* (NOT removed) via a Crypto Gains
+`review_required` flag (red "YES: \<reason\>" row, when the lot exists), a Crypto
+Supplementary "Review required" row (SRG-009 already covers this section), and a log
+WARNING - so legitimate gas tokens missing from the config can be discovered and added
+(over-taxing on uncertainty is the safe direction). An empty `exclude_transaction_fee_max_eur_per_asset`
+degrades the filter to tagged-only (NOT a full no-op). Full mechanism (TxHash co-occurrence
+guard, two-phase lot matching, per-lot logging, suspect propagation, pipeline wiring) is
+documented in `docs/maintenance/crypto_implementation_guidelines.md` "Transaction Fee
+Filtering (DP-015)". Distinct from DP-006 (transfer fees are folded into the transferred
+asset's cost basis via a Koinly setting; DP-015 filters a realized standalone-fee disposal
+via a tool-side guard).

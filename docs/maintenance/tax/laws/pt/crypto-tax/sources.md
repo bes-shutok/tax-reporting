@@ -160,6 +160,15 @@ Searched AT administrative-instruction index for a derivatives-specific ofício 
 
 Related ofícios circulados on derivatives (consulted but NOT specific to crypto and NOT re-archived): n.º 20271/2024 (IRC Modelo 22 corrections for derivative financial instruments, art. 49 - corporate, not individual), n.º 25021/2024 (autonomous taxation and derivatives), n.º 20249/2023 (off-balance-sheet derivatives). None address individual-IRS treatment of crypto-asset derivatives.
 
+## Related local archive (general Portugal IRS / NHR)
+
+- `../sources.md` and `../official/at_folheto_rnh_2022-10-19.pdf`
+  - Purpose: the AT RNH (NHR) folheto and its provenance manifest, covering the
+    Residente Nao Habitual regime and Anexo L. Relevant to crypto filing because NHR
+    determines whether foreign-source crypto income (Anexo J Quadro 9.4/9.4A) is
+    exempt-with-progression and how Anexo L Quadro 5/6C applies the method. See
+    `../README.md` for the folder layout.
+
 ## Related local origin archive
 
 - `../../../crypto-origin/sources.md`
