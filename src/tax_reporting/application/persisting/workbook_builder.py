@@ -145,7 +145,10 @@ def generate_tax_report(  # noqa: PLR0912, PLR0915
                 len(crypto_tax_report.capital_entries),
                 len(crypto_tax_report.reward_entries),
             )
-            aggregated_rewards = aggregate_taxable_rewards(crypto_tax_report.reward_entries)
+            aggregated_rewards = aggregate_taxable_rewards(
+                crypto_tax_report.reward_entries,
+                config.tax_jurisdiction.country,
+            )
 
         write_ib_reporting_sheet(
             worksheet,
@@ -159,8 +162,8 @@ def generate_tax_report(  # noqa: PLR0912, PLR0915
             try:
                 write_crypto_gains_sheet(workbook, crypto_tax_report)
                 if config.tax_jurisdiction.separate_derivatives_reporting:
-                    write_derivatives_sheet(workbook, crypto_tax_report)
-                write_crypto_supplementary_sheet(workbook, crypto_tax_report)
+                    write_derivatives_sheet(workbook, crypto_tax_report, config.tax_jurisdiction)
+                write_crypto_supplementary_sheet(workbook, crypto_tax_report, config.tax_jurisdiction)
                 write_crypto_reconciliation_sheet(workbook, crypto_tax_report)
                 write_loan_activity_sheet(workbook, crypto_tax_report)
                 write_assumptions_and_methodology_sheet(

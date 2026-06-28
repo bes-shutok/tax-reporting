@@ -161,15 +161,15 @@ class TestEntitiesImport:
     def test_aggregated_reward_income_entry_exists(self) -> None:
         """AggregatedRewardIncomeEntry dataclass should be importable."""
         entry = AggregatedRewardIncomeEntry(
-            income_code="401",
+            income_code="E25",
             source_country="US",
             gross_income_eur=Decimal("100"),
             foreign_tax_eur=Decimal("10"),
             raw_row_count=5,
             chains=("Ethereum", "Solana"),
-            description="Income code 401 from US",
+            description="Income code E25 from US",
         )
-        assert entry.income_code == "401"
+        assert entry.income_code == "E25"
         assert entry.raw_row_count == 5
 
     def test_holdings_snapshot_exists(self) -> None:
@@ -499,8 +499,8 @@ class TestDerivativesPnLEntry:
         field_names = {f.name for f in fields(DerivativesPnLEntry)}
         assert "holding_period" not in field_names
 
-    def test_default_annex_hint_is_g_q13(self) -> None:
-        """DerivativesPnLEntry constructed without annex_hint should default to 'G/Q13' (Anexo G, Quadro 13)."""
+    def test_default_annex_hint_is_blank(self) -> None:
+        """DerivativesPnLEntry without annex_hint defaults to blank (OGR handler resolves the route)."""
         entry = DerivativesPnLEntry(
             date="2025-01-12",
             asset="USDT",
@@ -509,10 +509,10 @@ class TestDerivativesPnLEntry:
             event_type=DerivativesEventType.PROFIT,
             source_ref="OGR:2025-01-12:USDT",
         )
-        assert entry.annex_hint == "G/Q13"
+        assert entry.annex_hint == ""
 
-    def test_default_operation_code_is_g51(self) -> None:
-        """DerivativesPnLEntry constructed without operation_code should default to 'G51' (derivatives)."""
+    def test_default_operation_code_is_blank(self) -> None:
+        """DerivativesPnLEntry without operation_code defaults to blank (OGR handler resolves the route)."""
         entry = DerivativesPnLEntry(
             date="2025-01-12",
             asset="USDT",
@@ -521,7 +521,7 @@ class TestDerivativesPnLEntry:
             event_type=DerivativesEventType.PROFIT,
             source_ref="OGR:2025-01-12:USDT",
         )
-        assert entry.operation_code == "G51"
+        assert entry.operation_code == ""
 
     def test_default_event_count_is_one(self) -> None:
         """DerivativesPnLEntry constructed without event_count should default to 1 (non-aggregated)."""

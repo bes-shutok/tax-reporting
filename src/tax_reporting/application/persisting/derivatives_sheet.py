@@ -9,7 +9,10 @@ from typing import TYPE_CHECKING
 import openpyxl
 from openpyxl.styles import Font, PatternFill
 
+from ...domain.jurisdiction import PORTUGAL_COUNTRY_CODE
+
 if TYPE_CHECKING:
+    from ...infrastructure.config import TaxJurisdictionConfig
     from ..crypto_reporting import CryptoTaxReport
 
 from .excel_utils import auto_column_width, safe_cell_value
@@ -27,23 +30,23 @@ _COLUMN_HEADERS = [
     "Event count",
     "Notes",
     "Review",
+    "Annex",
+    "Código",
 ]
 _EMPTY_STATE_MESSAGE = "No derivatives activity for this jurisdiction"
 _LOSS_FOOTNOTE = "Losses are deductible against other Category G gains; carry-forward 5 years per PT-C-016"
 _TOTAL_LABEL = "Total"
 _NUM_COLUMNS = len(_COLUMN_HEADERS)
-# Detail line shown above the column headers when the sheet has at least one row.
-# The three fields are constants for derivatives today (annex routing never branches
-# because derivatives have no 365-day exemption; Código G51 is the closed-enum value
-# for all instrumentos financeiros derivados; legal basis is always art. 10(1)(e)).
-# Render them once on a detail line rather than as repeating columns.
-_DETAIL_LINE_TEMPLATE = "Annex: {annex_hint} | Código: {operation_code} | Legal basis: {legal_category}"
 
 # Red fill for review rows (matches crypto_gains_sheet convention)
 _REVIEW_FILL = PatternFill(start_color="FFFF0000", end_color="FFFF0000", fill_type="solid")
 
 
-def write_derivatives_sheet(workbook: openpyxl.Workbook, crypto_tax_report: CryptoTaxReport) -> None:
+def write_derivatives_sheet(
+    workbook: openpyxl.Workbook,
+    crypto_tax_report: CryptoTaxReport,
+    jurisdiction: TaxJurisdictionConfig,
+) -> None:
     """Create and populate the 'Derivatives P&L' worksheet.
 
     Renders a single-tab P&L summary for derivatives realizations taxed under
@@ -51,9 +54,11 @@ def write_derivatives_sheet(workbook: openpyxl.Workbook, crypto_tax_report: Cryp
     shows the net P&L; a loss-deductibility footnote appears whenever at least
     one entry is a loss.
 
-    A detail line above the column headers records the annex routing, AT operation
-    code, and legal basis. These are constants across all derivatives rows today,
-    so they appear once on the detail line rather than as repeating columns.
+    The annex routing (column 11) and AT operation code (column 12) are written
+    per row from each entry's ``annex_hint`` and ``operation_code`` (blank for
+    non-PT jurisdictions). When the sheet renders under a PT jurisdiction and any
+    entry has a blank annex_hint, a warning is emitted so a failed/blank route is
+    surfaced loudly rather than rendered silently (development_lessons.md #77/#118).
 
     The sheet is always rendered, even when derivatives_entries is empty (per
     development_lessons.md #93): the headers and an explicit empty-state row are
@@ -62,6 +67,7 @@ def write_derivatives_sheet(workbook: openpyxl.Workbook, crypto_tax_report: Cryp
     Args:
         workbook: The Excel workbook to add the sheet to.
         crypto_tax_report: The crypto tax report; only derivatives_entries is used.
+        jurisdiction: The active tax jurisdiction; gates the blank-annex warning.
     """
     worksheet = workbook.create_sheet(_SHEET_NAME)
 
@@ -70,37 +76,23 @@ def write_derivatives_sheet(workbook: openpyxl.Workbook, crypto_tax_report: Cryp
 
     entries = crypto_tax_report.derivatives_entries
 
-    if entries:
-        first = entries[0]
-        # Design Invariant 4 of the 2026-06-15 derivatives P&L columns plan holds that
-        # (annex_hint, operation_code, legal_category) are constants across all rows
-        # today, so the detail line reads them from entries[0]. Surface heterogeneity
-        # loudly (e.g. if a future change introduces G52/G53/G54 per-row routing) so the
-        # wrong detail line is never rendered silently. See development_lessons.md #77.
-        distinct_constant_tuples = {(e.annex_hint, e.operation_code, e.legal_category) for e in entries}
-        if len(distinct_constant_tuples) > 1:
+    # Defensive guard: under PT, _derivatives_route always resolves a non-blank
+    # annex for the single DerivativesPnLEntry construction site, so this is not
+    # an observed production condition today. It catches a future second
+    # construction site that forgets to route. Describe the observation rather
+    # than diagnosing a cause the renderer cannot establish.
+    if entries and jurisdiction.country.upper() == PORTUGAL_COUNTRY_CODE:
+        blank_annex_rows = [
+            e for e in entries if e.annex_hint == ""
+        ]
+        if blank_annex_rows:
             logging.getLogger(__name__).warning(
-                "Derivatives P&L detail-line fields are heterogeneous across entries: "
-                "%d distinct (annex_hint, operation_code, legal_category) tuples %s; "
-                "rendering detail line from entries[0] = annex=%s code=%s legal=%s",
-                len(distinct_constant_tuples),
-                sorted(distinct_constant_tuples),
-                first.annex_hint,
-                first.operation_code,
-                first.legal_category,
+                "Derivatives P&L: %d of %d entries have a blank Annex (annex_hint) under "
+                "the PT jurisdiction. Affected rows: %s",
+                len(blank_annex_rows),
+                len(entries),
+                sorted({(e.date, e.asset, e.platform) for e in blank_annex_rows}),
             )
-        detail_cell = worksheet.cell(
-            2,
-            1,
-            safe_cell_value(
-                _DETAIL_LINE_TEMPLATE.format(
-                    annex_hint=first.annex_hint,
-                    operation_code=first.operation_code,
-                    legal_category=first.legal_category,
-                )
-            ),
-        )
-        detail_cell.font = Font(italic=True)
 
     header_row = 3
     for idx, header in enumerate(_COLUMN_HEADERS, start=1):
@@ -130,6 +122,8 @@ def write_derivatives_sheet(workbook: openpyxl.Workbook, crypto_tax_report: Cryp
             "YES: (no reason propagated)" if entry.review_required else "NO"
         )
         worksheet.cell(current_row, 10, review_display)
+        worksheet.cell(current_row, 11, safe_cell_value(entry.annex_hint))
+        worksheet.cell(current_row, 12, safe_cell_value(entry.operation_code))
 
         if entry.review_required:
             for col_idx in range(1, _NUM_COLUMNS + 1):

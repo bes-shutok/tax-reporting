@@ -22,6 +22,7 @@ from tax_reporting.application.crypto_reporting import (
 )
 from tax_reporting.application.extraction import parse_ib_export_all
 from tax_reporting.application.persisting import generate_tax_report
+from tax_reporting.application.persisting.tax_constants import get_income_code_description
 from tax_reporting.application.transformation import calculate_fifo_gains
 from tax_reporting.domain.collections import TradeCyclePerCompany
 
@@ -373,19 +374,26 @@ def test_example_taxable_now_rewards_are_reported_on_reporting_sheet(tmp_path: P
     reporting_ws = wb["Reporting"]
     rows = list(reporting_ws.iter_rows(values_only=True))
 
-    found_other = False
-    reward_row = None
-    for row in rows:
+    # Locate the OTHER CAPITAL INVESTMENT INCOME subsection header, then the
+    # single aggregated reward data row that follows it. The example's taxable
+    # EUR rewards are interest-type, which resolve to the official Tabela V code
+    # E25 under PT, so the row is located structurally from the subsection header.
+    subsection_idx = None
+    for idx, row in enumerate(rows):
         if row and isinstance(row[0], str) and "OTHER CAPITAL INVESTMENT INCOME" in row[0]:
-            found_other = True
-        if found_other and row and len(row) > 1 and isinstance(row[0], str) and row[0].startswith("Crypto"):
-            reward_row = row
+            subsection_idx = idx
             break
-
-    assert found_other, "OTHER CAPITAL INVESTMENT INCOME subsection not found in Reporting"
+    assert subsection_idx is not None, "OTHER CAPITAL INVESTMENT INCOME subsection not found in Reporting"
+    reward_row = rows[subsection_idx + 1]
     assert reward_row is not None, "Taxable fiat reward row not found in Reporting"
 
-    assert reward_row[0] == "Crypto capital income (staking, rewards, airdrops)"
+    # Interest rewards resolve to income_code="E25" under PT -> the income-type
+    # cell carries the official E25 description (a complete filing row), not a
+    # review marker.
+    assert isinstance(reward_row[0], str)
+    assert reward_row[0] == get_income_code_description("E25"), (
+        f"Expected E25 income-type description, got {reward_row[0]!r}"
+    )
     assert reward_row[1] == "IE"
     assert float(reward_row[3]) == pytest.approx(30.00), f"Expected gross 30.00, got {reward_row[3]}"
     assert float(reward_row[4]) == pytest.approx(0.0), f"Expected foreign tax 0, got {reward_row[4]}"

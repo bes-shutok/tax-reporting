@@ -345,7 +345,7 @@ Lesson #32, Lesson #33, Lesson #35, Lesson #37, Lesson #42, Lesson #55, Lesson #
 Lesson #72, Lesson #74, Lesson #89, Lesson #96, Lesson #97, Lesson #98, Lesson #99,
 Lesson #100, Lesson #101, Lesson #104, Lesson #109, Lesson #116, Lesson #120, Lesson #122,
 Lesson #123, Lesson #128, Lesson #129, Lesson #132, Lesson #140, Lesson #141, Lesson #149,
-Lesson #158. (35 lessons)
+Lesson #158, Lesson #184. (36 lessons)
 
 This is the over-represented family (~30% of mapped lessons, 35/113). Consolidation yields the most recall
 value here, but most of these lessons are genuinely distinct angles (the corpus author
@@ -373,7 +373,9 @@ Clusters:
   not add test-only parameters; tests must reflect real production usage), Lesson #16 (test
   real behavior, not implementation details), Lesson #89 (read the implementation before
   writing test expectations), Lesson #96 (structural identification for Excel tests, not
-  hardcoded value exclusions). Overlapping.
+  hardcoded value exclusions), Lesson #184 (a pure-helper unit test going GREEN does not
+  prove the production caller invokes it; add a construction-path test alongside helper
+  tests). Overlapping.
 - Verify claims/data against the real source: Lesson #31 (read the full dataclass
   definition before describing fields in a plan), Lesson #32 (distinguish code comments
   from observed data), Lesson #74 (cross-module function dependencies require complete
@@ -406,7 +408,7 @@ Clusters:
 - Doc cross-ref disambiguation: Lesson #140 (when renumbering a colliding numeric ID,
   disambiguate each cross-ref by context, not by the number alone). Standalone-ish.
 
-Accounting: 35 lessons.
+Accounting: 36 lessons.
 
 ---
 

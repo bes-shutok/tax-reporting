@@ -13,6 +13,7 @@ from tax_reporting.application.crypto_reporting import (
     CryptoTaxReport,
 )
 from tax_reporting.application.persisting.derivatives_sheet import write_derivatives_sheet
+from tests.conftest import build_koinly_jurisdiction
 
 _SHEET_NAME = "Derivatives P&L"
 _HEADER_TITLE = "DERIVATIVES P&L (Financial Derivatives: CIRS art. 10(1)(e))"
@@ -27,6 +28,8 @@ _COLUMN_HEADERS = [
     "Event count",
     "Notes",
     "Review",
+    "Annex",
+    "Código",
 ]
 _NUM_COLUMNS = len(_COLUMN_HEADERS)
 _EMPTY_STATE_MESSAGE = "No derivatives activity for this jurisdiction"
@@ -102,6 +105,24 @@ def _find_row_containing(ws: openpyxl.worksheet.worksheet.Worksheet, substring: 
     raise AssertionError(f"Row containing '{substring}' not found")
 
 
+def _find_row_with_platform(
+    ws: openpyxl.worksheet.worksheet.Worksheet,
+    platform: str,
+    header_row: int,
+    max_row: int = 60,
+) -> int:
+    """Find the data row whose Platform cell (column 3) equals platform.
+
+    Searches data rows starting at header_row + 1 (skipping the header). Returns the
+    1-based row index. Used to locate a specific entry's row by its distinguishing
+    Platform value so per-row routing cells can be read from THAT row.
+    """
+    for r in range(header_row + 1, min(ws.max_row, max_row) + 1):
+        if ws.cell(r, 3).value == platform:
+            return r
+    raise AssertionError(f"Data row with Platform '{platform}' not found in column 3")
+
+
 @pytest.mark.unit
 class TestDerivativesSheet:
     """Behavioral coverage for the Derivatives P&L sheet."""
@@ -109,7 +130,7 @@ class TestDerivativesSheet:
     def test_renders_header_with_legal_basis(self):
         report = _make_crypto_tax_report(derivatives_entries=[_make_derivatives_entry()])
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
         assert _SHEET_NAME in wb.sheetnames
         ws = wb[_SHEET_NAME]
@@ -122,7 +143,7 @@ class TestDerivativesSheet:
         ]
         report = _make_crypto_tax_report(derivatives_entries=entries)
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
         ws = wb[_SHEET_NAME]
 
@@ -140,8 +161,6 @@ class TestDerivativesSheet:
         assert ws.cell(data_row_1, 2).value == "USDT"
         assert ws.cell(data_row_1, 3).value == "ByBit"
         assert ws.cell(data_row_1, 4).value == "profit"
-        # Legal Category, Annex hint, and Operation code are constants across all
-        # derivatives rows today; they appear on the row-2 detail line, not as columns.
 
         assert ws.cell(data_row_2, 1).value == "2025-01-13"
         assert ws.cell(data_row_2, 2).value == "USDT"
@@ -154,7 +173,7 @@ class TestDerivativesSheet:
         ]
         report = _make_crypto_tax_report(derivatives_entries=entries)
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
         ws = wb[_SHEET_NAME]
         totals_row = _find_row_containing(ws, "Total")
@@ -167,7 +186,7 @@ class TestDerivativesSheet:
     def test_empty_state_when_no_entries(self):
         report = _make_crypto_tax_report(derivatives_entries=[])
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
         ws = wb[_SHEET_NAME]
         header_row = _find_row_with_value(ws, "Date")
@@ -186,12 +205,12 @@ class TestDerivativesSheet:
         ]
         report = _make_crypto_tax_report(derivatives_entries=entries)
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
         ws = wb[_SHEET_NAME]
         header_row = _find_row_with_value(ws, "Date")
         data_row = header_row + 1
-        # Review lives in the last column (column 10 under the 10-column layout)
+        # Review lives in column 10 (Annex=11, Código=12 are the last two columns)
         review_cell = ws.cell(data_row, 10).value
         assert review_cell == "YES: Ambiguous OGR/CG value mismatch", (
             f"Review cell must render 'YES: <reason>', got '{review_cell}'"
@@ -203,7 +222,7 @@ class TestDerivativesSheet:
         ]
         report = _make_crypto_tax_report(derivatives_entries=entries)
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
         ws = wb[_SHEET_NAME]
         footnote_row = _find_row_containing(ws, "Losses are deductible")
@@ -225,7 +244,7 @@ class TestDerivativesSheet:
         ]
         report = _make_crypto_tax_report(derivatives_entries=entries)
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
         ws = wb[_SHEET_NAME]
         found = False
@@ -245,7 +264,7 @@ class TestDerivativesSheet:
         ]
         report = _make_crypto_tax_report(derivatives_entries=entries)
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
         ws = wb[_SHEET_NAME]
         header_row = _find_row_with_value(ws, "Date")
@@ -257,13 +276,12 @@ class TestDerivativesSheet:
                 f"Col {col} should have red fill (FFFF0000), got {cell.fill.fgColor.rgb}"
             )
 
-    # --- 10-column layout with detail line (Annex hint, Operation code, Legal
-    #     Category are constants; rendered once on row 2, not as columns) ---
+    # --- 12-column layout with per-row routing columns (Annex=11, Código=12) ---
 
-    def test_header_has_ten_columns(self):
+    def test_header_has_twelve_columns(self):
         report = _make_crypto_tax_report(derivatives_entries=[_make_derivatives_entry()])
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
         ws = wb[_SHEET_NAME]
         header_row = 3
@@ -272,17 +290,17 @@ class TestDerivativesSheet:
             for c in range(1, 50)
             if ws.cell(header_row, c).value is not None
         ]
-        assert len(populated) == 10, (
-            f"Header row should have exactly 10 populated cells, got {len(populated)}: {populated}"
+        assert len(populated) == 12, (
+            f"Header row should have exactly 12 populated cells, got {len(populated)}: {populated}"
         )
         last_col, last_value = populated[-1]
-        assert last_col == 10, f"Last header cell should be at column 10, got column {last_col}"
-        assert last_value == "Review", f"Last header cell should be 'Review', got '{last_value}'"
+        assert last_col == 12, f"Last header cell should be at column 12, got column {last_col}"
+        assert last_value == "Código", f"Last header cell should be 'Código', got '{last_value}'"
 
     def test_header_columns_include_operator_event_count_notes(self):
         report = _make_crypto_tax_report(derivatives_entries=[_make_derivatives_entry()])
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
         ws = wb[_SHEET_NAME]
         header_row = _find_row_with_value(ws, "Date")
@@ -291,163 +309,257 @@ class TestDerivativesSheet:
             for c in range(1, 50)
             if ws.cell(header_row, c).value is not None
         }
-        for required in ["Operator entity", "Operator country", "Event count", "Notes"]:
+        for required in [
+            "Operator entity",
+            "Operator country",
+            "Event count",
+            "Notes",
+            "Annex",
+            "Código",
+        ]:
             assert required in header_values, (
                 f"Header row missing required column '{required}'. Headers seen: {sorted(map(str, header_values))}"
             )
-        # Constants collapsed to the detail line must NOT appear as columns.
-        for dropped in ["Annex hint", "Operation code", "Legal Category"]:
-            assert dropped not in header_values, (
-                f"'{dropped}' should be on the detail line, not a column. "
-                f"Headers seen: {sorted(map(str, header_values))}"
-            )
 
-    def test_detail_line_above_header_shows_annex_code_and_legal_basis(self):
-        entries = [
-            _make_derivatives_entry(
-                annex_hint="G/Q13",
-                operation_code="G51",
-                legal_category="CIRS art. 10(1)(e)",
-            ),
-        ]
-        report = _make_crypto_tax_report(derivatives_entries=entries)
-        wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+    # --- Per-row routing columns (Annex at col 11, Código at col 12) ---
+    # The row-2 `_DETAIL_LINE_TEMPLATE` detail line was removed (A4) in favor of
+    # per-row routing columns. The detail-line tests below were deleted and replaced
+    # by `test_no_single_detail_line_route` plus per-row routing coverage.
 
-        ws = wb[_SHEET_NAME]
-        detail_value = ws.cell(2, 1).value
-        assert detail_value is not None, "Row 2 column 1 should contain the detail line"
-        detail_text = str(detail_value)
-        assert "Annex: G/Q13" in detail_text, (
-            f"Detail line should mention 'Annex: G/Q13', got '{detail_text}'"
-        )
-        assert "Código: G51" in detail_text, (
-            f"Detail line should mention 'Código: G51', got '{detail_text}'"
-        )
-        assert "Legal basis: CIRS art. 10(1)(e)" in detail_text, (
-            f"Detail line should mention 'Legal basis: CIRS art. 10(1)(e)', got '{detail_text}'"
-        )
+    def test_each_row_carries_own_route(self):
+        """Each data row carries its OWN Annex (col 11) and Código (col 12), not a
+        single detail-line value shared across rows.
 
-    def test_detail_line_reads_values_from_first_entry(self):
-        entries = [
-            _make_derivatives_entry(
-                annex_hint="G/Q13",
-                operation_code="G51",
-                legal_category="CIRS art. 10(1)(e)",
-            ),
-            _make_derivatives_entry(date="2025-02-01"),
-        ]
-        report = _make_crypto_tax_report(derivatives_entries=entries)
-        wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
-
-        ws = wb[_SHEET_NAME]
-        detail_text = str(ws.cell(2, 1).value)
-        # The detail line reads from the first entry; if a future edge case varies
-        # these fields across rows, the sheet owner must extend the rendering.
-        assert "Annex: G/Q13" in detail_text
-
-    def test_detail_line_warns_when_entries_disagree_on_constant_fields(self, caplog):
-        """Heterogeneous (annex_hint, operation_code, legal_category) must surface a warning.
-
-        Today the three fields are constants across all derivatives rows, so the
-        detail line is safe to render once from entries[0]. But that invariant is
-        enforced by data inspection alone. If a future change (e.g. introduction of
-        G52/G53/G54 per-row routing) ever produces heterogeneous values, the sheet
-        must warn loudly rather than silently taking entries[0]. See review r1 Medium 1
-        and development_lessons.md #77 (silent-overwrite hazard).
+        Given two PT-jurisdiction entries with DISTINGUISHING platforms (resident row
+        PT-Broker carrying G/Q13 + G51; non-resident row Kraken carrying J/Q9.2.B +
+        G30), locate each data row by its Platform cell (column 3) and read THAT
+        row's column-11 (Annex) and column-12 (Código) cells. Each row must carry its
+        own route, not the other row's values. This defeats column mislabel, field
+        swap, and cross-row contamination (set-membership and generic "each row has
+        cells" assertions do not).
         """
         entries = [
             _make_derivatives_entry(
+                platform="PT-Broker",
+                operator_country="PT",
+                annex_hint="G/Q13",
+                operation_code="G51",
+            ),
+            _make_derivatives_entry(
+                platform="Kraken",
+                operator_country="US",
+                annex_hint="J/Q9.2.B",
+                operation_code="G30",
+            ),
+        ]
+        report = _make_crypto_tax_report(derivatives_entries=entries)
+        wb = openpyxl.Workbook()
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
+
+        ws = wb[_SHEET_NAME]
+        header_row = _find_row_with_value(ws, "Date")
+        assert ws.cell(header_row, 11).value == "Annex", (
+            f"Header column 11 must be 'Annex', got '{ws.cell(header_row, 11).value}'"
+        )
+        assert ws.cell(header_row, 12).value == "Código", (
+            f"Header column 12 must be 'Código', got '{ws.cell(header_row, 12).value}'"
+        )
+
+        # Locate each data row by its Platform cell (column 3), then read THAT row's
+        # column-11 (Annex) and column-12 (Código) cells.
+        pt_broker_row = _find_row_with_platform(ws, "PT-Broker", header_row)
+        kraken_row = _find_row_with_platform(ws, "Kraken", header_row)
+
+        assert ws.cell(pt_broker_row, 11).value == "G/Q13", (
+            f"PT-Broker row Annex (col 11) must be 'G/Q13', got '{ws.cell(pt_broker_row, 11).value}'"
+        )
+        assert ws.cell(pt_broker_row, 12).value == "G51", (
+            f"PT-Broker row Código (col 12) must be 'G51', got '{ws.cell(pt_broker_row, 12).value}'"
+        )
+        assert ws.cell(kraken_row, 11).value == "J/Q9.2.B", (
+            f"Kraken row Annex (col 11) must be 'J/Q9.2.B', got '{ws.cell(kraken_row, 11).value}'"
+        )
+        assert ws.cell(kraken_row, 12).value == "G30", (
+            f"Kraken row Código (col 12) must be 'G30', got '{ws.cell(kraken_row, 12).value}'"
+        )
+
+        # The legacy `_DETAIL_LINE_TEMPLATE` detail line is GONE so this test cannot
+        # be satisfied by reading the detail-line string.
+        detail_line_present = any(
+            isinstance(ws.cell(r, 1).value, str)
+            and "Annex:" in ws.cell(r, 1).value
+            and "Código:" in ws.cell(r, 1).value
+            for r in range(1, min(ws.max_row, 50) + 1)
+        )
+        assert not detail_line_present, (
+            "The legacy _DETAIL_LINE_TEMPLATE detail line must be gone; found a row "
+            "containing 'Annex:' and 'Código:' in column 1."
+        )
+
+    def test_mixed_residency_renders_both_routes(self):
+        """A mixed-residency set renders BOTH G51 and G30 in the per-row Código column.
+
+        Supplementary to `test_each_row_carries_own_route`: confirms the sheet is not
+        collapsing both routes to a single value.
+        """
+        entries = [
+            _make_derivatives_entry(
+                platform="PT-Broker",
+                operator_country="PT",
+                annex_hint="G/Q13",
+                operation_code="G51",
+            ),
+            _make_derivatives_entry(
+                platform="Kraken",
+                operator_country="US",
+                annex_hint="J/Q9.2.B",
+                operation_code="G30",
+            ),
+        ]
+        report = _make_crypto_tax_report(derivatives_entries=entries)
+        wb = openpyxl.Workbook()
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
+
+        ws = wb[_SHEET_NAME]
+        header_row = _find_row_with_value(ws, "Date")
+        codigos = {
+            ws.cell(r, 12).value
+            for r in range(header_row + 1, ws.max_row + 1)
+            if ws.cell(r, 3).value in {"PT-Broker", "Kraken"}
+        }
+        assert "G51" in codigos, f"Per-row Código column must contain 'G51', got {codigos}"
+        assert "G30" in codigos, f"Per-row Código column must contain 'G30', got {codigos}"
+
+    def test_no_single_detail_line_route(self):
+        """The old `entries[0]`-derived `_DETAIL_LINE_TEMPLATE` detail line is gone.
+
+        Per P0, the single detail-line mechanism is removed in favor of per-row
+        routing columns. No row in column 1 may carry the legacy
+        'Annex: ... | Código: ... | Legal basis: ...' string.
+        """
+        entries = [
+            _make_derivatives_entry(
+                platform="PT-Broker",
+                operator_country="PT",
                 annex_hint="G/Q13",
                 operation_code="G51",
                 legal_category="CIRS art. 10(1)(e)",
             ),
+        ]
+        report = _make_crypto_tax_report(derivatives_entries=entries)
+        wb = openpyxl.Workbook()
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
+
+        ws = wb[_SHEET_NAME]
+        for r in range(1, min(ws.max_row, 50) + 1):
+            cell_val = ws.cell(r, 1).value
+            if isinstance(cell_val, str):
+                assert "Legal basis:" not in cell_val, (
+                    f"Legacy detail-line string must be gone; row {r} column 1 = {cell_val!r}"
+                )
+
+    def test_blank_annex_under_pt_warns(self, caplog):
+        """A blank Annex under the PT jurisdiction must surface a warning.
+
+        Pins the dev_lessons #77/#118 'surface invalidity loudly' guarantee that the
+        removed detail-line guard previously provided. A row that failed to resolve a
+        route (annex_hint == '') under PT must never render silently.
+        """
+        entries = [
             _make_derivatives_entry(
-                date="2025-02-01",
-                annex_hint="G/Q14",
-                operation_code="G52",
-                legal_category="CIRS art. 10(1)(f)",
+                platform="PT-Broker",
+                operator_country="PT",
+                annex_hint="",
+                operation_code="",
             ),
         ]
         report = _make_crypto_tax_report(derivatives_entries=entries)
 
         with caplog.at_level("WARNING", logger="tax_reporting.application.persisting.derivatives_sheet"):
             wb = openpyxl.Workbook()
-            write_derivatives_sheet(wb, report)
+            write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
         joined = " | ".join(rec.message for rec in caplog.records)
-        assert "Derivatives P&L detail-line fields are heterogeneous" in joined, (
-            f"Expected a warning surfacing heterogeneous detail fields, got: {joined!r}"
+        assert "blank" in joined.lower(), (
+            f"Expected a warning mentioning 'blank' for a blank Annex under PT, got: {joined!r}"
+        )
+        assert "annex" in joined.lower(), (
+            f"Expected a warning mentioning 'Annex' for a blank Annex under PT, got: {joined!r}"
         )
 
-    def test_detail_line_no_warning_when_entries_agree_on_constant_fields(self, caplog):
-        """Homogeneous (annex_hint, operation_code, legal_category) must NOT warn."""
+    def test_no_blank_annex_warning_when_routes_resolved(self, caplog):
+        """Paired negative: when ALL PT entries resolved non-blank annexes, NO warning.
+
+        Forces the blank-Annex guard to be gated behind the real condition (PT + blank
+        annex), defeating a trivial unconditional `logger.warning(...)` implementation.
+        Mirrors the existing positive/negative convention.
+        """
         entries = [
             _make_derivatives_entry(
+                platform="PT-Broker",
+                operator_country="PT",
                 annex_hint="G/Q13",
                 operation_code="G51",
-                legal_category="CIRS art. 10(1)(e)",
             ),
-            _make_derivatives_entry(date="2025-02-01"),
+            _make_derivatives_entry(
+                platform="Kraken",
+                operator_country="US",
+                annex_hint="J/Q9.2.B",
+                operation_code="G30",
+            ),
         ]
         report = _make_crypto_tax_report(derivatives_entries=entries)
 
         with caplog.at_level("WARNING", logger="tax_reporting.application.persisting.derivatives_sheet"):
             wb = openpyxl.Workbook()
-            write_derivatives_sheet(wb, report)
+            write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
-        heterogeneity_warnings = [
-            rec for rec in caplog.records if "heterogeneous" in rec.message.lower()
+        blank_annex_warnings = [
+            rec for rec in caplog.records
+            if "blank" in rec.message.lower() and "annex" in rec.message.lower()
         ]
-        assert not heterogeneity_warnings, (
-            f"Expected no heterogeneity warning when entries agree, got: {[r.message for r in heterogeneity_warnings]}"
+        assert not blank_annex_warnings, (
+            f"Expected no blank-Annex warning when all routes resolved, "
+            f"got: {[r.message for r in blank_annex_warnings]}"
         )
 
-    def test_detail_line_strips_control_chars_via_safe_cell_value(self):
-        """Detail-line fields must pass through safe_cell_value before the cell write.
+    def test_no_blank_annex_warning_under_non_pt(self, caplog):
+        """Paired negative: a blank Annex under a NON-PT jurisdiction must NOT warn.
 
-        The template prefix "Annex: " structurally prevents formula injection at the
-        cell-start position, but control characters (newlines, carriage returns) in
-        user-overridable fields would still corrupt cell rendering. Wrapping the
-        formatted string also matches the per-row write convention in the same module
-        (every user-overridable string field on the row path goes through
-        safe_cell_value). See review r2 Low 1 and development_lessons.md #7.
+        Non-PT jurisdictions legitimately carry blank annexes (no Modelo 3 hint),
+        so the warning is PT-gated. This falsifies the country gate directly: a
+        regression that drops the ``jurisdiction.country == PT`` condition (making
+        the warning unconditional) would log spurious warnings on every non-PT
+        run and fail this test.
         """
         entries = [
-            _make_derivatives_entry(annex_hint="G/Q13\nG/Q14"),
+            _make_derivatives_entry(
+                platform="PT-Broker",
+                operator_country="PT",
+                annex_hint="",
+                operation_code="",
+            ),
         ]
         report = _make_crypto_tax_report(derivatives_entries=entries)
-        wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
 
-        ws = wb[_SHEET_NAME]
-        detail_text = str(ws.cell(2, 1).value)
-        assert "\n" not in detail_text, (
-            f"Control char in annex_hint must be stripped by safe_cell_value; got {detail_text!r}"
-        )
-        assert "G/Q13" in detail_text, (
-            f"Stripped detail line should still mention 'G/Q13'; got {detail_text!r}"
-        )
-        assert "G/Q14" in detail_text, (
-            f"Stripped detail line should still mention 'G/Q14'; got {detail_text!r}"
-        )
+        with caplog.at_level("WARNING", logger="tax_reporting.application.persisting.derivatives_sheet"):
+            wb = openpyxl.Workbook()
+            write_derivatives_sheet(wb, report, build_koinly_jurisdiction(country="DE"))
 
-    def test_detail_line_omitted_when_no_entries(self):
-        report = _make_crypto_tax_report(derivatives_entries=[])
-        wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
-
-        ws = wb[_SHEET_NAME]
-        assert ws.cell(2, 1).value is None, (
-            f"Detail line should be omitted when there are no entries; got '{ws.cell(2, 1).value}'"
+        blank_annex_warnings = [
+            rec for rec in caplog.records
+            if "blank" in rec.message.lower() and "annex" in rec.message.lower()
+        ]
+        assert not blank_annex_warnings, (
+            f"Expected no blank-Annex warning under a non-PT jurisdiction, "
+            f"got: {[r.message for r in blank_annex_warnings]}"
         )
 
     def test_row_writes_operator_entity_and_country_in_columns_6_and_7(self):
         entries = [_make_derivatives_entry(operator_entity="ByBit", operator_country="AE")]
         report = _make_crypto_tax_report(derivatives_entries=entries)
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
         ws = wb[_SHEET_NAME]
         header_row = _find_row_with_value(ws, "Date")
@@ -463,7 +575,7 @@ class TestDerivativesSheet:
         entries = [_make_derivatives_entry(event_count=3)]
         report = _make_crypto_tax_report(derivatives_entries=entries)
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
         ws = wb[_SHEET_NAME]
         header_row = _find_row_with_value(ws, "Date")
@@ -476,7 +588,7 @@ class TestDerivativesSheet:
         entries = [_make_derivatives_entry(notes="manual annotation")]
         report = _make_crypto_tax_report(derivatives_entries=entries)
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
         ws = wb[_SHEET_NAME]
         header_row = _find_row_with_value(ws, "Date")
@@ -488,7 +600,7 @@ class TestDerivativesSheet:
     def test_row_writes_notes_in_column_9_default_empty(self):
         report = _make_crypto_tax_report(derivatives_entries=[_make_derivatives_entry()])
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
         ws = wb[_SHEET_NAME]
         header_row = _find_row_with_value(ws, "Date")
@@ -507,7 +619,7 @@ class TestDerivativesSheet:
         ]
         report = _make_crypto_tax_report(derivatives_entries=entries)
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
         ws = wb[_SHEET_NAME]
         header_row = _find_row_with_value(ws, "Date")
@@ -516,18 +628,18 @@ class TestDerivativesSheet:
             f"Column 10 should render 'YES: <reason>', got '{ws.cell(data_row, 10).value}'"
         )
 
-    def test_review_fill_spans_all_ten_columns(self):
+    def test_review_fill_spans_all_columns(self):
         entries = [
             _make_derivatives_entry(review_required=True, review_reason="missing platform mapping"),
         ]
         report = _make_crypto_tax_report(derivatives_entries=entries)
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
         ws = wb[_SHEET_NAME]
         header_row = _find_row_with_value(ws, "Date")
         data_row = header_row + 1
-        for col in range(1, 11):
+        for col in range(1, _NUM_COLUMNS + 1):
             cell = ws.cell(data_row, col)
             assert cell.fill.patternType == "solid", (
                 f"Col {col} should have solid fill, got {cell.fill.patternType}"
@@ -543,7 +655,7 @@ class TestDerivativesSheet:
         ]
         report = _make_crypto_tax_report(derivatives_entries=entries)
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
         ws = wb[_SHEET_NAME]
         total_row = _find_row_with_value(ws, "Total")
@@ -567,7 +679,7 @@ class TestDerivativesSheet:
         ]
         report = _make_crypto_tax_report(derivatives_entries=entries)
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction())
 
         ws = wb[_SHEET_NAME]
         total_row = _find_row_with_value(ws, "Total")

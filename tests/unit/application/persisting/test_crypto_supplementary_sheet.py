@@ -16,9 +16,10 @@ from tax_reporting.application.crypto_reporting import (
     RewardTaxClassification,
 )
 from tax_reporting.application.persisting.crypto_supplementary_sheet import write_crypto_supplementary_sheet
+from tax_reporting.application.persisting.tax_constants import _INCOME_CODE_DESCRIPTIONS
 
 # make_operator_origin is a module-level helper from conftest, not a pytest fixture
-from tests.conftest import make_operator_origin
+from tests.conftest import build_koinly_jurisdiction, make_operator_origin
 
 
 def _make_reward_entry(
@@ -48,7 +49,7 @@ def _make_reward_entry(
 
 def _make_aggregated_reward(**overrides: object) -> AggregatedRewardIncomeEntry:
     defaults = {
-        "income_code": "401",
+        "income_code": "",
         "source_country": "US",
         "gross_income_eur": Decimal("1500"),
         "foreign_tax_eur": Decimal("0"),
@@ -103,7 +104,7 @@ class TestCryptoSupplementarySheetName:
     def test_sheet_named_crypto_supplementary(self):
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         assert "Crypto Supplementary" in wb.sheetnames
 
 
@@ -114,7 +115,7 @@ class TestCryptoSupplementarySheetIncomeCodes:
     def test_section_1_title_written(self):
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         found = False
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=1):
@@ -126,7 +127,7 @@ class TestCryptoSupplementarySheetIncomeCodes:
     def test_section_1_title_is_bold(self):
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=1):
             if row[0].value == "1. INCOME CODES REFERENCE":
@@ -136,7 +137,7 @@ class TestCryptoSupplementarySheetIncomeCodes:
     def test_reference_note_is_italic(self):
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         found = False
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=1):
@@ -149,7 +150,7 @@ class TestCryptoSupplementarySheetIncomeCodes:
     def test_income_codes_headers_written(self):
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         header_row = None
         for r in range(1, ws.max_row + 1):
@@ -164,7 +165,7 @@ class TestCryptoSupplementarySheetIncomeCodes:
     def test_income_codes_headers_are_bold(self):
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         header_row = None
         for r in range(1, ws.max_row + 1):
@@ -178,7 +179,7 @@ class TestCryptoSupplementarySheetIncomeCodes:
     def test_all_income_codes_listed(self):
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         header_row = None
         for r in range(1, ws.max_row + 1):
@@ -197,20 +198,22 @@ class TestCryptoSupplementarySheetIncomeCodes:
             if code and isinstance(code, str):
                 codes_found.append(code)
 
-        # All codes from _INCOME_CODE_DESCRIPTIONS should be present
-        expected_codes = {"401", "402", "403", "404", "405"}
-        assert set(codes_found) == expected_codes
+        # Only the official Tabela V crypto code (E25) is rendered under PT.
+        # The set is sourced from the consolidated owner, not a hardcoded literal,
+        # so the assertion tracks the owner without duplicating its contents.
+        assert set(codes_found) == set(_INCOME_CODE_DESCRIPTIONS.keys())
 
     def test_income_codes_sorted_alphabetically(self):
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         header_row = None
         for r in range(1, ws.max_row + 1):
             if ws.cell(r, 1).value == "Country":
                 header_row = r
                 break
+        assert header_row is not None
 
         codes = []
         for r in range(header_row + 1, ws.max_row + 1):
@@ -222,8 +225,52 @@ class TestCryptoSupplementarySheetIncomeCodes:
             if code and isinstance(code, str):
                 codes.append(code)
 
-        # Should be sorted: 401, 402, 403, 404, 405
+        # Codes are rendered via sorted(_INCOME_CODE_DESCRIPTIONS.items())
         assert codes == sorted(codes)
+
+    def test_income_code_table_renders_official_codes_under_pt(self):
+        """Under PT the reference table lists the official E25 code with its
+        official description, the Country column is sourced from the
+        jurisdiction (not a hardcoded literal), and the code matches the
+        consolidated owner."""
+        wb = openpyxl.Workbook()
+        report = _make_crypto_tax_report()
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
+        ws = wb["Crypto Supplementary"]
+        header_row = None
+        for r in range(1, ws.max_row + 1):
+            if ws.cell(r, 1).value == "Country":
+                header_row = r
+                break
+        assert header_row is not None
+
+        # Single official code under PT
+        assert ws.cell(header_row + 1, 1).value == "PT"
+        assert ws.cell(header_row + 1, 2).value == "E25"
+        assert ws.cell(header_row + 1, 3).value == _INCOME_CODE_DESCRIPTIONS["E25"]
+        # No second code row before section 2
+        assert ws.cell(header_row + 2, 1).value != "PT"
+
+    def test_income_code_reference_omitted_under_non_pt(self):
+        """Under a non-PT jurisdiction the entire '1. INCOME CODES REFERENCE'
+        section is omitted (structural absence, not field-blanked)."""
+        wb = openpyxl.Workbook()
+        report = _make_crypto_tax_report()
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction(country="DE"))
+        ws = wb["Crypto Supplementary"]
+
+        for r in range(1, ws.max_row + 1):
+            val = ws.cell(r, 1).value
+            assert val != "1. INCOME CODES REFERENCE"
+            assert val != "Country"
+        # The first visible section is renumbered to "1." so the list does not
+        # start at "2." (which would imply a missing predecessor).
+        found_renumbered_first = False
+        for r in range(1, ws.max_row + 1):
+            if ws.cell(r, 1).value == "1. TAXABLE-NOW - SUPPORT DETAIL":
+                found_renumbered_first = True
+                break
+        assert found_renumbered_first
 
 
 @pytest.mark.unit
@@ -247,7 +294,7 @@ class TestCryptoSupplementarySheetTaxableNowDetail:
     def test_section_2_title_written(self):
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         found = False
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=1):
@@ -259,7 +306,7 @@ class TestCryptoSupplementarySheetTaxableNowDetail:
     def test_section_2_title_is_bold(self):
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=1):
             if row[0].value == "2. TAXABLE-NOW - SUPPORT DETAIL":
@@ -269,7 +316,7 @@ class TestCryptoSupplementarySheetTaxableNowDetail:
     def test_taxable_note_mentions_reporting_worksheet(self):
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         found = False
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=1):
@@ -282,7 +329,7 @@ class TestCryptoSupplementarySheetTaxableNowDetail:
     def test_detail_headers_written(self):
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report(reward_entries=[_make_reward_entry()])
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         section_row = None
         for r in range(1, ws.max_row + 1):
@@ -311,7 +358,7 @@ class TestCryptoSupplementarySheetTaxableNowDetail:
         )
         report = _make_crypto_tax_report(reward_entries=[entry])
         wb = openpyxl.Workbook()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         header_row = None
         for r in range(1, ws.max_row + 1):
@@ -336,7 +383,7 @@ class TestCryptoSupplementarySheetTaxableNowDetail:
         entry = _make_reward_entry(review_required=True, review_reason="Missing cost basis")
         report = _make_crypto_tax_report(reward_entries=[entry])
         wb = openpyxl.Workbook()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         header_row = None
         for r in range(1, ws.max_row + 1):
@@ -350,7 +397,7 @@ class TestCryptoSupplementarySheetTaxableNowDetail:
         deferred = _make_reward_entry(classification=RewardTaxClassification.DEFERRED_BY_LAW)
         report = _make_crypto_tax_report(reward_entries=[deferred])
         wb = openpyxl.Workbook()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         found = False
         section_start = None
@@ -374,7 +421,7 @@ class TestCryptoSupplementarySheetDeferredDetail:
     def test_section_3_title_written(self):
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         found = False
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=1):
@@ -386,7 +433,7 @@ class TestCryptoSupplementarySheetDeferredDetail:
     def test_section_3_title_is_bold(self):
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=1):
             if row[0].value == "3. DEFERRED BY LAW - SUPPORT DETAIL":
@@ -396,7 +443,7 @@ class TestCryptoSupplementarySheetDeferredDetail:
     def test_deferred_note_is_italic(self):
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         found = False
         section_start = None
@@ -427,7 +474,7 @@ class TestCryptoSupplementarySheetDeferredDetail:
         )
         report = _make_crypto_tax_report(reward_entries=[deferred])
         wb = openpyxl.Workbook()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         section_start = None
         for r in range(1, ws.max_row + 1):
@@ -453,7 +500,7 @@ class TestCryptoSupplementarySheetDeferredDetail:
         taxable = _make_reward_entry(classification=RewardTaxClassification.TAXABLE_NOW)
         report = _make_crypto_tax_report(reward_entries=[taxable])
         wb = openpyxl.Workbook()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         section_start = None
         for r in range(1, ws.max_row + 1):
@@ -477,7 +524,7 @@ class TestCryptoSupplementarySheetClassificationReconciliation:
     def test_section_4_title_written(self):
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         found = False
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=1):
@@ -489,7 +536,7 @@ class TestCryptoSupplementarySheetClassificationReconciliation:
     def test_section_4_title_is_bold(self):
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=1):
             if row[0].value == "4. REWARDS CLASSIFICATION RECONCILIATION":
@@ -503,7 +550,7 @@ class TestCryptoSupplementarySheetClassificationReconciliation:
         )
         report = _make_crypto_tax_report(reward_entries=[taxable, deferred])
         wb = openpyxl.Workbook()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         section_start = None
         for r in range(1, ws.max_row + 1):
@@ -527,7 +574,7 @@ class TestCryptoSupplementarySheetClassificationReconciliation:
     def test_reconciliation_empty_rewards(self):
         report = _make_crypto_tax_report(reward_entries=[])
         wb = openpyxl.Workbook()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         section_start = None
         for r in range(1, ws.max_row + 1):
@@ -548,7 +595,7 @@ class TestCryptoSupplementarySheetAutoWidth:
     def test_auto_width_adjusts_columns(self):
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         assert ws.column_dimensions["A"].width > 0
 
@@ -558,7 +605,7 @@ class TestCryptoSupplementarySheetAutoWidth:
 
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
 
         # All column widths should be capped at MAX_CELL_WIDTH + 2
@@ -574,7 +621,7 @@ class TestCryptoSupplementarySheetAutoWidth:
 
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
 
         for col_idx in range(1, 12):  # Columns A through K
@@ -601,7 +648,7 @@ class TestCryptoSupplementarySheetReviewRequired:
         ]
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report(review_entries=review_entries)
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
 
         # Find the section title
@@ -626,7 +673,7 @@ class TestCryptoSupplementarySheetReviewRequired:
         ]
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report(review_entries=review_entries)
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
 
         # Find the header row (after section title and note)
@@ -665,7 +712,7 @@ class TestCryptoSupplementarySheetReviewRequired:
         ]
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report(review_entries=review_entries)
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
 
         # Find the data start row (after headers)
@@ -714,7 +761,7 @@ class TestCryptoSupplementarySheetReviewRequired:
         ]
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report(review_entries=review_entries)
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
 
         # Find the data start row
@@ -744,7 +791,7 @@ class TestCryptoSupplementarySheetReviewRequired:
         """Test that 'No review items' message is shown when there are no review entries."""
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report(review_entries=[])
-        write_crypto_supplementary_sheet(wb, report)
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
 
         # Find the header row

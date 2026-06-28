@@ -17,6 +17,8 @@ from __future__ import annotations
 import openpyxl
 from openpyxl.styles import Font
 
+from ...domain.jurisdiction import PORTUGAL_COUNTRY_CODE
+from ...infrastructure.config import TaxJurisdictionConfig
 from ..crypto_reporting import (
     ZERO,
     CryptoReviewEntry,
@@ -123,14 +125,15 @@ def _write_review_rows(
     return row_no
 
 
-def write_crypto_supplementary_sheet(
+def write_crypto_supplementary_sheet(  # noqa: PLR0915
     workbook: openpyxl.Workbook,
     crypto_tax_report: CryptoTaxReport,
+    tax_jurisdiction: TaxJurisdictionConfig,
 ) -> None:
     """Create and populate a 'Crypto Supplementary' worksheet with audit data.
 
     Writes:
-    - Section 1: Income Codes reference
+    - Section 1: Income Codes reference (PT only; omitted entirely under other jurisdictions)
     - Section 2: Taxable-now support detail (per-row trace data)
     - Section 3: Deferred-by-law support detail
     - Section 4: Rewards classification reconciliation
@@ -143,6 +146,10 @@ def write_crypto_supplementary_sheet(
     Args:
         workbook: The Excel workbook to add the sheet to.
         crypto_tax_report: The crypto tax report data.
+        tax_jurisdiction: The reporting jurisdiction. The Income Codes reference
+            section is rendered only when ``tax_jurisdiction.country == "PT"``
+            (the official Tabela V crypto codes are PT-specific); under any other
+            country the entire reference section is omitted.
     """
     worksheet = workbook.create_sheet("Crypto Supplementary")
 
@@ -154,34 +161,42 @@ def write_crypto_supplementary_sheet(
     ]
 
     row_no = 1
+    # Sections are numbered dynamically so the list still reads 1, 2, 3, ...
+    # when the PT-only "INCOME CODES REFERENCE" section is omitted under another
+    # jurisdiction (a hardcoded "1."-prefixed list that starts at "2." implies a
+    # missing predecessor).
+    section_no = 0
 
-    # 1. INCOME CODES REFERENCE
-    worksheet.cell(row_no, 1, "1. INCOME CODES REFERENCE").font = Font(bold=True)
-    row_no += 1
-
-    reference_note = worksheet.cell(
-        row_no,
-        1,
-        "Portuguese Tabela V income codes used for crypto reward income classification. "
-        "See https://www.gov.pt (search 'Tabela V' in IRS withholding tax tables) for official source.",
-    )
-    reference_note.font = Font(italic=True, size=9)
-    row_no += 1
-
-    worksheet.cell(row_no, 1, "Country").font = Font(bold=True)
-    worksheet.cell(row_no, 2, "Income Code").font = Font(bold=True)
-    worksheet.cell(row_no, 3, "Description").font = Font(bold=True)
-    row_no += 1
-
-    for code, description in sorted(_INCOME_CODE_DESCRIPTIONS.items()):
-        worksheet.cell(row_no, 1, "PT")
-        worksheet.cell(row_no, 2, code)
-        worksheet.cell(row_no, 3, description)
+    # 1. INCOME CODES REFERENCE (PT only; omitted entirely under other jurisdictions)
+    if tax_jurisdiction.country.upper() == PORTUGAL_COUNTRY_CODE:
+        section_no += 1
+        worksheet.cell(row_no, 1, f"{section_no}. INCOME CODES REFERENCE").font = Font(bold=True)
         row_no += 1
+
+        reference_note = worksheet.cell(
+            row_no,
+            1,
+            "Portuguese Tabela V income codes used for crypto reward income classification. "
+            "See https://www.gov.pt (search 'Tabela V' in IRS withholding tax tables) for official source.",
+        )
+        reference_note.font = Font(italic=True, size=9)
+        row_no += 1
+
+        worksheet.cell(row_no, 1, "Country").font = Font(bold=True)
+        worksheet.cell(row_no, 2, "Income Code").font = Font(bold=True)
+        worksheet.cell(row_no, 3, "Description").font = Font(bold=True)
+        row_no += 1
+
+        for code, description in sorted(_INCOME_CODE_DESCRIPTIONS.items()):
+            worksheet.cell(row_no, 1, tax_jurisdiction.country.upper())
+            worksheet.cell(row_no, 2, code)
+            worksheet.cell(row_no, 3, description)
+            row_no += 1
 
     # 2. TAXABLE-NOW SUPPORT DETAIL
     row_no += 1
-    worksheet.cell(row_no, 1, "2. TAXABLE-NOW - SUPPORT DETAIL").font = Font(bold=True)
+    section_no += 1
+    worksheet.cell(row_no, 1, f"{section_no}. TAXABLE-NOW - SUPPORT DETAIL").font = Font(bold=True)
     row_no += 1
 
     taxable_note = worksheet.cell(
@@ -198,7 +213,8 @@ def write_crypto_supplementary_sheet(
 
     # 3. DEFERRED BY LAW SUPPORT DETAIL
     row_no += 1
-    worksheet.cell(row_no, 1, "3. DEFERRED BY LAW - SUPPORT DETAIL").font = Font(bold=True)
+    section_no += 1
+    worksheet.cell(row_no, 1, f"{section_no}. DEFERRED BY LAW - SUPPORT DETAIL").font = Font(bold=True)
     row_no += 1
 
     deferred_note = worksheet.cell(
@@ -214,7 +230,8 @@ def write_crypto_supplementary_sheet(
 
     # 4. REWARDS CLASSIFICATION RECONCILIATION
     row_no += 1
-    worksheet.cell(row_no, 1, "4. REWARDS CLASSIFICATION RECONCILIATION").font = Font(bold=True)
+    section_no += 1
+    worksheet.cell(row_no, 1, f"{section_no}. REWARDS CLASSIFICATION RECONCILIATION").font = Font(bold=True)
     row_no += 1
 
     taxable_now_total_eur = sum((e.value_eur for e in taxable_now_entries), start=ZERO)
@@ -235,7 +252,8 @@ def write_crypto_supplementary_sheet(
 
     # 5. REVIEW REQUIRED
     row_no += 1
-    worksheet.cell(row_no, 1, "5. REVIEW REQUIRED").font = Font(bold=True)
+    section_no += 1
+    worksheet.cell(row_no, 1, f"{section_no}. REVIEW REQUIRED").font = Font(bold=True)
     row_no += 1
 
     review_note = worksheet.cell(

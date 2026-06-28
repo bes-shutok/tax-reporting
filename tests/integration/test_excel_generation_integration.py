@@ -18,9 +18,36 @@ from tax_reporting.application.crypto_reporting import (
     resolve_operator_origin,
 )
 from tax_reporting.application.persisting import generate_tax_report
+from tax_reporting.application.persisting.tax_constants import get_income_code_description
 from tax_reporting.domain.collections import DividendIncomePerCompany
 from tax_reporting.domain.entities import DividendIncomePerSecurity
 from tax_reporting.domain.value_objects import parse_currency
+
+# Stable fragment of the official E25 Tabela V description, used to identify a rendered
+# Lending-interest reward row without pinning the full PT verbatim string. Guarded at
+# module load so any drift in the production description breaks here instead of silently
+# failing row lookups (mirrors the pattern in tests/unit/application/persisting/test_ib_sheet.py).
+_E25_LABEL_FRAGMENT = "criptoativos"
+assert _E25_LABEL_FRAGMENT in get_income_code_description("E25"), (
+    "E25 description fragment drifted from the production mapping; update _E25_LABEL_FRAGMENT"
+)
+
+
+def _find_other_capital_income_data_row(rows: list[tuple]) -> tuple | None:
+    """Return the first data row under the OTHER CAPITAL INVESTMENT INCOME subsection.
+
+    Locates the reward row structurally from the subsection header (not by a brittle
+    description label), then returns the first non-header row that follows it. Returns
+    None if the subsection or its data row is absent.
+    """
+    for i, row in enumerate(rows):
+        if row and isinstance(row[0], str) and "OTHER CAPITAL INVESTMENT INCOME" in row[0]:
+            # The data row is the first populated row after the subsection header.
+            for candidate in rows[i + 1 :]:
+                if candidate and candidate[0] is not None:
+                    return candidate
+            return None
+    return None
 
 
 class TestDividendExcelPersisting:
@@ -1627,20 +1654,29 @@ class TestExcelGenerationIntegration:
 
         found_cii_section = False
         found_other_subsection = False
-        found_reward_row = False
         for row in rows:
             if row and isinstance(row[0], str) and "CAPITAL INVESTMENT INCOME" in row[0]:
                 found_cii_section = True
             if row and isinstance(row[0], str) and "OTHER CAPITAL INVESTMENT INCOME" in row[0]:
                 found_other_subsection = True
-            if row and len(row) > 1 and row[0] == "Crypto interest (lending, deposit interest)":
-                found_reward_row = True
-                assert row[1] == "IE"
-                assert float(row[3]) == pytest.approx(3.00), f"Expected gross 3.00, got {row[3]}"
 
         assert found_cii_section, "CAPITAL INVESTMENT INCOME section not found in Reporting"
         assert found_other_subsection, "OTHER CAPITAL INVESTMENT INCOME subsection not found"
-        assert found_reward_row, "Taxable fiat reward row not found in Reporting"
+
+        # Locate the reward row structurally from the OTHER CAPITAL INVESTMENT INCOME
+        # subsection header. A Lending-interest reward under PT resolves to official
+        # income code E25, whose rendered description is the official Tabela V text
+        # (no longer the old synthetic "Crypto interest ..." label).
+        reward_row = _find_other_capital_income_data_row(rows)
+        assert reward_row is not None, "Taxable fiat reward row not found in Reporting"
+        assert reward_row[1] == "IE", f"Expected country IE, got {reward_row[1]}"
+        assert float(reward_row[3]) == pytest.approx(3.00), f"Expected gross 3.00, got {reward_row[3]}"
+        # The description cell carries the official E25 description; assert a stable
+        # fragment rather than the full verbatim PT string.
+        assert isinstance(reward_row[0], str), f"Expected E25 description, got {reward_row[0]!r}"
+        assert _E25_LABEL_FRAGMENT in reward_row[0], (
+            f"Expected E25 description containing {_E25_LABEL_FRAGMENT!r}, got {reward_row[0]!r}"
+        )
 
         rewards_ws = workbook["Crypto Supplementary"]
         rewards_labels = []
@@ -1667,7 +1703,7 @@ class TestExcelGenerationIntegration:
                 amount=Decimal("5"),
                 value_eur=Decimal("5.00"),
                 income_label="Reward",
-                source_type="Reward",
+                source_type="interest",
                 wallet="Kraken",
                 platform="Kraken",
                 chain="Kraken",
@@ -1684,7 +1720,7 @@ class TestExcelGenerationIntegration:
                 amount=Decimal("7"),
                 value_eur=Decimal("7.00"),
                 income_label="Reward",
-                source_type="Reward",
+                source_type="interest",
                 wallet="Kraken",
                 platform="Kraken",
                 chain="Kraken",
@@ -1710,22 +1746,32 @@ class TestExcelGenerationIntegration:
         reporting_ws = workbook["Reporting"]
         rows = list(reporting_ws.iter_rows(values_only=True))
 
+        # The two interest rewards share income_code ("E25" under PT for the interest
+        # family) and source country, so they aggregate into exactly one row. Locate it
+        # structurally from the OTHER CAPITAL INVESTMENT INCOME subsection header by its
+        # populated country cell (col 1).
         other_rows = []
-        in_other = False
-        for row in rows:
+        for i, row in enumerate(rows):
             if row and isinstance(row[0], str) and "OTHER CAPITAL INVESTMENT INCOME" in row[0]:
-                in_other = True
-                continue
-            if in_other and row and len(row) > 1 and isinstance(row[0], str) and row[0].startswith("Crypto"):
-                other_rows.append(row)
-            elif in_other and row and row[0] is None and row[1] is None:
+                for candidate in rows[i + 1 :]:
+                    if candidate and candidate[0] is None and candidate[1] is None:
+                        break
+                    if candidate and candidate[1] is not None:
+                        other_rows.append(candidate)
                 break
 
         assert len(other_rows) == 1, f"Expected exactly 1 aggregated reward row, got {len(other_rows)}"
 
         agg_row = other_rows[0]
-        assert agg_row[0] == "Crypto capital income (staking, rewards, airdrops)"
-        assert agg_row[1] == "IE"
+        # Interest resolves to the official Tabela V code E25 under PT, so the
+        # income-type cell carries the E25 description (a complete filing row), not a
+        # review marker.
+        assert isinstance(agg_row[0], str), f"Expected an E25 income-type label, got {agg_row[0]!r}"
+        assert _E25_LABEL_FRAGMENT in agg_row[0], (
+            f"Expected E25 description containing {_E25_LABEL_FRAGMENT!r}, got {agg_row[0]!r}"
+        )
+        assert not agg_row[0].startswith("YES:"), "Interest reward must not be flagged for review"
+        assert agg_row[1] == "IE", f"Expected country IE, got {agg_row[1]}"
         assert float(agg_row[3]) == pytest.approx(12.00), f"Expected gross 12.00, got {agg_row[3]}"
         assert float(agg_row[4]) == pytest.approx(0.80), f"Expected foreign tax 0.80, got {agg_row[4]}"
         net_val = float(agg_row[11]) if agg_row[11] is not None else None
@@ -1909,15 +1955,11 @@ class TestExcelGenerationIntegration:
         dividend_data_rows = [
             row for row in rows if row and len(row) > 1 and row[0] == "Share dividends"
         ]
-        reward_data_rows = [
-            row
-            for row in rows
-            if row
-            and len(row) > 1
-            and isinstance(row[0], str)
-            and isinstance(row[1], str)
-            and row[0].startswith("Crypto")
-        ]
+        # Locate the reward row structurally from the OTHER CAPITAL INVESTMENT INCOME
+        # subsection header. Under PT a Lending-interest reward resolves to E25, so its
+        # description cell carries the official Tabela V text (no longer a "Crypto..." label).
+        reward_data_row = _find_other_capital_income_data_row(rows)
+        reward_data_rows = [reward_data_row] if reward_data_row is not None else []
         assert len(dividend_data_rows) == 1, f"Expected 1 dividend row, found {len(dividend_data_rows)}"
         assert len(reward_data_rows) == 1, f"Expected 1 reward row, found {len(reward_data_rows)}"
 

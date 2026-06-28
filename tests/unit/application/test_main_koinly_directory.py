@@ -61,6 +61,18 @@ def test_is_koinly_year_mismatch_detects_fallback_year_mismatch(tmp_path):
     assert not _is_koinly_year_mismatch(koinly_dir, tax_year_hint=2024)
 
 
+def test_is_koinly_year_mismatch_uses_parent_year_for_new_layout(tmp_path):
+    """The ``<year>/koinly`` layout has a bare ``koinly`` leaf, so mismatch
+    detection falls back to the parent directory's year. Without this, a
+    fiscal_year/IB-year divergence on the new layout would load wrong-year
+    crypto data with no warning (removing the parent fallback leaves this RED)."""
+    koinly_dir = tmp_path / "2024" / "koinly"
+    koinly_dir.mkdir(parents=True)
+
+    assert _is_koinly_year_mismatch(koinly_dir, tax_year_hint=2025)
+    assert not _is_koinly_year_mismatch(koinly_dir, tax_year_hint=2024)
+
+
 def test_load_crypto_tax_report_skips_year_mismatch(tmp_path, monkeypatch):
     koinly_dir = tmp_path / "koinly2024"
     koinly_dir.mkdir()
@@ -274,6 +286,63 @@ def test_load_crypto_tax_report_passes_rates_to_loader(tmp_path, monkeypatch):
         "The SAME rates list object passed into _load_crypto_tax_report must reach "
         "load_koinly_crypto_report (inner-hop forward); got a different object."
     )
+
+
+def test_resolve_koinly_directory_finds_year_subdir_layout(tmp_path):
+    """New personal-data layout: ``<base_dir>/<year>/koinly`` resolves by fiscal year."""
+    (tmp_path / "2025" / "koinly").mkdir(parents=True)
+
+    resolved = _resolve_koinly_directory(tmp_path, tax_year_hint=2025, fiscal_year=2025)
+
+    assert resolved is not None
+    assert resolved == tmp_path / "2025" / "koinly"
+
+
+def test_resolve_koinly_directory_fiscal_year_drives_year_subdir(tmp_path):
+    """fiscal_year (config) selects the year subdir even when it differs from tax_year_hint.
+
+    The fiscal year from config is the source of truth for which tax year is being
+    filed; it must drive ``<year>/koinly`` resolution, not the IB-inferred hint.
+    """
+    (tmp_path / "2025" / "koinly").mkdir(parents=True)
+    (tmp_path / "2026" / "koinly").mkdir(parents=True)
+
+    resolved = _resolve_koinly_directory(tmp_path, tax_year_hint=2026, fiscal_year=2025)
+
+    assert resolved is not None
+    assert resolved == tmp_path / "2025" / "koinly"
+
+
+def test_resolve_koinly_directory_prefers_year_subdir_over_legacy_scan(tmp_path):
+    """The ``<year>/koinly`` layout wins over a legacy ``koinly<year>`` sibling."""
+    (tmp_path / "2025" / "koinly").mkdir(parents=True)
+    (tmp_path / "koinly2025").mkdir()  # legacy layout also present
+
+    resolved = _resolve_koinly_directory(tmp_path, tax_year_hint=2025, fiscal_year=2025)
+
+    assert resolved is not None
+    assert resolved == tmp_path / "2025" / "koinly"
+
+
+def test_resolve_koinly_directory_year_subdir_falls_back_to_hint_without_fiscal_year(tmp_path):
+    """Without a config fiscal_year, tax_year_hint drives the ``<year>/koinly`` lookup."""
+    (tmp_path / "2024" / "koinly").mkdir(parents=True)
+
+    resolved = _resolve_koinly_directory(tmp_path, tax_year_hint=2024, fiscal_year=None)
+
+    assert resolved is not None
+    assert resolved == tmp_path / "2024" / "koinly"
+
+
+def test_resolve_koinly_directory_year_subdir_ignored_when_year_absent(tmp_path):
+    """A ``<year>/koinly`` for a non-matching year is not used; legacy scan takes over."""
+    (tmp_path / "2024" / "koinly").mkdir(parents=True)
+    (tmp_path / "koinly2025").mkdir()  # legacy fixture for the requested year
+
+    resolved = _resolve_koinly_directory(tmp_path, tax_year_hint=2025, fiscal_year=2025)
+
+    assert resolved is not None
+    assert resolved.name == "koinly2025"
 
 
 def test_resolve_koinly_directory_fiscal_year_fallback_via_main(tmp_path, monkeypatch):

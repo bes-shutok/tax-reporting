@@ -349,16 +349,21 @@ def write_assumptions_and_methodology_sheet(
                 ),
                 (
                     "Futures/Derivatives Losses",
-                    "DP-010, PT-C-031, PT-C-032",
+                    "DP-010, DP-012, PT-C-031, PT-C-034",
                     (
                         "Futures and derivatives are 'instrumentos financeiros derivados' under "
                         "CIRS art. 10(1)(e). Liquidations are taxable disposals (alienação onerosa), "
-                        "NOT withdrawals. Losses follow holding-period rules: "
-                        "short-term (<365 days) can be carried forward 5 years; "
-                        "long-term (≥365 days) both gains AND losses are excluded "
-                        "(CIRS art. 10(19): 'São excluídos os ganhos obtidos, bem como as perdas incorridas'). "
-                        "Report in Anexo J Quadro 9.4 with negative capital gain amount. "
-                        "Source: CIRS art. 10(1)(e), art. 10(19); "
+                        "NOT withdrawals. There is no 365-day exemption for derivatives: CIRS art. 10(19) "
+                        "excludes gains/losses only for 'operações previstas na alínea k)' (spot "
+                        "criptoativos); derivatives fall under alínea e), so both gains and losses are "
+                        "always recognized, regardless of holding period. Losses can be carried forward "
+                        "5 years (PT-C-016; CIRS art. 55(1)(d)). Routing is by counterparty residency "
+                        "per AT binding ruling Processo 28298/2025: resident counterparty -> Anexo G "
+                        "Quadro 13, operation code G51; non-resident counterparty (the usual case for "
+                        "foreign exchanges) -> Anexo J Quadro 9.2.B, operation code G30. Report the loss "
+                        "with a negative gain/loss amount under the matching counterparty route. "
+                        "Source: CIRS art. 10(1)(e), art. 10(19), art. 55(1)(d); "
+                        "AT PIV 28298/2025 (docs/maintenance/tax/laws/pt/crypto-tax/official/at_piv_28298_2025.pdf); "
                         "AT portal rendering cirs_art10_portal_2026-04-01.html."
                     ),
                 ),

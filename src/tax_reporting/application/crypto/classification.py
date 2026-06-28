@@ -11,10 +11,12 @@ import logging
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
+from typing import Final
 
 import pycountry
 
 from ...domain.exceptions import FileProcessingError
+from ...domain.jurisdiction import PORTUGAL_COUNTRY_CODE
 from ...infrastructure.json_loader import DEGRADED, load_guarded_json
 from .entities import CryptoCapitalGainEntry, DerivativesClassification, ParsedOgrRow, RewardTaxClassification
 
@@ -176,19 +178,37 @@ _TABELA_X_COUNTRY_CODES: frozenset[str] = frozenset(
     }
 )
 
-# Koinly income type to Tabela V income code mapping for Portuguese IRS
-_KOINLY_TYPE_TO_INCOME_CODE: dict[str, str] = {
-    # Crypto capital income codes (Tabela V for Anexo J)
-    "staking": "401",  # Rendimentos de capitais - criptoativos
-    "reward": "401",
-    "airdrop": "401",
-    "interest": "402",  # Juros de criptoativos
-    "lending": "402",
-    "lending interest": "402",
-    "mining": "403",  # Rendimentos da atividade de mineração
-    "fork": "404",  # Rendimentos de forks
-    "dividend": "405",  # Dividendos de criptoativos
-    # Default fallback for unknown types
+# Koinly income types whose fiat-denominated reward form maps to the single
+# official Portuguese Tabela V (Categoria E) crypto code E25 under PT
+# jurisdiction. All other Koinly types resolve to "" (no Tabela V code; see
+# _resolve_income_code). Per Invariant 5, the crypto package is the single
+# owner of the type -> (official_code, description) mapping;
+# persisting/tax_constants.py derives the description half from
+# INCOME_CODE_DESCRIPTIONS below.
+_INTEREST_INCOME_TYPES: frozenset[str] = frozenset(
+    {
+        "interest",
+        "lending",
+        "lending interest",
+    }
+)
+
+# The single official Tabela V (Categoria E) crypto income code this branch
+# verified for the PT interest family. Shared by the resolver (producer) and the
+# description table (consumer) below so the closed AT value cannot drift across
+# sites as more Tabela V codes are added (mirrors the PORTUGAL_COUNTRY_CODE pattern).
+_PT_INTEREST_INCOME_CODE: Final[str] = "E25"
+
+# Official Tabela V (Categoria E) code -> PT description for crypto reward
+# income classification. Only E25 is a real Tabela V crypto code
+# (modelo3_anexo_j_2025.pdf). Mining (B13), fork, crypto "dividend" and
+# staking/reward/airdrop have no Tabela V code and are intentionally absent.
+# Description is the E25 descritivo trimmed to a complete clause.
+INCOME_CODE_DESCRIPTIONS: dict[str, str] = {
+    _PT_INTEREST_INCOME_CODE: (
+        "Rendimentos de capitais (criptoativos) - quaisquer formas de remuneração "
+        "decorrentes de operações relativas a criptoativos (al. u) do n.2 do art.5 CIRS)"
+    ),
 }
 
 # Popular/known crypto tokens that should not have zero value in rewards.
@@ -442,18 +462,32 @@ def _classify_reward_tax_status(asset: str) -> RewardTaxClassification:
     return RewardTaxClassification.DEFERRED_BY_LAW
 
 
-def _resolve_income_code(koinly_type: str) -> str:
-    """Map Koinly income type to Portuguese Tabela V income code for Anexo J filing.
+def _resolve_income_code(koinly_type: str, country: str) -> str:
+    """Map a Koinly income type to its official Modelo 3 income code under a jurisdiction.
+
+    Under ``country == "PT"`` the interest/lending family maps to the single
+    official Tabela V (Categoria E) crypto code ``E25``. Every other Koinly
+    type (staking, reward, airdrop, mining, fork, dividend) has no Tabela V
+    code and resolves to ``""`` (mining is Tabela III/Categoria B; fork and
+    crypto "dividend" have no PT code at all). Unknown types also resolve to
+    ``""`` rather than a synthetic default. Under any non-PT country every type
+    resolves to ``""`` (Invariant 2).
 
     Args:
-        koinly_type: The type field from Koinly income report (e.g., "staking", "airdrop").
+        koinly_type: The type field from Koinly income report (e.g., "interest", "staking").
+        country: The REPORTING jurisdiction (ISO 3166-1 alpha-2). NEVER the
+            operator/origin country.
 
     Returns:
-        Tabela V income code (e.g., "401" for crypto capital income).
-        Defaults to "401" for unknown types (crypto capital income catch-all).
+        The official income code (``"E25"`` for the PT interest family), or
+        ``""`` when the type has no code under the jurisdiction.
     """
+    if country.upper() != PORTUGAL_COUNTRY_CODE:
+        return ""
     normalized_type = koinly_type.strip().lower()
-    return _KOINLY_TYPE_TO_INCOME_CODE.get(normalized_type, "401")
+    if normalized_type in _INTEREST_INCOME_TYPES:
+        return _PT_INTEREST_INCOME_CODE
+    return ""
 
 
 def _is_valid_tabela_x_country(country: str) -> bool:

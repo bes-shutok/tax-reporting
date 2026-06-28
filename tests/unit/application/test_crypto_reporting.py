@@ -45,6 +45,7 @@ from tax_reporting.domain.token_origin import (
     TokenOrigin,
 )
 from tax_reporting.infrastructure.koinly_parser import format_datetime, parse_koinly_decimal
+from tests.conftest import build_koinly_jurisdiction
 
 _TEST_OPERATOR = OperatorOrigin(
     platform="TestPlatform",
@@ -1933,14 +1934,15 @@ def test_aggregate_taxable_rewards_by_income_code_and_country():
     from tax_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
 
     entries = [
-        # Two EUR rewards from Kraken (Ireland) - same income code "401", same country "IE"
+        # Two EUR interest rewards from Kraken (Ireland) - income_code "E25" under PT,
+        # same country "IE" so they aggregate into one group
         CryptoRewardIncomeEntry(
             date="2025-01-01",
             asset="EUR",
             amount=Decimal("100"),
             value_eur=Decimal("100"),
             income_label="Reward",
-            source_type="reward",
+            source_type="interest",
             wallet="Kraken",
             platform="Kraken",
             chain="Kraken",
@@ -1957,7 +1959,7 @@ def test_aggregate_taxable_rewards_by_income_code_and_country():
             amount=Decimal("50"),
             value_eur=Decimal("50"),
             income_label="Reward",
-            source_type="reward",
+            source_type="interest",
             wallet="Kraken",
             platform="Kraken",
             chain="Kraken",
@@ -1968,14 +1970,14 @@ def test_aggregate_taxable_rewards_by_income_code_and_country():
             tax_classification=RewardTaxClassification.TAXABLE_NOW,
             foreign_tax_eur=ZERO,
         ),
-        # USD reward from Bybit (UAE) - different country, different aggregation group
+        # USD interest reward from Bybit (UAE) - different country, different aggregation group
         CryptoRewardIncomeEntry(
             date="2025-01-03",
             asset="USD",
             amount=Decimal("200"),
             value_eur=Decimal("185"),
             income_label="Reward",
-            source_type="reward",
+            source_type="lending",
             wallet="ByBit",
             platform="ByBit",
             chain="ByBit",
@@ -1986,14 +1988,15 @@ def test_aggregate_taxable_rewards_by_income_code_and_country():
             tax_classification=RewardTaxClassification.TAXABLE_NOW,
             foreign_tax_eur=ZERO,
         ),
-        # Staking reward from Gate.io (Malta) - different income code "401" but default for staking
+        # Lending interest from Gate.io (Malta) - income_code "E25" under PT,
+        # separate group by country "MT"
         CryptoRewardIncomeEntry(
             date="2025-01-04",
             asset="EUR",
             amount=Decimal("75"),
             value_eur=Decimal("75"),
             income_label="Reward",
-            source_type="staking",
+            source_type="lending interest",
             wallet="Gate.io",
             platform="Gate.io",
             chain="Gate.io",
@@ -2024,34 +2027,92 @@ def test_aggregate_taxable_rewards_by_income_code_and_country():
         ),
     ]
 
-    result = aggregate_taxable_rewards(entries)
+    result = aggregate_taxable_rewards(entries, country="PT")
 
-    # Should have 3 aggregation groups:
-    # 1. income_code=401, country=IE (Kraken EUR rewards: 100 + 50 = 150)
-    # 2. income_code=401, country=AE (Bybit USD reward: 185)
-    # 3. income_code=401, country=MT (Gate.io staking: 75) - staking maps to 401 by default
+    # Under PT the interest/lending source types resolve to the official Tabela V
+    # code E25. Groups stay separate because they differ by source_country.
+    # 1. income_code="E25", country=IE (Kraken EUR interest: 100 + 50 = 150)
+    # 2. income_code="E25", country=AE (Bybit USD lending: 185)
+    # 3. income_code="E25", country=MT (Gate.io lending interest: 75)
     assert len(result) == 3
 
     # Find Ireland group (Kraken)
     ie_group = next((g for g in result if g.source_country == "IE"), None)
     assert ie_group is not None
-    assert ie_group.income_code == "401"
+    assert ie_group.income_code == "E25"
     assert ie_group.gross_income_eur == Decimal("150")
     assert ie_group.raw_row_count == 2
 
     # Find UAE group (Bybit)
     ae_group = next((g for g in result if g.source_country == "AE"), None)
     assert ae_group is not None
-    assert ae_group.income_code == "401"
+    assert ae_group.income_code == "E25"
     assert ae_group.gross_income_eur == Decimal("185")
     assert ae_group.raw_row_count == 1
 
-    # Find Malta group (Gate.io staking)
+    # Find Malta group (Gate.io lending interest)
     mt_group = next((g for g in result if g.source_country == "MT"), None)
     assert mt_group is not None
-    assert mt_group.income_code == "401"  # staking maps to 401
+    assert mt_group.income_code == "E25"
     assert mt_group.gross_income_eur == Decimal("75")
     assert mt_group.raw_row_count == 1
+
+    # A resolved income_code produces an "Income code <code> from <country>"
+    # description (distinct from the "Reward income from <country>" form used for
+    # blank-code rows under non-PT jurisdictions).
+    assert ie_group.description == "Income code E25 from IE"
+    assert ae_group.description == "Income code E25 from AE"
+    assert mt_group.description == "Income code E25 from MT"
+
+
+def test_aggregate_taxable_rewards_interest_and_non_pt_do_not_raise(caplog):
+    """Negative controls for the blank-income-code fail-closed contract.
+
+    The PT non-interest raise is covered by
+    ``test_aggregate_taxable_rewards_fails_on_blank_income_code_under_pt``. These
+    are the two cases that must NOT raise: (1) a PT interest reward resolves to
+    ``E25`` (a complete filing row); (2) under a non-PT country blank is the
+    expected/valid resolution for every type. Neither emits a blank-code warning.
+    """
+    from tax_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
+
+    def _fiat_reward(source_type: str) -> CryptoRewardIncomeEntry:
+        return CryptoRewardIncomeEntry(
+            date="2025-01-01",
+            asset="EUR",
+            amount=Decimal("10"),
+            value_eur=Decimal("10"),
+            income_label="Reward",
+            source_type=source_type,
+            wallet="Kraken",
+            platform="Kraken",
+            chain="Kraken",
+            operator_origin=dataclasses.replace(_TEST_OPERATOR, operator_country="IE"),
+            annex_hint="J",
+            review_required=False,
+            description="Cashback",
+            tax_classification=RewardTaxClassification.TAXABLE_NOW,
+            foreign_tax_eur=ZERO,
+        )
+
+    # Interest fiat reward under PT -> E25 -> no raise, no review flag, no warning.
+    with caplog.at_level("WARNING", logger="tax_reporting.application.crypto.aggregation"):
+        interest_result = aggregate_taxable_rewards([_fiat_reward("interest")], country="PT")
+    assert len(interest_result) == 1
+    assert interest_result[0].income_code == "E25"
+    assert not any("no official Tabela V income code" in rec.message for rec in caplog.records), (
+        "Interest rewards resolve to E25 and must not trigger a blank-code warning"
+    )
+
+    # Non-interest fiat reward under a non-PT country -> blank is expected -> no raise, no warning.
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="tax_reporting.application.crypto.aggregation"):
+        de_result = aggregate_taxable_rewards([_fiat_reward("reward")], country="DE")
+    assert len(de_result) == 1
+    assert de_result[0].income_code == ""
+    assert not any("no official Tabela V income code" in rec.message for rec in caplog.records), (
+        "Blank income codes under a non-PT country are expected and must not warn"
+    )
 
 
 def test_aggregate_taxable_rewards_filters_out_deferred_rewards():
@@ -2066,7 +2127,7 @@ def test_aggregate_taxable_rewards_filters_out_deferred_rewards():
             amount=Decimal("100"),
             value_eur=Decimal("100"),
             income_label="Reward",
-            source_type="reward",
+            source_type="interest",
             wallet="Kraken",
             platform="Kraken",
             chain="Kraken",
@@ -2115,7 +2176,7 @@ def test_aggregate_taxable_rewards_filters_out_deferred_rewards():
         ),
     ]
 
-    result = aggregate_taxable_rewards(entries)
+    result = aggregate_taxable_rewards(entries, country="PT")
 
     # Only the EUR reward should be aggregated
     assert len(result) == 1
@@ -2134,7 +2195,7 @@ def test_aggregate_taxable_rewards_with_foreign_tax():
             amount=Decimal("100"),
             value_eur=Decimal("100"),
             income_label="Reward",
-            source_type="reward",
+            source_type="interest",
             wallet="Kraken",
             platform="Kraken",
             chain="Kraken",
@@ -2151,7 +2212,7 @@ def test_aggregate_taxable_rewards_with_foreign_tax():
             amount=Decimal("50"),
             value_eur=Decimal("50"),
             income_label="Reward",
-            source_type="reward",
+            source_type="interest",
             wallet="Kraken",
             platform="Kraken",
             chain="Kraken",
@@ -2164,7 +2225,7 @@ def test_aggregate_taxable_rewards_with_foreign_tax():
         ),
     ]
 
-    result = aggregate_taxable_rewards(entries)
+    result = aggregate_taxable_rewards(entries, country="PT")
 
     assert len(result) == 1
     assert result[0].gross_income_eur == Decimal("150")
@@ -2174,7 +2235,7 @@ def test_aggregate_taxable_rewards_with_foreign_tax():
 
 def test_aggregate_taxable_rewards_empty_list():
     """Empty input list returns empty list."""
-    result = aggregate_taxable_rewards([])
+    result = aggregate_taxable_rewards([], country="PT")
     assert result == []
 
 
@@ -2202,7 +2263,7 @@ def test_aggregate_taxable_rewards_no_taxable_entries():
         ),
     ]
 
-    result = aggregate_taxable_rewards(entries)
+    result = aggregate_taxable_rewards(entries, country="PT")
     assert result == []
 
 
@@ -2232,7 +2293,46 @@ def test_aggregate_taxable_rewards_fails_on_invalid_country():
     ]
 
     with pytest.raises(FileProcessingError, match="has an unresolved platform/operator"):
-        aggregate_taxable_rewards(entries)
+        aggregate_taxable_rewards(entries, country="PT")
+
+
+def test_aggregate_taxable_rewards_fails_on_blank_income_code_under_pt():
+    """A PT taxable-now reward with no Tabela V income code must fail closed.
+
+    Mirrors the country-code fail-closed contract (a taxable_now row with an
+    invalid/UNKNOWN Tabela X country raises ``FileProcessingError`` before
+    aggregation). The income type is also a mandatory Quadro 8A field, so a
+    taxable_now reward whose ``source_type`` resolves to no official Tabela V
+    code under PT must raise rather than emit a flagged-but-incomplete filing
+    row. ``tax_classification`` depends only on the asset being fiat, so a fiat
+    reward of a non-interest type (e.g. EUR cashback, ``source_type="reward"``)
+    is taxable_now and resolves to ``""`` under PT. Review round 3 finding 1.
+    """
+    from tax_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
+    from tax_reporting.domain.exceptions import FileProcessingError
+
+    entries = [
+        CryptoRewardIncomeEntry(
+            date="2025-01-01",
+            asset="EUR",
+            amount=Decimal("10"),
+            value_eur=Decimal("10"),
+            income_label="Reward",
+            source_type="reward",
+            wallet="Kraken",
+            platform="Kraken",
+            chain="Kraken",
+            operator_origin=dataclasses.replace(_TEST_OPERATOR, operator_country="IE"),
+            annex_hint="J",
+            review_required=False,
+            description="Cashback",
+            tax_classification=RewardTaxClassification.TAXABLE_NOW,
+            foreign_tax_eur=ZERO,
+        ),
+    ]
+
+    with pytest.raises(FileProcessingError, match="no official Tabela V income code"):
+        aggregate_taxable_rewards(entries, country="PT")
 
 
 def test_aggregate_taxable_rewards_wallet_aliases_collapse():
@@ -2253,7 +2353,7 @@ def test_aggregate_taxable_rewards_wallet_aliases_collapse():
             amount=Decimal("100"),
             value_eur=Decimal("100"),
             income_label="Reward",
-            source_type="reward",
+            source_type="interest",
             wallet="ByBit",
             platform="ByBit",
             chain="ByBit",
@@ -2270,7 +2370,7 @@ def test_aggregate_taxable_rewards_wallet_aliases_collapse():
             amount=Decimal("50"),
             value_eur=Decimal("50"),
             income_label="Reward",
-            source_type="reward",
+            source_type="interest",
             wallet="ByBit (2)",
             platform="ByBit",
             chain="ByBit",
@@ -2283,9 +2383,9 @@ def test_aggregate_taxable_rewards_wallet_aliases_collapse():
         ),
     ]
 
-    result = aggregate_taxable_rewards(entries)
+    result = aggregate_taxable_rewards(entries, country="PT")
 
-    # Should aggregate to single entry since same income_code (401) and country (AE)
+    # Should aggregate to single entry since same income_code ("E25") and country (AE)
     assert len(result) == 1
     assert result[0].gross_income_eur == Decimal("150")
     assert result[0].source_country == "AE"
@@ -2307,7 +2407,7 @@ def test_aggregate_taxable_rewards_different_platforms_stay_separate():
             amount=Decimal("100"),
             value_eur=Decimal("100"),
             income_label="Reward",
-            source_type="reward",
+            source_type="interest",
             wallet="ByBit",
             platform="ByBit",
             chain="ByBit",
@@ -2324,7 +2424,7 @@ def test_aggregate_taxable_rewards_different_platforms_stay_separate():
             amount=Decimal("50"),
             value_eur=Decimal("50"),
             income_label="Reward",
-            source_type="reward",
+            source_type="interest",
             wallet="Kraken",
             platform="Kraken",
             chain="Kraken",
@@ -2337,7 +2437,7 @@ def test_aggregate_taxable_rewards_different_platforms_stay_separate():
         ),
     ]
 
-    result = aggregate_taxable_rewards(entries)
+    result = aggregate_taxable_rewards(entries, country="PT")
 
     # Different countries = separate aggregation groups
     assert len(result) == 2
@@ -2374,37 +2474,43 @@ def test_is_valid_tabela_x_country():
 
 
 def test_resolve_income_code_from_koinly_type():
-    """Map Koinly income type to Portuguese Tabela V income code."""
-    # Known types
-    assert _resolve_income_code("staking") == "401"
-    assert _resolve_income_code("reward") == "401"
-    assert _resolve_income_code("airdrop") == "401"
-    assert _resolve_income_code("interest") == "402"
-    assert _resolve_income_code("lending") == "402"
-    assert _resolve_income_code("mining") == "403"
-    assert _resolve_income_code("fork") == "404"
-    assert _resolve_income_code("dividend") == "405"
+    """Map Koinly income type to its official Modelo 3 code under the PT jurisdiction."""
+    # Interest family -> official E25 under PT
+    assert _resolve_income_code("interest", country="PT") == "E25"
+    assert _resolve_income_code("lending", country="PT") == "E25"
+    assert _resolve_income_code("lending interest", country="PT") == "E25"
 
-    # Unknown types default to crypto capital income (401)
-    assert _resolve_income_code("unknown_type") == "401"
-    assert _resolve_income_code("custom_reward") == "401"
-    assert _resolve_income_code("") == "401"
+    # Other Koinly types have no Tabela V code under PT -> ""
+    assert _resolve_income_code("staking", country="PT") == ""
+    assert _resolve_income_code("reward", country="PT") == ""
+    assert _resolve_income_code("airdrop", country="PT") == ""
+    assert _resolve_income_code("mining", country="PT") == ""
+    assert _resolve_income_code("fork", country="PT") == ""
+    assert _resolve_income_code("dividend", country="PT") == ""
+
+    # Unknown types resolve to "" (no synthetic 401 default)
+    assert _resolve_income_code("unknown_type", country="PT") == ""
+    assert _resolve_income_code("custom_reward", country="PT") == ""
+    assert _resolve_income_code("", country="PT") == ""
 
     # Case insensitive
-    assert _resolve_income_code("STAKING") == "401"
-    assert _resolve_income_code("Airdrop") == "401"
-    assert _resolve_income_code("  lending  ") == "402"
+    assert _resolve_income_code("Interest", country="PT") == "E25"
+    assert _resolve_income_code("LENDING", country="PT") == "E25"
+    assert _resolve_income_code("  lending  ", country="PT") == "E25"
 
-    # Edge cases: whitespace-only defaults to 401
-    assert _resolve_income_code("   ") == "401"
-    assert _resolve_income_code("\t\n") == "401"
-    assert _resolve_income_code("  \t  ") == "401"
+    # Edge cases: whitespace-only and formula-prefix-only resolve to "" under PT
+    assert _resolve_income_code("   ", country="PT") == ""
+    assert _resolve_income_code("\t\n", country="PT") == ""
+    assert _resolve_income_code("  \t  ", country="PT") == ""
+    assert _resolve_income_code("===", country="PT") == ""
+    assert _resolve_income_code("+++", country="PT") == ""
+    assert _resolve_income_code("---", country="PT") == ""
+    assert _resolve_income_code("@@@", country="PT") == ""
 
-    # Edge cases: formula-prefix-only defaults to 401 (not a digit)
-    assert _resolve_income_code("===") == "401"
-    assert _resolve_income_code("+++") == "401"
-    assert _resolve_income_code("---") == "401"
-    assert _resolve_income_code("@@@") == "401"
+    # Non-PT jurisdiction -> "" for every type (Invariant 2)
+    assert _resolve_income_code("interest", country="DE") == ""
+    assert _resolve_income_code("staking", country="DE") == ""
+    assert _resolve_income_code("unknown_type", country="US") == ""
 
 
 def test_aggregate_preserves_reconciliation_trail():
@@ -2418,7 +2524,7 @@ def test_aggregate_preserves_reconciliation_trail():
             amount=Decimal("10"),
             value_eur=Decimal("10"),
             income_label="Reward",
-            source_type="reward",
+            source_type="interest",
             wallet="Kraken",
             platform="Kraken",
             chain="Kraken",
@@ -2432,7 +2538,7 @@ def test_aggregate_preserves_reconciliation_trail():
         for i in range(1, 6)  # 5 rows
     ]
 
-    result = aggregate_taxable_rewards(entries)
+    result = aggregate_taxable_rewards(entries, country="PT")
 
     assert len(result) == 1
     assert result[0].raw_row_count == 5
@@ -8866,52 +8972,12 @@ class TestOgrDisabledBackwardCompatibility:
 
 # =============================================================================
 # Characterization tests for OGR override (golden values captured BEFORE
-# derivatives separation, see docs/history/plans/2026-06-13-derivatives-separation.md
-# Task 1). These tests capture TODAY's pipeline behavior so that Tasks 2-14 can
-# verify the separate_derivatives_reporting=False path remains byte-identical.
+# derivatives separation, see docs/history/plans/completed/2026-06-13-derivatives-separation.md
+# Task 1). These tests pin the flag-off (separate_derivatives_reporting=False)
+# pipeline output so the backward-compatibility path stays byte-identical.
+# Values are inlined below (no external snapshot file) so the contract holds on
+# any clean checkout.
 # =============================================================================
-
-
-# Path to the golden-values snapshot written by Task 1. The file lives under
-# docs/tmp/ (gitignored) and records the source_sha at capture time plus the two
-# aggregated gain values. The characterization test reads this file and asserts
-# both the gain values and that source_sha matches the current HEAD (Monitor #3
-# mitigation: detects a stale golden file if an unrelated PR changes parser
-# behavior before the plan lands).
-_GOLDEN_JSON_PATH = Path("docs/tmp/derivatives-characterization-golden.json")
-
-
-def _load_golden_snapshot() -> dict[str, str]:
-    """Load the Task 1 golden-values JSON snapshot.
-
-    Returns the parsed JSON as a dict. Fails the calling test if the file is
-    missing or malformed. The snapshot must exist for the characterization
-    contract to hold.
-    """
-    import json
-
-    if not _GOLDEN_JSON_PATH.exists():
-        pytest.fail(
-            f"Golden snapshot not found at {_GOLDEN_JSON_PATH}. "
-            "Run Task 1 of docs/history/plans/2026-06-13-derivatives-separation.md to create it."
-        )
-    return json.loads(_GOLDEN_JSON_PATH.read_text(encoding="utf-8"))
-
-
-def _current_head_sha() -> str:
-    """Return the current git HEAD commit hash (short-circuit on missing git)."""
-    import subprocess
-
-    try:
-        # git is expected on PATH in the dev/CI environment; bare executable name
-        # keeps the helper portable across machines (noqa: S607).
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"],  # noqa: S607
-            text=True,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        pytest.fail(f"Could not determine git HEAD sha for golden-snapshot check: {exc}")
 
 
 def _build_characterization_jurisdiction():
@@ -8938,38 +9004,10 @@ def _build_characterization_jurisdiction():
 class TestOgrCharacterizationGolden:
     """Golden-value characterization tests for the OGR direction override.
 
-    Captures the CURRENT pipeline output (pre-derivatives-separation) for the
-    ByBit Case 1 and Case 2 fixtures. These values are the backward-compatibility
-    target: once separate_derivatives_reporting is added (Task 3), the flag-off
-    path must reproduce these exact values.
-
-    The golden snapshot is read from docs/tmp/derivatives-characterization-golden.json,
-    which also records the source_sha at capture time. The class-level fixture
-    asserts the snapshot's source_sha matches the current HEAD so a stale golden
-    file is detected rather than silently masking a behavior change (Monitor #3).
+    Pins the flag-off (separate_derivatives_reporting=False) pipeline output for
+    the ByBit Case 1 and Case 2 example fixtures. These inlined values are the
+    backward-compatibility target: the flag-off path must keep reproducing them.
     """
-
-    def setup_method(self) -> None:
-        snapshot = _load_golden_snapshot()
-        # Monitor #3 informational check: log when the snapshot was captured against
-        # a different HEAD. Post-implementation (plan archived), source drift is
-        # expected as the codebase evolves; the strict assertion would force a
-        # golden refresh on every commit, which is unmaintainable. The value
-        # assertions in the test methods are the real backward-compat contract.
-        snapshot_sha = snapshot["source_sha"]
-        head_sha = _current_head_sha()
-        if snapshot_sha != head_sha:
-            import logging
-
-            logging.getLogger(__name__).warning(
-                "Golden snapshot source_sha (%s) differs from current HEAD (%s). "
-                "Values were captured at %s; re-verify the case1/case2 assertions "
-                "if parser behavior has changed.",
-                snapshot_sha,
-                head_sha,
-                snapshot_sha,
-            )
-        self._snapshot = snapshot
 
     def test_case1_gain_before_separation(self) -> None:
         """ByBit Case 1 aggregated gain for (2025-01-12, USDT, Demo Futures).
@@ -8999,11 +9037,11 @@ class TestOgrCharacterizationGolden:
             f"Expected exactly one aggregated entry for (2025-01-12, USDT, Demo Futures), "
             f"got {len(matches)}: {[(e.gain_loss_eur, e.holding_period) for e in matches]}"
         )
-        expected = Decimal(self._snapshot["case1_gain_eur"])
+        expected = Decimal("136.01")
         assert matches[0].gain_loss_eur == expected, (
             f"Case 1 golden value drift: expected {expected} EUR, got "
             f"{matches[0].gain_loss_eur} EUR. The OGR override behavior has changed; "
-            "either update the golden snapshot (Task 1) or investigate the regression."
+            "investigate the regression."
         )
 
     def test_case2_gain_before_separation(self) -> None:
@@ -9033,11 +9071,11 @@ class TestOgrCharacterizationGolden:
             f"Expected exactly one aggregated entry for (2025-01-13, USDT, Demo Futures), "
             f"got {len(matches)}: {[(e.gain_loss_eur, e.holding_period) for e in matches]}"
         )
-        expected = Decimal(self._snapshot["case2_gain_eur"])
+        expected = Decimal("-1.00")
         assert matches[0].gain_loss_eur == expected, (
             f"Case 2 golden value drift: expected {expected} EUR, got "
             f"{matches[0].gain_loss_eur} EUR. The OGR override behavior has changed; "
-            "either update the golden snapshot (Task 1) or investigate the regression."
+            "investigate the regression."
         )
 
 
@@ -9951,6 +9989,83 @@ class TestDerivativesAggregation:
         assert len(result) == 1
         assert result[0].notes == "repeat note; other note", (
             f"Notes should be deduped and order-preserved; got {result[0].notes!r}"
+        )
+
+    def test_aggregate_derivatives_warns_on_mixed_annex_routes(self, caplog) -> None:
+        """Mixed (annex_hint, operation_code) within a group is surfaced at warning+.
+
+        Feature A's counterparty-residency routing made annex_hint/operation_code
+        per-row variable, so a mixed-route group would silently drop non-first
+        members' routes when the aggregator takes ``first.``. Safe today (platform
+        is in the group key and routes are platform-deterministic), but the warning
+        makes the latent gap observable. Discriminates against an implementation
+        that takes ``first.`` with no heterogeneity check (#118 / #185 shape).
+        """
+        entries = [
+            DerivativesPnLEntry(
+                date="2025-01-12",
+                asset="USDT",
+                platform="ByBit",
+                pnl_eur=Decimal("10"),
+                event_type=DerivativesEventType.PROFIT,
+                source_ref="OGR:2025-01-12:USDT#a",
+                annex_hint="G1/Q8A",
+                operation_code="G41",
+            ),
+            DerivativesPnLEntry(
+                date="2025-01-12",
+                asset="USDT",
+                platform="ByBit",
+                pnl_eur=Decimal("20"),
+                event_type=DerivativesEventType.PROFIT,
+                source_ref="OGR:2025-01-12:USDT#b",
+                annex_hint="G/Q13",
+                operation_code="G51",
+            ),
+        ]
+
+        with caplog.at_level("WARNING", logger="tax_reporting.application.crypto.aggregation"):
+            result = aggregate_derivatives_entries(entries)
+
+        assert len(result) == 1
+        # The first member's route is always rendered.
+        assert result[0].annex_hint == "G1/Q8A"
+        assert result[0].operation_code == "G41"
+        # Heterogeneity is surfaced, not silent.
+        assert any("mixed annex routes" in rec.message for rec in caplog.records), (
+            "Expected a warning for mixed annex routes within a derivatives group"
+        )
+
+    def test_aggregate_derivatives_no_warning_on_uniform_routes(self, caplog) -> None:
+        """Uniform routes within a group emit no heterogeneity warning (negative control)."""
+        entries = [
+            DerivativesPnLEntry(
+                date="2025-01-12",
+                asset="USDT",
+                platform="ByBit",
+                pnl_eur=Decimal("10"),
+                event_type=DerivativesEventType.PROFIT,
+                source_ref="OGR:2025-01-12:USDT#a",
+                annex_hint="G/Q13",
+                operation_code="G51",
+            ),
+            DerivativesPnLEntry(
+                date="2025-01-12",
+                asset="USDT",
+                platform="ByBit",
+                pnl_eur=Decimal("20"),
+                event_type=DerivativesEventType.PROFIT,
+                source_ref="OGR:2025-01-12:USDT#b",
+                annex_hint="G/Q13",
+                operation_code="G51",
+            ),
+        ]
+
+        with caplog.at_level("WARNING", logger="tax_reporting.application.crypto.aggregation"):
+            aggregate_derivatives_entries(entries)
+
+        assert not any("mixed annex routes" in rec.message for rec in caplog.records), (
+            "Uniform-route groups must not trigger the heterogeneity warning"
         )
 
 
@@ -11298,3 +11413,454 @@ def test_fee_suspect_flagging_runs_after_payment_proceeds(tmp_path):
         "reason must be present so the late pass is proven to have run after "
         "payment-proceeds resolution)"
     )
+
+
+class TestDerivativesRouting:
+    """TDD for residency-gated derivatives routing at construction (Modelo 3 / art. 10(1)(e)).
+
+    PT-gated: a non-PT operator routes the derivatives P&L entry to Anexo J Q9.2.B with
+    operation code G30; a PT-resident operator routes to Anexo G Q13 with G51. Non-PT
+    jurisdictions emit no Modelo 3 hint at all (Invariant 2).
+
+    One nonresident case (``test_nonresident_operator_gets_j_q92b_g30``) drives the real
+    ``_split_ogr_index`` construction site (ogr_handler.py:265-282) via a synthetic OGR row
+    whose wallet resolves to a non-PT operator. This forces the wiring under test; the pure
+    ``_derivatives_route`` helper is unit-tested separately and must NOT substitute for
+    construction coverage (the suite would otherwise go GREEN while construction still omits
+    the routed fields).
+
+    The resident / unknown / non-PT cases call the pure helper
+    ``_derivatives_route(country, operator_country)`` directly (added in Task A2).
+    """
+
+    def test_nonresident_operator_gets_j_q92b_g30(self):
+        """Non-PT operator (AE) under a PT jurisdiction routes to J/Q9.2.B + G30 via construction.
+
+        Builds the entry through the real ``_split_ogr_index`` path: a synthetic Profit OGR
+        row whose wallet is ``ByBit`` (resolves to ``operator_country="AE"``) plus a PT
+        jurisdiction with derivatives separation enabled. The resulting ``DerivativesPnLEntry``
+        must carry ``annex_hint == "J/Q9.2.B"`` and ``operation_code == "G30"``.
+
+        Pins the contract implemented at the construction site
+        (ogr_handler.py via entities.py), where the route is resolved per row.
+        """
+        from tax_reporting.application.crypto.ogr_handler import _split_ogr_index
+
+        rows = [
+            ParsedOgrRow(
+                date="2025-01-12",
+                asset="USDT",
+                gain_loss=Decimal("140.18"),
+                row_type="Profit",
+                wallet="ByBit",
+            ),
+        ]
+        capital_entries: list[CryptoCapitalGainEntry] = []
+
+        _spot_index, derivatives_entries = _split_ogr_index(
+            rows, capital_entries, build_koinly_jurisdiction(separate_derivatives_reporting=True)
+        )
+
+        assert len(derivatives_entries) == 1
+        entry = derivatives_entries[0]
+        # ByBit resolves to AE (operator_origin.py:160), a non-PT alpha-2 code.
+        assert entry.operator_country == "AE"
+        assert entry.annex_hint == "J/Q9.2.B"
+        assert entry.operation_code == "G30"
+
+    def test_resident_route_through_full_construction(self, monkeypatch):
+        """PT-resident counterparty routes to G/Q13 + G51 through real construction.
+
+        Mirrors ``test_nonresident_operator_gets_j_q92b_g30`` but injects a PT-resident
+        operator so the resident branch of ``_split_ogr_index`` is exercised end-to-end.
+        No PT-domiciled operator is registered in ``operator_origin.py`` (so an e2e
+        fixture cannot resolve a PT operator from wallet labels); the
+        ``resolve_operator_origin`` symbol in the ``ogr_handler`` namespace is patched
+        to return an ``OperatorOrigin(operator_country="PT")``. This is the same idiom
+        used by ``test_separate_derivatives_disabled_produces_no_derivatives_entries_and_no_operator_resolution``
+        (line ~9536) and keeps the test on the real ``_split_ogr_index`` construction
+        site rather than calling ``_derivatives_route`` directly. If construction wiring
+        ever drops the resident branch, this fails (the entry would carry the neutral
+        blank default, not G/Q13 + G51).
+        """
+        from tax_reporting.application.crypto import ogr_handler
+        from tax_reporting.application.crypto.ogr_handler import _split_ogr_index
+
+        pt_operator = OperatorOrigin(
+            platform="PTOperator",
+            service_scope="crypto",
+            operator_entity="PT Resident Entity",
+            operator_country="PT",
+            source_url="",
+            source_checked_on="2026-01-01",
+            confidence="high",
+            review_required=False,
+            valid_from="2026-01-01",
+        )
+        monkeypatch.setattr(ogr_handler, "resolve_operator_origin", lambda *_a, **_kw: pt_operator)
+
+        rows = [
+            ParsedOgrRow(
+                date="2025-01-12",
+                asset="USDT",
+                gain_loss=Decimal("140.18"),
+                row_type="Profit",
+                wallet="PTOperator",
+            ),
+        ]
+        capital_entries: list[CryptoCapitalGainEntry] = []
+
+        _spot_index, derivatives_entries = _split_ogr_index(
+            rows, capital_entries, build_koinly_jurisdiction(separate_derivatives_reporting=True)
+        )
+
+        assert len(derivatives_entries) == 1
+        entry = derivatives_entries[0]
+        assert entry.operator_country == "PT"
+        assert entry.annex_hint == "G/Q13"
+        assert entry.operation_code == "G51"
+
+    def test_non_pt_jurisdiction_blanks_through_full_construction(self):
+        """Non-PT jurisdiction emits blank annex/operation code through real construction.
+
+        Construction-path counterpart to ``test_non_pt_jurisdiction_blanks_routing``:
+        drives the real ``_split_ogr_index`` site under a non-PT jurisdiction (DE) so
+        the constructed ``DerivativesPnLEntry`` must carry blank ``annex_hint`` and
+        ``operation_code`` (Invariant 2: Modelo 3 output is PT-gated). The
+        ByBit/AE operator is intentional: even a routable counterparty must NOT
+        produce a Modelo 3 hint when the filing jurisdiction is non-PT. If a future
+        change adds a fallback default at construction (e.g. ``annex_hint=route or
+        "G/Q13"``), the pure-helper tests stay green while this test fails, catching
+        the silent PT-annex emission for a non-PT return.
+        """
+        from tax_reporting.application.crypto.ogr_handler import _split_ogr_index
+
+        rows = [
+            ParsedOgrRow(
+                date="2025-01-12",
+                asset="USDT",
+                gain_loss=Decimal("140.18"),
+                row_type="Profit",
+                wallet="ByBit",
+            ),
+        ]
+        capital_entries: list[CryptoCapitalGainEntry] = []
+
+        _spot_index, derivatives_entries = _split_ogr_index(
+            rows,
+            capital_entries,
+            build_koinly_jurisdiction(
+                separate_derivatives_reporting=True,
+                country="DE",
+                timezone=ZoneInfo("Europe/Berlin"),
+            ),
+        )
+
+        assert len(derivatives_entries) == 1
+        entry = derivatives_entries[0]
+        # ByBit resolves to AE, a routable counterparty, but a non-PT filing
+        # jurisdiction emits no Modelo 3 annex regardless of the operator.
+        assert entry.annex_hint == ""
+        assert entry.operation_code == ""
+
+    def test_resident_operator_gets_g_q13_g51(self):
+        """PT-resident operator under a PT jurisdiction routes to G/Q13 + G51.
+
+        Calls the pure helper ``_derivatives_route(country, operator_country)`` directly
+        (added in Task A2).
+        """
+        from tax_reporting.application.crypto.ogr_handler import _derivatives_route
+
+        annex_hint, operation_code = _derivatives_route("PT", "PT")
+
+        assert annex_hint == "G/Q13"
+        assert operation_code == "G51"
+
+    def test_unknown_country_defaults_nonresident(self):
+        """UNKNOWN operator country under a PT jurisdiction defaults to non-resident (J/Q9.2.B + G30).
+
+        Fail-safe: when operator origin cannot be resolved, route to the non-resident annex
+        rather than silently claiming PT residence. Calls the pure helper directly.
+        """
+        from tax_reporting.application.crypto.ogr_handler import _derivatives_route
+
+        annex_hint, operation_code = _derivatives_route("PT", "UNKNOWN")
+
+        assert annex_hint == "J/Q9.2.B"
+        assert operation_code == "G30"
+
+    def test_non_pt_jurisdiction_blanks_routing(self):
+        """Non-PT jurisdiction (DE) emits no Modelo 3 hint regardless of operator country.
+
+        Invariant 2: jurisdiction-specific output is gated on ``TaxJurisdictionConfig.country``;
+        a non-PT return has no Modelo 3 annex, so the hint and operation code are blank.
+        Calls the pure helper directly. A bare ``"DE"`` literal is used as a test input
+        (not a membership check), so no constant is needed.
+        """
+        from tax_reporting.application.crypto.ogr_handler import _derivatives_route
+
+        annex_hint, operation_code = _derivatives_route("DE", "PT")
+
+        assert annex_hint == ""
+        assert operation_code == ""
+
+    def test_pt_jurisdiction_empty_operator_defaults_nonresident(self):
+        """PT jurisdiction with an empty operator country defaults to non-resident (J/Q9.2.B + G30).
+
+        Fail-safe mirror of the UNKNOWN case: an empty operator country must not be
+        treated as PT-resident. Calls the pure helper directly.
+        """
+        from tax_reporting.application.crypto.ogr_handler import _derivatives_route
+
+        annex_hint, operation_code = _derivatives_route("PT", "")
+
+        assert annex_hint == "J/Q9.2.B"
+        assert operation_code == "G30"
+
+    def test_non_pt_jurisdiction_unknown_operator_blanks_routing(self):
+        """Non-PT jurisdiction with an UNKNOWN operator still emits no Modelo 3 hint.
+
+        Guards that the non-PT blank branch does not depend on the operator country
+        value: even an UNKNOWN counterparty under a non-PT return yields blank routing.
+        Calls the pure helper directly. A bare ``"DE"`` literal is a test input.
+        """
+        from tax_reporting.application.crypto.ogr_handler import _derivatives_route
+
+        annex_hint, operation_code = _derivatives_route("DE", "UNKNOWN")
+
+        assert annex_hint == ""
+        assert operation_code == ""
+
+
+# --- Task B1 (RED): official income-code resolution, PT-gated ---
+
+
+@pytest.mark.unit
+class TestIncomeCode:
+    """Tests pinning the PT-gated official income-code resolution.
+
+    These pin the contract B2 implemented in ``_resolve_income_code`` and
+    ``aggregate_taxable_rewards``: under ``country == "PT"`` only the
+    fiat-reward interest family resolves to the official Tabela V code ``E25``;
+    every other Koinly type resolves to ``""`` (no synthetic ``40x`` default);
+    under any non-PT country every type resolves to ``""`` (Invariant 2).
+
+    The pure-helper cases call the two-arg signature
+    ``_resolve_income_code(source_type, country)``. The aggregation case threads
+    ``country=`` into ``aggregate_taxable_rewards``. The production-path case
+    drives the real ``generate_tax_report`` entrypoint under a non-PT jurisdiction.
+    """
+
+    # -- pure helper: PT interest family -> E25 --
+
+    @pytest.mark.parametrize("koinly_type", ["interest", "lending", "lending interest"])
+    def test_interest_resolves_to_e25_under_pt(self, koinly_type: str):
+        """Under PT, the fiat-interest family resolves to the official E25."""
+        assert _resolve_income_code(koinly_type, country="PT") == "E25"
+
+    # -- pure helper: every other type -> "" (NOT any 40x) under PT --
+
+    @pytest.mark.parametrize(
+        "koinly_type",
+        ["staking", "reward", "airdrop", "mining", "fork", "dividend"],
+    )
+    def test_other_type_resolves_to_official_under_pt(self, koinly_type: str):
+        """Under PT, non-interest types have no Tabela V code: official value is blank.
+
+        Each must NOT return any synthetic ``40x`` code (the legacy default).
+        """
+        result = _resolve_income_code(koinly_type, country="PT")
+        assert result == ""
+        assert not result.startswith("40"), f"Synthetic 40x code leaked for {koinly_type!r}: {result!r}"
+
+    # -- pure helper: unknown type -> "" (old "401" default is gone) --
+
+    def test_default_fallback_blank_under_pt(self):
+        """Under PT, an unknown Koinly type resolves to blank, not the legacy '401'."""
+        assert _resolve_income_code("some-unknown-type", country="PT") == ""
+
+    # -- pure helper: non-PT -> "" for every type (Invariant 2) --
+
+    @pytest.mark.parametrize("koinly_type", ["interest", "staking", "mining", "dividend"])
+    def test_non_pt_resolves_blank(self, koinly_type: str):
+        """Under a non-PT country (e.g. DE), every type resolves to blank."""
+        assert _resolve_income_code(koinly_type, country="DE") == ""
+
+    # -- reference-table descriptions must not present synthetic 40x as Tabela V --
+
+    def test_descriptions_not_mislabeled_as_tabela_v(self):
+        """Official-code descriptions must be consistent with Tabela V and free of synthetic 40x.
+
+        B2 consolidates the type -> (official_code, description) mapping into the
+        crypto package. At RED the consolidated owner does not exist and the
+        legacy ``_INCOME_CODE_DESCRIPTIONS`` still carries invented 40x labels,
+        so this fails until the consolidation lands.
+        """
+        from tax_reporting.application.crypto import classification as classification_mod
+
+        # B2 exposes the consolidated mapping on the crypto package; until then
+        # AttributeError / missing attribute is the expected RED signal.
+        descriptions: dict[str, str] = classification_mod.INCOME_CODE_DESCRIPTIONS  # type: ignore[attr-defined]
+
+        # Only E25 is a real Tabela V (Categoria E) code; no synthetic 40x may remain.
+        assert "E25" in descriptions, "E25 official description must be present"
+        for code, desc in descriptions.items():
+            assert not code.startswith("40"), (
+                f"Synthetic 40x code {code!r} still presented as Tabela V: {desc!r}"
+            )
+
+    # -- aggregation threads the REPORTING country (not operator_country) --
+
+    def test_aggregation_threads_reporting_country_to_resolver(self):
+        """aggregate_taxable_rewards must thread the reporting country to the resolver.
+
+        Builds taxable_now interest rewards whose ``operator_origin.operator_country``
+        is FOREIGN (IE) - the discriminator for the silent-correctness trap where
+        B2 could mistakenly thread ``operator_country`` instead of the reporting
+        country. Under ``country="PT"`` the result must carry ``income_code ==
+        "E25"``; under ``country="DE"`` it must be ``""``. If B2 threads the
+        operator country ("IE"), the PT case resolves to "" (non-PT) and fails.
+        """
+        from tax_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
+
+        foreign_operator = dataclasses.replace(_TEST_OPERATOR, operator_country="IE")
+
+        entries = [
+            CryptoRewardIncomeEntry(
+                date="2025-01-01",
+                asset="EUR",
+                amount=Decimal("100"),
+                value_eur=Decimal("100"),
+                income_label="Interest",
+                source_type="interest",
+                wallet="Nexo",
+                platform="Nexo",
+                chain="Nexo",
+                operator_origin=foreign_operator,
+                annex_hint="J",
+                review_required=False,
+                description="Lending interest",
+                tax_classification=RewardTaxClassification.TAXABLE_NOW,
+                foreign_tax_eur=ZERO,
+            ),
+        ]
+
+        pt_result = aggregate_taxable_rewards(entries, country="PT")
+        assert len(pt_result) == 1
+        assert pt_result[0].income_code == "E25"
+        assert pt_result[0].description == "Income code E25 from IE"
+
+        de_result = aggregate_taxable_rewards(entries, country="DE")
+        assert len(de_result) == 1
+        assert de_result[0].income_code == ""
+        assert de_result[0].description == "Reward income from IE"
+
+    # -- production path: non-PT blanks income_code end-to-end --
+
+    def test_production_path_blanks_income_code_under_non_pt(self, tmp_path, monkeypatch):
+        """The production workbook-builder path must blank income_code under a non-PT country.
+
+        This is the ONLY shape that exercises the production call site
+        ``workbook_builder.py:148`` (``aggregate_taxable_rewards``) under a
+        non-PT jurisdiction. ``test_workbook_builder.py`` hardcodes PT today,
+        so without this case a non-PT regression at the production caller ships
+        GREEN.
+
+        Path chosen: the real ``generate_tax_report`` entrypoint, with
+        ``load_configuration_from_file`` monkeypatched on the workbook_builder
+        module to return a DE-jurisdiction ``Config`` (built via
+        ``build_koinly_jurisdiction(country="DE")``). The real
+        ``aggregate_taxable_rewards`` is wrapped to capture its return value so
+        the aggregated ``income_code`` can be asserted without re-deriving it
+        from the written workbook.
+        """
+        from tax_reporting.application.crypto_reporting import (
+            ZERO,
+            CryptoCapitalGainStats,
+            CryptoReconciliationSummary,
+            CryptoRewardIncomeEntry,
+            CryptoTaxReport,
+        )
+        from tax_reporting.application.persisting import workbook_builder
+        from tax_reporting.infrastructure.config import Config
+
+        # DE jurisdiction via the shared test builder.
+        de_jurisdiction = build_koinly_jurisdiction(country="DE")
+
+        # Build a fully valid Config from tests/config.ini (PT), then swap in the
+        # DE jurisdiction. This avoids faking base/rates/security while still
+        # putting a non-PT jurisdiction in front of the crypto aggregation path.
+        import dataclasses as _dc
+
+        pt_config = workbook_builder.load_configuration_from_file()
+        de_config = _dc.replace(pt_config, tax_jurisdiction=de_jurisdiction)
+
+        def _fake_load_config() -> Config:
+            return de_config
+
+        monkeypatch.setattr(workbook_builder, "load_configuration_from_file", _fake_load_config)
+
+        foreign_operator = dataclasses.replace(_TEST_OPERATOR, operator_country="IE")
+        reward_entries = [
+            CryptoRewardIncomeEntry(
+                date="2025-01-01",
+                asset="EUR",
+                amount=Decimal("100"),
+                value_eur=Decimal("100"),
+                income_label="Interest",
+                source_type="interest",
+                wallet="Nexo",
+                platform="Nexo",
+                chain="Nexo",
+                operator_origin=foreign_operator,
+                annex_hint="J",
+                review_required=False,
+                description="Lending interest",
+                tax_classification=RewardTaxClassification.TAXABLE_NOW,
+                foreign_tax_eur=ZERO,
+            ),
+        ]
+
+        # Spy on the production call site: wrap the real aggregator to capture
+        # its return value while preserving production behaviour.
+        real_aggregate = workbook_builder.aggregate_taxable_rewards
+        captured: list[list] = []
+
+        def _capturing_aggregate(reward_entries, *args, **kwargs):  # noqa: ANN002, ANN003
+            result = real_aggregate(reward_entries, *args, **kwargs)
+            captured.append(result)
+            return result
+
+        monkeypatch.setattr(workbook_builder, "aggregate_taxable_rewards", _capturing_aggregate)
+
+        report = CryptoTaxReport(
+            tax_year=2025,
+            capital_entries=[],
+            reward_entries=reward_entries,
+            reconciliation=CryptoReconciliationSummary(
+                capital_rows=0,
+                reward_rows=0,
+                short_term_rows=0,
+                long_term_rows=0,
+                mixed_rows=0,
+                unknown_rows=0,
+                capital_cost_total_eur=Decimal("0"),
+                capital_proceeds_total_eur=Decimal("0"),
+                capital_gain_total_eur=Decimal("0"),
+                reward_total_eur=Decimal("0"),
+                opening_holdings=None,
+                closing_holdings=None,
+            ),
+            capital_gain_stats=CryptoCapitalGainStats.from_entries([]),
+        )
+
+        output = tmp_path / "report_de.xlsx"
+        workbook_builder.generate_tax_report(str(output), {}, crypto_tax_report=report)
+
+        assert captured, "aggregate_taxable_rewards was not invoked on the production path"
+        aggregated = captured[0]
+        assert len(aggregated) == 1
+        assert aggregated[0].income_code == "", (
+            f"Non-PT production path must blank income_code, got {aggregated[0].income_code!r}"
+        )
+

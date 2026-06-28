@@ -171,7 +171,7 @@ def make_operator_origin(**overrides: object):
 # Committed synthetic Koinly 2025 example fixture directories.
 #
 # Crypto e2e/unit tests read these committed synthetic exports (never the
-# gitignored personal ``resources/source/koinly2025/``). Each directory is
+# gitignored personal ``resources/source/<year>/koinly/``). Each directory is
 # isolated to one scenario family (derivatives separation / zero-basis
 # materiality / payment-proceeds) per Design Invariant #8 of the
 # 2026-06-22-crypto-tests-off-local-fixtures plan.

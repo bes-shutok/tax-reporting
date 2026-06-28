@@ -132,13 +132,19 @@ class DerivativesPnLEntry:
         event_type: PROFIT or LOSS, used as part of the aggregation key so a profit and a
             fee on the same day do not collapse into a misleading net.
         source_ref: Audit reference back to the source row (e.g., "OGR:2025-01-12:USDT").
-        legal_category: Legal basis citation; defaults to art. 10(1)(e).
+        legal_category: Legal basis citation; defaults to art. 10(1)(e). Retained for
+            audit/programmatic access; not currently rendered to the workbook (the
+            per-sheet detail line that rendered it was removed when routing moved to
+            the per-row Annex/Codigo columns).
         review_required: True when classification was ambiguous; triggers "YES: <reason>".
         review_reason: Specific actionable reason when review_required is True.
-        annex_hint: IRS Anexo G Quadro 13 routing; constant for derivatives
-            (no 365-day exemption), unlike crypto where it branches on holding period.
-        operation_code: Operation code from Tabela de Códigos; ``G51`` covers
-            "instrumentos financeiros derivados" (closed AT enum G51-G54).
+        annex_hint: IRS Anexo routing hint. Resolved per (taxpayer jurisdiction,
+            counterparty residency) by the OGR handler: PT + PT-resident operator ->
+            ``"G/Q13"``; PT + any other operator -> ``"J/Q9.2.B"``; non-PT -> blank.
+            Defaults to the neutral blank (no PT hint without a PT jurisdiction).
+        operation_code: Operation code from Tabela de Códigos. Resolved alongside
+            ``annex_hint``: PT resident -> ``G51`` (instrumentos financeiros derivados);
+            PT non-resident -> ``G30``; non-PT -> blank. Defaults to blank.
         operator_entity: Operator entity from ``resolve_operator_origin()``; empty until
             the OGR handler populates it. Raw wallet name is used for unmapped platforms.
         operator_country: Resolved counterparty country code (Tabela X); ``"UNKNOWN"`` for
@@ -158,10 +164,12 @@ class DerivativesPnLEntry:
     legal_category: str = "CIRS art. 10(1)(e)"
     review_required: bool = False
     review_reason: str = ""
-    # IRS Anexo G Quadro 13 routing; constant for derivatives (no 365-day exemption).
-    annex_hint: str = "G/Q13"
-    # Operation code from Tabela de Códigos; G51 covers "instrumentos financeiros derivados".
-    operation_code: str = "G51"
+    # IRS Anexo routing hint. Resolved per (country, counterparty residency) by the OGR
+    # handler; defaults to the neutral blank (no PT hint without a PT jurisdiction).
+    annex_hint: str = ""
+    # Operation code from Tabela de Códigos. Resolved alongside annex_hint by the OGR
+    # handler; defaults to the neutral blank.
+    operation_code: str = ""
     # Operator entity/country from resolve_operator_origin(); empty until OGR handler populates.
     operator_entity: str = ""
     operator_country: str = ""
@@ -415,7 +423,8 @@ class AggregatedRewardIncomeEntry:
     by income_code + source_country. Only includes rewards classified as taxable_now.
 
     Attributes:
-        income_code: Tabela V income code for the reward type (e.g., "401" for crypto capital income).
+        income_code: Official Modelo 3 income code for the reward type (e.g., "E25"
+            for the PT interest family under PT jurisdiction; "" when no code applies).
         source_country: Tabela X country code where the income originated (from operator entity).
         gross_income_eur: Sum of all EUR values for this aggregation key.
         foreign_tax_eur: Sum of all foreign taxes paid (if any).

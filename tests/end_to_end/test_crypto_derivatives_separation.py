@@ -7,7 +7,7 @@ between Crypto Gains (spot fee disposal lots) and Derivatives P&L
 (art. 10(1)(e) realizations), and that disabling
 ``separate_derivatives_reporting`` reproduces the legacy mixed value exactly.
 
-Migrated off the gitignored personal ``resources/source/koinly2025/`` export by
+Migrated off the gitignored personal ``resources/source/<year>/koinly/`` export by
 plan ``docs/history/plans/2026-06-22-crypto-tests-off-local-fixtures.md`` Task 3.
 All golden values are recomputed against the synthetic CSVs by independent
 arithmetic (see the worked comments next to each assertion). The synthetic
@@ -971,40 +971,36 @@ class TestPipelineIntegration:
 
 
 class TestDerivativesE2E:
-    """E2E characterization for the 10-column Derivatives P&L sheet layout.
+    """E2E characterization for the 12-column Derivatives P&L sheet layout.
 
     Covers Task 5 of the 2026-06-15 derivatives P&L columns plan: the
     synthetic data run (koinly2025 fixture, separate_derivatives_reporting=True)
-    must render the Derivatives P&L tab with a 10-column header plus a row-2
-    detail line carrying the constant Annex hint, Operation code, and Legal
-    Category fields, and populate operator_country for every derivatives row
-    using the production ``resolve_operator_origin`` wiring (Task 2). The
-    13-column layout predates the bc90c21 refactor that collapsed those three
-    constant fields onto the detail line. These tests are structural (column
-    population, country-code validity) so they survive fixture platform changes
-    per development_lessons.md #96.
+    must render the Derivatives P&L tab with a 12-column header where Annex
+    (col 11) and Código (col 12) are written per row, and populate
+    operator_country for every derivatives row using the production
+    ``resolve_operator_origin`` wiring (Task 2). These tests are structural
+    (column population, country-code validity) so they survive fixture platform
+    changes per development_lessons.md #96.
     """
 
     _DERIVATIVES_SHEET_NAME = "Derivatives P&L"
-    _EXPECTED_NUM_COLUMNS = 10
+    _EXPECTED_NUM_COLUMNS = 12
     _HEADER_ROW = 3
 
-    def test_derivatives_sheet_has_ten_columns(self) -> None:
-        """The Derivatives P&L sheet has 10 populated header cells in row 3.
+    def test_derivatives_sheet_has_twelve_columns(self) -> None:
+        """The Derivatives P&L sheet has 12 populated header cells in row 3.
 
         Renders the production sheet from the synthetic koinly2025 report and
         counts populated header cells in row 3 (column population per
         development_lessons.md #96, not hardcoded value exclusions). The
-        last populated header cell must sit at column 10 and read "Review".
-
-        Annex hint, Operation code, and Legal Category used to be columns
-        but were collapsed onto a row-2 detail line because they are
-        constants across all derivatives rows.
+        last populated header cell must sit at column 12 and read "Código".
+        Annex (col 11) and Código (col 12) are written per row from each
+        entry's annex_hint/operation_code.
         """
         report = _load_with_separation(separate_derivatives=True)
 
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction(separate_derivatives_reporting=True))
         ws = wb[self._DERIVATIVES_SHEET_NAME]
 
         populated = [
@@ -1013,15 +1009,15 @@ class TestDerivativesE2E:
             if ws.cell(self._HEADER_ROW, c).value is not None
         ]
         assert len(populated) == self._EXPECTED_NUM_COLUMNS, (
-            "Derivatives P&L header row should have exactly 10 populated cells. "
+            "Derivatives P&L header row should have exactly 12 populated cells. "
             f"Got {len(populated)}: {populated}"
         )
         last_col, last_value = populated[-1]
         assert last_col == self._EXPECTED_NUM_COLUMNS, (
-            f"Last header cell should be at column 10, got column {last_col}"
+            f"Last header cell should be at column 12, got column {last_col}"
         )
-        assert last_value == "Review", (
-            f"Last header cell should read 'Review', got {last_value!r}"
+        assert last_value == "Código", (
+            f"Last header cell should read 'Código', got {last_value!r}"
         )
 
     def test_derivatives_rows_operator_country_is_valid_or_unknown(self) -> None:
@@ -1046,7 +1042,7 @@ class TestDerivativesE2E:
         )
 
         wb = openpyxl.Workbook()
-        write_derivatives_sheet(wb, report)
+        write_derivatives_sheet(wb, report, build_koinly_jurisdiction(separate_derivatives_reporting=True))
         ws = wb[self._DERIVATIVES_SHEET_NAME]
 
         header_row = self._HEADER_ROW

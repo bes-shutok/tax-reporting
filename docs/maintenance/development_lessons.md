@@ -1535,7 +1535,7 @@ When a plan task, design invariant, or gist example makes a claim about producti
 **Required behavior:**
 1. Before writing any plan task that references a production-code fact (field name, line number, file path, function signature, return type), open the source file and confirm the fact.
 2. Field-semantics claims are the highest-risk category: a plan that says "field X carries minute-precision timestamp" must be verified by reading the parser that populates field X. If the parser strips the time component, the claim is wrong and downstream matching logic built on it will fail.
-3. Line-number claims drift as the file evolves; cite line numbers only after reading the file at plan time, and prefer function-name anchors over line numbers when the surrounding code is stable.
+3. Line-number claims drift as the file evolves; cite line numbers only after reading the file at plan time, and prefer function-name anchors over line numbers when the surrounding code is stable. The same applies to inline code comments: name the guarding symbol or feature (e.g. "the fail-fast in the crypto loader") rather than a `file.py:NNN` line, because any edit above the anchor shifts the number.
 4. When a user-facing design preference (e.g., "match by timestamp + asset + wallet + amount") implies a code capability (timestamp precision on a domain field), verify the capability exists before accepting the preference. If it does not, surface the trade-off explicitly in the plan's Monitor section rather than silently substituting an alternative.
 5. When acting on a code-review finding, verify the finding's OWN claims before applying or routing it: count the sites a "duplication" finding names (grep for the shared pattern across the package, not just the two the finding cites), and confirm any path/function the finding's proposed fix names actually exists and carries the responsibility claimed. A finding can understate scope or propose a wrong target; applying its proposed fix verbatim can write a second wrong path or leave the real duplication in place.
 
@@ -3002,3 +3002,417 @@ When an external or secondary web source appears to CONFLICT with a value the re
 **Distinguishing from #100 and the AGENTS.md source-preference rule:** Lesson #100 mandates verifying a plan-time claim (path, line, field, function shape) against actual source BEFORE depending on it. The AGENTS.md hard rule ("prefer authoritative PDFs over raw HTML; reuse local mirrors") governs what to FETCH and consult. This lesson covers the narrower conflict-resolution decision: what to do once a secondary source already DISAGREES with an archived official source. The fix is a source-authority judgment (official archive wins outright), not a verification step or a fetch preference.
 
 **How to apply:** Before writing "the repo conflicts with source X" or "this is unresolved," check whether the repo already archives an official source for the claim. If it does, the official archive settles it; cite the archived file and form field, and do not record the secondary claim as a competing position.
+
+---
+
+## 172. Authoritative law portals render the CURRENT version; for a prior fiscal year, use the redação in force for that period, cross-checked against a year-specific secondary source.
+
+**What happened (2026-06-24 FY2025 englobamento calc):** The AT portal page for CIRS art. 68 (IRS bracket table) renders the CURRENT law (OE2026, applies to 2026 income): first bracket 8,342 @ 12.5%. That is the wrong table for a 2025-income return filed in 2026. The 2025-income table (OE2025, first bracket 8,059 @ 13.0%) is the prior "redação em vigor até dezembro de 2025" version the page lists but does not render by default. A web-search LLM summary also mixed in 12.5% first-bracket figures, compounding the confusion. Using the current table would have changed the marginal bracket and the englobamento-vs-28% decision inputs. Resolved by cross-checking the OECD Tax and Benefit Policy Descriptions for Portugal 2025 (statutory schedule, reference date 1 Jan 2025) and PwC Guia Fiscal 2025, both of which confirmed the 8,059/13.0% 2025-income table.
+
+**General rule:** When an authoritative source publishes versioned or time-series legal data (a tax code portal, a regulation page, an official form), the default page render is the CURRENT version, which may not be the version applicable to the reporting period you are working on. Before using any rate, threshold, bracket, or limit, confirm it is the redação/version in force for the specific date or fiscal year of the task. Do not treat a single web-search summary as confirmation; secondary summaries frequently conflate the current version with the period-specific one.
+
+**Distinguishing from #171 (official archive wins over secondary) and #100 (verify claims against source):** #171 resolves conflicts between a secondary source and an ALREADY-ARCHIVED official source; #100 verifies plan-time claims against actual source. This lesson is the orthogonal version-selection step that must happen BEFORE either: the portal you consult is official and authoritative, but it is showing the wrong time slice. No archive conflict exists yet; the error is fetching the current redação when the task needs a prior one.
+
+**How to apply:** For any year-sensitive tax figure, (1) identify the fiscal year/period the task targets and the law version in force for it ("redação em vigor até <date>"); (2) read the portal's version selector / "Redações anteriores" listing rather than the default render; (3) cross-check the period-specific value against at least one year-dated secondary source (e.g. OECD TaxBEN for that year, a Big-4 Guia Fiscal for that year) whose stated reference date matches the target period. Flag the version used in the artifact, per the no-hardcoding rule (CLAUDE.md §4).
+
+---
+
+## 173. "The code emits value X" only proves X is correct for the modeled subcase; a binding source can introduce a discriminator the code does not model.
+
+**Principle:** Family H (verify the real thing, not the abstraction)
+
+When verifying that a classification or routing the code produces is "correct," confirming the code path emits a given annex/code/value is NOT sufficient. The verifying authority (a binding ruling, law, form instructions) may condition the correct answer on a discriminator the code does not branch on at all. In that case the emitted value is correct only for the modeled subcase (or a default), and is wrong for every other value of the unmodeled dimension. The deeper error is equating "the pipeline emits X consistently" with "X is the correct filing value."
+
+**What happened (2026-06-24 derivatives routing):** A doc-review round "confirmed" the derivatives annex routing against the source code: `DerivativesPnLEntry` emits `annex_hint="G/Q13"`, `operation_code="G51"`, and the live workbook header reads "Annex: G/Q13 | Código: G51", so the round declared the repo correct. But the AT binding ruling the routing rests on (Processo 28298/2025) splits the destination on a discriminator the code never reads, counterparty tax residency: resident counterparty -> Anexo G Q13 / G51; non-resident counterparty -> Anexo J Q9.2.B / G30. The filer's exchanges (ByBit/Binance/OKX) are non-resident, so the workbook's Q13/G51 is wrong for the actual case; the code emits it unconditionally because it does not model residency at all. Verifying "the code emits G51" proved only that the resident subcase is wired, not that G51 is the correct value.
+
+**General rule:** When a review or verification cites a binding authority (ruling, statute, form instruction) as the basis for a value the code produces, check whether that authority conditions the answer on a dimension the code does NOT branch on (a property of the counterparty, the asset, the date range, the residency, the instrument subtype). If the authority adds a discriminator the code ignores, the emitted value is conditional, not authoritative, and must be reported as "correct only for the modeled subcase" until the code models the dimension. Do not let a green "the code emits X" check close a correctness question that the authority answers conditionally.
+
+**Distinguishing from #72 and #100:** #72 requires tracing the user's specific case end-to-end through the pipeline (data-flow verification). #100 requires verifying a plan-time claim against actual source before depending on it. This lesson is the upstream failure: the verification correctly traced the code path AND read the authority, but stopped at "code emits X" without asking whether the authority makes X depend on something the code does not compute. The fix is a discriminator-coverage check against the cited authority, not a deeper data trace.
+
+**How to apply:** Whenever a correctness verdict rests on "the code emits value V" plus "authority A says V is right," enumerate the conditions/branches A attaches to V (read the ruling/statute's full conditional, not its conclusion). For each condition, confirm the code actually computes and branches on that dimension. Any condition the code does not model downgrades the verdict to "V is correct only when <condition> = <modeled value>"; flag the unmodeled discriminator as a separate implementation decision (see #174 for propagating the corrected text across surfaces).
+
+---
+
+## 174. A corrected domain rule is often echoed in multiple rendered surfaces; grep the stale string across the corpus and fix every surface in one pass.
+
+**Principle:** Family D (single source of truth)
+
+A single domain rule (a tax-code scope limit, an annex-routing decision, a holding-period exclusion) is frequently rendered in more than one place: the emitted workbook assumptions/methodology text, the decision-point doc, the rules doc, and sometimes a constant in code. When a review finding flags the rule as stale in ONE location, the same stale wording typically survives in the sibling surfaces. Fixing only the named file leaves the corpus internally contradictory: the code/docs the user actually files from still state the old rule.
+
+**What happened (2026-06-24 art. 10(19) derivatives exclusion):** A review finding flagged the stale "Anexo J Q9.4 / long-term (>=365 days) excluded" wording for derivatives in the `Assumptions & Methodology` sheet text (`assumptions_sheet.py`). The same stale claim also lived in `decision_points/2025.md` (the "Filing Guidelines" block, two lines) and in `crypto_rules.md` (PT-C-032, which applied the spot-crypto 365-day exclusion to derivatives). Correcting only the assumptions text would have left two authoritative docs still telling the filer to exclude long-term derivative losses and to use Anexo J Q9.4. The fix had to touch all three surfaces plus their tests, with the same corrected rule (no 365-day exemption for derivatives; art. 10(19) is scoped to alinea k spot criptoativos only).
+
+**General rule:** When you correct or invalidate a domain rule in response to a finding, treat the stale string as a token to grep for across the whole corpus (source code, emitted-text constants, decision-point docs, rules docs, tests) and correct every surface in the same pass. A review finding names the site the reviewer happened to read; the rule almost certainly propagates beyond it. Do not close the finding until a corpus-wide grep for the stale wording returns nothing.
+
+**Distinguishing from #111 and #1540:** #111 greps ALL test files for stale assertions after a data-flow semantics change (test-scope). #1540 greps the package to count the true scope of a code-review duplication finding before acting (review-reception scope). This lesson is the doc/surface-propagation analog: the trigger is correcting a RULE (not changing data flow or triaging a duplication), and the target is every rendered/doc surface that echoes the rule text, not just tests or code sites. The preventive action (corpus-wide grep for the stale token before closing) is the shared shape.
+
+**How to apply:** After correcting a domain rule, run `grep -rn "<stale wording>" src/ docs/ tests/` (and any emitted-text constants). For each hit, either apply the same correction or confirm the hit legitimately still applies the old rule. Only close the finding when the grep is clean. Pair with #173: if the correction came from a binding authority, also confirm the corrected rule is not conditional on an unmodeled discriminator before propagating it.
+
+---
+
+## 175. DTA Suspension and NHR Blacklist Distinctions
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
+When assessing NHR exemptions for foreign income, strictly rely on Portugal's domestic tax haven blacklist (Portaria n.º 150/2004) rather than international or EU non-cooperative lists.
+
+**Trigger:** A Double Taxation Agreement (DTA) is suspended, or a country is added to an EU/international blacklist, and you need to determine if NHR exemption still applies.
+
+**Rule:** 
+- If a DTA is suspended, the Portuguese AT falls back to domestic law (CIRS Art. 81(5)). Foreign rental income remains exempt under NHR if it may be taxed in the source country under the OECD Model AND the source country is not on the Portuguese blacklist (Portaria n.º 150/2004).
+- Do not assume an EU blacklist addition automatically nullifies Portuguese NHR exemptions; Portugal's domestic Portaria determines the legal status.
+
+**Example (2026-06-25 Russia DTA suspension):** Russia was added to the EU non-cooperative list in 2023, and it suspended most DTA articles with Portugal. However, because Russia was not added to Portugal's domestic Portaria 150/2004 list, the NHR fallback rule (CIRS Art. 81(5)) still legally exempts Russian rental income in Portugal.
+
+---
+
+## 176. Multilingual Glossary: Separate Generic from Jurisdiction-Specific, English Defines
+
+**Principle:** Documentation corpus structure (reference docs must be navigable and unambiguous in the project's working language).
+
+**Trigger:** Extending a glossary, dictionary, or reference doc that mixes language-neutral engineering terms with jurisdiction- or domain-specific terms that originate in another language (e.g. Portuguese tax-form field names, operation codes, legal article titles).
+
+**Rule:**
+- **Scope-tag the sections.** Separate language-neutral/engineering terms (FIFO, OGR, holding period) from jurisdiction- or domain-specific terms (schedules, quadros, operation codes, legal concepts) into distinct, explicitly labeled sections. Do not interleave them in one flat list.
+- **English is the defining language.** Write the definition in the project's primary language (English). Preserve the original non-English naming (the exact portal/form string) alongside, in *italics*, for identification, never as the definition. Example: "**G01** - *Alienação onerosa de ações / partes sociais* - taxable disposal of shares, art. 10(1)(b)." Not: "G01 - Alienação onerosa de ações (shares)..."
+- **State the convention once at the top** of the doc (language convention + section layout) so future additions follow it without re-deriving the rule.
+
+**What happened (2026-06-26 glossary extension):** The first revision of `docs/maintenance/glossary.md` added IRS filing codes (G01, G30, Anexos, Quadros) as undifferentiated bullets interleaved with generic reporting terms (CG, OGR, FIFO), and used Portuguese as the primary definition language. The user flagged two problems: (a) generic and PT-specific content were inconsistent in the same sections; (b) Portuguese led the definition. The fix restructured into four labeled sections (Generic data & reporting terms, PT tax-jurisdiction terms, EU terms, Internal identifiers) with a top-of-file language convention and English-primary definitions preserving native naming in italics.
+
+**How to apply:** Before adding a term to `docs/maintenance/glossary.md`, decide which labeled section it belongs to (generic vs jurisdiction-tagged), write the English definition, and append the original-language name in italics if the term originates in a non-English source. When a new jurisdiction is introduced, add a new labeled section rather than mixing it into an existing one. The in-place canonical statement of this convention is the top of `glossary.md`; this lesson is the discoverable cross-reference.
+
+## 177. Tax Treatment of Structured Products and Certificates
+
+**Principle:** Domain knowledge / Legal representation.
+
+**Trigger:** When classifying a new asset, specifically one ending in "Certificate", "Tracker", or "Note".
+
+**Rule:** 
+- Structured products (e.g. certificates) are classified as derivatives (Code G30 in Anexo J Q9.2B), not as shares (Code G01 in Q9.2A). 
+- The "País da Fonte" (Country of Source) for structured products is strictly the legal domicile of the issuer entity, regardless of the ISIN prefix (e.g., `CH` for Switzerland) or the exchange where it trades.
+- **Blacklist trap:** Under CIRS Art. 43(7), any capital loss resulting from an issuer domiciled in a blacklisted tax haven (e.g., the United Arab Emirates) is completely non-deductible. It cannot offset other gains or be carried forward.
+
+**Example (2026-06-26 PSTEYV):** A "Tracker Certificate" (PSTEYV) traded on the Swiss exchange with a `CH` ISIN was initially misclassified as a share. Its true issuer was a Vontobel entity in the Dubai International Financial Centre (UAE). Because the UAE is on Portugal's blacklist (Portaria 150/2004), the resulting ~3,900 EUR loss was entirely non-deductible, significantly altering the net taxable base.
+
+---
+
+## 178. Never Write Temporary Artifacts to Tracked Folders
+
+**Principle:** Repository hygiene.
+
+**Trigger:** When creating a one-off scratch script or a temporary data file.
+
+**Rule:** 
+- Temporary artifacts (scratch files, throwaway scripts like `fix_data.py`) must never be placed in git-tracked folders like the project root.
+- Use the dedicated git-ignored scratch folder (`{tmp_dir}`) or the system-provided scratch space.
+
+**What happened (2026-06-26):** A temporary `fix_anexoj.py` script was created in the project root to perform bulk markdown edits, leaving untracked pollution in the git tree that required manual cleanup.
+
+---
+
+## 179. Anexo J Quadro 8A Has No Per-Payer Discriminator; Aggregate by (Código + País)
+
+**Principle:** Domain knowledge / Filing mechanics (Modelo 3, Anexo J).
+
+**Trigger:** When entering multiple Categoria E (capital income) lines in Anexo J Quadro 8 that share the same income code AND the same source country (e.g., several US dividends, all code E10 / country 840).
+
+**Rule:**
+- Quadro 8A (Rendimentos de Capitais, Categoria E) has **no ISIN field and no payer-NIF field** per line. Its columns are: Código do Rendimento, País da Fonte, Rendimento Bruto, and the Imposto Pago no Estrangeiro / Imposto Retido em Portugal sub-blocks.
+- Because there is no per-payer discriminator, the portal's duplicate-line validation key collapses to **(Código + País da Fonte)**. Two lines with the same code AND same country are treated as a repeat and rejected with **error 159J "A linha está repetida"** - even when the gross and WHT amounts differ.
+- **Fix:** aggregate all income lines that share (Código, País da Fonte) into **one row**, summing the gross and summing the withholding tax. The totals are preserved, so downstream englobamento / Anexo L exemption outcomes are unaffected.
+- This applies broadly to any same-code/same-country Cat E grouping (multiple US dividends, multiple EU interest lines, etc.), not just dividends. If a genuine per-payer split is required for some other reason, it cannot be represented in Q8A.
+
+**Example (2026-06-26):** Five US share dividends (code E10, country 840) entered as five separate Q8A rows triggered 159J. Resolved by aggregating them into a single E10/840 row (gross = sum of the five per-row EUR amounts; WHT = sum of the five withholding amounts), alongside the single CA dividend row and the Wirex interest row, for a final Q8 of 3 lines. The per-symbol/per-ISIN breakdown remains the source-of-truth in the reporting worksheet; it just cannot be transcribed one-row-per-line into Q8A.
+
+**Distinguishing from #174 (stale-rule surface propagation):** #174 corrects a RULE echoed across rendered surfaces. This lesson captures a FORM-STRUCTURE constraint (no discriminator field exists) that forces an aggregation at entry time; the trigger is a validation error, not a rule correction.
+
+---
+
+## 180. When a Validator Rejects Input That Is Valid Under Your Assumed Model, Verify the Validator's Actual Key Before Hypothesizing Hidden Data
+
+**Principle:** Family H (verify the real thing, not the abstraction) - model revision over evidence invention.
+
+**Trigger:** An external system's validator/constraint (portal form, DB unique index, API dedup, build rule) rejects input that is valid under the model you have assumed for how that validator decides. The output looks correct to you, yet it is refused.
+
+**Rule:**
+- When observation contradicts your prediction, the bug is more often in your MODEL of the system than in an unseen extra record. Do not reconcile the contradiction by inventing hidden data ("there must be an 8th row I cannot see").
+- First verify the validator's ACTUAL key/constraints: which fields the form exposes, its documented dedup/unique semantics, or the real index columns. Confirm the key composition from the system itself (field list, schema, docs) before reasoning about why rows collide.
+- Prefer revising the model (the key is narrower than assumed) over revising the data (positing invisible duplicates). Only after the key is confirmed should you search for genuine duplicates that collide on the confirmed key.
+
+**What happened (2026-06-26 Quadro 8 validation):** Portal validation rejected an Anexo J Quadro 8 entry with error 159J "A linha está repetida." I assumed the dedup key was (Codigo + Pais + Rendimento Bruto + Imposto), noted none of the visible rows collided on those four fields, and therefore told the user there must be a hidden 8th duplicate row, asking them to locate it. The real cause (found by the user): Q8A exposes NO per-payer field, so the actual dedup key is the narrower (Codigo + Pais da Fonte); the five same-code/same-country US dividend rows collide by design and must be aggregated (see #179). I should have questioned my assumed key the moment the visible rows did not collide on it, rather than positing invisible data.
+
+**General rule:** "My model predicts no collision, but the validator reports one" is evidence that the model of the validator is wrong, not that extra records exist. Verify the validator's real key/constraints from the system before hypothesizing unseen inputs.
+
+**Distinguishing from #173 and #100:** #173 is about the CODE's model missing a discriminator that a binding authority introduces. #100 is about verifying a plan-time claim against source before depending on it. This lesson is about the AGENT's model of an EXTERNAL validator being wrong, and the specific anti-pattern of inventing hidden evidence to preserve a mistaken model instead of confirming the validator's actual semantics and revising the model.
+
+---
+
+## 181. Prepare Portal-Entry Data Against the Official Form's Actual Field List and Title Qualifiers, Not an Assumed Shape
+
+**Principle:** Family H (verify the real thing, not the abstraction) - transcribe against the authority, not a summary.
+
+**Trigger:** When preparing worksheet data to enter into an official IRS annex/Quadro (e.g., Anexo G1 Quadro 7, Anexo J Q9.x/Q8), or when routing a row to an annex based on the annex's title.
+
+**Rule:**
+- **Mirror the form's full column set.** The official form PDF (mirrored under `docs/maintenance/tax/laws/pt/crypto-tax/official/`, e.g. `modelo3_anexo_g1_2025.pdf`) defines exactly which fields a Quadro exposes. Transcribe EVERY one of them per line - for Anexo G1 Q7 that is Titular, Entidade Gestora (NIF Portugues OR Pais), Realizacao (Ano/Mes/Dia/Valor), Aquisicao (Ano/Mes/Dia/Valor), Despesas e encargos, and Pais da contraparte. A net gain/loss aggregate is INSUFFICIENT where the form demands realization value, acquisition value, and expenses as separate fields; capture the gross components from the source workbook, not just the derived net.
+- **Verify each title qualifier clause holds for the data.** An annex title is a conjunction of scope clauses, some negated or directional, and each must be satisfied before routing a row there. Anexo G1 Q7 admits only assets that are (a) criptoativos, (b) "que NAO constituam valores mobiliarios" (non-security tokens - security tokens / tokenized instruments are excluded and route to the securities regime), AND (c) "detidos por periodo SUPERIOR OU IGUAL a 365 dias" (>= 365 days). Negations ("nao") and direction words ("superior" vs "inferior") are easy to misread; parse them deliberately. Note PT inverts the usual intuition: >= 365-day crypto is FULLY EXEMPT (CIRS art. 10(19)), not merely favourably rated.
+- Confirm both the field list and the title wording against the mirrored official PDF before declaring entry data portal-ready.
+
+**What happened (2026-06-26 Anexo G1 Q7):** The filing entry-data worksheet for long-term crypto captured only the net gain/loss per lot (two negative values), but Q7 demands Valor de Realizacao, Valor de Aquisicao, and Despesas as separate fields. Preparing the portal entry required re-opening the personal IRS filing spreadsheet mid-task to pull the gross realization and acquisition values for each lot. Separately, the filer twice challenged the Q7 routing - first reading "Superior ou Igual a 365 Dias" as if it meant < 365 days, then flagging the "que nao constituam valores mobiliarios" qualifier as if it excluded the tokens. Both challenges were answerable (the lots were non-security utility tokens held >= 365 days, so every clause holds), but they showed the title's clauses had not been made explicit in the worksheet.
+
+**General rule:** Entry-data worksheets and routing decisions must be grounded in the official form's actual field list and full title wording, verified against the mirrored PDF - not in an assumed aggregate shape or a keyword match on the title. Negated and directional qualifiers in a title are load-bearing and must be checked per row.
+
+**Distinguishing from #179 and #180:** #179 is a domain fact (Q8A has no per-payer discriminator, so aggregate by Codigo + Pais). #180 is the anti-pattern of inventing hidden data to preserve a wrong model of a validator. This lesson is upstream of both: before any of those filing mechanics matter, the entry data itself must be transcribed against the form's real columns and the routing must satisfy every title clause. #162 ("verify whether a report output is an aggregation before concluding a value is missing") is the inverse direction (a value that looks missing because it was aggregated); this lesson is the forward direction (a form that demands components where only a net was captured).
+
+---
+
+## 182. Jurisdiction-Specific Tax Output Must Be Country-Gated, Never Fire Unconditionally
+
+**Principle:** Family - configuration-driven jurisdiction dispatch (do not bake the primary use case's rules into the unconditional path).
+
+**Trigger:** When adding or revising output that references a jurisdiction-specific tax construct: a national tax-form code table (e.g. Modelo 3 Tabela V income codes such as `E25`, Tabela de Codigos operation codes such as `G51`/`G30`), an annex/Quadro routing string, a country-only reference table or sheet section, or a hardcoded country label (e.g. a literal `"PT"`).
+
+**Rule:**
+- **Gate at the resolution layer, not the renderer.** The helper/resolver that computes the jurisdiction-specific value takes the reporting country (`TaxJurisdictionConfig.country`) as a parameter. Renderers read the already-resolved entry field; they do not branch on country themselves (the one exception is a sheet that emits a country-only reference section, which receives `jurisdiction` to decide whether to render at all).
+- **Non-configured country leaves the field blank and omits country-only sections.** Never emit a synthetic placeholder code, and never hardcode the primary country's label. Unknown/missing inputs under the configured country also resolve to blank rather than a synthetic default.
+- **Defaults are jurisdiction-neutral.** Entity/record field defaults are the blank/neutral route, so direct construction without a configured jurisdiction cannot emit the primary country's rules (fail safe).
+- **The pipeline targets multiple reporting countries.** PT is the current main use case, not a baked-in assumption. Adding a second country later means adding its resolution branch, not refactoring an unconditional PT path.
+
+**What happened (2026-06-26 modelo3-code-correctness plan):** The plan's first revision replaced synthetic internal income codes (`401`-`405`) with official PT Tabela V codes (e.g. `E25` for crypto interest) and added counterparty-residency derivatives routing (`G51`/`G30`, Quadro 13 / 9.2.B) - both wired to fire for every row, regardless of reporting country. The user corrected: these are PT/Modelo 3 rules and must fire only when PT is the reporting country, otherwise the system bakes PT into a pipeline meant to support multiple countries. The plan was redesigned around a "PT-Country Dispatch" invariant: the income-code resolver and the derivatives route helper both take `country`; under a non-PT country they return `""`, the PT-only "Income Codes Reference" sheet section is omitted, and the hardcoded `"PT"` country column derives from `jurisdiction.country` instead of a literal.
+
+**General rule:** When a pipeline targets multiple jurisdictions, any output tied to one jurisdiction's tax forms must be resolved conditionally on the reporting-country config. The resolution layer takes the country; renderers read the resolved field; defaults are jurisdiction-neutral; the non-configured branch is blank, never synthetic.
+
+**Distinguishing from #68 and #150:** #68 is the mechanism (a decision-point flag needs a corresponding `TaxJurisdictionConfig` field). #150 is type-dispatch on config type hints. This lesson is the architectural principle those mechanisms serve: jurisdiction-specific output must not ride the unconditional path at all - it is country-gated, with a blank non-jurisdiction fallback, so the primary use case never becomes a hardcoded default.
+
+## 183. When a Plan Changes a Function Signature, Enumerate Callers Across ALL Test Tiers, Not Just the Dedicated Test File
+
+**Principle:** Family A (Equivalence-class coverage) - the caller-side analog of #111.
+
+**Trigger:** A plan task adds a REQUIRED parameter to an existing function (or removes/renames one), especially when flipping an optional parameter to required to make a forgotten call site fail loudly. The task's test-impact inventory lists the callers to update.
+
+**Rule:** A function's dedicated test file (e.g. `test_derivatives_sheet.py` for `write_derivatives_sheet`) is NOT an exhaustive caller list. Functions with a dedicated unit-test file are frequently also called from e2e/integration tests that exercise the full workbook/report path. When a plan makes a parameter required, enumerate every caller across the ENTIRE test tree (`grep -rn "<func_name>(" tests/`), including `tests/unit/`, `tests/integration/`, and `tests/end_to_end/`. Each unlisted caller breaks with `TypeError` at execution and only surfaces in a tier the plan did not run.
+
+**What happened (2026-06-26 modelo3-code-correctness plan, review round r5):** The plan made `jurisdiction` a REQUIRED param on `write_derivatives_sheet`. Its P0 test-impact inventory counted "~24 callers" - all in `test_derivatives_sheet.py` - and missed 2 production-shaped callers in `tests/end_to_end/test_crypto_derivatives_separation.py` (lines 1007, 1049). Those e2e callers were in a file the plan's A4 GREEN step explicitly runs, so they would have broken the GREEN run. The review caught it; the fix was to add the 2 e2e callers to P0's disposition (passing the existing `build_koinly_jurisdiction()` fixture the e2e file already imports).
+
+**Why this happens:** The plan author grepped or recalled callers from the function's own test module, which holds the bulk of calls, and stopped there. The e2e tier calls the same function through the real workbook-building path but is mentally filed under "derivatives separation," not "derivatives sheet signature." A focused test run on the dedicated file passes; the missed caller only fails when the broader tier runs.
+
+**Required behavior:**
+1. When a plan task changes any existing function signature (new required param, removed/renamed param, optional-flipped-to-required), the test-impact step MUST include `grep -rn "<func_name>(" tests/` and group hits by tier.
+2. Record the per-tier caller count in the inventory (e.g. "~24 unit + 2 e2e"), not a single total attributed to one file.
+3. For e2e/integration callers, reuse the jurisdiction/fixture helper that tier already imports (e.g. `build_koinly_jurisdiction()`); verify the helper exists in that file before prescribing it.
+
+**Distinguishing from #111:** #111 is the assertion-side grep (a data-flow change breaks assertions referencing a data identity tuple; grep all test files for those assertions). This lesson is the caller-side grep (a signature change breaks call sites; grep all test files for callers of the changed function). Same hazard shape - a sibling test in another tier is forgotten - different object (callers vs assertions) and different grep target (function name vs data identity).
+
+## 184. A Pure-Helper Unit Test Going GREEN Does Not Prove the Production Caller Invokes It
+
+**Principle:** Family H (Verify the real thing, not the abstraction) - the wiring-coverage analog of #91.
+
+**Trigger:** A plan extracts a computation into a pure helper (e.g. `_derivatives_route(country, operator_country) -> (annex_hint, operation_code)`) and a production call site must be wired to invoke it, replacing a stale hardcoded default at that site. The plan's RED task writes helper-direct tests AND a separate construction-path test that drives the real producer; the GREEN task adds the helper and wires the site.
+
+**Rule:** Direct unit tests for a pure helper prove only that the helper returns the right value. They do NOT prove the production caller invokes the helper. The caller can continue emitting a stale default (an unconditional `annex_hint="G/Q13"` / `operation_code="G51"` baked into the entity, or a constructor argument the caller still hardcodes) while every helper-direct test is GREEN. When the goal is "the production entry carries the resolved value," at least ONE test must drive the real production construction site (feed the caller's inputs and assert on the object the caller builds), not just call the helper. A suite with only helper-direct tests would go GREEN while construction still omits the routed fields - false GREEN.
+
+**What happened (2026-06-26 modelo3-code-correctness plan, Task A1 RED):** The `TestDerivativesRouting` RED suite deliberately split coverage: three cases called the not-yet-existing pure helper `_derivatives_route(...)` directly (RED via `ImportError`), and one case (`test_nonresident_operator_gets_j_q92b_g30`) drove the real `_split_ogr_index(ogr_rows, capital_entries, jurisdiction)` construction site with a synthetic OGR row whose wallet resolved to a non-PT operator. The construction-path case was the single load-bearing guard: its RED was an `AssertionError` (`'G/Q13' == 'J/Q9.2.B'`), proving the construction RAN but emitted the hardcoded resident default - i.e. the helper is not the only thing that must change; the wiring must change too. If only the helper-direct cases existed, Task A2 could have added the helper and flipped all three to GREEN while `_split_ogr_index` still constructed `DerivativesPnLEntry` with the resident default, and the suite would pass for the wrong reason.
+
+**Why this happens:** Helper-direct tests are cheaper to write (no fixture assembly, no jurisdiction wiring), so a plan author defaults to them. They fully cover the helper's branches but say nothing about the caller. The caller's stale default is usually a field default on the entity dataclass plus (optionally) an explicit constructor argument the caller still passes; both survive a helper-only GREEN. The failure mode is "all helper tests pass, production still wrong" - a false GREEN that the focused test run never challenges.
+
+**Required behavior:**
+1. When a plan extracts a value-resolving helper AND the goal is that a production caller emits the resolved value, the RED suite MUST include at least one construction-path test that drives the real producer and asserts on the object it builds, not only helper-direct tests.
+2. The construction-path test must be capable of failing for the wiring-specific reason (stale default still present), not only for the helper-missing reason. An `AssertionError` (value mismatch at the built object) is the right RED signature for the wiring case; an `ImportError` is acceptable for the helper-direct cases.
+3. Before declaring GREEN, confirm the construction-path case flipped from its wiring-specific RED (value mismatch) to GREEN - not just that the helper-direct cases pass.
+
+**Distinguishing from #91:** #91 is "an extracted helper needs DIRECT unit tests, not only indirect integration coverage" (the helper itself is under-tested). This lesson is the inverse: "the helper IS unit-tested and passing, but the production caller's wiring is unproven" (the caller is under-tested). #91 says add helper tests; #184 says add a construction-site test alongside them. Both can apply to the same extraction; they protect opposite ends of the call.
+
+## 185. When a Field's Aggregation Strategy Changes, Re-Scope the Guard That Observed the Old Strategy's Failure Mode
+
+**Principle:** Family G (Data-loss observability) - the production-side analog of #143's test-side re-scoping rule, paired with #118's guard-adding rule.
+
+**Trigger:** A plan task changes how a field is rendered/aggregated in a way that invalidates the trigger condition of an existing observability guard. Specifically: the field was previously ASSUMED constant across a group and read from `entries[0]` (or `first`), guarded by a #118-style heterogeneity check (`len(distinct) > 1`); the change moves the field to per-row rendering (each row carries its own value), so "heterogeneity across group members" is no longer a failure mode at all - it is the intended design. The old guard's trigger can never fire under the new design, so deleting it loses observability without replacing it.
+
+**Rule:** When a refactor removes the `entries[0]` / `first` read for a field (because the field is now per-row), the #118 heterogeneity guard that protected that read is NOT simply deleted. Its observability must be re-scoped to the NEW failure mode the per-row design introduces: a row that failed to resolve the field and rendered blank (or a sentinel) under the jurisdiction where the field is required. The re-scoped guard fires when (a) the sheet runs under the jurisdiction that requires the field and (b) any rendered entry has a blank/unresolved value for that field. The old guard's positive/negative test pair is replaced by a new pair targeting the new condition (blank-under-required-jurisdiction warns; all-resolved or a non-requiring jurisdiction does not).
+
+**What happened (2026-06-26 modelo3-code-correctness plan, Task A4 GREEN):** The derivatives P&L sheet previously rendered Annex / Código / Legal-category as a single row-2 detail line derived from `entries[0]`, guarded by a `distinct_constant_tuples` heterogeneity check (#118, from the 2026-06-16 review). A4 moved Annex and Código to per-row columns (each entry carries its own route), so "the group disagrees on the constant" became meaningless - disagreement is now the point. Deleting the `distinct_constant_tuples` guard outright would have left no observability for the new failure mode: a PT entry whose route failed to resolve and rendered an empty Annex cell. A4 re-scoped the guard to warn when the sheet renders under PT and any entry has `annex_hint == ""`, with a fresh positive/negative test pair (`test_blank_annex_under_pt_warns` / `test_no_blank_annex_warning_when_routes_resolved`).
+
+**Why this happens:** The #118 guard and the field's aggregation strategy are coupled - the guard observes the strategy's specific failure mode ("the assumed-constant field disagrees across members"). When the strategy changes, the guard's trigger condition describes a state that can no longer occur. A refactor focused on the rendering change treats the guard as dead code and removes it; the new failure mode (unresolved/blank under the requiring jurisdiction) is only apparent if the author asks "what is the new shape of invalidity this field can take?"
+
+**Required behavior:**
+1. When a refactor removes an `entries[0]` / `first` read for a field (moving it to per-row or per-entry rendering), audit every guard whose trigger condition depended on the old strategy. A guard that checked `len(distinct_constant_tuples) > 1` (heterogeneity) cannot fire under per-row rendering and is dead.
+2. Do NOT delete the dead guard without replacing its observability. Identify the new failure mode the per-row design introduces (typically: an entry that failed to resolve the field and rendered blank/sentinel under a jurisdiction that requires it).
+3. Re-scope the guard to the new condition: fire on (jurisdiction-requires-field AND any-entry-blank), not on (group-members-disagree). Gate on the jurisdiction/country config so a non-requiring jurisdiction does not false-warn.
+4. Replace the old guard's test pair with a new pair targeting the new condition: a positive test that constructs the new failure (blank-under-requiring-jurisdiction) and asserts the warning, plus a negative test (all-resolved OR non-requiring-jurisdiction) that asserts silence. The negative test defeats a trivial unconditional `logger.warning`.
+
+**Distinguishing from #118 and #143:** #118 says ADD a heterogeneity guard when you take `entries[0]` for an assumed-constant field. This lesson #185 says RE-SCOPE that guard when the field stops being assumed-constant (the old trigger is dead; the observability must move to the new failure mode). #143 is the test-side analog (re-scope a TEST assertion when a fixture flips an orthogonal signal); this is the production-side analog (re-scope a PRODUCTION guard when the field's strategy changes).
+
+## 186. Test Class Names Must Match pytest's `python_classes` Pattern, Else They Are Silently Deselected
+
+**Principle:** Family A (Verify the real thing, not the abstraction) - the collection-configuration analog of #8's type-annotation specificity.
+
+**Trigger:** A plan task prescribes a pytest test class by a specific name (e.g. `IncomeCodeTest`), or an author names a new test class without checking the project's `pyproject.toml` / `pytest.ini` collection config.
+
+**Rule:** A pytest class is only collected if its name matches the configured `python_classes` pattern. This repo configures `python_classes = ["Test*"]` (verified at `pyproject.toml`), so `IncomeCodeTest` (suffix `Test`) is NOT collected - every case in it is silently deselected, and a RED run reports "0 failed" because the cases never executed. A class named `TestIncomeCode` (prefix `Test`) IS collected. Before writing or naming a new pytest class, read the `python_classes` setting; when a task body fixes a class name, conform to the configured pattern (rename to `Test*`) rather than the task's literal name, and record the deviation in the implement log. Confirm collection with `uv run pytest <file> --co -q | grep <ClassName>` or `-k <token>` returning the expected count before relying on RED output.
+
+**What happened (2026-06-26 modelo3-code-correctness plan, Task B1 RED):** The B1 task body named the new class `IncomeCodeTest`. The repo's `pyproject.toml` restricts collection to `python_classes = ["Test*"]` (the existing sibling class `TestDerivativesRouting` conforms). `IncomeCodeTest` is deselected under that config: `uv run pytest -k IncomeCode` returned "363 deselected" with the 17 new cases never running, which would have produced a false "RED achieved" signal (no failures) if not caught. Renaming to `TestIncomeCode` made `-k IncomeCode` select all 17 cases, which then RED correctly on the real contract (`TypeError: ... got an unexpected keyword argument 'country'`).
+
+**Why this happens:** The default pytest behavior collects any `Test*` class, so an author assumes any name containing "Test" is collected. A project that narrows `python_classes` to an exact prefix list silently excludes suffix and infix variants. The failure mode is invisible: the run reports deselection, not error, and a RED check that sees "0 failed" can be mistaken for "not yet broken" rather than "not collected."
+
+**Required behavior:**
+1. Before writing a new pytest class, read `python_classes` (and `python_files`, `python_functions`) in `pyproject.toml` / `pytest.ini`. Conform the class name to the configured pattern.
+2. When a task body prescribes a class name that does NOT match the configured pattern, rename to the matching pattern (preserving the logical name and every assertion) and record the collection-mechanism adaptation in the implement log; do NOT change test intent.
+3. After authoring, confirm collection: `uv run pytest <file> --co -q` reports the expected item count and `grep <ClassName>` (or `-k <token>`) matches the new cases. Never interpret "0 failed" as RED without first confirming the cases were collected.
+
+**Distinguishing from #8:** #8 is about type annotations preserving static-analysis visibility. This lesson #186 is about pytest collection config preserving runtime visibility of test cases. Both are "the tool silently skips your work because of a configuration detail," but at different layers (type checker vs test runner).
+
+## 187. When a Plan Changes Rendered Output Text, Grep All Test Tiers for Tests That Locate the Row by the Stale Label
+
+**Principle:** Family A (Equivalence-class coverage) - the output-identity analog of #183 (signature-change caller grep) and #174 (stale-string echo across surfaces).
+
+**Trigger:** A plan task changes the text a rendered report cell carries (e.g. a description/label column that previously held a synthetic internal label now carries an official code description, or vice versa). The task's test-impact inventory lists the test files to update, typically the unit and e2e tiers that exercise the renderer directly.
+
+**Rule:** A plan that changes rendered output text must grep ALL test tiers (`grep -rn "<old label string>" tests/`) for tests that LOCATE a row by matching that cell's text, not only the renderer's dedicated unit tests. Integration tests frequently build a domain entity, render the full workbook, then find the resulting row on the report sheet by scanning for a hardcoded label string in a specific column. When the renderer starts emitting different text for that column (e.g. an official Tabela code description instead of a synthetic `"Crypto interest (lending, deposit interest)"` label), the row-locator match silently fails and the test errors or false-fails - but only in the integration tier the inventory did not list. The dedicated unit test for the renderer was already re-scoped; the integration test using a different identification strategy (positional scan by label) was never in the inventory.
+
+**What happened (2026-06-26 modelo3-code-correctness plan, Phase-2 validation):** Tasks B2/B3 mapped crypto reward income codes to official Modelo 3 / Tabela V codes, which changed the description cell rendered by `_write_other_capital_income_subsection` from a synthetic `"Crypto interest (lending, deposit interest)"` / `"Crypto capital income (staking, rewards, airdrops)"` label to the official E25 Tabela V text (or blank for source types that do not resolve to a code). B3's test-impact inventory re-scoped the unit analog (`tests/unit/application/persisting/test_ib_sheet.py`) and the e2e analog. It MISSED three integration tests in `tests/integration/test_excel_generation_integration.py` that located the reward row by `row[0] == "Crypto interest (lending, deposit interest)"` or `row[0].startswith("Crypto")`. Those locators never matched the new official-text cell, so the integration tier failed in Phase-2 full-suite validation, after the plan tasks were already committed.
+
+**Why this happens:** The integration tests use a different row-identification strategy than the unit tests. The unit test calls the renderer and asserts on the returned cell value directly; the integration test builds the entity, renders the whole workbook, then SCAN-locates the row by a hardcoded label string in a column. A plan author who re-scoped the unit tier (asserting the new cell value) does not automatically notice that a sibling integration test identifies the row by the OLD cell value. The grep target is the stale label string, not a function name, so a #183-style caller grep would not find it.
+
+**Required behavior:**
+1. When a plan task changes the text a rendered report cell carries, the test-impact step MUST include `grep -rn "<old label string>" tests/` across ALL tiers (unit, integration, e2e), in addition to any signature-based caller grep.
+2. For each hit, distinguish a row-locator match (the test finds the row BY this string) from an incidental assertion (the test asserts the cell EQUALS this string). Both must be updated, but the row-locator case is the silent-failure hazard: the test does not assert the label, it USES it to find the row, so a mismatch produces a "row not found" error rather than a value-mismatch failure.
+3. When re-scoping a row-locator, prefer STRUCTURAL identification (position relative to a subsection header, or a populated country cell) over a new label-string match, so the test no longer couples to a specific rendered string. If a string match is retained (e.g. to also cover description rendering), match a STABLE FRAGMENT of the official text (e.g. `"criptoativos"` for the E25 description) with a module-load drift guard (`assert fragment in get_income_code_description(code)`), not the full verbatim string.
+4. Record the per-tier re-scope in the implement log: which tier used direct cell-value assertions (unit), which used structural row-location (integration after fix), and which used label-string row-location before the fix.
+
+**Distinguishing from #183 and #174:** #183 greps for callers of a changed FUNCTION (grep target: function name); this lesson greps for tests that locate a row by a changed LABEL (grep target: the stale string). #174 is "a corrected domain rule is echoed in multiple rendered SURFACES; grep the stale string across the corpus" (production surfaces + tests together); this lesson is the test-only specialization where the stale string is a row-locator, not an asserted value - so the failure is "row not found" rather than "wrong value asserted." Same hazard family (a sibling in another tier/file is forgotten), different grep target and different failure signature.
+
+## 188. When a Web/Search MCP Tool Quotas Out Mid-Task, Fall Back to Direct HTTP and Local Extraction
+
+**Principle:** Source-verification discipline - the tool-outage sibling of #98 (probe the canonical URL before declaring a source absent) and #172 (cite the year-correct redação). The hazard is treating a TOOL outage as a SOURCE outage.
+
+**Trigger:** During source verification, a web-search or web-reader MCP tool returns a quota-exhausted / rate-limit error (e.g. `-429 Weekly/Monthly Limit Exhausted, resets <date>`, HTTP 429) instead of the requested page or results. The task still needs the source content to verify a claim.
+
+**Rule:** A quota or rate-limit error from an MCP/search tool is a TOOL-side outage, not evidence that the source is missing, unverifiable, or stale. Do not abandon the verification or soften the citation to "could not verify." Fall back to direct HTTP from the shell (`curl -sL <url> -o file`, with a browser User-Agent if needed) and extract locally: `pdftotext` for PDFs; an HTML tag-strip (`python3 -c "import re,sys;..."`, `pandoc -f html -t plain`, or `lynx -dump`) for HTML. GET the same canonical URL #98 tells you to HEAD-probe. Only if the direct GET also fails (non-2xx, DNS, connection refused) may you record the source as unavailable - and only after the #98 HEAD probe.
+
+**What happened (2026-06-27 PT rent-deduction source verification):** While verifying Portaria 106/2025/1 (CLS) and the CIRS art. 78-E cap reconciliation for the FY2025 walkthrough, the web-search and web-reader MCP tools both returned `-429 Weekly/Monthly Limit Exhausted, resets 2026-07-09` for every request. The initial reaction was to treat the sources as not directly verifiable. Recovery was `curl -sL <dre files URL> -o portaria.pdf` + `pdftotext`, which retrieved the official PDF verbatim (9 pages, byte-count match), plus `curl` + HTML tag-strip for the consolidated CIRS article. All citations ended up primary-source-verified.
+
+**Why this happens:** MCP/search tools sit behind shared monthly quotas independent of the underlying source's availability. A quota error carries zero information about whether `https://files.diariodarepublica.pt/...` resolves. Conflating the two produces filings or walkthroughs that cite a source as "unverified" when the official document was one `curl` away.
+
+**Required behavior:**
+1. When an MCP/search tool returns a quota/rate-limit error (429, "limit exhausted", "rate limited"), do NOT mark the source unverifiable. Switch transport to direct HTTP from the shell.
+2. Direct-GET the canonical URL (`curl -sL [-A "<browser UA>"] <url> -o <file>`); for PDFs run `pdftotext <file> -`; for HTML strip tags.
+3. Only if the direct GET itself fails (non-2xx after the #98 HEAD probe) may you record the source as unavailable.
+4. Record the fallback method in the work log (curl + pdftotext vs MCP) so the verification chain is auditable.
+
+**Distinguishing from #98 and #172:** #98 is "before declaring a source ABSENT, probe its canonical URL with HEAD" (the existence check). #188 is "when a verification TOOL errors out, switch transport rather than abandoning verification" (tool-outage vs source-outage). #172 is about WHICH version to cite (year-correct redação). All three guard source-verification integrity; #188 specifically prevents a tool quota from masquerading as a missing source.
+
+## 189. Tests Must Not Depend on Gitignored Data
+
+**Principle:** Test-fixture portability - the cross-project rule in `coding_guidelines.md` #26. A test that reads a gitignored data file is green only on the machine that happens to hold the file and fails at setup on every fresh clone and CI run.
+
+**Trigger:** A test's `setup_method`, fixture loader, or body opens a data file (a golden snapshot, a scratch JSON, a personal-data CSV) whose path is gitignored.
+
+**Rule:** Test data a test reads at runtime must be committed to the repo, inlined as a literal in the test, or generated deterministically at test time - never placed under a gitignored path. Before reading a file from a test, run `git check-ignore <path>`; if it returns the path, the test depends on data absent from a clean checkout. For characterization/golden-snapshot tests specifically, do NOT write the captured value to a gitignored file and read it back in `setup_method` with a `pytest.fail` when missing - inline the expected value as a literal instead.
+
+**What happened (2026-06-27 derivatives characterization test):** `TestOgrCharacterizationGolden` read two aggregated gain values from `docs/tmp/derivatives-characterization-golden.json` (gitignored), and `_load_golden_snapshot()` called `pytest.fail` when the file was absent. The full suite showed `1492 passed, 2 errors` - the two errors were setup failures, not assertion failures. The file existed on the author's machine (written during the derivatives-separation plan's Task 1) but nowhere else. Fix: inline `Decimal("136.01")` and `Decimal("-1.00")` directly in the test methods, delete the snapshot file, and remove the `_load_golden_snapshot` / `_current_head_sha` / `setup_method` machinery. Now `1494 passed` on any checkout.
+
+**Why this happens:** A plan captures "golden" pre-change output to guard a backward-compat contract, and the implementer parks the snapshot under `{tmp_dir}` (`docs/tmp/`, gitignored by design for scratch). That conflates a durable test contract with ephemeral scratch. The test then cannot travel - it is correct only where the scratch file survived.
+
+**Required behavior:**
+1. Any data file a test reads must be version-controlled, inlined, or deterministically generated. Run `git check-ignore` on the path before depending on it.
+2. Characterization/golden values go inline in the test as literals, not into a gitignored snapshot read back at setup.
+3. If a snapshot must be a file (large/many values), commit it under `tests/` resources, not under `{tmp_dir}`.
+
+**Distinguishing from related lessons:** This is portability of the test's INPUT data. #127 is about hygiene/leak GUARDS scanning every file a protected value can reach (including skipped-in-CI tests) - that is guard coverage, not test input portability. The repo constraint "Crypto tests MUST read committed synthetic data under `resources/source/example/`" is the personal-data-specific instance of the same principle. See `coding_guidelines.md` #26 for the universal rule.
+
+## 190. Mirror Consolidated Living-Code Statutes for Offline Cross-Reference; "It Will Be Outdated" Is Not a Reason to Skip Mirroring
+
+**Principle:** Source-archiving discipline - the archiving sibling of #171 (a locally-archived official source wins outright vs a secondary), #172 (cite the year-correct redação), and #188 (curl fallback when a verification tool quotas out). The hazard is declining to mirror an authoritative source because it is a "living" text that "will be immediately outdated."
+
+**Trigger:** Deciding whether to mirror an official source that is a large consolidated code amended by successive diplomas (e.g. the CIRS, CPPT, CIS consolidated compilations on the Portal das Finanças), versus consulting it online only.
+
+**Rule:** Default to MIRRORING. "It is a large living code, so it will be outdated the moment it is persisted" is NOT sufficient grounds to skip mirroring. The Portal's consolidated rendering is itself just a snapshot at retrieval time; tagging the file with its "última atualização" diploma (and date-stamping the filename by that date) makes it a definite, citable redação - the operative text for a given fiscal year. Staleness is bounded the same way as any archived source: `sources.md` provenance (issuing authority, última atualização, effective/superseded, retrieved date, accessible mirror URL, provisions consulted) plus annual re-verification (re-download, diff the última-atualização tag, bump the dated filename and entry when it advances; for a prior fiscal year apply the redação in force then, incl. transitional norms - #172). Offline access is exactly the resilience path #188 reaches for when an MCP tool rate-limits, and the authoritative reference that corrects a secondary summary that returns the wrong article. So: mirror, date-stamp, record provenance, and cite the local mirror from derived notes.
+
+**What happened (2026-06-27 CIRS/CPPT/CIS mirroring):** Earlier in the rent-deduction work the consolidated CIRS was deliberately NOT mirrored, with a `sources.md` caveat reading "Not mirrored (the consolidated CIRS is a large living code; consult online rather than snapshotting)." The user challenged that call ("can't we download and version it to allow local cross reference, or are you saying the documentation is outdated right after persisting it? If not, let's download and cross reference all relevant docs as we should always do"). The concession was correct: the very next verification needed the CPPT reclamação-graciosa prazo, a secondary LLM-search summary returned the wrong article ("art. 130, 2 years"), and only primary-source PDF verification (`pdftotext` on the downloaded CPPT) settled it at art. 70 n.º 1 = 120 dias. Mirroring CIRS, CPPT, and CIS (date-stamped by última atualização) with `sources.md` entries 4-6 and a staleness-management section made offline cross-reference permanent.
+
+**Why this happens:** "Living code" reads as a reason to defer to the live portal, but the staleness objection applies to EVERY archived external source (which is why `sources.md` provenance and annual re-verification exist per project-guidelines #1/#2) - it is not unique to consolidated codes. Meanwhile the cost of NOT mirroring is concrete: when a verification tool quotas out (#188) or a secondary summary errs (#171), the agent has no local primary source to fall back to and must re-fetch under rate-limit pressure or accept "unverified."
+
+**Required behavior:**
+1. When you consult a consolidated statute (or any authoritative source) more than once, mirror it under the appropriate `official/` folder rather than consulting online each time.
+2. Date-stamp the filename by the última-atualização date (e.g. `cirs_consolidado_2026-06-03.pdf`); record full provenance in `sources.md` (issuing authority, última atualização, effective/superseded, retrieved date, accessible mirror URL, provisions consulted).
+3. Add a staleness-management note: re-verify annually, bump the dated filename + entry when the última atualização advances, and for a prior fiscal year apply the redação in force then (incl. transitional norms) rather than reading the consolidated base directly (#172, project-guidelines #3).
+4. Cite the local mirror (not the live URL) from derived cross-reference notes once mirrored.
+
+**Distinguishing from #171, #172, #188:** #171 = a locally-archived official source outranks a conflicting secondary. #172 = cite the redação in force for the target fiscal year. #188 = when a verification TOOL quotas out, switch transport (curl/pdftotext) rather than abandoning verification. #190 = the upstream decision to MIRROR the authoritative source in the first place so that #171/#188 have a local artifact to fall back to - "living code" does not excuse skipping it.
+
+## 191. Wiring Discoverability for a Newly Mirrored Source When the Instruction Entrypoint Is at the Size Ceiling
+
+**Principle:** Discoverability + instruction-size-budget discipline. The `done` Step 2.6 obligation ("new reference material must be discoverable from the instruction paths future agents read") has to hold even when `AGENTS.md` is at the 30,720-byte gate and a net-new bullet will not fit.
+
+**Trigger:** The session mirrors new official sources (or adds reusable reference material) and needs to wire them into the always-loaded instruction entrypoint (`AGENTS.md`/`CLAUDE.md` §5 "Domain Knowledge References"), but the entrypoint has near-zero size headroom.
+
+**Rule:** Two techniques, in priority order. (1) If the reference has a DISTINCT seeker path (a reason an agent would look for it that no existing bullet's trigger covers), it deserves a dedicated bullet: COMPACT duplicate or verbose §5 bullets to make room rather than skip it - merge two bullets citing the same doc, and drop parentheticals that duplicate the linked doc's own contents. (2) Only if compaction cannot free enough, or the reference is already reached by an existing bullet's trigger, surface it by NAME inside that existing bullet (cheap - rename "the X PDF" to "the X/Y/Z PDFs") and route the CONCRETE PATH through the size-ungated Layer-2 doc the bullet already points to (`project-guidelines.md` #N, folder `README.md`, or `sources.md`). In both cases put the full path, dated-filename pattern, `sources.md` entry numbers, and use-cases in the Layer-2 doc; keep the entrypoint bullet as the one-line pointer; and verify the chain resolves. Do NOT let the size budget be the reason a mirror stays undiscoverable, and do NOT overflow the gate.
+
+**What happened (2026-06-27 CIRS/CPPT/CIS discoverability):** After mirroring the three consolidated codes, the high-traffic paths still described them abstractly - `AGENTS.md` §5 said "verify against the consolidated CIRS PDF" with no hint a local mirror existed, and `project-guidelines.md` #3 said "cross-check against the current consolidated CIRS PDF" with no path. `AGENTS.md` was at 30,703/30,720 bytes (17 bytes of headroom). First pass (technique 2): renamed the §5 bullet to "the consolidated CIRS/CPPT/CIS PDFs" (+10 bytes, within budget) and put the concrete `official/` folder path, the dated-filename pattern, the `sources.md` entry numbers (4/5/6), and the CPPT/CIS use-cases into `project-guidelines.md` #3. That left a residual gap: a prazo-only seeker (who never reads the CIRS-trigger bullet) would not discover the CPPT mirror. Second pass (technique 1): the CPPT reference HAS a distinct seeker path (reclamação/impugnação prazos), so it deserved its own bullet; merged the two duplicate `plan_quality_guidelines.md` bullets and trimmed the verbose root-cause-catalog parenthetical, freeing ~200 bytes, and added a dedicated "Before advising on an IRS reclamação/impugnação prazo, verify against the mirrored CPPT" bullet - still under the gate (30,715/30,720).
+
+**Why this happens:** Discoverability cross-refs land last (after the mirror and provenance are written), by which point the entrypoint is often near its ceiling from the session's earlier instruction edits. The instinct to add a dedicated §5 bullet per new source then collides with the size gate.
+
+**Required behavior:**
+1. For every source mirrored or reference doc added this session, confirm a future agent can reach it from an always-loaded entrypoint (run the done Step 2.6 check explicitly - do not assume `learn` wired it).
+2. If the entrypoint is at the size ceiling, surface the reference by NAME in an existing bullet and put the concrete path + use-cases in the size-ungated Layer-2 doc that bullet points to.
+3. Verify the chain resolves: entrypoint name -> Layer-2 path -> file. Re-run the instruction-size gate (`check-instruction-size.sh gate`) after the entrypoint edit.
+
+**Distinguishing from done Step 2.6 and #190:** done Step 2.6 states the discoverability OBLIGATION for new reference material. #190 is the decision to MIRROR the source at all. #191 is the TECHNIQUE for making the mirror discoverable when the entrypoint size budget blocks a dedicated bullet - route the path through the Layer-2 doc the existing bullet already names.
+
+## 192. Verify Classification-Determined Reachability Claims Against Source Data; a Plan Hedge Is a Verify Prompt
+
+**Principle:** Family H (Verify the real thing, not the abstraction) - the data-side sibling of #100 (code-reality claims) and #173 (data-trace verification).
+
+**Trigger:** A plan, design note, or review finding justifies a narrow mapping or an "X never reaches code path Y" claim by appealing to a CLASSIFIER that routes by a data attribute (asset denomination, type field, tag). The justification often hedges ("likely", "probably", "should only reach", "in practice only").
+
+**Rule:** When a reachability claim depends on a classifier that keys off a data attribute, trace that attribute across real source rows before trusting the claim. A single row whose attribute differs from the assumed norm (e.g. a `Type="Reward"` row that is fiat-denominated EUR, not crypto) reaches the supposedly-unreachable path and invalidates the assumption. Treat a hedge word in the justification as an explicit verify prompt, not a confidence statement: the author was unsure, so confirm it against source data.
+
+**What happened (2026-06-28 modelo3 review, finding 1):** The 2026-06-26 modelo3-code-correctness plan narrowed `_resolve_income_code` so only the interest family maps to E25 under PT, leaving every other Koinly type blank. Its B0 research justified this with: "`_resolve_income_code` is called only inside `aggregate_taxable_rewards`, which filters to `taxable_now` (fiat rewards); crypto-denominated staking/reward/airdrop/mining/fork are `DEFERRED_BY_LAW` and never reach the resolver, so **likely** only `interest -> E25` is reachable." The hedge hid an unverified assumption: the `taxable_now` classifier keys off the ASSET being fiat (CRG-002), independent of the Koinly `Type`. A `Type="Reward"` row denominated in EUR is `taxable_now` AND not in the interest family, so it reaches the resolver and resolves to blank. The 2024 example income report (`koinly2024/...income_report...csv` lines 154-163) had exactly ten such EUR "Reward"/"Referral bonus" rows. They were invisible until a review finding proposed failing-closed on the blank code and the full suite hit them. Grepping the source data for a fiat-denominated non-interest reward at plan time (or at B0) would have surfaced the gap and forced an explicit decision about how those rows resolve before the mapping shipped.
+
+**Why this happens:** Classification routing reads as a solid boundary ("crypto rewards are deferred, so they never reach the fiat resolver") because it IS solid for crypto-denominated assets. The hole is the cross-product the author did not enumerate: a type that is USUALLY crypto-denominated but CAN be fiat. The hedge word is the tell - it marks the spot the author stopped enumerating cases.
+
+**Required behavior:**
+1. When a mapping/resolver is narrowed with a "type X never reaches here" justification, identify the classifier that gates reachability and the data attribute it keys on.
+2. Trace that attribute across committed source/example data (`resources/source/`, fixture CSVs) for rows of the excluded type. If any row's attribute would route it INTO the supposedly-excluded path, the narrowing is unsound until that row's resolution is decided explicitly.
+3. Read hedge words ("likely", "probably", "should only", "in practice") as verify prompts: restate the claim without the hedge and check it against source data.
+4. When the verified mapping is deliberately narrow pending a legal-judgment call (here: E25's broad "quaisquer formas de remuneração" wording plausibly covers exchange promotional rewards, but extending it was deferred), record the EXACT official wording of the mapped code at the mapping site so a future maintainer can reason about coverage without re-deriving it from the PDF - otherwise a "never guess" narrow mapping reads as "the law only covers interest" when it is really "the law is broad but only interest is verified so far."
+
+**Distinguishing from #100 / #173 / #111:** #100 verifies plan claims about CODE structure; this lesson verifies claims whose truth depends on a classifier AND source DATA denomination. #173 is full data-trace verification across reports; this is the narrower trigger of a hedge-marked reachability assumption. #111 greps test files for stale assertions after a semantics change; the fixture-data grep in step 2 above is the input-side complement (the source data itself can encode the case that breaks the assumption).
+
+## 193. Mandatory Fields on One Filing Record Share One Error Contract
+
+**Principle:** Design consistency - the contract for "this field is mandatory for a complete filing" must be uniform across the mandatory fields of the same record, because the filer-facing consequence (an incomplete row that cannot be filed as-is) is identical regardless of which mandatory field is missing.
+
+**Trigger:** A filing record (IRS quadro/field group, form row, declaration line) has more than one field that is mandatory for the record to be filable, and the pipeline handles a missing/invalid value for each field differently - one fail-closed (raises), another flag-and-continue (emits a flagged row).
+
+**Rule:** All mandatory fields of the same filing record must use the SAME error contract. If one missing mandatory field raises `FileProcessingError`, a different missing mandatory field on the same record must also raise (or both must flag-and-continue with a documented, accepted reason). Asymmetry is a design smell to surface in review: it lets one incomplete-row shape reach the filing surface while another is blocked, with no principled distinction between them.
+
+**What happened (2026-06-28 modelo3 review, finding 1):** A PT Quadro 8A reward row has two mandatory fields resolved in `aggregate_taxable_rewards`: the Tabela X source country and the Tabela V income code. The country code was fail-closed (UNKNOWN/invalid country raises `FileProcessingError` pre-aggregation). The income code, under the same PT jurisdiction, was flag-and-continue: a taxable-now reward resolving to a blank code was appended to the filing-facing list with `review_required=True` and a red-filled "YES: <reason>" income-type cell. Both missing values produce a row that cannot be filed as a complete Quadro 8A line, yet one halted the run and the other emitted a flagged-but-incomplete filing row. The review flagged the asymmetry; the resolution made the income code fail-closed too, mirroring the country-code contract.
+
+**Why this happens:** Mandatory-field handling is often added field-by-field across separate tasks (country validation in one task, income-code resolution in another), so each field inherits the error contract its own task chose without anyone comparing across the fields of the same record.
+
+**Required behavior:**
+1. When you add or change the handling for a missing/invalid mandatory field, enumerate the OTHER mandatory fields on the same filing record and confirm they share the same error contract.
+2. If the contracts differ, either align them (preferred - fail-closed for all mandatory fields so an incomplete record never reaches the filing surface) or document an explicit, accepted reason for the asymmetry at the handling site.
+3. In code review, treat "field A raises but field B flags on the same record" as a finding to raise, not an implementation detail.
+
+**Distinguishing from the partial/uncertain-results indicator rule (CLAUDE.md §1):** That rule says partial/uncertain rows must carry an explicit in-band indicator. This lesson says that when the partial row's incompleteness is a MISSING MANDATORY field, the indicator is not enough - the row should not reach the filing surface at all unless every mandatory field on its record uses the same accepted flag-and-continue contract.
+
+## 194. Flipping an Error Contract Orphans the Superseded Strategy's Surface Across All Tiers - Remove It, Do Not Leave a Dual Mechanism
+
+**Principle:** Family D (consistency / no drift) + the surgical-edits orphan rule. When a branching behavior changes from strategy A to strategy B, every tier that strategy A touched becomes dead the moment the flip lands. The "remove orphans your changes created" hard rule covers orphans inside the file you just edited; this lesson covers the WIDER grep: the superseded strategy's surface typically spans tiers the flip task did not open (a dataclass field defined elsewhere, a renderer `if`-branch in another module, a dedicated test), and leaving it produces a dual mechanism where only one branch is reachable.
+
+**Trigger:** You change how a field/condition is handled - most commonly flipping an error contract from flag-and-continue (emit a review-flagged row) to fail-closed (raise), or the reverse. Also triggers on any behavior flip that replaces one strategy wholesale with another (e.g. "compute X inline" -> "compute X via helper"; "render field on a detail line" -> "render field per row").
+
+**Rule:** After the flip, grep ALL tiers for the superseded strategy's surface and remove it: (1) the dataclass/entity fields that only the old strategy populated; (2) the renderer or conditional branches that only the old strategy reached (`if entry.<flag>:` blocks whose producer no longer sets the flag); (3) the dedicated tests that exercise the now-unreachable path. A codebase that carries the fields, renderer, AND test for strategy A while only strategy B is live is a drift trap - a future maintainer reads the entity/renderer contract and expects the old behavior, and the test green-lights dead code. Verify the orphaned surface is not shared with another live consumer before removing (grep readers of each field/branch across src/).
+
+**What happened (2026-06-28 modelo3 review round 4, finding 1):** Round 3 flipped the PT blank-income-code case from flag-and-continue to fail-closed (raise `FileProcessingError`), the user-approved decision (#193). The flip landed in `aggregate_taxable_rewards`, but three tiers of the OLD flag-and-continue strategy were left in place: `AggregatedRewardIncomeEntry.review_required`/`review_reason` fields (entities.py), two `if entry.review_required:` renderer blocks in `ib_sheet._write_other_capital_income_subsection` (income-type "YES:" override + red fill), and `test_other_capital_income_renders_yes_reason_when_review_required`. Because the only producer that could set the flag now raised before constructing the entry, every produced entry carried `review_required=False` and the renderer blocks were unreachable - dead dual mechanism. Round 4 caught it; the fix removed all three tiers (fields, renderer blocks, test) plus two stale assertions in the aggregator's own tests. Crucially the OTHER `review_required` readers (crypto_gains_sheet, derivatives_sheet, crypto_supplementary_sheet) bind to different entities where the flag stays live, so the removal was scoped to the reward entity only.
+
+**Why this happens:** The flip task edits the producer (the aggregator) and verifies the new contract with a new test, so it goes green. The superseded strategy's surface lives in files the task never opened (the entity dataclass, a sibling renderer, a sibling test), so it is not in the task's diff and survives the commit. It then takes a later review round - or a maintainer confused by the dead contract - to notice.
+
+**Required behavior:**
+1. When you flip an error contract or replace a strategy wholesale, enumerate the tiers the OLD strategy touched: producer assignment, entity/dataclass fields, renderer/conditional branches, and tests.
+2. Grep readers of each orphaned field/branch across src/ (`grep -rn "\.<field>" src/`) before removing, to confirm no OTHER live consumer still depends on it; remove only what is now unreachable.
+3. Remove the dedicated test for the superseded behavior together with the behavior (a passing test for dead code green-lights the dead surface and is itself debt).
+4. In code review, treat "the producer raises/never sets X, but a renderer/test still branches on X" as a finding to raise.
+
+**Distinguishing from the hard "remove orphans your changes created" rule and #193:** The hard rule is about orphans INSIDE the file your edit touched (same diff). This lesson is about the WIDER, cross-tier orphan a behavior flip creates in sibling files the flip task did not open - it requires an explicit cross-file grep, not just cleaning up the file you edited. #193 is the DECISION of which error contract to use; this lesson is the CLEANUP of the superseded contract's surface once the decision flips it. #158 (byte-identical non-regression refactors must not add net-new side effects) is about not introducing NEW behavior in a refactor; this is about removing OLD behavior left behind by a contract change.

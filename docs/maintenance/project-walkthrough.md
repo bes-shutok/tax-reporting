@@ -140,7 +140,7 @@ The 160 synthetic reward rows split into two categories:
 
 Taxable now (10 rows -- EUR referral rewards from Kraken):
 
-Ten EUR-denominated referral rewards are immediately taxable as Category E income under CIRS art. 5(11) because the remuneration is not in the form of cryptoassets, so the deferral rule does not apply. These rows are grouped by income code from Tabela V and source country from Tabela X into a single summary line written to the `Reporting` worksheet under `OTHER CAPITAL INVESTMENT INCOME`: income code 401, country IE, 30.00 EUR gross. The `Crypto Rewards` worksheet retains the per-row classification detail and reconciliation for auditability but is not a filing target for these taxable-now aggregates.
+Ten EUR-denominated referral rewards are immediately taxable as Category E income under CIRS art. 5(11) because the remuneration is not in the form of cryptoassets, so the deferral rule does not apply. These rows are grouped by income code from Tabela V and source country from Tabela X into a single summary line written to the `Reporting` worksheet under `OTHER CAPITAL INVESTMENT INCOME`: income code E25, country IE, 30.00 EUR gross. Under a PT jurisdiction the interest/lending family resolves to the official Tabela V code E25; under a non-PT country the income code resolves to blank. The `Crypto Rewards` worksheet retains the per-row classification detail and reconciliation for auditability but is not a filing target for these taxable-now aggregates.
 
 Deferred by law (150 rows):
 

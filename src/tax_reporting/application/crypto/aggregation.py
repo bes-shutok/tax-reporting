@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Final, TypedDict
 
 from tax_reporting.domain.entities import OgrValidationResult
 from tax_reporting.domain.exceptions import FileProcessingError
+from tax_reporting.domain.jurisdiction import PORTUGAL_COUNTRY_CODE
 
 from .classification import (
     _is_valid_tabela_x_country,
@@ -45,6 +46,7 @@ _OGR_MAGNITUDE_DIFF_THRESHOLD: Final = 5
 
 def aggregate_taxable_rewards(
     reward_entries: list[CryptoRewardIncomeEntry],
+    country: str,
 ) -> list[AggregatedRewardIncomeEntry]:
     """Aggregate taxable_now reward entries by income_code + source_country for IRS filing.
 
@@ -57,12 +59,17 @@ def aggregate_taxable_rewards(
 
     Args:
         reward_entries: All parsed reward entries from Koinly income report.
+        country: The REPORTING jurisdiction (ISO 3166-1 alpha-2), threaded to
+            :func:`_resolve_income_code`. NEVER the operator/origin country.
 
     Returns:
         List of aggregated reward entries ready for IRS filing.
 
     Raises:
-        FileProcessingError: If a taxable_now row cannot be assigned valid Tabela X country.
+        FileProcessingError: If a taxable_now row cannot be assigned a valid Tabela X
+            country code, or if (under PT) a taxable_now group resolves to no official
+            Tabela V income code -- the income type is a mandatory Quadro 8A field, so
+            an incomplete filing row is never emitted.
     """
     logger = logging.getLogger(__name__)
 
@@ -101,7 +108,7 @@ def aggregate_taxable_rewards(
 
     groups: dict[tuple[str, str], _RewardGroup] = {}
     for entry in taxable_entries:
-        income_code = _resolve_income_code(entry.source_type)
+        income_code = _resolve_income_code(entry.source_type, country)
         source_country = entry.operator_origin.operator_country.upper()
         key = (income_code, source_country)
 
@@ -123,6 +130,27 @@ def aggregate_taxable_rewards(
     for (income_code, source_country), data in sorted(groups.items()):
         entries = data["entries"]
         chains_tuple = tuple(sorted(data["chains"]))
+        if income_code:
+            description = f"Income code {income_code} from {source_country}"
+        else:
+            description = f"Reward income from {source_country}"
+            # The income type (Tabela V code) is a mandatory Quadro 8A field, just
+            # like the Tabela X country code that is fail-closed above. Mirror that
+            # contract: a taxable-now (fiat-denominated) reward whose source_type
+            # resolves to no official Tabela V code under PT must fail closed rather
+            # than emit an incomplete filing row that a filer could transcribe as-is.
+            # (Non-PT resolves to "" for every type and is expected/valid; not raised.)
+            if country.upper() == PORTUGAL_COUNTRY_CODE:
+                source_types = sorted({e.source_type for e in entries if e.source_type})
+                sample = entries[0]
+                raise FileProcessingError(
+                    f"Immediately taxable PT reward from wallet '{sample.wallet}' "
+                    f"(asset: {sample.asset}, value: {data['gross_income']} EUR, "
+                    f"source_type(s): {', '.join(source_types) or 'unknown'}, "
+                    f"source_country={source_country}) has no official Tabela V income "
+                    f"code. Verify the correct Modelo 3 income type (Quadro 8A) and add "
+                    f"the source_type -> code mapping in _resolve_income_code() before filing."
+                )
         aggregated.append(
             AggregatedRewardIncomeEntry(
                 income_code=income_code,
@@ -131,7 +159,7 @@ def aggregate_taxable_rewards(
                 foreign_tax_eur=data["foreign_tax"],
                 raw_row_count=len(entries),
                 chains=chains_tuple,
-                description=f"Income code {income_code} from {source_country}",
+                description=description,
             )
         )
 
@@ -342,6 +370,8 @@ def aggregate_derivatives_entries(
         key = (entry.date, entry.asset, entry.platform, entry.event_type)
         groups.setdefault(key, []).append(entry)
 
+    logger = logging.getLogger(__name__)
+
     result = []
     for group in groups.values():
         first = group[0]
@@ -351,6 +381,24 @@ def aggregate_derivatives_entries(
         # established codebase pattern so non-first members' notes survive aggregation
         # instead of being silently dropped (development_lessons.md #77, review r1 Medium 2).
         merged_notes = "; ".join(dict.fromkeys(e.notes for e in group if e.notes)) or ""
+        # annex_hint/operation_code are taken from `first` below. Before this branch
+        # they were group-constants (every row carried G/Q13 + G51); Feature A's
+        # counterparty-residency routing made them per-row variable, so a mixed-route
+        # group would silently drop non-first members' routes. Safe today because
+        # operator_country is resolved deterministically per platform and platform is
+        # part of the group key, but surface heterogeneity at warning+ so the latent
+        # gap is observable if that invariant ever changes (#118 / #185 shape).
+        routes = {(e.annex_hint, e.operation_code) for e in group}
+        if len(routes) > 1:
+            logger.warning(
+                "Derivatives group (date=%s asset=%s platform=%s event=%s) has mixed "
+                "annex routes %s; rendering route from the first member.",
+                first.date,
+                first.asset,
+                first.platform,
+                first.event_type.value,
+                sorted(routes),
+            )
         result.append(
             replace(
                 first,

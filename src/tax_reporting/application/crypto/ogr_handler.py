@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import Final
 
 from ...domain.entities import OgrValidationResult
+from ...domain.jurisdiction import PORTUGAL_COUNTRY_CODE
 from ...infrastructure.config import TaxJurisdictionConfig
 from ...infrastructure.koinly_parser import (
     normalize_asset_ticker,
@@ -25,6 +26,46 @@ from .operator_origin import resolve_operator_origin
 
 # OGR validation threshold constants
 _OGR_MAGNITUDE_DIFF_THRESHOLD: Final = 5  # Percent threshold for magnitude difference warnings
+
+# Derivatives routing constants (Modelo 3 / CIRS art. 10(1)(e)). The annex + operation
+# codes form a closed AT enum and are paired per the routing rule below; they never mix.
+_RESIDENT_ANNEX_HINT: Final = "G/Q13"
+_RESIDENT_OPERATION_CODE: Final = "G51"
+_NONRESIDENT_ANNEX_HINT: Final = "J/Q9.2.B"
+_NONRESIDENT_OPERATION_CODE: Final = "G30"
+
+
+def _derivatives_route(country: str, operator_country: str) -> tuple[str, str]:
+    """Resolve the Modelo 3 annex hint and operation code for a derivatives P&L row.
+
+    Jurisdiction-gated routing (Invariant 2: jurisdiction-specific output must gate on
+    ``TaxJurisdictionConfig.country``, never be unconditional):
+
+    - Non-PT jurisdiction -> ``("", "")``: a non-PT return has no Modelo 3 annex, so no
+      PT-specific hint is emitted.
+    - PT jurisdiction + PT-resident counterparty -> ``("G/Q13", "G51")``: Anexo G Quadro 13
+      with operation code G51 ("instrumentos financeiros derivados").
+    - PT jurisdiction + any other counterparty (including ``"UNKNOWN"`` and empty) ->
+      ``("J/Q9.2.B", "G30")``: fail-safe to the non-resident annex. When operator origin
+      cannot be resolved, route to the non-resident annex rather than silently claiming
+      PT residence.
+
+    The ``country`` argument is the taxpayer's jurisdiction (equality test against the
+    single PT identifier, not a Tabela-X membership test). The ``operator_country``
+    argument is the counterparty's alpha-2 country code from ``resolve_operator_origin``.
+
+    Args:
+        country: Taxpayer jurisdiction alpha-2 code (``TaxJurisdictionConfig.country``).
+        operator_country: Counterparty alpha-2 country code (or ``"UNKNOWN"``).
+
+    Returns:
+        Tuple ``(annex_hint, operation_code)`` per the routing rule above.
+    """
+    if country.upper() != PORTUGAL_COUNTRY_CODE:
+        return "", ""
+    if operator_country.upper() == PORTUGAL_COUNTRY_CODE:
+        return _RESIDENT_ANNEX_HINT, _RESIDENT_OPERATION_CODE
+    return _NONRESIDENT_ANNEX_HINT, _NONRESIDENT_OPERATION_CODE
 
 
 def _validate_capital_entries_have_valid_countries(
@@ -262,6 +303,12 @@ def _split_ogr_index(
         # classification context (Design Invariant 3; matches ogr_handler.py:76).
         combined_reason = "; ".join(filter(None, [operator_origin_reason, classification_reason]))
 
+        # Resolve the Modelo 3 annex + operation code from the taxpayer's jurisdiction
+        # and the counterparty's residency. PT-gated: non-PT jurisdictions emit no hint.
+        route_annex_hint, route_operation_code = _derivatives_route(
+            jurisdiction.country, operator_origin.operator_country
+        )
+
         derivatives_entries.append(
             DerivativesPnLEntry(
                 date=row.date,
@@ -278,6 +325,10 @@ def _split_ogr_index(
                 # which would leak into Excel (Design Invariant 6).
                 operator_entity=row.wallet,
                 operator_country=operator_origin.operator_country,
+                # Resolved per (jurisdiction, counterparty residency) so the Modelo 3
+                # routing reflects the operator origin, not a hardcoded resident default.
+                annex_hint=route_annex_hint,
+                operation_code=route_operation_code,
             )
         )
 

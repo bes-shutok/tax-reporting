@@ -18,7 +18,15 @@ dates (see `docs/maintenance/project-guidelines.md` #1).
   oficios circulados, and AT binding rulings. Self-documenting; see `crypto-tax/README.md`
   and `crypto-tax/sources.md`.
 - `official/`: Portugal tax-law references that are NOT crypto-specific. Currently holds the
-  AT RNH folheto (NHR / Anexo L). See `sources.md` for provenance.
+  AT RNH folheto (NHR / Anexo L), the AT IRS deductions folheto (deducoes a coleta,
+  beneficios fiscais e taxas, for rendimentos de 2025), Portaria n.º 106/2025/1 (CLS,
+  tenant-side lease communication), and date-stamped consolidated-code snapshots for
+  offline cross-reference: CIRS (última atualização Lei 26/2026), CPPT (DL 49/2025), and
+  CIS (DL 49/2025). See `sources.md` for provenance and the staleness-management policy.
+- `rent_deduction_cross_reference.md`: derived cross-reference note (not source-origin)
+  verifying the FY2025 permanent-housing rent deduction (CIRS art. 78.º-E, incl. the cap
+  reconciliation between consolidated text and the AT folheto) and the CLS scope/effective
+  date. Verified 2026-06-27.
 - `sources.md`: provenance manifest for the `official/` general-IRS references in this folder.
 
 ## Why the general (non-crypto) archive exists

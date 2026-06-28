@@ -772,6 +772,54 @@ class TestMethodologyAssumptionsSection:
             "Methodology must include an item citing CIRS art. 10(1)(k) for the Crypto Gains tab"
         )
 
+    def test_derivatives_loss_text_no_365_day_exemption_and_correct_routing(self):
+        """Futures/Derivatives Losses methodology reflects the law-driven routing, not the stale spot-crypto path.
+
+        Grounded in CIRS art. 10(1)(e) (derivatives), art. 10(19) (365-day exclusion scoped to
+        alinea k spot criptoativos only), art. 55(1)(d) / PT-C-016 (5-year carry-forward), and AT binding
+        ruling Processo 28298/2025 (route by counterparty residency). See DP-012, PT-C-032, PT-C-034.
+        """
+        wb = openpyxl.Workbook()
+        entry = _make_capital_entry(platform="Kraken")
+        report = _make_crypto_tax_report(capital_entries=[entry])
+        write_assumptions_and_methodology_sheet(wb, capital_entries=report.capital_entries)
+        ws = wb["Assumptions & Methodology"]
+
+        description = None
+        for row_idx in range(1, 200):
+            if ws.cell(row_idx, 1).value == "Futures/Derivatives Losses":
+                description = ws.cell(row_idx, 2).value
+                break
+        assert description is not None, "Futures/Derivatives Losses row not found"
+        assert isinstance(description, str)
+
+        # The stale spot-crypto routing must be gone.
+        assert "Quadro 9.4" not in description, (
+            "Derivatives text must not route to Anexo J Quadro 9.4 (that is spot crypto <365d)"
+        )
+        assert "long-term" not in description.lower(), (
+            "Derivatives text must not reuse the spot-crypto holding-period framing"
+        )
+        assert "are excluded" not in description.lower(), (
+            "Derivatives text must not claim a >=365-day exclusion (art. 10(19) is alinea k only)"
+        )
+
+        # Correct, law-driven content.
+        assert "10(1)(e)" in description, "Must cite CIRS art. 10(1)(e) for derivatives"
+        assert "28298/2025" in description, "Must cite AT binding ruling Processo 28298/2025"
+        assert "no 365-day exemption" in description.lower(), (
+            "Must state derivatives have no 365-day exemption (art. 10(19) is alinea k only)"
+        )
+        assert "5-year" in description.lower() or "5 year" in description.lower(), (
+            "Must state 5-year loss carry-forward (PT-C-016)"
+        )
+        # Routing by counterparty residency per ruling 28298/2025.
+        assert "G51" in description, "Resident counterparty route: Anexo G Q13, code G51"
+        assert "G30" in description, "Non-resident counterparty route: Anexo J Q9.2.B, code G30"
+        assert "Quadro 13" in description or "Q13" in description, (
+            "Must reference Anexo G Quadro 13 for resident-counterparty derivatives"
+        )
+
     def test_legal_citation_format(self):
         """Legal citations follow expected format patterns."""
         wb = openpyxl.Workbook()

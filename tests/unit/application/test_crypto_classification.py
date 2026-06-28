@@ -102,32 +102,32 @@ class TestIncomeCodeResolution:
     """Tests for _resolve_income_code function."""
 
     def test_resolve_staking_income_code(self):
-        """Given staking type, expects 401 income code."""
+        """Under PT, staking has no Tabela V code -> blank."""
         from tax_reporting.application.crypto.classification import _resolve_income_code
 
-        result = _resolve_income_code("staking")
-        assert result == "401"
+        result = _resolve_income_code("staking", country="PT")
+        assert result == ""
 
     def test_resolve_airdrop_income_code(self):
-        """Given airdrop type, expects 401 income code."""
+        """Under PT, airdrop has no Tabela V code -> blank."""
         from tax_reporting.application.crypto.classification import _resolve_income_code
 
-        result = _resolve_income_code("airdrop")
-        assert result == "401"
+        result = _resolve_income_code("airdrop", country="PT")
+        assert result == ""
 
     def test_resolve_interest_income_code(self):
-        """Given interest type, expects 402 income code."""
+        """Under PT, interest resolves to the official E25."""
         from tax_reporting.application.crypto.classification import _resolve_income_code
 
-        result = _resolve_income_code("interest")
-        assert result == "402"
+        result = _resolve_income_code("interest", country="PT")
+        assert result == "E25"
 
     def test_resolve_unknown_income_code(self):
-        """Given unknown type, expects default 401 income code."""
+        """Under PT, an unknown type resolves to blank (no synthetic default)."""
         from tax_reporting.application.crypto.classification import _resolve_income_code
 
-        result = _resolve_income_code("unknown_type")
-        assert result == "401"
+        result = _resolve_income_code("unknown_type", country="PT")
+        assert result == ""
 
 
 class TestTabelaXValidation:

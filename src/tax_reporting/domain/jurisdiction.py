@@ -4,9 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import Final
 from zoneinfo import ZoneInfo
 
 DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS: Decimal = Decimal("10")
+
+# Portugal ISO 3166-1 alpha-2 country code. Canonical single source for the
+# jurisdiction whose Modelo 3 / CIRS rules are implemented; PT-gating sites
+# compare ``TaxJurisdictionConfig.country`` against this rather than a local
+# literal so the identifier cannot drift across modules.
+PORTUGAL_COUNTRY_CODE: Final[str] = "PT"
 
 
 @dataclass(frozen=True)

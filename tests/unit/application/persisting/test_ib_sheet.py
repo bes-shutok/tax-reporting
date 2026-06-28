@@ -20,6 +20,14 @@ from tax_reporting.domain.entities import (
 from tax_reporting.domain.value_objects import Company, Currency, TradeDate
 from tax_reporting.infrastructure.config import Config, ConversionRate, TaxJurisdictionConfig
 
+# Stable fragment of the official E25 description used to locate the rendered
+# other-capital-income row by structural identification. The assertion below
+# guards the fragment against drift in the production description.
+_E25_LABEL_FRAGMENT = "criptoativos"
+assert _E25_LABEL_FRAGMENT in get_income_code_description("E25"), (
+    "E25 description fragment drifted from the production mapping; update _E25_LABEL_FRAGMENT"
+)
+
 
 def _make_capital_gain_line(  # noqa: PLR0913
     sell_date: TradeDate | None = None,
@@ -96,7 +104,7 @@ def _make_config() -> Config:
 
 
 def _make_aggregated_reward_entry(  # noqa: PLR0913
-    income_code: str = "402",
+    income_code: str = "E25",
     source_country: str = "GB",
     gross_income_eur: Decimal | None = None,
     foreign_tax_eur: Decimal | None = None,
@@ -735,7 +743,7 @@ class TestWriteIbReportingSheetCapitalInvestmentIncome:
         other_row = self._find_row_with_text(ws, "OTHER CAPITAL INVESTMENT INCOME")
         assert other_row is not None
 
-        data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
+        data_row = self._find_row_with_text(ws, _E25_LABEL_FRAGMENT, column=1)
         assert data_row is not None
 
         assert ws.cell(data_row, 2).value == "GB"
@@ -765,7 +773,7 @@ class TestWriteIbReportingSheetCapitalInvestmentIncome:
         )
         write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
 
-        data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
+        data_row = self._find_row_with_text(ws, _E25_LABEL_FRAGMENT, column=1)
         assert data_row is not None
         assert ws.cell(data_row, 2).value == "IE"
         assert ws.cell(data_row, 8).value == "Kraken"
@@ -783,7 +791,7 @@ class TestWriteIbReportingSheetCapitalInvestmentIncome:
         )
         write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
 
-        data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
+        data_row = self._find_row_with_text(ws, _E25_LABEL_FRAGMENT, column=1)
         assert data_row is not None
         assert float(ws.cell(data_row, 4).value) == pytest.approx(100)
         assert float(ws.cell(data_row, 5).value) == pytest.approx(15)
@@ -826,7 +834,7 @@ class TestWriteIbReportingSheetCapitalInvestmentIncome:
             )
             write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
 
-            data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
+            data_row = self._find_row_with_text(ws, _E25_LABEL_FRAGMENT, column=1)
             assert data_row is not None, f"Data row for prefix '{prefix}'"
 
             cell = ws.cell(data_row, 8)
@@ -847,7 +855,7 @@ class TestWriteIbReportingSheetCapitalInvestmentIncome:
             )
             write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
 
-            data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
+            data_row = self._find_row_with_text(ws, _E25_LABEL_FRAGMENT, column=1)
             assert data_row is not None, f"Data row for prefix '{prefix}'"
 
             cell = ws.cell(data_row, 8)
@@ -867,7 +875,7 @@ class TestWriteIbReportingSheetCapitalInvestmentIncome:
         )
         write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
 
-        data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
+        data_row = self._find_row_with_text(ws, _E25_LABEL_FRAGMENT, column=1)
         assert data_row is not None, "Data row for control char test"
 
         cell = ws.cell(data_row, 8)
@@ -885,7 +893,7 @@ class TestWriteIbReportingSheetCapitalInvestmentIncome:
         entry = _make_aggregated_reward_entry(gross_income_eur=Decimal("0"))
         write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
 
-        data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
+        data_row = self._find_row_with_text(ws, _E25_LABEL_FRAGMENT, column=1)
         assert data_row is not None
         # Zero value should render as 0, not None or empty
         assert float(ws.cell(data_row, 4).value) == pytest.approx(0)
@@ -904,7 +912,7 @@ class TestWriteIbReportingSheetCapitalInvestmentIncome:
         )
         write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
 
-        data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
+        data_row = self._find_row_with_text(ws, _E25_LABEL_FRAGMENT, column=1)
         assert data_row is not None
         # Net value should be negative (gross - tax = 100 - 150 = -50)
         assert float(ws.cell(data_row, 4).value) == pytest.approx(100)
@@ -921,11 +929,51 @@ class TestWriteIbReportingSheetCapitalInvestmentIncome:
         entry = _make_aggregated_reward_entry(chains=())
         write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
 
-        data_row = self._find_row_with_text(ws, "Crypto interest", column=1)
+        data_row = self._find_row_with_text(ws, _E25_LABEL_FRAGMENT, column=1)
         assert data_row is not None
         # Empty chains should render as empty string in source detail column (column 8)
         source_detail_value = ws.cell(data_row, 8).value
         assert source_detail_value in ("", None)
+
+    def test_other_capital_income_renders_official_description_under_pt(self):
+        """Under PT, a crypto-interest aggregated reward (income_code='E25')
+        renders the official E25 description in the income-type column (col 1)."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        lines: CapitalGainLinesPerCompany = {}
+        entry = _make_aggregated_reward_entry(income_code="E25")
+        write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
+
+        # Column 1 carries the official E25 description verbatim
+        data_row = self._find_row_with_text(ws, _E25_LABEL_FRAGMENT, column=1)
+        assert data_row is not None
+        assert ws.cell(data_row, 1).value == get_income_code_description("E25")
+
+    def test_other_capital_income_renders_blank_for_blank_income_code(self):
+        """The renderer blanks the income-type description cell when income_code
+        is '' (regardless of jurisdiction, since the renderer is
+        jurisdiction-independent). The cell must be blank, with no 'Income code'
+        fallback string. The non-PT aggregation path that PRODUCES income_code=''
+        is covered by test_production_path_blanks_income_code_under_non_pt."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporting"
+        config = _make_config()
+        lines: CapitalGainLinesPerCompany = {}
+        # income_code='' is what aggregate_taxable_rewards produces under non-PT
+        entry = _make_aggregated_reward_entry(income_code="")
+        write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
+
+        # Locate the OTHER CAPITAL INVESTMENT INCOME data row structurally:
+        # the subsection header is followed by exactly one data row.
+        subsection_row = self._find_row_with_text(ws, "OTHER CAPITAL INVESTMENT INCOME")
+        assert subsection_row is not None
+        data_row = subsection_row + 1
+        income_type_cell = ws.cell(data_row, 1).value
+        assert income_type_cell in ("", None)
+        assert not (isinstance(income_type_cell, str) and income_type_cell.startswith("Income code"))
 
 
 @pytest.mark.unit
@@ -933,15 +981,19 @@ class TestGetIncomeCodeDescription:
     """Tests for get_income_code_description function."""
 
     def test_returns_known_code_description(self):
-        """Known income codes return their descriptions."""
-        assert get_income_code_description("401") == "Crypto capital income (staking, rewards, airdrops)"
-        assert get_income_code_description("402") == "Crypto interest (lending, deposit interest)"
-        assert get_income_code_description("403") == "Mining income"
-        assert get_income_code_description("404") == "Fork income"
-        assert get_income_code_description("405") == "Crypto dividends"
+        """Known official income codes return their descriptions from the
+        consolidated owner (E25 is the sole official Tabela V crypto code)."""
+        from tax_reporting.application.persisting.tax_constants import _INCOME_CODE_DESCRIPTIONS
+
+        assert get_income_code_description("E25") == _INCOME_CODE_DESCRIPTIONS["E25"]
+
+    def test_blank_code_returns_empty_string(self):
+        """A blank income code (non-PT jurisdictions and non-interest PT types
+        resolve to "") renders as blank, not a fallback string."""
+        assert get_income_code_description("") == ""
 
     def test_returns_fallback_for_unknown_code(self):
-        """Unknown income codes return a fallback string with the code."""
+        """Unknown non-blank income codes return a fallback string with the code."""
         unknown_code = "999"
         result = get_income_code_description(unknown_code)
         assert result == f"Income code {unknown_code}"

@@ -143,18 +143,38 @@ are classified as "instrumentos financeiros derivados" under CIRS art. 10(1)(e).
 Disposals of derivative positions, including liquidations, are treated as alienação onerosa
 and are taxable events. A liquidation is a forced disposal event, not a withdrawal.
 
-**IRS filing routing (Quadro 13):** Derivatives realizations are declared in **Anexo G, Quadro 13**
-("INSTRUMENTOS FINANCEIROS DERIVADOS, WARRANTS AUTÓNOMOS E CERTIFICADOS"), lines 1301-1306, with
-income code **G51** ("Operações relativas a instrumentos financeiros derivados"). Each line carries
-four mandatory fields: Código da operação, Titular, Rendimento líquido (the EUR P&L), and País da
-contraparte (counterparty country = operator entity country). Cryptoasset disposals under alínea k)
-go to Quadro 18 instead; derivatives and cryptoassets are reported in different Quadros.
-Englobamento option for Quadro 13 derivatives is signalled in Quadro 15 of the same annex.
+**IRS filing routing (counterparty-residency-dependent):** Derivatives realizations route to
+different Quadros depending on whether the counterparty (the exchange/operator entity) is resident
+or non-resident in Portugal, per AT binding ruling Processo 28298/2025 paragraphs 22-23:
+- **Resident counterparty** -> declared in **Anexo G, Quadro 13**
+  ("INSTRUMENTOS FINANCEIROS DERIVADOS, WARRANTS AUTÓNOMOS E CERTIFICADOS"), lines 1301-1306, with
+  income code **G51** ("Operações relativas a instrumentos financeiros derivados"); the englobamento
+  option is signalled in **Quadro 15 of Anexo G**. Each line carries four mandatory fields: Código da
+  operação, Titular, Rendimento líquido (the EUR P&L), and País da contraparte (counterparty country =
+  operator entity country).
+- **Non-resident counterparty** (income obtained abroad, e.g. ByBit/Binance/OKX) -> declared in
+  **Anexo J, Quadro 9.2.B**, with income code **G30**; the englobamento option is signalled in
+  **Quadro 9.2.C of Anexo J**.
+
+The repo resolves the filing route per row from counterparty residency, but only under a PT
+jurisdiction. `ogr_handler._derivatives_route(country, operator_country)` drives
+`DerivativesPnLEntry.annex_hint` / `operation_code` as follows: under `country == "PT"`, a resident
+operator (`operator_country == "PT"`) yields `annex_hint="G/Q13"`, `operation_code="G51"`; a
+non-resident, empty, or `UNKNOWN` operator yields `annex_hint="J/Q9.2.B"`, `operation_code="G30"`;
+under any non-PT country both fields resolve to `""`. The entity defaults are the blank route, so a
+direct constructor that passes no jurisdiction fails safe (no PT hint). The Derivatives P&L sheet
+renders `annex_hint` (Annex column) and `operation_code` (Código column) per row; under PT it warns
+if any rendered Annex is blank. No filer override is required.
+Cryptoasset disposals under alínea k) go to Quadro 18 instead; derivatives and cryptoassets are
+reported in different Quadros.
 > Source: CIRS art. 10(1)(e) - "Operações relativas a instrumentos financeiros derivados";
 > confirmed via official AT portal rendering in `cirs_art10_portal_2026-04-01.html`.
 > Filing routing: `docs/maintenance/tax/laws/pt/crypto-tax/official/modelo3_anexo_g_2026.pdf` page 4
 > (Quadro 13 structure, verified 2026-06-13 via pdftotext extraction); AT PIV 28298/2025 paragraph 22
-> (Quadro 15 englobamento signal).
+> (resident counterparty -> Anexo G Quadro 13, code G51; englobamento in Quadro 15) and paragraph 23
+> (non-resident counterparty -> Anexo J Quadro 9.2.B, code G30; englobamento in Quadro 9.2.C), verified
+> 2026-06-24 via pdftotext extraction of `at_piv_28298_2025.pdf`. Cross-referenced in
+> `docs/maintenance/tax/decision_points/2025.md` "Filing Guidelines: Futures and Derivatives Losses".
 
 > **Example:** ByBit SOL/USDT position `<POSITION_ID>` liquidated on 19 Jan 2025,
 > 11:28:53 PM. Koinly reported -42.26 USD loss at 11:29:46 PM. The system assessed disposal
@@ -164,12 +184,19 @@ Englobamento option for Quadro 13 derivatives is signalled in Quadro 15 of the s
 > `docs/maintenance/negative_gain_handling_verification.md`.
 
 **PT-C-032** `[OFFICIAL | CIRS art. 10(19)]`
-Losses from derivatives follow the same holding-period rules as gains:
-- **Short-term (<365 days):** losses can be carried forward for 5 years (PT-C-016)
+For **spot criptoativos** (art. 10(1)(k)), the 365-day rule excludes BOTH gains and losses symmetrically:
+- **Short-term (<365 days):** gains/losses are taxable/deductible; losses can be carried forward for 5 years (PT-C-016)
 - **Long-term (≥365 days):** both gains AND losses are excluded from taxation
-The text states: "São excluídos os ganhos obtidos, bem como as perdas incorridas"
-(obtained gains are excluded, as well as incurred losses) for assets held ≥365 days.
+The text states: "São excluídos os ganhos obtidos, bem como as perdas incorridas, resultantes das operações
+previstas na **alínea k)** do n.º 1 relativas a criptoativos detidos por um período igual ou superior a
+365 dias" (gains and losses from alínea k) operations on criptoativos held >=365 days are excluded).
 > Source: CIRS art. 10(19); official AT portal rendering in `cirs_art10_portal_2026-04-01.html`.
+
+> **Scope carve-out - derivatives are NOT covered by PT-C-032.** Art. 10(19) is textually limited to
+> "operações previstas na alínea k)" (spot criptoativos). Derivatives fall under alínea e) and have **no
+> 365-day holding-period exemption**: both their gains and losses are taxable/deductible regardless of
+> holding period, and losses carry forward 5 years unconditionally (see DP-012, PT-C-034, and AT binding
+> ruling Processo 28298/2025). Do not apply the >=365-day exclusion to derivatives.
 
 **PT-C-033** `[OFFICIAL | 2026-01-12 | CIRS art. 10(1)(e) | AT folheto 2026-01-12]`
 
