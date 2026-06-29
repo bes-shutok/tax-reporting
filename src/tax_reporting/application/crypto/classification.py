@@ -16,7 +16,6 @@ from typing import Final
 import pycountry
 
 from ...domain.exceptions import FileProcessingError
-from ...domain.jurisdiction import PORTUGAL_COUNTRY_CODE
 from ...infrastructure.json_loader import DEGRADED, load_guarded_json
 from .entities import CryptoCapitalGainEntry, DerivativesClassification, ParsedOgrRow, RewardTaxClassification
 
@@ -196,7 +195,7 @@ _INTEREST_INCOME_TYPES: frozenset[str] = frozenset(
 # The single official Tabela V (Categoria E) crypto income code this branch
 # verified for the PT interest family. Shared by the resolver (producer) and the
 # description table (consumer) below so the closed AT value cannot drift across
-# sites as more Tabela V codes are added (mirrors the PORTUGAL_COUNTRY_CODE pattern).
+# sites as more Tabela V codes are added.
 _PT_INTEREST_INCOME_CODE: Final[str] = "E25"
 
 # Official Tabela V (Categoria E) code -> PT description for crypto reward
@@ -462,27 +461,27 @@ def _classify_reward_tax_status(asset: str) -> RewardTaxClassification:
     return RewardTaxClassification.DEFERRED_BY_LAW
 
 
-def _resolve_income_code(koinly_type: str, country: str) -> str:
+def _resolve_income_code(koinly_type: str, classify_with_income_codes: bool) -> str:
     """Map a Koinly income type to its official Modelo 3 income code under a jurisdiction.
 
-    Under ``country == "PT"`` the interest/lending family maps to the single
-    official Tabela V (Categoria E) crypto code ``E25``. Every other Koinly
+    When ``classify_with_income_codes`` is True the interest/lending family maps to the
+    single official Tabela V (Categoria E) crypto code ``E25``. Every other Koinly
     type (staking, reward, airdrop, mining, fork, dividend) has no Tabela V
     code and resolves to ``""`` (mining is Tabela III/Categoria B; fork and
     crypto "dividend" have no PT code at all). Unknown types also resolve to
-    ``""`` rather than a synthetic default. Under any non-PT country every type
-    resolves to ``""`` (Invariant 2).
+    ``""`` rather than a synthetic default. When ``classify_with_income_codes`` is
+    False every type resolves to ``""`` regardless of jurisdiction.
 
     Args:
         koinly_type: The type field from Koinly income report (e.g., "interest", "staking").
-        country: The REPORTING jurisdiction (ISO 3166-1 alpha-2). NEVER the
-            operator/origin country.
+        classify_with_income_codes: Whether to classify into official Tabela V codes
+            (``TaxJurisdictionConfig.classify_rewards_with_income_codes``).
 
     Returns:
-        The official income code (``"E25"`` for the PT interest family), or
-        ``""`` when the type has no code under the jurisdiction.
+        The official income code (``"E25"`` for the interest family when classification
+        is enabled), or ``""`` when the type has no code or classification is disabled.
     """
-    if country.upper() != PORTUGAL_COUNTRY_CODE:
+    if not classify_with_income_codes:
         return ""
     normalized_type = koinly_type.strip().lower()
     if normalized_type in _INTEREST_INCOME_TYPES:

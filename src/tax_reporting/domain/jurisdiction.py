@@ -4,16 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Final
 from zoneinfo import ZoneInfo
 
 DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS: Decimal = Decimal("10")
-
-# Portugal ISO 3166-1 alpha-2 country code. Canonical single source for the
-# jurisdiction whose Modelo 3 / CIRS rules are implemented; PT-gating sites
-# compare ``TaxJurisdictionConfig.country`` against this rather than a local
-# literal so the identifier cannot drift across modules.
-PORTUGAL_COUNTRY_CODE: Final[str] = "PT"
 
 
 @dataclass(frozen=True)
@@ -44,6 +37,15 @@ class TaxJurisdictionConfig:
         separate_derivatives_reporting: Whether derivatives P&L is reported separately
             from spot crypto (e.g., True for PT per DP-012; CIRS art. 10(1)(e) covers
             derivatives with no 365-day exemption, while spot retains art. 10(1)(k)).
+        route_derivatives_by_counterparty_residency: Whether derivatives P&L rows are
+            assigned Modelo 3 annex + operation codes by counterparty residency (e.g.,
+            True for PT per CIRS art. 10(1)(e) routed to Anexo G Quadro 13 for resident
+            counterparties, or Anexo J Quadro 9.2.B for non-resident counterparties).
+            When False, no annex/code hint is emitted regardless of jurisdiction.
+        classify_rewards_with_income_codes: Whether crypto reward income rows are
+            classified into official Tabela V income codes (e.g., True for PT, where the
+            interest/lending family resolves to code E25 under Categoria E). When False,
+            every reward resolves to a blank income code regardless of jurisdiction.
         infer_payment_proceeds: Whether to correct the realization value (valor de
             realização) of Koinly-tagged ``Payment``/``Card Payment`` disposals whose
             CG ``proceeds_eur == 0`` because Koinly's price DB had no match for the
@@ -111,6 +113,8 @@ class TaxJurisdictionConfig:
     futures_derivatives_taxable: bool = False
     use_other_gains_report: bool = False
     separate_derivatives_reporting: bool = False
+    route_derivatives_by_counterparty_residency: bool = False
+    classify_rewards_with_income_codes: bool = False
     infer_payment_proceeds: bool = False
     exclude_transaction_fees: bool = False
     exclude_transaction_fee_default_max_eur: Decimal = Decimal("0.5")

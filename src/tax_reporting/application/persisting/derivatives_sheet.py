@@ -9,8 +9,6 @@ from typing import TYPE_CHECKING
 import openpyxl
 from openpyxl.styles import Font, PatternFill
 
-from ...domain.jurisdiction import PORTUGAL_COUNTRY_CODE
-
 if TYPE_CHECKING:
     from ...infrastructure.config import TaxJurisdictionConfig
     from ..crypto_reporting import CryptoTaxReport
@@ -55,8 +53,8 @@ def write_derivatives_sheet(
     one entry is a loss.
 
     The annex routing (column 11) and AT operation code (column 12) are written
-    per row from each entry's ``annex_hint`` and ``operation_code`` (blank for
-    non-PT jurisdictions). When the sheet renders under a PT jurisdiction and any
+    per row from each entry's ``annex_hint`` and ``operation_code`` (blank when
+    residency routing is disabled). When residency routing is enabled and any
     entry has a blank annex_hint, a warning is emitted so a failed/blank route is
     surfaced loudly rather than rendered silently (development_lessons.md #77/#118).
 
@@ -67,7 +65,8 @@ def write_derivatives_sheet(
     Args:
         workbook: The Excel workbook to add the sheet to.
         crypto_tax_report: The crypto tax report; only derivatives_entries is used.
-        jurisdiction: The active tax jurisdiction; gates the blank-annex warning.
+        jurisdiction: The active tax jurisdiction; gates the blank-annex warning
+            via ``route_derivatives_by_counterparty_residency``.
     """
     worksheet = workbook.create_sheet(_SHEET_NAME)
 
@@ -76,19 +75,19 @@ def write_derivatives_sheet(
 
     entries = crypto_tax_report.derivatives_entries
 
-    # Defensive guard: under PT, _derivatives_route always resolves a non-blank
-    # annex for the single DerivativesPnLEntry construction site, so this is not
-    # an observed production condition today. It catches a future second
-    # construction site that forgets to route. Describe the observation rather
-    # than diagnosing a cause the renderer cannot establish.
-    if entries and jurisdiction.country.upper() == PORTUGAL_COUNTRY_CODE:
+    # Defensive guard: when residency routing is enabled, _derivatives_route always
+    # resolves a non-blank annex for the single DerivativesPnLEntry construction
+    # site, so this is not an observed production condition today. It catches a
+    # future second construction site that forgets to route. Describe the
+    # observation rather than diagnosing a cause the renderer cannot establish.
+    if entries and jurisdiction.route_derivatives_by_counterparty_residency:
         blank_annex_rows = [
             e for e in entries if e.annex_hint == ""
         ]
         if blank_annex_rows:
             logging.getLogger(__name__).warning(
                 "Derivatives P&L: %d of %d entries have a blank Annex (annex_hint) under "
-                "the PT jurisdiction. Affected rows: %s",
+                "the active jurisdiction. Affected rows: %s",
                 len(blank_annex_rows),
                 len(entries),
                 sorted({(e.date, e.asset, e.platform) for e in blank_annex_rows}),

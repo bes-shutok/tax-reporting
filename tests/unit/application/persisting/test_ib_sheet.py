@@ -955,14 +955,15 @@ class TestWriteIbReportingSheetCapitalInvestmentIncome:
         """The renderer blanks the income-type description cell when income_code
         is '' (regardless of jurisdiction, since the renderer is
         jurisdiction-independent). The cell must be blank, with no 'Income code'
-        fallback string. The non-PT aggregation path that PRODUCES income_code=''
-        is covered by test_production_path_blanks_income_code_under_non_pt."""
+        fallback string. The classify_rewards_with_income_codes=False aggregation
+        path that PRODUCES income_code='' is covered by
+        test_production_path_blanks_income_code_when_classification_off."""
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Reporting"
         config = _make_config()
         lines: CapitalGainLinesPerCompany = {}
-        # income_code='' is what aggregate_taxable_rewards produces under non-PT
+        # income_code='' is what aggregate_taxable_rewards produces under classify_rewards_with_income_codes=False
         entry = _make_aggregated_reward_entry(income_code="")
         write_ib_reporting_sheet(ws, config, lines, None, other_capital_income_entries=[entry])
 
@@ -988,8 +989,9 @@ class TestGetIncomeCodeDescription:
         assert get_income_code_description("E25") == _INCOME_CODE_DESCRIPTIONS["E25"]
 
     def test_blank_code_returns_empty_string(self):
-        """A blank income code (non-PT jurisdictions and non-interest PT types
-        resolve to "") renders as blank, not a fallback string."""
+        """A blank income code (jurisdictions with classification off and
+        non-interest types under classification on resolve to "") renders as
+        blank, not a fallback string."""
         assert get_income_code_description("") == ""
 
     def test_returns_fallback_for_unknown_code(self):

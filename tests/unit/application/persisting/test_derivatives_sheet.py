@@ -459,11 +459,12 @@ class TestDerivativesSheet:
                 )
 
     def test_blank_annex_under_pt_warns(self, caplog):
-        """A blank Annex under the PT jurisdiction must surface a warning.
+        """A blank Annex when `route_derivatives_by_counterparty_residency` is on
+        must surface a warning.
 
         Pins the dev_lessons #77/#118 'surface invalidity loudly' guarantee that the
         removed detail-line guard previously provided. A row that failed to resolve a
-        route (annex_hint == '') under PT must never render silently.
+        route (annex_hint == '') while the flag is on must never render silently.
         """
         entries = [
             _make_derivatives_entry(
@@ -481,10 +482,10 @@ class TestDerivativesSheet:
 
         joined = " | ".join(rec.message for rec in caplog.records)
         assert "blank" in joined.lower(), (
-            f"Expected a warning mentioning 'blank' for a blank Annex under PT, got: {joined!r}"
+            f"Expected a warning mentioning 'blank' for a blank Annex while the flag is on, got: {joined!r}"
         )
         assert "annex" in joined.lower(), (
-            f"Expected a warning mentioning 'Annex' for a blank Annex under PT, got: {joined!r}"
+            f"Expected a warning mentioning 'Annex' for a blank Annex while the flag is on, got: {joined!r}"
         )
 
     def test_no_blank_annex_warning_when_routes_resolved(self, caplog):
@@ -523,14 +524,15 @@ class TestDerivativesSheet:
             f"got: {[r.message for r in blank_annex_warnings]}"
         )
 
-    def test_no_blank_annex_warning_under_non_pt(self, caplog):
-        """Paired negative: a blank Annex under a NON-PT jurisdiction must NOT warn.
+    def test_no_blank_annex_warning_when_routing_disabled(self, caplog):
+        """Paired negative: a blank Annex with residency routing disabled must NOT warn.
 
-        Non-PT jurisdictions legitimately carry blank annexes (no Modelo 3 hint),
-        so the warning is PT-gated. This falsifies the country gate directly: a
-        regression that drops the ``jurisdiction.country == PT`` condition (making
-        the warning unconditional) would log spurious warnings on every non-PT
-        run and fail this test.
+        When residency routing is disabled, entries legitimately carry blank annexes
+        (no Modelo 3 hint), so the warning is flag-gated. This falsifies the flag gate
+        directly: a regression that drops the
+        ``route_derivatives_by_counterparty_residency`` condition (making the warning
+        unconditional) would log spurious warnings on every flag-off run and fail this
+        test.
         """
         entries = [
             _make_derivatives_entry(
@@ -544,14 +546,21 @@ class TestDerivativesSheet:
 
         with caplog.at_level("WARNING", logger="tax_reporting.application.persisting.derivatives_sheet"):
             wb = openpyxl.Workbook()
-            write_derivatives_sheet(wb, report, build_koinly_jurisdiction(country="DE"))
+            write_derivatives_sheet(
+                wb,
+                report,
+                build_koinly_jurisdiction(
+                    country="DE",
+                    route_derivatives_by_counterparty_residency=False,
+                ),
+            )
 
         blank_annex_warnings = [
             rec for rec in caplog.records
             if "blank" in rec.message.lower() and "annex" in rec.message.lower()
         ]
         assert not blank_annex_warnings, (
-            f"Expected no blank-Annex warning under a non-PT jurisdiction, "
+            f"Expected no blank-Annex warning when residency routing is disabled, "
             f"got: {[r.message for r in blank_annex_warnings]}"
         )
 

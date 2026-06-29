@@ -17,7 +17,6 @@ from __future__ import annotations
 import openpyxl
 from openpyxl.styles import Font
 
-from ...domain.jurisdiction import PORTUGAL_COUNTRY_CODE
 from ...infrastructure.config import TaxJurisdictionConfig
 from ..crypto_reporting import (
     ZERO,
@@ -133,7 +132,7 @@ def write_crypto_supplementary_sheet(  # noqa: PLR0915
     """Create and populate a 'Crypto Supplementary' worksheet with audit data.
 
     Writes:
-    - Section 1: Income Codes reference (PT only; omitted entirely under other jurisdictions)
+    - Section 1: Income Codes reference (rendered when income-code classification is enabled)
     - Section 2: Taxable-now support detail (per-row trace data)
     - Section 3: Deferred-by-law support detail
     - Section 4: Rewards classification reconciliation
@@ -147,9 +146,9 @@ def write_crypto_supplementary_sheet(  # noqa: PLR0915
         workbook: The Excel workbook to add the sheet to.
         crypto_tax_report: The crypto tax report data.
         tax_jurisdiction: The reporting jurisdiction. The Income Codes reference
-            section is rendered only when ``tax_jurisdiction.country == "PT"``
-            (the official Tabela V crypto codes are PT-specific); under any other
-            country the entire reference section is omitted.
+            section is rendered only when income-code classification is enabled
+            (``classify_rewards_with_income_codes``); otherwise the entire
+            reference section is omitted.
     """
     worksheet = workbook.create_sheet("Crypto Supplementary")
 
@@ -162,13 +161,13 @@ def write_crypto_supplementary_sheet(  # noqa: PLR0915
 
     row_no = 1
     # Sections are numbered dynamically so the list still reads 1, 2, 3, ...
-    # when the PT-only "INCOME CODES REFERENCE" section is omitted under another
-    # jurisdiction (a hardcoded "1."-prefixed list that starts at "2." implies a
+    # when the "INCOME CODES REFERENCE" section is omitted (classification
+    # disabled; a hardcoded "1."-prefixed list that starts at "2." implies a
     # missing predecessor).
     section_no = 0
 
-    # 1. INCOME CODES REFERENCE (PT only; omitted entirely under other jurisdictions)
-    if tax_jurisdiction.country.upper() == PORTUGAL_COUNTRY_CODE:
+    # 1. INCOME CODES REFERENCE (rendered when income-code classification is enabled)
+    if tax_jurisdiction.classify_rewards_with_income_codes:
         section_no += 1
         worksheet.cell(row_no, 1, f"{section_no}. INCOME CODES REFERENCE").font = Font(bold=True)
         row_no += 1

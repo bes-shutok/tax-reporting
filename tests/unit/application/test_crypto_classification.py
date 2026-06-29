@@ -102,31 +102,31 @@ class TestIncomeCodeResolution:
     """Tests for _resolve_income_code function."""
 
     def test_resolve_staking_income_code(self):
-        """Under PT, staking has no Tabela V code -> blank."""
+        """With classification on, staking has no Tabela V code -> blank."""
         from tax_reporting.application.crypto.classification import _resolve_income_code
 
-        result = _resolve_income_code("staking", country="PT")
+        result = _resolve_income_code("staking", True)
         assert result == ""
 
     def test_resolve_airdrop_income_code(self):
-        """Under PT, airdrop has no Tabela V code -> blank."""
+        """With classification on, airdrop has no Tabela V code -> blank."""
         from tax_reporting.application.crypto.classification import _resolve_income_code
 
-        result = _resolve_income_code("airdrop", country="PT")
+        result = _resolve_income_code("airdrop", True)
         assert result == ""
 
     def test_resolve_interest_income_code(self):
-        """Under PT, interest resolves to the official E25."""
+        """With classification on, interest resolves to the official E25."""
         from tax_reporting.application.crypto.classification import _resolve_income_code
 
-        result = _resolve_income_code("interest", country="PT")
+        result = _resolve_income_code("interest", True)
         assert result == "E25"
 
     def test_resolve_unknown_income_code(self):
-        """Under PT, an unknown type resolves to blank (no synthetic default)."""
+        """With classification on, an unknown type resolves to blank (no synthetic default)."""
         from tax_reporting.application.crypto.classification import _resolve_income_code
 
-        result = _resolve_income_code("unknown_type", country="PT")
+        result = _resolve_income_code("unknown_type", True)
         assert result == ""
 
 

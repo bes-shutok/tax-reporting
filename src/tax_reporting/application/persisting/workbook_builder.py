@@ -147,7 +147,7 @@ def generate_tax_report(  # noqa: PLR0912, PLR0915
             )
             aggregated_rewards = aggregate_taxable_rewards(
                 crypto_tax_report.reward_entries,
-                config.tax_jurisdiction.country,
+                config.tax_jurisdiction.classify_rewards_with_income_codes,
             )
 
         write_ib_reporting_sheet(

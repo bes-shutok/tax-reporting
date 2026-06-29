@@ -32,6 +32,21 @@ use_other_gains_report = true
 # are reported under art. 10(1)(e); spot retains art. 10(1)(k).
 separate_derivatives_reporting = true
 
+# DP-017: Route derivatives P&L to the Modelo 3 annex/operation code dictated by
+# counterparty residency (per AT binding ruling Processo 28298/2025 and CIRS
+# art. 10(1)(e)). When True the resolver gates on `operator_country == country`:
+# resident counterparty -> Anexo G Quadro 13, code G51; non-resident counterparty
+# (the usual case for foreign exchanges such as ByBit/Binance/OKX) or UNKNOWN/empty
+# -> Anexo J Quadro 9.2.B, code G30. NOT Quadro 9.4 (which is spot crypto, art.
+# 10(1)(k)). When False the route and code resolve to blank.
+route_derivatives_by_counterparty_residency = true
+
+# DP-018: Classify crypto reward income with the Modelo 3 income codes from
+# Tabela V. When True the resolver assigns the official code for the reward
+# family (E25 for the interest/lending family); all other reward types resolve
+# to blank. When False every reward income code resolves to blank.
+classify_rewards_with_income_codes = true
+
 # DP-014: Infer the realization value (valor de realização) of Koinly-tagged
 # Payment/Card Payment disposals whose CG proceeds_eur == 0 because Koinly's
 # price DB had no match for the imported ticker (a typical root cause is a

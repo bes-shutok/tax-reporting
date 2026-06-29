@@ -1934,7 +1934,8 @@ def test_aggregate_taxable_rewards_by_income_code_and_country():
     from tax_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
 
     entries = [
-        # Two EUR interest rewards from Kraken (Ireland) - income_code "E25" under PT,
+        # Two EUR interest rewards from Kraken (Ireland) - income_code "E25" when
+        # classify_rewards_with_income_codes is on,
         # same country "IE" so they aggregate into one group
         CryptoRewardIncomeEntry(
             date="2025-01-01",
@@ -1988,7 +1989,7 @@ def test_aggregate_taxable_rewards_by_income_code_and_country():
             tax_classification=RewardTaxClassification.TAXABLE_NOW,
             foreign_tax_eur=ZERO,
         ),
-        # Lending interest from Gate.io (Malta) - income_code "E25" under PT,
+        # Lending interest from Gate.io (Malta) - income_code "E25" when classify_rewards_with_income_codes is on,
         # separate group by country "MT"
         CryptoRewardIncomeEntry(
             date="2025-01-04",
@@ -2027,9 +2028,9 @@ def test_aggregate_taxable_rewards_by_income_code_and_country():
         ),
     ]
 
-    result = aggregate_taxable_rewards(entries, country="PT")
+    result = aggregate_taxable_rewards(entries, classify_rewards_with_income_codes=True)
 
-    # Under PT the interest/lending source types resolve to the official Tabela V
+    # With classification on, the interest/lending source types resolve to the official Tabela V
     # code E25. Groups stay separate because they differ by source_country.
     # 1. income_code="E25", country=IE (Kraken EUR interest: 100 + 50 = 150)
     # 2. income_code="E25", country=AE (Bybit USD lending: 185)
@@ -2059,19 +2060,19 @@ def test_aggregate_taxable_rewards_by_income_code_and_country():
 
     # A resolved income_code produces an "Income code <code> from <country>"
     # description (distinct from the "Reward income from <country>" form used for
-    # blank-code rows under non-PT jurisdictions).
+    # blank-code rows when classify_rewards_with_income_codes is off).
     assert ie_group.description == "Income code E25 from IE"
     assert ae_group.description == "Income code E25 from AE"
     assert mt_group.description == "Income code E25 from MT"
 
 
-def test_aggregate_taxable_rewards_interest_and_non_pt_do_not_raise(caplog):
+def test_aggregate_taxable_rewards_interest_and_classification_off_do_not_raise(caplog):
     """Negative controls for the blank-income-code fail-closed contract.
 
-    The PT non-interest raise is covered by
-    ``test_aggregate_taxable_rewards_fails_on_blank_income_code_under_pt``. These
-    are the two cases that must NOT raise: (1) a PT interest reward resolves to
-    ``E25`` (a complete filing row); (2) under a non-PT country blank is the
+    The classified non-interest raise is covered by
+    ``test_aggregate_taxable_rewards_fails_on_blank_income_code_when_classified``. These
+    are the two cases that must NOT raise: (1) a classified interest reward resolves to
+    ``E25`` (a complete filing row); (2) when classification is off, blank is the
     expected/valid resolution for every type. Neither emits a blank-code warning.
     """
     from tax_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
@@ -2095,23 +2096,25 @@ def test_aggregate_taxable_rewards_interest_and_non_pt_do_not_raise(caplog):
             foreign_tax_eur=ZERO,
         )
 
-    # Interest fiat reward under PT -> E25 -> no raise, no review flag, no warning.
+    # Interest fiat reward with classification on -> E25 -> no raise, no review flag, no warning.
     with caplog.at_level("WARNING", logger="tax_reporting.application.crypto.aggregation"):
-        interest_result = aggregate_taxable_rewards([_fiat_reward("interest")], country="PT")
+        interest_result = aggregate_taxable_rewards([_fiat_reward("interest")], classify_rewards_with_income_codes=True)
     assert len(interest_result) == 1
     assert interest_result[0].income_code == "E25"
     assert not any("no official Tabela V income code" in rec.message for rec in caplog.records), (
         "Interest rewards resolve to E25 and must not trigger a blank-code warning"
     )
 
-    # Non-interest fiat reward under a non-PT country -> blank is expected -> no raise, no warning.
+    # Non-interest fiat reward with classification off -> blank is expected -> no raise, no warning.
     caplog.clear()
     with caplog.at_level("WARNING", logger="tax_reporting.application.crypto.aggregation"):
-        de_result = aggregate_taxable_rewards([_fiat_reward("reward")], country="DE")
-    assert len(de_result) == 1
-    assert de_result[0].income_code == ""
+        unclassified_result = aggregate_taxable_rewards(
+            [_fiat_reward("reward")], classify_rewards_with_income_codes=False
+        )
+    assert len(unclassified_result) == 1
+    assert unclassified_result[0].income_code == ""
     assert not any("no official Tabela V income code" in rec.message for rec in caplog.records), (
-        "Blank income codes under a non-PT country are expected and must not warn"
+        "Blank income codes with classification off are expected and must not warn"
     )
 
 
@@ -2176,7 +2179,7 @@ def test_aggregate_taxable_rewards_filters_out_deferred_rewards():
         ),
     ]
 
-    result = aggregate_taxable_rewards(entries, country="PT")
+    result = aggregate_taxable_rewards(entries, classify_rewards_with_income_codes=True)
 
     # Only the EUR reward should be aggregated
     assert len(result) == 1
@@ -2225,7 +2228,7 @@ def test_aggregate_taxable_rewards_with_foreign_tax():
         ),
     ]
 
-    result = aggregate_taxable_rewards(entries, country="PT")
+    result = aggregate_taxable_rewards(entries, classify_rewards_with_income_codes=True)
 
     assert len(result) == 1
     assert result[0].gross_income_eur == Decimal("150")
@@ -2235,7 +2238,7 @@ def test_aggregate_taxable_rewards_with_foreign_tax():
 
 def test_aggregate_taxable_rewards_empty_list():
     """Empty input list returns empty list."""
-    result = aggregate_taxable_rewards([], country="PT")
+    result = aggregate_taxable_rewards([], classify_rewards_with_income_codes=True)
     assert result == []
 
 
@@ -2263,7 +2266,7 @@ def test_aggregate_taxable_rewards_no_taxable_entries():
         ),
     ]
 
-    result = aggregate_taxable_rewards(entries, country="PT")
+    result = aggregate_taxable_rewards(entries, classify_rewards_with_income_codes=True)
     assert result == []
 
 
@@ -2293,20 +2296,21 @@ def test_aggregate_taxable_rewards_fails_on_invalid_country():
     ]
 
     with pytest.raises(FileProcessingError, match="has an unresolved platform/operator"):
-        aggregate_taxable_rewards(entries, country="PT")
+        aggregate_taxable_rewards(entries, classify_rewards_with_income_codes=True)
 
 
-def test_aggregate_taxable_rewards_fails_on_blank_income_code_under_pt():
+def test_aggregate_taxable_rewards_fails_on_blank_income_code_when_classified():
     """A PT taxable-now reward with no Tabela V income code must fail closed.
 
     Mirrors the country-code fail-closed contract (a taxable_now row with an
     invalid/UNKNOWN Tabela X country raises ``FileProcessingError`` before
     aggregation). The income type is also a mandatory Quadro 8A field, so a
     taxable_now reward whose ``source_type`` resolves to no official Tabela V
-    code under PT must raise rather than emit a flagged-but-incomplete filing
-    row. ``tax_classification`` depends only on the asset being fiat, so a fiat
-    reward of a non-interest type (e.g. EUR cashback, ``source_type="reward"``)
-    is taxable_now and resolves to ``""`` under PT. Review round 3 finding 1.
+    code when classify_rewards_with_income_codes is on must raise rather than
+    emit a flagged-but-incomplete filing row. ``tax_classification`` depends
+    only on the asset being fiat, so a fiat reward of a non-interest type
+    (e.g. EUR cashback, ``source_type="reward"``) is taxable_now and resolves
+    to ``""`` when classification is on. Review round 3 finding 1.
     """
     from tax_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
     from tax_reporting.domain.exceptions import FileProcessingError
@@ -2332,7 +2336,7 @@ def test_aggregate_taxable_rewards_fails_on_blank_income_code_under_pt():
     ]
 
     with pytest.raises(FileProcessingError, match="no official Tabela V income code"):
-        aggregate_taxable_rewards(entries, country="PT")
+        aggregate_taxable_rewards(entries, classify_rewards_with_income_codes=True)
 
 
 def test_aggregate_taxable_rewards_wallet_aliases_collapse():
@@ -2383,7 +2387,7 @@ def test_aggregate_taxable_rewards_wallet_aliases_collapse():
         ),
     ]
 
-    result = aggregate_taxable_rewards(entries, country="PT")
+    result = aggregate_taxable_rewards(entries, classify_rewards_with_income_codes=True)
 
     # Should aggregate to single entry since same income_code ("E25") and country (AE)
     assert len(result) == 1
@@ -2437,7 +2441,7 @@ def test_aggregate_taxable_rewards_different_platforms_stay_separate():
         ),
     ]
 
-    result = aggregate_taxable_rewards(entries, country="PT")
+    result = aggregate_taxable_rewards(entries, classify_rewards_with_income_codes=True)
 
     # Different countries = separate aggregation groups
     assert len(result) == 2
@@ -2474,43 +2478,43 @@ def test_is_valid_tabela_x_country():
 
 
 def test_resolve_income_code_from_koinly_type():
-    """Map Koinly income type to its official Modelo 3 code under the PT jurisdiction."""
-    # Interest family -> official E25 under PT
-    assert _resolve_income_code("interest", country="PT") == "E25"
-    assert _resolve_income_code("lending", country="PT") == "E25"
-    assert _resolve_income_code("lending interest", country="PT") == "E25"
+    """Map Koinly income type to its official Modelo 3 code when classification is enabled."""
+    # Interest family -> official E25 when classification is on
+    assert _resolve_income_code("interest", True) == "E25"
+    assert _resolve_income_code("lending", True) == "E25"
+    assert _resolve_income_code("lending interest", True) == "E25"
 
-    # Other Koinly types have no Tabela V code under PT -> ""
-    assert _resolve_income_code("staking", country="PT") == ""
-    assert _resolve_income_code("reward", country="PT") == ""
-    assert _resolve_income_code("airdrop", country="PT") == ""
-    assert _resolve_income_code("mining", country="PT") == ""
-    assert _resolve_income_code("fork", country="PT") == ""
-    assert _resolve_income_code("dividend", country="PT") == ""
+    # Other Koinly types have no Tabela V code under classification -> ""
+    assert _resolve_income_code("staking", True) == ""
+    assert _resolve_income_code("reward", True) == ""
+    assert _resolve_income_code("airdrop", True) == ""
+    assert _resolve_income_code("mining", True) == ""
+    assert _resolve_income_code("fork", True) == ""
+    assert _resolve_income_code("dividend", True) == ""
 
     # Unknown types resolve to "" (no synthetic 401 default)
-    assert _resolve_income_code("unknown_type", country="PT") == ""
-    assert _resolve_income_code("custom_reward", country="PT") == ""
-    assert _resolve_income_code("", country="PT") == ""
+    assert _resolve_income_code("unknown_type", True) == ""
+    assert _resolve_income_code("custom_reward", True) == ""
+    assert _resolve_income_code("", True) == ""
 
     # Case insensitive
-    assert _resolve_income_code("Interest", country="PT") == "E25"
-    assert _resolve_income_code("LENDING", country="PT") == "E25"
-    assert _resolve_income_code("  lending  ", country="PT") == "E25"
+    assert _resolve_income_code("Interest", True) == "E25"
+    assert _resolve_income_code("LENDING", True) == "E25"
+    assert _resolve_income_code("  lending  ", True) == "E25"
 
-    # Edge cases: whitespace-only and formula-prefix-only resolve to "" under PT
-    assert _resolve_income_code("   ", country="PT") == ""
-    assert _resolve_income_code("\t\n", country="PT") == ""
-    assert _resolve_income_code("  \t  ", country="PT") == ""
-    assert _resolve_income_code("===", country="PT") == ""
-    assert _resolve_income_code("+++", country="PT") == ""
-    assert _resolve_income_code("---", country="PT") == ""
-    assert _resolve_income_code("@@@", country="PT") == ""
+    # Edge cases: whitespace-only and formula-prefix-only resolve to "" when classified
+    assert _resolve_income_code("   ", True) == ""
+    assert _resolve_income_code("\t\n", True) == ""
+    assert _resolve_income_code("  \t  ", True) == ""
+    assert _resolve_income_code("===", True) == ""
+    assert _resolve_income_code("+++", True) == ""
+    assert _resolve_income_code("---", True) == ""
+    assert _resolve_income_code("@@@", True) == ""
 
-    # Non-PT jurisdiction -> "" for every type (Invariant 2)
-    assert _resolve_income_code("interest", country="DE") == ""
-    assert _resolve_income_code("staking", country="DE") == ""
-    assert _resolve_income_code("unknown_type", country="US") == ""
+    # Classification disabled -> "" for every type (Invariant 4)
+    assert _resolve_income_code("interest", False) == ""
+    assert _resolve_income_code("staking", False) == ""
+    assert _resolve_income_code("unknown_type", False) == ""
 
 
 def test_aggregate_preserves_reconciliation_trail():
@@ -2538,7 +2542,7 @@ def test_aggregate_preserves_reconciliation_trail():
         for i in range(1, 6)  # 5 rows
     ]
 
-    result = aggregate_taxable_rewards(entries, country="PT")
+    result = aggregate_taxable_rewards(entries, classify_rewards_with_income_codes=True)
 
     assert len(result) == 1
     assert result[0].raw_row_count == 5
@@ -9122,6 +9126,58 @@ class TestSeparateDerivativesReportingFlag:
         result = _load_tax_jurisdiction_config(cp, logger)
         assert result.separate_derivatives_reporting is True
 
+    def test_modelo3_dispatch_flags_auto_discovered_by_loader(self, tmp_path, monkeypatch) -> None:
+        """The two new Modelo 3 dispatch bool flags are auto-discovered by the loader.
+
+        Proves Invariant 5 (no config.py edit): ``_KNOWN_BOOL_FLAGS`` is derived from
+        ``get_type_hints(TaxJurisdictionConfig)`` at import time, so adding the two bool
+        fields to the dataclass is sufficient for the loader to pick them up.
+
+        Case 1 (true): a 2025.toml with both flags ``true`` under ``[countries.PT]`` ->
+        both resolve ``True``.
+        Case 2 (omitted): a 2025.toml whose ``[countries.PT]`` KEEPS
+        ``exclude_loan_repayment_gains = true`` (REQUIRED: loader raises ValueError for
+        PT without it, config.py:321) but OMITS the two new flags -> both resolve
+        ``False`` via the ``setdefault(flag_name, False)`` auto-discovery default loop
+        (config.py:334-336), NOT via an empty section.
+        """
+        import configparser
+        import logging
+
+        import tax_reporting.infrastructure.config as config_module
+        from tax_reporting.infrastructure.config import _load_tax_jurisdiction_config
+
+        def _load(toml_body: str):
+            monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+            (tmp_path / "2025.toml").write_text(toml_body, encoding="utf-8")
+            cp = configparser.ConfigParser()
+            cp.optionxform = lambda optionstr: optionstr
+            cp["TAX JURISDICTION"] = {"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025"}
+            logger = logging.getLogger(__name__)
+            return _load_tax_jurisdiction_config(cp, logger)
+
+        # Case 1: both new flags explicitly true.
+        result_true = _load(
+            "[meta]\n"
+            "fiscal_year = 2025\n"
+            "[countries.PT]\n"
+            "exclude_loan_repayment_gains = true\n"
+            "route_derivatives_by_counterparty_residency = true\n"
+            "classify_rewards_with_income_codes = true\n"
+        )
+        assert result_true.route_derivatives_by_counterparty_residency is True
+        assert result_true.classify_rewards_with_income_codes is True
+
+        # Case 2: both new flags omitted -> auto-discovery default False.
+        result_omitted = _load(
+            "[meta]\n"
+            "fiscal_year = 2025\n"
+            "[countries.PT]\n"
+            "exclude_loan_repayment_gains = true\n"
+        )
+        assert result_omitted.route_derivatives_by_counterparty_residency is False
+        assert result_omitted.classify_rewards_with_income_codes is False
+
 
 # =============================================================================
 # Task 7 (docs/history/plans/2026-06-13-derivatives-separation.md): row-level OGR
@@ -11416,11 +11472,13 @@ def test_fee_suspect_flagging_runs_after_payment_proceeds(tmp_path):
 
 
 class TestDerivativesRouting:
-    """TDD for residency-gated derivatives routing at construction (Modelo 3 / art. 10(1)(e)).
+    """TDD for flag-gated, residency-routed derivatives (Modelo 3 / art. 10(1)(e)).
 
-    PT-gated: a non-PT operator routes the derivatives P&L entry to Anexo J Q9.2.B with
-    operation code G30; a PT-resident operator routes to Anexo G Q13 with G51. Non-PT
-    jurisdictions emit no Modelo 3 hint at all (Invariant 2).
+    Flag-gated: with ``route_via_residency=True`` a differing/UNKNOWN/empty operator routes
+    the derivatives P&L entry to Anexo J Q9.2.B with operation code G30 (non-resident);
+    a same-country operator routes to Anexo G Q13 with G51 (resident). With the flag
+    ``False`` every jurisdiction emits no Modelo 3 hint at all (the flag, not the country,
+    now gates routing).
 
     One nonresident case (``test_nonresident_operator_gets_j_q92b_g30``) drives the real
     ``_split_ogr_index`` construction site (ogr_handler.py:265-282) via a synthetic OGR row
@@ -11429,17 +11487,18 @@ class TestDerivativesRouting:
     construction coverage (the suite would otherwise go GREEN while construction still omits
     the routed fields).
 
-    The resident / unknown / non-PT cases call the pure helper
-    ``_derivatives_route(country, operator_country)`` directly (added in Task A2).
+    The resident / unknown / flag-off / country-agnostic cases call the pure helper
+    ``_derivatives_route(country, operator_country, route_via_residency)`` directly.
     """
 
     def test_nonresident_operator_gets_j_q92b_g30(self):
-        """Non-PT operator (AE) under a PT jurisdiction routes to J/Q9.2.B + G30 via construction.
+        """Non-resident operator (AE) routes to J/Q9.2.B + G30 via construction when the flag is on.
 
         Builds the entry through the real ``_split_ogr_index`` path: a synthetic Profit OGR
         row whose wallet is ``ByBit`` (resolves to ``operator_country="AE"``) plus a PT
-        jurisdiction with derivatives separation enabled. The resulting ``DerivativesPnLEntry``
-        must carry ``annex_hint == "J/Q9.2.B"`` and ``operation_code == "G30"``.
+        jurisdiction with derivatives separation enabled (``route_derivatives_by_counterparty_residency``
+        on). The resulting ``DerivativesPnLEntry`` must carry ``annex_hint == "J/Q9.2.B"``
+        and ``operation_code == "G30"``.
 
         Pins the contract implemented at the construction site
         (ogr_handler.py via entities.py), where the route is resolved per row.
@@ -11520,18 +11579,19 @@ class TestDerivativesRouting:
         assert entry.annex_hint == "G/Q13"
         assert entry.operation_code == "G51"
 
-    def test_non_pt_jurisdiction_blanks_through_full_construction(self):
-        """Non-PT jurisdiction emits blank annex/operation code through real construction.
+    def test_flag_off_blanks_through_full_construction(self):
+        """Residency routing disabled emits blank annex/operation code through real construction.
 
-        Construction-path counterpart to ``test_non_pt_jurisdiction_blanks_routing``:
-        drives the real ``_split_ogr_index`` site under a non-PT jurisdiction (DE) so
-        the constructed ``DerivativesPnLEntry`` must carry blank ``annex_hint`` and
-        ``operation_code`` (Invariant 2: Modelo 3 output is PT-gated). The
-        ByBit/AE operator is intentional: even a routable counterparty must NOT
-        produce a Modelo 3 hint when the filing jurisdiction is non-PT. If a future
-        change adds a fallback default at construction (e.g. ``annex_hint=route or
-        "G/Q13"``), the pure-helper tests stay green while this test fails, catching
-        the silent PT-annex emission for a non-PT return.
+        Construction-path counterpart to ``test_flag_off_blanks_for_pt_jurisdiction``:
+        drives the real ``_split_ogr_index`` site with
+        ``route_derivatives_by_counterparty_residency=False`` so the constructed
+        ``DerivativesPnLEntry`` must carry blank ``annex_hint`` and
+        ``operation_code`` regardless of jurisdiction (Invariant 2: Modelo 3 output
+        is flag-gated). The ByBit/AE operator is intentional: even a routable
+        counterparty must NOT produce a Modelo 3 hint when residency routing is
+        disabled. If a future change adds a fallback default at construction (e.g.
+        ``annex_hint=route or "G/Q13"``), the pure-helper tests stay green while
+        this test fails, catching the silent annex emission.
         """
         from tax_reporting.application.crypto.ogr_handler import _split_ogr_index
 
@@ -11553,138 +11613,164 @@ class TestDerivativesRouting:
                 separate_derivatives_reporting=True,
                 country="DE",
                 timezone=ZoneInfo("Europe/Berlin"),
+                route_derivatives_by_counterparty_residency=False,
             ),
         )
 
         assert len(derivatives_entries) == 1
         entry = derivatives_entries[0]
-        # ByBit resolves to AE, a routable counterparty, but a non-PT filing
-        # jurisdiction emits no Modelo 3 annex regardless of the operator.
+        # ByBit resolves to AE, a routable counterparty, but residency routing
+        # disabled emits no Modelo 3 annex regardless of the operator.
         assert entry.annex_hint == ""
         assert entry.operation_code == ""
 
     def test_resident_operator_gets_g_q13_g51(self):
-        """PT-resident operator under a PT jurisdiction routes to G/Q13 + G51.
+        """Same-country operator routes to G/Q13 + G51 when the flag is on.
 
-        Calls the pure helper ``_derivatives_route(country, operator_country)`` directly
-        (added in Task A2).
+        Calls the pure helper ``_derivatives_route(country, operator_country, route_via_residency)``
+        directly (added in Task A2). Flag on + ``operator_country == country`` -> resident codes.
         """
         from tax_reporting.application.crypto.ogr_handler import _derivatives_route
 
-        annex_hint, operation_code = _derivatives_route("PT", "PT")
+        annex_hint, operation_code = _derivatives_route("PT", "PT", True)
 
         assert annex_hint == "G/Q13"
         assert operation_code == "G51"
 
     def test_unknown_country_defaults_nonresident(self):
-        """UNKNOWN operator country under a PT jurisdiction defaults to non-resident (J/Q9.2.B + G30).
+        """UNKNOWN operator country defaults to non-resident (J/Q9.2.B + G30) when the flag is on.
 
         Fail-safe: when operator origin cannot be resolved, route to the non-resident annex
         rather than silently claiming PT residence. Calls the pure helper directly.
         """
         from tax_reporting.application.crypto.ogr_handler import _derivatives_route
 
-        annex_hint, operation_code = _derivatives_route("PT", "UNKNOWN")
+        annex_hint, operation_code = _derivatives_route("PT", "UNKNOWN", True)
 
         assert annex_hint == "J/Q9.2.B"
         assert operation_code == "G30"
 
-    def test_non_pt_jurisdiction_blanks_routing(self):
-        """Non-PT jurisdiction (DE) emits no Modelo 3 hint regardless of operator country.
+    def test_resident_route_country_agnostic_de(self):
+        """Country-agnostic resident case (lesson #133): DE taxpayer + DE operator -> resident codes.
 
-        Invariant 2: jurisdiction-specific output is gated on ``TaxJurisdictionConfig.country``;
-        a non-PT return has no Modelo 3 annex, so the hint and operation code are blank.
-        Calls the pure helper directly. A bare ``"DE"`` literal is used as a test input
-        (not a membership check), so no constant is needed.
+        Proves residency is ``operator_country == country``, defeating both a PT literal and a
+        ``{PT, DE}`` allow-list regression. Flag on + same-country operator -> ``("G/Q13", "G51")``.
         """
         from tax_reporting.application.crypto.ogr_handler import _derivatives_route
 
-        annex_hint, operation_code = _derivatives_route("DE", "PT")
+        annex_hint, operation_code = _derivatives_route("DE", "DE", True)
+
+        assert annex_hint == "G/Q13"
+        assert operation_code == "G51"
+
+    def test_resident_route_country_agnostic_fr(self):
+        """Second country-agnostic resident case (lesson #133): FR taxpayer + FR operator -> resident codes.
+
+        A second independent country closes the allow-list hole that a single DE case cannot.
+        Flag on + same-country operator -> ``("G/Q13", "G51")``.
+        """
+        from tax_reporting.application.crypto.ogr_handler import _derivatives_route
+
+        annex_hint, operation_code = _derivatives_route("FR", "FR", True)
+
+        assert annex_hint == "G/Q13"
+        assert operation_code == "G51"
+
+    def test_nonresident_route_country_agnostic_fr_de(self):
+        """Non-resident pair on a second non-PT country: FR taxpayer + DE operator -> non-resident codes.
+
+        Flag on + differing operator country -> ``("J/Q9.2.B", "G30")``.
+        """
+        from tax_reporting.application.crypto.ogr_handler import _derivatives_route
+
+        annex_hint, operation_code = _derivatives_route("FR", "DE", True)
+
+        assert annex_hint == "J/Q9.2.B"
+        assert operation_code == "G30"
+
+    def test_flag_off_blanks_for_pt_jurisdiction(self):
+        """Flag off -> blank routing for any jurisdiction, including PT.
+
+        A PT jurisdiction with the flag off emits no Modelo 3 hint (the flag, not the country,
+        now gates routing).
+        """
+        from tax_reporting.application.crypto.ogr_handler import _derivatives_route
+
+        annex_hint, operation_code = _derivatives_route("PT", "PT", False)
 
         assert annex_hint == ""
         assert operation_code == ""
 
     def test_pt_jurisdiction_empty_operator_defaults_nonresident(self):
-        """PT jurisdiction with an empty operator country defaults to non-resident (J/Q9.2.B + G30).
+        """Empty operator country defaults to non-resident (J/Q9.2.B + G30) when the flag is on.
 
         Fail-safe mirror of the UNKNOWN case: an empty operator country must not be
-        treated as PT-resident. Calls the pure helper directly.
+        treated as resident. Flag on + ``"" != country`` -> non-resident, unchanged behaviour.
+        Calls the pure helper directly.
         """
         from tax_reporting.application.crypto.ogr_handler import _derivatives_route
 
-        annex_hint, operation_code = _derivatives_route("PT", "")
+        annex_hint, operation_code = _derivatives_route("PT", "", True)
 
         assert annex_hint == "J/Q9.2.B"
         assert operation_code == "G30"
 
-    def test_non_pt_jurisdiction_unknown_operator_blanks_routing(self):
-        """Non-PT jurisdiction with an UNKNOWN operator still emits no Modelo 3 hint.
 
-        Guards that the non-PT blank branch does not depend on the operator country
-        value: even an UNKNOWN counterparty under a non-PT return yields blank routing.
-        Calls the pure helper directly. A bare ``"DE"`` literal is a test input.
-        """
-        from tax_reporting.application.crypto.ogr_handler import _derivatives_route
-
-        annex_hint, operation_code = _derivatives_route("DE", "UNKNOWN")
-
-        assert annex_hint == ""
-        assert operation_code == ""
-
-
-# --- Task B1 (RED): official income-code resolution, PT-gated ---
+# --- Task 1 (RED): flag-gated official income-code resolution ---
 
 
 @pytest.mark.unit
 class TestIncomeCode:
-    """Tests pinning the PT-gated official income-code resolution.
+    """Tests pinning the flag-gated official income-code resolution.
 
-    These pin the contract B2 implemented in ``_resolve_income_code`` and
-    ``aggregate_taxable_rewards``: under ``country == "PT"`` only the
-    fiat-reward interest family resolves to the official Tabela V code ``E25``;
-    every other Koinly type resolves to ``""`` (no synthetic ``40x`` default);
-    under any non-PT country every type resolves to ``""`` (Invariant 2).
+    These pin the contract implemented in ``_resolve_income_code`` and
+    ``aggregate_taxable_rewards``: with ``classify_with_income_codes=True`` only
+    the fiat-reward interest family resolves to the official Tabela V code
+    ``E25``; every other Koinly type resolves to ``""`` (no synthetic ``40x``
+    default); with ``classify_with_income_codes=False`` every type resolves to
+    ``""`` (Invariant 4).
 
     The pure-helper cases call the two-arg signature
-    ``_resolve_income_code(source_type, country)``. The aggregation case threads
-    ``country=`` into ``aggregate_taxable_rewards``. The production-path case
-    drives the real ``generate_tax_report`` entrypoint under a non-PT jurisdiction.
+    ``_resolve_income_code(source_type, classify_with_income_codes)``. The
+    aggregation case threads ``classify_rewards_with_income_codes=`` into
+    ``aggregate_taxable_rewards``. The production-path case drives the real
+    ``generate_tax_report`` entrypoint under a non-classifying jurisdiction.
     """
 
-    # -- pure helper: PT interest family -> E25 --
+    # -- pure helper: classified interest family -> E25 --
 
     @pytest.mark.parametrize("koinly_type", ["interest", "lending", "lending interest"])
-    def test_interest_resolves_to_e25_under_pt(self, koinly_type: str):
-        """Under PT, the fiat-interest family resolves to the official E25."""
-        assert _resolve_income_code(koinly_type, country="PT") == "E25"
+    def test_interest_resolves_to_e25_when_classified(self, koinly_type: str):
+        """With classification on, the fiat-interest family resolves to the official E25."""
+        assert _resolve_income_code(koinly_type, True) == "E25"
 
-    # -- pure helper: every other type -> "" (NOT any 40x) under PT --
+    # -- pure helper: every other type -> "" (NOT any 40x) when classified --
 
     @pytest.mark.parametrize(
         "koinly_type",
         ["staking", "reward", "airdrop", "mining", "fork", "dividend"],
     )
-    def test_other_type_resolves_to_official_under_pt(self, koinly_type: str):
-        """Under PT, non-interest types have no Tabela V code: official value is blank.
+    def test_other_type_resolves_to_official_when_classified(self, koinly_type: str):
+        """With classification on, non-interest types have no Tabela V code: official value is blank.
 
         Each must NOT return any synthetic ``40x`` code (the legacy default).
         """
-        result = _resolve_income_code(koinly_type, country="PT")
+        result = _resolve_income_code(koinly_type, True)
         assert result == ""
         assert not result.startswith("40"), f"Synthetic 40x code leaked for {koinly_type!r}: {result!r}"
 
     # -- pure helper: unknown type -> "" (old "401" default is gone) --
 
-    def test_default_fallback_blank_under_pt(self):
-        """Under PT, an unknown Koinly type resolves to blank, not the legacy '401'."""
-        assert _resolve_income_code("some-unknown-type", country="PT") == ""
+    def test_default_fallback_blank_when_classified(self):
+        """With classification on, an unknown Koinly type resolves to blank, not the legacy '401'."""
+        assert _resolve_income_code("some-unknown-type", True) == ""
 
-    # -- pure helper: non-PT -> "" for every type (Invariant 2) --
+    # -- pure helper: classification off -> "" for every type (Invariant 4) --
 
     @pytest.mark.parametrize("koinly_type", ["interest", "staking", "mining", "dividend"])
-    def test_non_pt_resolves_blank(self, koinly_type: str):
-        """Under a non-PT country (e.g. DE), every type resolves to blank."""
-        assert _resolve_income_code(koinly_type, country="DE") == ""
+    def test_classification_off_resolves_blank(self, koinly_type: str):
+        """With classification off, every type resolves to blank."""
+        assert _resolve_income_code(koinly_type, False) == ""
 
     # -- reference-table descriptions must not present synthetic 40x as Tabela V --
 
@@ -11709,21 +11795,21 @@ class TestIncomeCode:
                 f"Synthetic 40x code {code!r} still presented as Tabela V: {desc!r}"
             )
 
-    # -- aggregation threads the REPORTING country (not operator_country) --
+    # -- aggregation threads the classification flag (not country/operator_country) --
 
-    def test_aggregation_threads_reporting_country_to_resolver(self):
-        """aggregate_taxable_rewards must thread the reporting country to the resolver.
+    def test_aggregation_threads_classification_flag_to_resolver(self):
+        """aggregate_taxable_rewards must thread the classification flag to the resolver.
 
-        Builds taxable_now interest rewards whose ``operator_origin.operator_country``
-        is FOREIGN (IE) - the discriminator for the silent-correctness trap where
-        B2 could mistakenly thread ``operator_country`` instead of the reporting
-        country. Under ``country="PT"`` the result must carry ``income_code ==
-        "E25"``; under ``country="DE"`` it must be ``""``. If B2 threads the
-        operator country ("IE"), the PT case resolves to "" (non-PT) and fails.
+        Builds a single taxable_now interest reward. Under
+        ``classify_rewards_with_income_codes=True`` the result must carry
+        ``income_code == "E25"``; under ``classify_rewards_with_income_codes=False``
+        the SAME reward must yield ``income_code == ""``. The dual assertion is the
+        discriminator (lesson #125): a single-arm test cannot catch a country-literal
+        revert that re-introduces PT-gating.
         """
         from tax_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry
 
-        foreign_operator = dataclasses.replace(_TEST_OPERATOR, operator_country="IE")
+        plain_operator = dataclasses.replace(_TEST_OPERATOR, operator_country="PT")
 
         entries = [
             CryptoRewardIncomeEntry(
@@ -11736,7 +11822,7 @@ class TestIncomeCode:
                 wallet="Nexo",
                 platform="Nexo",
                 chain="Nexo",
-                operator_origin=foreign_operator,
+                operator_origin=plain_operator,
                 annex_hint="J",
                 review_required=False,
                 description="Lending interest",
@@ -11745,31 +11831,29 @@ class TestIncomeCode:
             ),
         ]
 
-        pt_result = aggregate_taxable_rewards(entries, country="PT")
-        assert len(pt_result) == 1
-        assert pt_result[0].income_code == "E25"
-        assert pt_result[0].description == "Income code E25 from IE"
+        classified_result = aggregate_taxable_rewards(entries, classify_rewards_with_income_codes=True)
+        assert len(classified_result) == 1
+        assert classified_result[0].income_code == "E25"
 
-        de_result = aggregate_taxable_rewards(entries, country="DE")
-        assert len(de_result) == 1
-        assert de_result[0].income_code == ""
-        assert de_result[0].description == "Reward income from IE"
+        unclassified_result = aggregate_taxable_rewards(entries, classify_rewards_with_income_codes=False)
+        assert len(unclassified_result) == 1
+        assert unclassified_result[0].income_code == ""
 
-    # -- production path: non-PT blanks income_code end-to-end --
+    # -- production path: classification-off blanks income_code end-to-end --
 
-    def test_production_path_blanks_income_code_under_non_pt(self, tmp_path, monkeypatch):
-        """The production workbook-builder path must blank income_code under a non-PT country.
+    def test_production_path_blanks_income_code_when_classification_off(self, tmp_path, monkeypatch):
+        """The production workbook-builder path must blank income_code when classification is off.
 
         This is the ONLY shape that exercises the production call site
         ``workbook_builder.py:148`` (``aggregate_taxable_rewards``) under a
-        non-PT jurisdiction. ``test_workbook_builder.py`` hardcodes PT today,
-        so without this case a non-PT regression at the production caller ships
-        GREEN.
+        non-classifying jurisdiction. ``test_workbook_builder.py`` hardcodes the
+        classifying jurisdiction today, so without this case a classification-off
+        regression at the production caller ships GREEN.
 
         Path chosen: the real ``generate_tax_report`` entrypoint, with
         ``load_configuration_from_file`` monkeypatched on the workbook_builder
         module to return a DE-jurisdiction ``Config`` (built via
-        ``build_koinly_jurisdiction(country="DE")``). The real
+        ``build_koinly_jurisdiction(country="DE", classify_rewards_with_income_codes=False)``). The real
         ``aggregate_taxable_rewards`` is wrapped to capture its return value so
         the aggregated ``income_code`` can be asserted without re-deriving it
         from the written workbook.
@@ -11784,12 +11868,17 @@ class TestIncomeCode:
         from tax_reporting.application.persisting import workbook_builder
         from tax_reporting.infrastructure.config import Config
 
-        # DE jurisdiction via the shared test builder.
-        de_jurisdiction = build_koinly_jurisdiction(country="DE")
+        # DE jurisdiction via the shared test builder. The classification flag must
+        # be explicitly disabled: build_koinly_jurisdiction(**overrides) only ADDS
+        # keys, so country="DE" alone would leave the flag inherited True and the
+        # interest row would resolve to E25 instead of blanking end-to-end.
+        de_jurisdiction = build_koinly_jurisdiction(
+            country="DE", classify_rewards_with_income_codes=False
+        )
 
         # Build a fully valid Config from tests/config.ini (PT), then swap in the
         # DE jurisdiction. This avoids faking base/rates/security while still
-        # putting a non-PT jurisdiction in front of the crypto aggregation path.
+        # putting a non-classifying jurisdiction in front of the crypto aggregation path.
         import dataclasses as _dc
 
         pt_config = workbook_builder.load_configuration_from_file()
@@ -11861,6 +11950,6 @@ class TestIncomeCode:
         aggregated = captured[0]
         assert len(aggregated) == 1
         assert aggregated[0].income_code == "", (
-            f"Non-PT production path must blank income_code, got {aggregated[0].income_code!r}"
+            f"Classification-off production path must blank income_code, got {aggregated[0].income_code!r}"
         )
 

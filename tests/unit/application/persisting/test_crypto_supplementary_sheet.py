@@ -251,12 +251,15 @@ class TestCryptoSupplementarySheetIncomeCodes:
         # No second code row before section 2
         assert ws.cell(header_row + 2, 1).value != "PT"
 
-    def test_income_code_reference_omitted_under_non_pt(self):
-        """Under a non-PT jurisdiction the entire '1. INCOME CODES REFERENCE'
-        section is omitted (structural absence, not field-blanked)."""
+    def test_income_code_reference_omitted_when_classification_off(self):
+        """When classify_rewards_with_income_codes is False the entire
+        '1. INCOME CODES REFERENCE' section is omitted (structural absence,
+        not field-blanked)."""
         wb = openpyxl.Workbook()
         report = _make_crypto_tax_report()
-        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction(country="DE"))
+        write_crypto_supplementary_sheet(
+            wb, report, build_koinly_jurisdiction(country="DE", classify_rewards_with_income_codes=False)
+        )
         ws = wb["Crypto Supplementary"]
 
         for r in range(1, ws.max_row + 1):

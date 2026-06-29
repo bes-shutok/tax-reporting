@@ -156,15 +156,17 @@ or non-resident in Portugal, per AT binding ruling Processo 28298/2025 paragraph
   **Anexo J, Quadro 9.2.B**, with income code **G30**; the englobamento option is signalled in
   **Quadro 9.2.C of Anexo J**.
 
-The repo resolves the filing route per row from counterparty residency, but only under a PT
-jurisdiction. `ogr_handler._derivatives_route(country, operator_country)` drives
-`DerivativesPnLEntry.annex_hint` / `operation_code` as follows: under `country == "PT"`, a resident
-operator (`operator_country == "PT"`) yields `annex_hint="G/Q13"`, `operation_code="G51"`; a
-non-resident, empty, or `UNKNOWN` operator yields `annex_hint="J/Q9.2.B"`, `operation_code="G30"`;
-under any non-PT country both fields resolve to `""`. The entity defaults are the blank route, so a
-direct constructor that passes no jurisdiction fails safe (no PT hint). The Derivatives P&L sheet
-renders `annex_hint` (Annex column) and `operation_code` (Código column) per row; under PT it warns
-if any rendered Annex is blank. No filer override is required.
+The repo resolves the filing route per row from counterparty residency, but only when the
+`TaxJurisdictionConfig.route_derivatives_by_counterparty_residency` flag is on.
+`ogr_handler._derivatives_route(country, operator_country, route_via_residency)` drives
+`DerivativesPnLEntry.annex_hint` / `operation_code` as follows: when the flag is off, both fields
+resolve to `""`. When the flag is on, a resident operator (`operator_country == country`, i.e. the
+counterparty is a resident of the taxpayer's jurisdiction) yields `annex_hint="G/Q13"`,
+`operation_code="G51"`; a non-resident, empty, or `UNKNOWN` operator yields `annex_hint="J/Q9.2.B"`,
+`operation_code="G30"`. The entity defaults are the blank route, so a direct constructor that passes
+no jurisdiction fails safe (no PT hint). The Derivatives P&L sheet renders `annex_hint` (Annex
+column) and `operation_code` (Código column) per row; when the flag is on it warns if any rendered
+Annex is blank. No filer override is required.
 Cryptoasset disposals under alínea k) go to Quadro 18 instead; derivatives and cryptoassets are
 reported in different Quadros.
 > Source: CIRS art. 10(1)(e) - "Operações relativas a instrumentos financeiros derivados";

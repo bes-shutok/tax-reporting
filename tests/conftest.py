@@ -217,6 +217,8 @@ def build_koinly_jurisdiction(**overrides: object):
         "separate_derivatives_reporting": True,
         "infer_payment_proceeds": False,
         "timezone": ZoneInfo("Europe/Lisbon"),
+        "route_derivatives_by_counterparty_residency": True,
+        "classify_rewards_with_income_codes": True,
     }
     defaults.update(overrides)
     return TaxJurisdictionConfig(**defaults)  # type: ignore[arg-type]

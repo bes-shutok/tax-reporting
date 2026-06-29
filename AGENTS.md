@@ -57,7 +57,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Authoritative law portals render the CURRENT version by default; for a prior fiscal year, use the redação in force for that period (the portal's "Redações anteriores" listing), cross-checked against a year-dated secondary source. See `development_lessons.md` #172.
 - Before assuming an official source is unavailable, probe the issuing authority's canonical URL with a HEAD request; a web/search MCP tool quota/rate-limit is a tool outage, not a missing source. See `development_lessons.md` #98, #188.
 - Under `docs/maintenance/tax/`, use `laws/<jurisdiction>/crypto-tax/` for tax-law archives and `crypto-origin/` for chain/operator domicile archives.
-- Adding a decision point flag requires the corresponding field on `TaxJurisdictionConfig` and type-dispatching support. Jurisdiction-specific output must be gated on `TaxJurisdictionConfig.country`, never unconditional. See `development_lessons.md` #68, #150, #182.
+- Adding a decision point flag requires the corresponding field on `TaxJurisdictionConfig` and type-dispatching support. Jurisdiction-specific output must be flag-gated, not country-literal-gated. See `development_lessons.md` #68, #150, #182, #195.
 - Verify DP enumerated rules match implemented code branches; update prose on change. See `development_lessons.md` #123.
 - Share crypto `País da Fonte` resolution across rewards and capital gains. Never use taxpayer residence.
 - Keep `docs/maintenance/tax/crypto-origin/` source manifest, registry, and decision log synchronized when changing chain/operator mappings.
@@ -76,8 +76,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Aggregate crypto capital gains by `(disposal_date, asset, platform, holding_period)` before reporting. Do not bypass `_aggregate_capital_entries()`.
 - After aggregation, exclude entries where `|gain/loss| < 1 EUR`. Do not remove `_filter_immaterial_entries()` or parameterize `_MATERIALITY_THRESHOLD` without a `crypto_rules.md` update.
 - Crypto reward income must be aggregated by `(income_code, source_country)` before inclusion in the IRS-ready filing table. Do not bypass `aggregate_taxable_rewards()`.
-- Reward classification into taxable_now vs deferred_by_law must use `_classify_reward_tax_status()` and cite CRG-001/CRG-002.
-- Taxable-now crypto-origin fiat rewards must be validated and aggregated before inclusion in `Reporting` under `OTHER CAPITAL INVESTMENT INCOME`; `Crypto Supplementary` holds support detail only, not a filing target. See SRG-008.
+- Reward classification (taxable_now vs deferred_by_law) uses `_classify_reward_tax_status()` (cite CRG-001/CRG-002). Taxable-now crypto-origin fiat rewards are the `Reporting` / `OTHER CAPITAL INVESTMENT INCOME` filing target; `Crypto Supplementary` is support detail only. See SRG-008.
 - The aggregation step fails with `FileProcessingError` if any taxable-now row cannot be assigned all mandatory IRS fields (valid Tabela X country code).
 - When `review_required=True` on `CryptoCapitalGainEntry` or `CryptoRewardIncomeEntry`, `review_reason` must contain a specific, actionable explanation. Excel shows "YES: \<reason\>", not a bare boolean. See PT-C-030.
 - `OperatorOrigin` has two review flags: `review_required` (row-level, colors rows) and `platform_review_required` (platform-level). Never conflate them. See CRG-016.
@@ -139,7 +138,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Recompute tolerance after shrinking sliding-window matchers. See `development_lessons.md` #108.
 - Re-run feasibility checks against the mutated post-phase-1 input set. See `development_lessons.md` #110.
 - When a task changes data flow semantics (filter/dedup/transformation split), grep ALL test files (`tests/`) for assertions referencing the affected data identity tuple, not just current task's file scope. See `development_lessons.md` #111.
-- When a plan task changes an existing function signature OR rendered output text (a description/label cell), grep ALL test tiers: callers (`grep -rn "<func>(" tests/`) for signature changes, and row-locators matching the stale label (`grep -rn "<old label>" tests/`) for output-text changes. A dedicated test file is not exhaustive. See `development_lessons.md` #183, #187.
+- When a plan task changes an existing function signature OR rendered output text (a description/label cell), grep ALL test tiers: callers (`grep -rn "<func>(" tests/`) for signature changes, and row-locators matching the stale label (`grep -rn "<old label>" tests/`) for output-text changes. A dedicated test file is not exhaustive. A wording/staleness review also greps method/function identifiers, not just prose. See `development_lessons.md` #183, #187, #197.
 - For verification-only tasks inspecting `git diff <base>..HEAD` with missing expected files, check if a prior same-session commit already applied the change. See `development_lessons.md` #116.
 - For comparing tool output against the committed baseline (linter/formatter), pipe the committed blob or use `git worktree add`; never use `git stash`. See `development_lessons.md` #122.
 - Before `execute-plan` Step 1.1 on a pre-migration plan, grep and translate moved path prefixes (`docs/tax/`, etc.) to their migrated locations in the plan body. See `development_lessons.md` #129 and `execute-plan` Step 0.4b.

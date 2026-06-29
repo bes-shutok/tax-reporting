@@ -75,7 +75,8 @@ to exercise. See `coding_guidelines.md` #18.
 
 Lessons: Lesson #6, Lesson #7, Lesson #22, Lesson #41, Lesson #69, Lesson #70, Lesson #83,
 Lesson #84, Lesson #90, Lesson #91, Lesson #111, Lesson #112, Lesson #117, Lesson #119,
-Lesson #125, Lesson #133, Lesson #134, Lesson #136, Lesson #138. (19 lessons)
+Lesson #125, Lesson #133, Lesson #134, Lesson #136, Lesson #138, Lesson #183, Lesson #187,
+Lesson #196, Lesson #197. (23 lessons)
 
 Clusters:
 
@@ -88,10 +89,17 @@ Clusters:
   Lesson #133 (procedure: disable the guard, confirm RED), Lesson #134 (restore/undo
   variant: assert the intermediate mutation). Each is explicitly distinguished from the
   others in its body. Overlapping; cross-link all three.
-- Coverage that crosses file/scope boundaries: Lesson #111 (grep ALL test files for stale
-  assertions when data-flow semantics change) and Lesson #112 (a test's name must reflect
-  its coverage scope within one file). Overlapping; distinct scope (cross-file vs
-  within-file).
+- Coverage that crosses file/scope boundaries (the "sibling forgotten" cluster):
+  Lesson #111 (grep ALL test files for stale assertions when data-flow semantics change),
+  Lesson #112 (a test's name must reflect its coverage scope within one file),
+  Lesson #183 (grep ALL tiers for callers of a changed function signature),
+  Lesson #187 (grep ALL tiers for tests that locate a row by a changed rendered label),
+  Lesson #196 (re-scope tests across TASK boundaries when a later task changes the contract),
+  Lesson #197 (a wording-pass review must grep method IDENTIFIERS, not only docstrings and
+  messages - same hazard, distinct position: identifier omitted from a wording grep).
+  Overlapping; distinct axis each (cross-file assertions, within-file name-vs-body,
+  cross-tier callers, cross-tier row-locators, cross-task contract change, positional
+  identifier omission in a review pass).
 - Centralization / sibling-caller coverage: Lesson #117 (within one function, branch on
   the discriminator for a multi-cause flag), Lesson #119 (sibling aggregators in the same
   module must mirror byte-identical patterns), Lesson #136 (centralized helper across
@@ -106,7 +114,7 @@ Clusters:
   (verify every absolute-position site after a structural change), Lesson #7 (every
   external-data field must be wrapped; one unprotected field is a bug). Overlapping.
 
-Accounting: 19 lessons.
+Accounting: 23 lessons.
 
 ---
 

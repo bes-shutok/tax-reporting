@@ -383,6 +383,31 @@ plan task. For each reader, verify it has access to all components of the new ke
 
 ---
 
+## Sequence a Config/TOML Task Adjacent to the Production Task That Reads the Key
+
+When a plan introduces a new config/decision-point key (for example a `TaxJurisdictionConfig`
+boolean or a `decision_points/<year>.toml` flag) that production code in an earlier task reads,
+sequence the config task **adjacent to or before** the production task, or explicitly document
+the expected transient RED between them.
+
+**Why this matters:** Per-task GREEN verification is the basic safety signal during plan
+execution. When Task N (production code) ships before Task N+1 (the TOML/config key it reads),
+the full suite is RED at the boundary between them (in the modelo3-flag-based-dispatch plan,
+7 integration/e2e tests stayed RED after Task 2 because the production TOML lacked the two new
+keys). A transient full-suite RED between two tasks hides any NEW breakage the second task
+introduces and forces the orchestrator to verify GREEN independently of the per-task signal.
+
+**Acceptable orderings, in preference:**
+1. Config/TOML task first, then the production task that reads the key (suite stays GREEN at
+   every boundary; the production task's per-task GREEN is meaningful on its own).
+2. If research/design forces the production task first (so the key name and semantics are
+   settled by real code), put the config task immediately next and have the production task
+   log its deferred failures by name. The plan must state that the full suite is expected RED
+   between the two tasks, so the orchestrator does not read it as a regression.
+
+**Do not** leave more than one task boundary between a production task and the config key it
+reads, and never end the plan with the config task still pending.
+
 ## Staged Replacement Planning
 
 When an existing feature is misleading or unsafe and the correct replacement design still
