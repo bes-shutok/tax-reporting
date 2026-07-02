@@ -158,7 +158,7 @@ class TestCorrectPaymentProceedsTiers:
           gain_loss_eur -100.00 (proceeds 0 -> phantom -cost).
         - TH ``Net Value (EUR)`` = "120,00" -> proceeds 120.00.
         - gain recomputed = 120 - 100 = 20.00 (NOT the input -100.00, so a
-          "leave gain untouched" conflation fails - lesson #99).
+          "leave gain untouched" conflation fails).
         - review_required=True; review_reason names the asset ("ABC") and the
           proceeds source ("Net Value"); exactly one CryptoReviewEntry
           appended.
@@ -622,7 +622,7 @@ class TestCorrectPaymentProceedsGuardsAndFallbacks:
         (GBPX) and tells the operator what to do (supply the EUR realization
         value / configure the peg).
 
-        Discriminating (lesson #125): under the buggy code the reason is
+        Discriminating: under the buggy code the reason is
         ``"... no None->EUR rate in config - ..."`` so the ``"None"`` assertion
         FAILS; the fixed code degrades the rate phrase for ``peg is None``.
         """
@@ -1042,7 +1042,7 @@ class TestCorrectPaymentProceedsCollisionSafety:
         success-path per-lot audit is per-ROW and deliberately NOT guarded by
         ``reviewed_keys`` (a future 'normalize all three append sites under one
         per-key guard' refactor would drop one audit here and fail
-        ``len == 2``; lesson #125).
+        ``len == 2``).
         """
         entries = [
             _make_cg_entry(
@@ -1079,7 +1079,8 @@ class TestCorrectPaymentProceedsCollisionSafety:
         # Insertion order (CG entry order == deque front-first pop order), NOT
         # sorted: the first CG candidate consumes the FRONT TH twin (120.00), the
         # second consumes 80.00. A LIFO (pop()) regression would flip these; a
-        # sorted assertion would hide it (lesson #125 discriminating test).
+        # sorted assertion would hide it (a discriminating test: the failure
+        # must not survive a wrong implementation).
         assert result[0].proceeds_eur == Decimal("120.00")
         assert result[1].proceeds_eur == Decimal("80.00")
         # Gain recomputed from each corrected proceeds (insertion order).
@@ -1103,7 +1104,7 @@ class TestCorrectPaymentProceedsCollisionSafety:
         branch (r11 quality Medium): the ``not_stablecoin`` reason names only
         the asset, so two same-key candidates produce a LITERALLY IDENTICAL
         reason - under an unguarded append ``len == 2``; the guard yields
-        ``len == 1``. Discriminates (lesson #125) the multi-candidate
+        ``len == 1``. Discriminates the multi-candidate
         cardinality that the single-candidate no-rate tests do not bind.
         """
         entries = [
@@ -1423,8 +1424,8 @@ class TestCorrectPaymentProceedsCollisionSafety:
 
 
 class TestBuildPaymentTagIndex:
-    """Direct coverage of ``build_payment_tag_index`` (extracted helper,
-    lesson #91): tag-set normalization (case-insensitive) and the
+    """Direct coverage of ``build_payment_tag_index`` (extracted helper):
+    tag-set normalization (case-insensitive) and the
     same-calendar-day correlation key (tz-robust to sub-day offsets).
     """
 
@@ -1658,8 +1659,8 @@ class TestLoadPaymentProceedsConfigFromPath:
 
 
 class TestDerivePegToEurRates:
-    """Direct coverage of ``_derive_peg_to_eur_rates`` (extracted helper,
-    lesson #91): only peg currencies WITH a finite, positive rate appear; the
+    """Direct coverage of ``_derive_peg_to_eur_rates`` (extracted helper):
+    only peg currencies WITH a finite, positive rate appear; the
     skip+warn branch fires for non-positive / non-finite rates.
     """
 

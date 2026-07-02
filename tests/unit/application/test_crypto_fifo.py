@@ -1685,7 +1685,7 @@ class TestParseThParseFail:
 
 
 class TestResolveCarryoverPlatformKey:
-    """Tests for (tx_key, platform) carry-over key scoping (Finding #5)."""
+    """Tests for (tx_key, platform) carry-over key scoping."""
 
     def test_same_tx_key_different_platforms_not_summed(self) -> None:
         """Two platform-specific carry-over entries for same tx_key must stay separate in merged_carryover."""
@@ -1753,7 +1753,7 @@ class TestResolveCarryoverPlatformKey:
 
 
 class TestHandleTransfer:
-    """Tests for transfer lot carry-over (Finding #1)."""
+    """Tests for transfer lot carry-over."""
 
     def _transfer_row(  # noqa: PLR0913
         self,
@@ -1865,7 +1865,7 @@ class TestHandleTransfer:
 
 
 class TestFifoCrossPlatformTransfer:
-    """Tests for same-asset cross-platform FIFO lot carry-over (Finding #1)."""
+    """Tests for same-asset cross-platform FIFO lot carry-over."""
 
     def test_transfer_lot_cost_basis_carries_to_receiver_platform(self) -> None:
         """Sender platform FIFO produces carry-over; receiver's deferred acquisition is resolved."""

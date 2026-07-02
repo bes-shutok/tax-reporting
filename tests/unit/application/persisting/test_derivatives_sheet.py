@@ -462,7 +462,7 @@ class TestDerivativesSheet:
         """A blank Annex when `route_derivatives_by_counterparty_residency` is on
         must surface a warning.
 
-        Pins the dev_lessons #77/#118 'surface invalidity loudly' guarantee that the
+        Pins the 'surface invalidity loudly' guarantee that the
         removed detail-line guard previously provided. A row that failed to resolve a
         route (annex_hint == '') while the flag is on must never render silently.
         """

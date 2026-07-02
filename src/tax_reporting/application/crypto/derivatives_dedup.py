@@ -62,7 +62,7 @@ def _on_error(failed_path: Path, kind: str, detail: str) -> object:
     """Policy callback for :func:`load_guarded_json`.
 
     Mirrors the degrade-vs-raise policy that previously lived inline in
-    ``_load_derivatives_labels_config_from_path`` (repo lesson #105: inherit the
+    ``_load_derivatives_labels_config_from_path`` (inherit the
     guards, recalibrate exception handling to the cost of silent failure). A
     *missing* config degrades silently (the caller owns the single WARNING); a
     *malformed* config is a correctness hazard (silent skip leaves

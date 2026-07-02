@@ -35,7 +35,7 @@ EXAMPLE_KOINLY_DIR = EXAMPLE_DIR / "koinly2024"
 # scoped to these directories only: the legacy example/koinly2024/ files predate the
 # _synth.csv filename convention and use real-looking wallet names (Kraken, Binance) and
 # non-empty TxHash/TxSrc/TxDest values, so applying the checks globally would false-fail on
-# pre-existing legacy data (lesson #142: scope a new-convention validator to new work, or
+# pre-existing legacy data (scope a new-convention validator to new work, or
 # accept-list the legacy token).
 SYNTHETIC_KOINLY_2025_DIRS = [
     EXAMPLE_DIR / "koinly2025",
@@ -233,7 +233,7 @@ def test_example_data_is_synthetic():
     # "Synthetic-data hygiene"). Scoped to the directories created by the
     # crypto-tests-off-local-fixtures plan: the legacy example/koinly2024/ files use a
     # 10-char token, real wallet names (Kraken/Binance), and non-empty TxHash/TxSrc/TxDest,
-    # so a global check would false-fail on pre-existing legacy data (lesson #142).
+    # so a global check would false-fail on pre-existing legacy data.
     scanned_csvs: list[Path] = []
     for synth_dir in SYNTHETIC_KOINLY_2025_DIRS:
         scanned_csvs.extend(sorted(synth_dir.glob("koinly_*.csv")))

@@ -187,7 +187,7 @@ def _render_source_label(entry: CryptoReviewEntry) -> str:
 
     Asserting against this helper (rather than just ``entry.source_section``)
     binds the test to the rendered label so a forgotten extension that falls
-    back to ``"Income"`` fails (r7 L5, lessons #114/#115).
+    back to ``"Income"`` fails (r7 L5).
     """
     return {
         "capital_gains": "Capital Gains",
@@ -1314,7 +1314,7 @@ class TestSuspects:
         assert len(review_entries) == 1
         assert review_entries[0].source_section == "transaction_history"
         # r7 L5: assert the RENDERED label too, so a forgotten extension that
-        # falls back to "Income" fails the test (lessons #114/#115).
+        # falls back to "Income" fails the test.
         rendered = _render_source_label(review_entries[0])
         assert rendered == "Transaction History"
 
@@ -1574,7 +1574,7 @@ class TestEmptyDictAndCollisions:
 
 
 class TestNoOpGates:
-    """Disabled-flag and missing-jurisdiction no-ops (lesson #84)."""
+    """Disabled-flag and missing-jurisdiction no-ops."""
 
     def test_disabled_flag_is_noop(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture

@@ -338,7 +338,7 @@ def _load_crypto_tax_report(
     # ``tax_jurisdiction.timezone is None`` (configured but no IANA_TIMEZONE, and not
     # PT which auto-deduces Europe/Lisbon at config load) fail here. The loader
     # itself stays a pure parser (unit-testable with jurisdiction=None); this is the
-    # application boundary that enforces it. See development_lessons.md #135.
+    # application boundary that enforces it.
     if tax_jurisdiction is None or tax_jurisdiction.timezone is None:
         reason = (
             "no jurisdiction config loaded (config.ini absent or unreadable)"

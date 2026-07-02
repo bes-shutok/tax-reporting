@@ -9,7 +9,7 @@ deliberately different degrade-vs-raise policies) across three callers:
   ``> size_limit`` is rejected),
 - ``json.load`` of the file contents.
 
-Policy is **not** owned here. Per ``development_lessons.md`` #105 ("when reusing
+Policy is **not** owned here. Per the established guidance ("when reusing
 a validation/security pattern, inherit the guards but recalibrate exception
 handling"), the helper delegates every failure to a caller-supplied
 ``on_error(path, kind, detail)`` callback and returns whatever that callback

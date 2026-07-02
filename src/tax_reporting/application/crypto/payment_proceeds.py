@@ -113,7 +113,7 @@ def _load_payment_proceeds_config_from_path(path: Path) -> PaymentProceedsConfig
     Delegates the mechanical file guards (symlink rejection, existence check,
     1 MiB size cap, ``json.load``) to
     :func:`tax_reporting.infrastructure.json_loader.load_guarded_json`. The
-    helper recalibrates exception handling to DEGRADE never raise (lesson #105):
+    helper recalibrates exception handling to DEGRADE never raise:
     a corrupt token file must never abort report generation. On any failure
     mode (missing, symlink, oversize, malformed JSON, missing keys, drift) the
     loader logs a WARNING naming the path and the specific failure, then
@@ -360,7 +360,7 @@ def _match_payment_disposal(
     """Return the payment-tagged TH bucket for ``entry``, or ``None``.
 
     Pure lookup; does NOT pop. Returns the live deque so the orchestrator
-    can ``popleft`` once a correction commits (lesson #124: mutate the
+    can ``popleft`` once a correction commits (mutate the
     shared deque only AFTER the fallible parse+replace succeeds).
 
     Args:
@@ -562,7 +562,7 @@ def correct_payment_proceeds(  # noqa: PLR0912, PLR0913, PLR0915, C901
       3. Iterate entries in order. Skip if ``proceeds_eur != 0`` or the asset
          is loan-affected. For a candidate, look up its bucket and apply the
          count-equality gate BEFORE the try (so popleft is only ever on a
-         non-empty deque - lesson #124):
+         non-empty deque):
            - ``th_count[key] == 0``: leave unchanged, NO review entry
              (DP-013 flag intact).
            - ``cg_count[key] != th_count[key]``: leave ALL candidates on the
@@ -624,7 +624,7 @@ def correct_payment_proceeds(  # noqa: PLR0912, PLR0913, PLR0915, C901
             result.append(entry)
             continue
 
-        # Count-equality gate runs BEFORE the try (lesson #124). Mismatch in
+        # Count-equality gate runs BEFORE the try. Mismatch in
         # EITHER direction blocks correction for ALL candidates on the key.
         if cg_count.get(key, 0) != th_count.get(key, 0):
             if key not in reviewed_keys:
@@ -714,7 +714,7 @@ def correct_payment_proceeds(  # noqa: PLR0912, PLR0913, PLR0915, C901
                 result.append(entry)
                 continue
 
-            # Success: compute gain, replace entry, THEN pop (lesson #124).
+            # Success: compute gain, replace entry, THEN pop.
             gain = proceeds - entry.cost_eur
             asset_safe = _sanitize_substring(entry.asset)
             peg = config.stablecoin_pegs.get(entry.asset)

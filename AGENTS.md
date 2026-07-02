@@ -21,51 +21,51 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Treat exactly one dot-grouped triplet (e.g. `1.234`) as ambiguous and raise a clear error. Only multi-group dot patterns (e.g. `1.234.567`) may be stripped as European thousands.
 - Use f-strings in exception constructors; never pass multiple positional args.
 - Catch row-level parse errors per row (warn and skip); do not let one bad row discard the whole dataset.
-- When extracting a second derived value inside a `try...except` block, reuse the parsed object inside the same block. See `development_lessons.md` #106.
-- When a row-processing loop outer `try...except` guard must not prevent a trusted-path branch from completing, wrap the fallible secondary field parse in a separate nested `try...except`. See `development_lessons.md` #154.
-- When an optional field from external input is absent, use a type-safe sentinel (e.g. `"0"` for numeric fields) rather than `""`. See `coding_guidelines.md` #4. When `"0"` is itself a valid observed value, use a non-representable sentinel like `"MISSING"`. See `development_lessons.md` #153.
+- When extracting a second derived value inside a `try...except` block, reuse the parsed object in the same block.
+- When a row-processing loop outer `try...except` guard must not prevent a trusted-path branch from completing, wrap the fallible secondary field parse in a separate nested `try...except`.
+- When an optional field from external input is absent, use a type-safe sentinel (e.g. `"0"` for numeric fields) rather than `""`. See `coding_guidelines.md` #4. When `"0"` is itself a valid observed value, use a non-representable sentinel like `"MISSING"`.
 - Data-loss conditions (unmatched items, dropped records) must be logged at warning+, never debug. See `coding_guidelines.md` #5.
-- All-or-nothing validation for required file sets: none present -> skip; partial set -> raise `FileProcessingError` listing missing files; all present -> proceed. See `development_lessons.md` #51.
-- Verification/hygiene guards must fail closed when the manifest file is absent; `grep -f <missing>` exits non-zero, so `cmd && echo BAD || echo GOOD` false-passes. See `development_lessons.md` #126.
+- All-or-nothing validation for required file sets: none present -> skip; partial set -> raise `FileProcessingError` listing missing files; all present -> proceed.
+- Verification/hygiene guards must fail closed when the manifest is absent; `grep -f <missing>` exits non-zero, so `cmd && echo BAD || echo GOOD` false-passes.
 - Validation that depends on complete state runs post-aggregation, not per-row (mid-accumulation state can be temporarily invalid).
-- When reusing a validation/security pattern, inherit the guards but recalibrate exception handling (degrade vs raise) to the cost of silent failure at the new call site. See `development_lessons.md` #105.
+- When reusing a validation/security pattern, inherit the guards but recalibrate exception handling to the cost of silent failure at the new call site.
 - Unmatched items from matching algorithms must never be silently discarded; apply an explicit fallback and log a warning.
-- When an aggregator takes `entries[0]` for a field assumed constant across a group, add a heterogeneity guard (#118); when that field later moves to per-row rendering, re-scope the guard (#185).
-- Sibling aggregators that merge the same field type must use byte-identical patterns or a shared helper; diverging patterns silently drop data. See `development_lessons.md` #119.
+- When an aggregator takes `entries[0]` for a field assumed constant across a group, add a heterogeneity guard; when that field later moves to per-row rendering, re-scope the guard.
+- Sibling aggregators that merge the same field type must use byte-identical patterns or a shared helper; diverging patterns silently drop data.
 - Partial or uncertain results must carry an explicit indicator so the user cannot mistake them for complete. Review flags must include specific actionable explanations, not bare booleans.
-- User-facing output labels use self-explanatory terminology, not terse names inherited from source formats. See `coding_guidelines.md` #6. F-strings interpolating `str | None` into user-facing text must degrade explicitly for `None` on warn-only config-drift paths; see `development_lessons.md` #131.
+- User-facing output labels use self-explanatory terminology, not terse names inherited from source formats. See `coding_guidelines.md` #6. F-strings interpolating `str | None` into user-facing text must degrade explicitly for `None` on warn-only config-drift paths.
 
 ### 2. Repository Style and Conventions
 
-- Specific type annotations for generic collections (`list[Type] | None`, not `list | None`). See `development_lessons.md` #8.
-- When extracting or using generic collection or matching primitives, use specific type parameterization (TypeVar) to preserve subclass field visibility under static analysis without type casting. See `development_lessons.md` #151.
-- For type dispatch on generic hints in config loaders use `get_args(hint) == (str, Decimal)` not `get_origin(hint) is dict`; overwrite the validated entry with converted values. See `development_lessons.md` #155.
-- Matching event fields must mirror the normalization of domain entry fields; normalizing one side silently breaks all matching for affected platforms. See `development_lessons.md` #156.
-- Type heterogeneous kwargs dicts as `dict[str, Any]` before `**`-unpacking into a dataclass constructor; per-key narrowing doesn't survive a splat. See `development_lessons.md` #157.
-- Catch specific exception types (`FileProcessingError`, `ValueError`), not broad `Exception`. See `development_lessons.md` #9.
+- Specific type annotations for generic collections (`list[Type] | None`, not `list | None`). See `development_lessons.md` #4.
+- For generic collection or matching primitives, use TypeVar parameterization so subclass fields stay visible to static analysis.
+- For type dispatch on generic hints in config loaders use `get_args(hint) == (str, Decimal)`, not `get_origin(hint) is dict`; overwrite the validated entry.
+- Matching event fields must mirror domain entry field normalization; normalizing one side breaks matching for affected platforms.
+- Type heterogeneous kwargs dicts as `dict[str, Any]` before `**`-unpacking into a dataclass; per-key narrowing doesn't survive a splat.
+- Catch specific exception types (`FileProcessingError`, `ValueError`), not broad `Exception`.
 - Koinly source discovery is year-agnostic (`koinly*`) and prefers a year matching parsed IB data.
 - If an inferred IB tax year exists and the selected Koinly directory year differs, skip crypto loading for that run.
 - Dividend aggregation validates one currency per symbol; mismatches raise `FileProcessingError`.
 - `TradeDate` is a `NamedTuple(year, month, day)`. Do not call `.date()` on it; use it directly or call `.to_datetime()`.
-- External-report date parsers must localize naive dates to the jurisdiction zone (a `strptime` format literal like ` UTC` does not populate `tzinfo`; detect on the matched format). See `development_lessons.md` #132.
+- External-report date parsers must localize naive dates to the jurisdiction zone (a `strptime` literal like ` UTC` does not populate `tzinfo`).
 - When classifying a dividend row as withholding tax, match only the literal `"Withholding Tax"`; never bare `"Tax"` (dividend descriptions contain "Tax" as a word fragment, e.g. "Tax-Exempt Interest").
 - `docs/maintenance/tax/.../official/` keeps only source-origin files; derived notes and numbered guidance belong outside `official/`; `sources.md` records issuing/effective/superseded dates. See `docs/maintenance/project-guidelines.md` #1.
 - For external source archive provenance and freshness checks, see `docs/maintenance/project-guidelines.md` #1.
 - For fiscal-year versioned tax decision points, see `docs/maintenance/project-guidelines.md` #2.
 - When AT guidance cites a CIRS paragraph number, verify against the consolidated CIRS/CPPT/CIS PDFs; AT documents may predate renumbering amendments. See `docs/maintenance/project-guidelines.md` #3.
-- For tax/origin web sources, prefer authoritative PDFs or extracted Markdown/PDF over raw HTML; reuse local mirrors. If a secondary source conflicts with a locally-archived official source, the official archive wins outright; do not flag a competing "repo conflict." See `development_lessons.md` #171.
-- Authoritative law portals render the CURRENT version by default; for a prior fiscal year, use the redação in force for that period (the portal's "Redações anteriores" listing), cross-checked against a year-dated secondary source. See `development_lessons.md` #172.
-- Before assuming an official source is unavailable, probe the issuing authority's canonical URL with a HEAD request; a web/search MCP tool quota/rate-limit is a tool outage, not a missing source. See `development_lessons.md` #98, #188.
+- For tax/origin web sources, prefer authoritative PDFs or extracted Markdown/PDF over raw HTML; reuse local mirrors. If a secondary source conflicts with a locally-archived official source, the official archive wins outright; do not flag a competing "repo conflict." .
+- Authoritative law portals render the CURRENT version by default; for a prior fiscal year, use the redação in force for that period (the portal's "Redações anteriores" listing), cross-checked against a year-dated secondary source. See `development_lessons.md` #31.
+- Before assuming an official source is unavailable, probe the issuing authority's canonical URL with a HEAD request; a web/search MCP tool quota/rate-limit is a tool outage, not a missing source. See `development_lessons.md` #37.
 - Under `docs/maintenance/tax/`, use `laws/<jurisdiction>/crypto-tax/` for tax-law archives and `crypto-origin/` for chain/operator domicile archives.
-- Adding a decision point flag requires the corresponding field on `TaxJurisdictionConfig` and type-dispatching support. Jurisdiction-specific output must be flag-gated, not country-literal-gated. See `development_lessons.md` #68, #150, #182, #195.
-- Verify DP enumerated rules match implemented code branches; update prose on change. See `development_lessons.md` #123.
+- Adding a decision point flag requires the corresponding field on `TaxJurisdictionConfig` and type-dispatching support. Jurisdiction-specific output must be flag-gated, not country-literal-gated. See `development_lessons.md` #36.
+- Verify DP enumerated rules match implemented code branches; update prose on change.
 - Share crypto `País da Fonte` resolution across rewards and capital gains. Never use taxpayer residence.
 - Keep `docs/maintenance/tax/crypto-origin/` source manifest, registry, and decision log synchronized when changing chain/operator mappings.
 - Chain derivation uses deterministic normalization and validates against trusted sources in `docs/maintenance/tax/crypto-origin/`.
 - Wallet labels are discovery hints only; final chain/country mappings come from archived operator origin documents, not asset symbols. Use `Unknown` explicitly when labels don't allow reasonable chain derivation.
-- Operator mapping temporal validity: `service_start_date` (matching) vs `valid_from` (audit-only); set `service_start_date <= valid_from`, and for unknown verification dates leave `valid_from` null. See `development_lessons.md` #139.
-- Module size: when a module exceeds 1,000 lines or 50 functions/classes, extract cohesive responsibilities into separate modules. See `development_lessons.md` #87, #88.
-- Orchestration layers stay thin (~500 lines max); extract sub-orchestrators or move domain logic to dedicated services when coordination grows. See `development_lessons.md` #87.
+- Operator mapping temporal validity: `service_start_date` (matching) vs `valid_from` (audit-only); set `service_start_date <= valid_from`, leave `valid_from` null when unknown.
+- Module size: when a module exceeds 1,000 lines or 50 functions/classes, extract cohesive responsibilities into separate modules.
+- Orchestration layers stay thin (~500 lines max); extract sub-orchestrators or move domain logic to dedicated services when coordination grows.
 
 ### 3. Repository Constraints
 
@@ -81,9 +81,9 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - When `review_required=True` on `CryptoCapitalGainEntry` or `CryptoRewardIncomeEntry`, `review_reason` must contain a specific, actionable explanation. Excel shows "YES: \<reason\>", not a bare boolean. See PT-C-030.
 - `OperatorOrigin` has two review flags: `review_required` (row-level, colors rows) and `platform_review_required` (platform-level). Never conflate them. See CRG-016.
 - The Platform Assumptions tab is a complete manifest. Do not filter; use `platform_review_required=True` to highlight.
-- Tests verifying "YES:"/"NO" rendering must set `review_required` / `review_reason` explicitly on the fixture entry; do not delegate to `origin.review_required`. See lesson #42.
-- When a downstream consumer synthesises a `review_reason` from a flag multiple distinct upstream cases can set (e.g. `review_required=True` from unknown-platform vs temporal-validity), branch on the discriminator (sentinel/enum) the upstream sets; don't collapse cases into one message. RED tests must exercise each cause. See lesson #117.
-- When migrating a test off a real fixture to synthetic data whose unmapped identifiers flip an orthogonal signal (e.g. `review_required=True`), re-scope the assertion to the behavior under test, not the incidental flag value. See lesson #143.
+- Tests verifying "YES:"/"NO" rendering must set `review_required` / `review_reason` explicitly on the fixture entry; do not delegate to `origin.review_required`.
+- When a downstream consumer synthesises a `review_reason` from a flag multiple distinct upstream cases can set (e.g. `review_required=True` from unknown-platform vs temporal-validity), branch on the discriminator (sentinel/enum) the upstream sets; don't collapse cases into one message. RED tests must exercise each cause.
+- When migrating a test off a real fixture to synthetic data whose unmapped identifiers flip an orthogonal signal (e.g. `review_required=True`), re-scope the assertion to the behavior under test, not the incidental flag value.
 - Crypto capital gains statistics must be computed via `CryptoCapitalGainStats.from_entries()` and rendered as the "1b. CAPITAL GAINS STATISTICS" section. Grand total EUR amounts come from the full entries list, not per-period subtotals, so unrecognized holding periods don't produce inconsistent statistics.
 - Token origin resolution uses `TokenOriginResolver` and implicit `(date, asset, wallet)` correlation with the Koinly transaction history. The resolver never guesses; unmatched rows return `unknown` (blank in workbook). Do not reintroduce same-day disposal-context matching.
 - Token origin resolution supports LP operations and airdrops: `AIRDROP`, `LIQUIDITY_WITHDRAWAL`, `LIQUIDITY_PROVISION`, `DIRECT_PURCHASE`.
@@ -93,59 +93,60 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - `discover_loan_affected_assets()` uses only `"loan"` and `"loan repayment"` tags (not `"loan fee"`); loan fee rows' Sent Currency is the gas/service fee asset, not the loan principal.
 - When IB data has no current-year trades (`tax_year_hint` is None), the Koinly directory year hint falls back to `TaxJurisdictionConfig.fiscal_year`, which drives Koinly directory selection for crypto-only runs.
 - Run `_validate_capital_entries_have_valid_countries()`, `_aggregate_capital_entries()`, and `_filter_immaterial_entries()` only after FIFO-derived entries are merged with raw CG rows.
-- Keep pipeline stages decoupled: run value corrections and data recovery passes (which modify properties like proceeds) before manual review flags or suspect-identification passes, to prevent clobbering and reason-joining hacks. See `development_lessons.md` #152.
-- OGR overrides apply BEFORE `_aggregate_capital_entries()` when `jurisdiction.use_other_gains_report=True` (OGR holds the disposal-event total; CG rows are FIFO lots summed in aggregation). See `development_lessons.md` #75, #78, #80, #85, #97, #99.
-- When plan pseudocode compares two same-unit fields by name across domain objects, confirm they represent the same economic quantity before implementing; set candidate fields to DIFFERENT realistic values in RED fixtures so a field-name conflation fails visibly. See `development_lessons.md` #99.
+- Keep pipeline stages decoupled: run value corrections and data recovery passes before manual review flags or suspect-identification passes, to prevent clobbering and reason-joining hacks.
+- OGR overrides apply BEFORE `_aggregate_capital_entries()` when `jurisdiction.use_other_gains_report=True` (OGR holds the disposal-event total; CG rows are FIFO lots summed in aggregation).
+- When plan pseudocode compares two same-unit fields by name across domain objects, confirm they represent the same economic quantity before implementing; set candidate fields to DIFFERENT realistic values in RED fixtures so a field-name conflation fails visibly.
 - Cross-asset FIFO carry-over matches by TH transaction identifier, never by day-level date alone.
 - Any excluded asset yielding zero FIFO output must log at warning+.
-- Crypto derivatives/futures liquidations reporting losses are disposals of collateral even at a loss; this is correct tax treatment, not an error. See `development_lessons.md` #67.
+- Crypto derivatives/futures liquidations reporting losses are disposals of collateral even at a loss; this is correct tax treatment, not an error. See `development_lessons.md` #26.
 - Crypto tests MUST read committed synthetic data under `resources/source/example/koinly<year>_<scenario>/`; never reference gitignored personal data. See `crypto_implementation_guidelines.md`.
 
 
 ### 4. Agent Workflow Rules
 
-- Bug fixes follow TDD: failing test first (RED), then fix (GREEN). See `development_lessons.md` #76, #159 (revert a RED break on an untracked file via Edit, not `git checkout`).
-- When a plan is revised between RED and GREEN, re-read each RED test against current design invariants before flipping GREEN. Update changed assertions and cite the invariant. See `development_lessons.md` #109.
-- When building an index from source data, handle duplicate keys by summing, never silent overwrite. See `development_lessons.md` #77.
-- Test string sanitization/validation/parsing for edge cases: empty, whitespace-only, multi-byte, control chars, multi-char prefixes, padded. See `development_lessons.md` #6.
-- Test error paths including double-failure (e.g. aggregation fails AND workbook.close fails). See `development_lessons.md` #6.
+- Bug fixes follow TDD: failing test first (RED), then fix (GREEN). See `development_lessons.md` #27 (revert a RED break on an untracked file via Edit, not `git checkout`).
+- When a plan is revised between RED and GREEN, re-read each RED test against current design invariants before flipping GREEN. Update changed assertions and cite the invariant.
+- A committed RED test that is itself the deliverable (a later task flips it GREEN) must fail via `pytest.fail(<message>)` naming the resolving task, never an unhandled exception.
+- When building an index from source data, handle duplicate keys by summing, never silent overwrite.
+- Test string sanitization/validation/parsing for edge cases: empty, whitespace-only, multi-byte, control chars, multi-char prefixes, padded.
+- Test error paths including double-failure (e.g. aggregation fails AND workbook.close fails).
 - Examine existing source data files (`resources/source/koinly*/`) directly before asking for samples. Use Glob/Read.
 - Commits allowed by default; never push/PR without instruction (Git Push Policy). `~/Projects/myrepos` stay local-only.
 - Always use `uv run pytest`, not `uvx pytest`.
-- Never write to `docs/review/` (singular); use `docs/history/reviews/` (plural). See `development_lessons.md` #95.
+- Never write to `docs/review/` (singular); use `docs/history/reviews/` (plural). See `development_lessons.md` #29.
 - **Never introduce a hardcoded value (asset ticker, constant set, threshold, magic string, fixed ordering) without first flagging it and asking the user.**
-- Verification-first task ordering for "is X handled correctly?": code inspection, test execution, doc review before implementation. Skip implementation if verification shows correctness. See `development_lessons.md` #71.
-- **CRITICAL:** Code inspection alone is INSUFFICIENT for "is X handled correctly?". Perform full data trace verification across all source reports and confirm code branches on every authority-cited discriminator. See `development_lessons.md` #72, #73, #173.
-- When a user provides multiple examples to investigate, trace and document ALL of them; do not assume the first example's root cause covers the rest. See `development_lessons.md` #161.
-- When verifying a user's claim that a specific amount is missing from the source data, verify whether the report output is an aggregation before concluding it is missing. See `development_lessons.md` #162.
-- When adding cross-module utility calls, verify imports resolve: `uv run python -c "from module import function"`. See `development_lessons.md` #74.
-- Static hygiene/leak guards must scan every file the protected value could realistically reach, including tests that `skip` in CI when their real fixture is absent. See `development_lessons.md` #127.
-- New boolean-flag features need backward-compat tests verifying the "disabled" state preserves existing behavior, not just that "enabled" works. See `development_lessons.md` #84.
-- When extracting a function to a new module, check for dependencies on constants from the source module (circular imports). See `development_lessons.md` #86.
-- On refactoring branches, fix all in-scope code review findings in the same branch, including findings touching changed files or addressing tech debt exposed by the extraction. See `development_lessons.md` #92.
-- For edge case tests, read the function implementation first to understand what patterns it supports; don't assume from name/docs. See `development_lessons.md` #89.
-- Validation functions with conditional logic need comprehensive edge case coverage (format, zero-padding, range, calendar/time validity, boundaries, whitespace). See `development_lessons.md` #90.
-- Extracted helpers need direct unit test coverage, not just indirect integration. Verify early returns, branches, boundaries, state mutation, edge cases. See `development_lessons.md` #91.
-- Discriminating tests assert a property that FAILS under a wrong implementation; cover N independent guards as N parametrized cases, each asserting its own signal (not one OR'd case). See `development_lessons.md` #125, #133.
-- When a plan task, design invariant, or gist example claims something about production code (field semantics, file path, line number, function behavior, return shape), verify against actual source BEFORE writing dependent plan tasks. See `development_lessons.md` #100.
-- Resolve pseudocode-vs-test contradictions before implementation. See `development_lessons.md` #120.
-- In a refactor with a byte-identical non-regression criterion, a clause adding a net-new side effect the code does NOT emit is contradictory; verify it exists pre-refactor, else route to the owning feature task. See `development_lessons.md` #158.
-- Trace filtered TH rows back to their OGR source rows to confirm Type. See `development_lessons.md` #101.
-- Add match-count warnings for non-unique deduplication keys. See `development_lessons.md` #102.
-- Deduplicate overlapping items when splitting shared tax pipelines. See `development_lessons.md` #103.
-- When N source events pair against M target items by non-unique key, use an ordered queue (deque) per key and pop one target per event. Never `dict[key] = item` (silently overwrites on collisions). See `development_lessons.md` #107.
-- Run fallible resolutions before mutating shared match structures. See `development_lessons.md` #124.
-- Recompute tolerance after shrinking sliding-window matchers. See `development_lessons.md` #108.
-- Re-run feasibility checks against the mutated post-phase-1 input set. See `development_lessons.md` #110.
-- When a task changes data flow semantics (filter/dedup/transformation split), grep ALL test files (`tests/`) for assertions referencing the affected data identity tuple, not just current task's file scope. See `development_lessons.md` #111.
-- When a plan task changes an existing function signature OR rendered output text (a description/label cell), grep ALL test tiers: callers (`grep -rn "<func>(" tests/`) for signature changes, and row-locators matching the stale label (`grep -rn "<old label>" tests/`) for output-text changes. A dedicated test file is not exhaustive. A wording/staleness review also greps method/function identifiers, not just prose. See `development_lessons.md` #183, #187, #197.
-- For verification-only tasks inspecting `git diff <base>..HEAD` with missing expected files, check if a prior same-session commit already applied the change. See `development_lessons.md` #116.
-- For comparing tool output against the committed baseline (linter/formatter), pipe the committed blob or use `git worktree add`; never use `git stash`. See `development_lessons.md` #122.
-- Before `execute-plan` Step 1.1 on a pre-migration plan, grep and translate moved path prefixes (`docs/tax/`, etc.) to their migrated locations in the plan body. See `development_lessons.md` #129 and `execute-plan` Step 0.4b.
-- When validating branch compliance (e.g. for em dashes), do not rely on working-tree filters like "touched" or "unstaged" if changes have already been committed; diff explicitly against the target branch. See development_lessons.md #144.
-- **Never proceed to plan execution or make code changes without explicit user approval when in Planning Mode.** Bypassing the approval gate violates user intent and creates unwanted code churn. See development_lessons.md #149.
-- Request a plan amendment before omitting prescribed behaviors. See `development_lessons.md` #160.
-- Temporary artifacts and scratch scripts must not be placed in git-tracked folders like the project root; use a dedicated git-ignored scratch folder or the system scratch directory. See `development_lessons.md` #178.
+- Verification-first task ordering for "is X handled correctly?": code inspection, test execution, doc review before implementation. Skip implementation if verification shows correctness.
+- **CRITICAL:** Code inspection is INSUFFICIENT for "is X handled correctly?". Perform full data trace verification across all source reports and confirm code branches on every authority-cited discriminator.
+- When a user provides multiple examples to investigate, trace and document ALL of them; do not assume the first example's root cause covers the rest.
+- When verifying a user's claim that a specific amount is missing from the source data, verify whether the report output is an aggregation before concluding it is missing.
+- When adding cross-module utility calls, verify imports resolve: `uv run python -c "from module import function"`.
+- Static hygiene/leak guards must scan every file the protected value could realistically reach, including tests that `skip` in CI when their real fixture is absent.
+- New boolean-flag features need backward-compat tests verifying the "disabled" state preserves existing behavior, not just that "enabled" works.
+- When extracting a function to a new module, check for dependencies on constants from the source module (circular imports).
+- On refactoring branches, fix all in-scope code review findings in the same branch, including findings touching changed files or addressing tech debt exposed by the extraction. See `development_lessons.md` #28.
+- For edge case tests, read the function implementation first to understand what patterns it supports; don't assume from name/docs.
+- Validation functions with conditional logic need comprehensive edge case coverage (format, zero-padding, range, calendar/time validity, boundaries, whitespace).
+- Extracted helpers need direct unit test coverage, not just indirect integration. Verify early returns, branches, boundaries, state mutation, edge cases.
+- Discriminating tests assert a property that FAILS under a wrong implementation; cover N independent guards as N parametrized cases, each asserting its own signal (not one OR'd case).
+- When a plan task, design invariant, or gist example claims something about production code (field semantics, file path, line number, function behavior, return shape), verify against actual source BEFORE writing dependent plan tasks.
+- Resolve pseudocode-vs-test contradictions before implementation.
+- In a refactor with a byte-identical non-regression criterion, a clause adding a net-new side effect the code does NOT emit is contradictory; verify it exists pre-refactor, else route to the owning feature task.
+- Trace filtered TH rows back to their OGR source rows to confirm Type.
+- Add match-count warnings for non-unique deduplication keys.
+- Deduplicate overlapping items when splitting shared tax pipelines.
+- When N source events pair against M target items by non-unique key, use an ordered queue (deque) per key and pop one target per event. Never `dict[key] = item` (silently overwrites on collisions).
+- Run fallible resolutions before mutating shared match structures.
+- Recompute tolerance after shrinking sliding-window matchers.
+- Re-run feasibility checks against the mutated post-phase-1 input set.
+- When a task changes data flow semantics (filter/dedup/transformation split), grep ALL test files (`tests/`) for assertions referencing the affected data identity tuple, not just current task's file scope.
+- When a plan task changes an existing function signature OR rendered output text (a description/label cell), grep ALL test tiers: callers (`grep -rn "<func>(" tests/`) for signature changes, and row-locators matching the stale label (`grep -rn "<old label>" tests/`) for output-text changes. A dedicated test file is not exhaustive. A wording/staleness review also greps method/function identifiers, not just prose.
+- For verification-only tasks inspecting `git diff <base>..HEAD` with missing expected files, check if a prior same-session commit already applied the change.
+- For comparing tool output against the committed baseline (linter/formatter), pipe the committed blob or use `git worktree add`; never use `git stash`.
+- Before `execute-plan` Step 1.1 on a pre-migration plan, grep and translate moved path prefixes (`docs/tax/`, etc.) to their migrated locations in the plan body and `execute-plan` Step 0.4b.
+- When validating branch compliance (e.g. for em dashes), do not rely on working-tree filters like "touched" or "unstaged" if changes have already been committed; diff explicitly against the target branch.
+- **Never proceed to plan execution or make code changes without explicit user approval when in Planning Mode.** Bypassing the approval gate violates user intent and creates unwanted code churn.
+- Request a plan amendment before omitting prescribed behaviors.
+- Temporary artifacts and scratch scripts must not be placed in git-tracked folders like the project root; use a dedicated git-ignored scratch folder or the system scratch directory. See `development_lessons.md` #34.
 
 
 ### 5. Domain Knowledge References
@@ -154,17 +155,17 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Before processing Koinly exports or changing Koinly-related code, read `docs/maintenance/koinly_guidelines.md` (loan repayment disposal treatment, wrapped-asset repair, Other Gains Report relevance, required settings).
 - Before discussing crypto tax treatment, proposing architecture, or advising on Koinly settings, check `docs/maintenance/tax/decision_points/` first.
 - Before changing cross-cutting report-generation behavior, read `docs/maintenance/tax_reporting_guidelines.md` (also documents Excel report sections) and cite SRG IDs.
-- Before changing cross-cutting logic that prior incidents cover, consult the root-cause principle catalog (`coding_guidelines.md` #17-#25, `docs/maintenance/principle-index.md`, `generalize` skill) to recall lessons by problem shape.
+- Before changing cross-cutting logic that prior incidents cover, consult the root-cause principle catalog (`coding_guidelines.md` #17-#25; resolve families by grepping the in-band `**Principle:** Family X` tags in `docs/maintenance/development_lessons.md`, with cross-project lessons in the user-level `development_lessons.md`; see the `generalize` skill) to recall lessons by problem shape.
 - Before writing implementation plans, repository walkthroughs, or presentation artifacts, read `docs/maintenance/plan_quality_guidelines.md`.
-- When adding terms to `docs/maintenance/glossary.md`, keep English as the defining language (preserve original non-English naming in italics) and separate generic from jurisdiction-specific (PT) terms; see `development_lessons.md` #176.
+- When adding terms to `docs/maintenance/glossary.md`, keep English as the defining language (preserve original non-English naming in italics) and separate generic from jurisdiction-specific (PT) terms; see `development_lessons.md` #32.
 - When a crypto presentation makes legal/filing claims, verify the current source set in `docs/maintenance/tax/laws/pt/crypto-tax/sources.md` and cite mirrored official documents.
 - Before advising on NHR (Residente Não Habitual) foreign-income exemption or Anexo L filing, read the AT RNH folheto mirror at `docs/maintenance/tax/laws/pt/official/at_folheto_rnh_2022-10-19.pdf` (provenance and folder index under `docs/maintenance/tax/laws/pt/`).
 - Before advising on an IRS reclamação/impugnação prazo, verify against the mirrored CPPT (`docs/maintenance/tax/laws/pt/official/`); secondary summaries have erred. See `project-guidelines.md` #3.
 - Use the authority level and source date in `crypto_rules.md` to check whether a rule may be stale for the current tax year.
 - For country-specific tax decision points, see `docs/maintenance/tax/decision_points/`.
 - For private personal tax context supplied by the user, read `docs/maintenance/personal/facts.md` (gitignored; do not copy into tracked docs unless requested).
-- For tax classification of structured products, certificates, and blacklisted-issuer rules (CIRS Art. 43(7)), see `development_lessons.md` #177.
-- When preparing Portal das Financas entry data for an IRS annex/Quadro, transcribe the form's full official field list (not just a net total) and confirm every title clause (incl. negated/directional qualifiers); Q8A has no per-payer field, so aggregate by (Codigo + Pais). See `development_lessons.md` #179, #180, #181.
+- For tax classification of structured products, certificates, and blacklisted-issuer rules (CIRS Art. 43(7)), see `development_lessons.md` #33.
+- When preparing Portal das Financas entry data for an IRS annex/Quadro, transcribe the form's full official field list (not just a net total) and confirm every title clause (incl. negated/directional qualifiers); Q8A has no per-payer field, so aggregate by (Codigo + Pais). See `development_lessons.md` #35.
 
 ## Project Context
 
@@ -178,7 +179,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 ## Configuration
 
 - `configparser` INI files: `config.ini` (prod), `tests/config.ini` (test). Four sections: `[COMMON]`, `[EXCHANGE RATES]`, `[SECURITY]`, `[TAX JURISDICTION]` (fields and defaults documented in `README.md`). Update exchange rates annually.
-- `IANA_TIMEZONE`: auto-deduces `Europe/Lisbon` for `TAX_COUNTRY=PT`; REQUIRED for other countries with crypto data, else fails fast (`development_lessons.md` #135).
+- `IANA_TIMEZONE`: auto-deduces `Europe/Lisbon` for `TAX_COUNTRY=PT`; REQUIRED for other countries with crypto data, else fails fast ().
 - **Law-driven flags** (e.g. `exclude_loan_repayment_gains`) live in `docs/maintenance/tax/decision_points/<fiscal_year>.toml`, NOT `config.ini` (user preferences only); update the `.md` and `.toml` sidecar together.
 - TOML schema: `[meta].fiscal_year` (integer) + `[countries.XX]` boolean tables (multi-type loader also accepts `dict[str, Decimal]` subtables); copy `2025.toml` per year. Missing TOML raises `MissingDecisionPointsError`; invalid `[TAX JURISDICTION]` raises `ConfigurationError`; both surface unwrapped from `main()`.
 
@@ -186,22 +187,22 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 
 - 3-tier: `tests/unit/` (401 unit-marked), `tests/integration/` (10), `tests/end_to_end/` (26 e2e-marked); 451 unmarked (888 total).
 - **Do not import pytest fixtures**; they are injected by name (`tmp_path`, `capsys`, `caplog`, `monkeypatch`, `request`).
-- Tests must not read gitignored data; inline expected values, commit the fixture, or generate it deterministically. See `coding_guidelines.md` #26, `development_lessons.md` #189.
-- Test class names must match `python_classes = ["Test*"]` in `pyproject.toml`; non-`Test*`-prefix names are silently deselected. See `development_lessons.md` #186.
+- Tests must not read gitignored data; inline expected values, commit the fixture, or generate it deterministically. See `coding_guidelines.md` #26, `development_lessons.md` #38.
+- Test class names must match `python_classes = ["Test*"]` in `pyproject.toml`; non-`Test*`-prefix names are silently deselected.
 - Remove unused imports (Ruff F401). Only import `Path` when instantiating or type-annotating.
 - Test meaningful business logic and real edge cases; avoid duplicating coverage. High-value: complex IB CSV formats, tax calculations, error handling; low-value: zero amounts, trivial parsing.
-- Excel output tests: structural identification over hardcoded value exclusions; default-empty cell assertions accept `None` and `""`; reuse the production validator for domain-validity predicates. See `development_lessons.md` #69, #70, #81, #82, #83, #96, #114, #115.
+- Excel output tests: structural identification over hardcoded value exclusions; default-empty cell assertions accept `None` and `""`; reuse the production validator for domain-validity predicates.
 
 ## Code Quality
 
-- **Ruff** is primary linter/formatter (`pyproject.toml`: Python 3.14, line length 120, full ruleset). Do not run `ruff check --fix` on modules that re-export for backward compat (e.g. `crypto_reporting.py`); `F401` removes re-exported names tests depend on. See `development_lessons.md` #121.
+- **Ruff** is primary linter/formatter (`pyproject.toml`: Python 3.14, line length 120, full ruleset). Do not run `ruff check --fix` on modules that re-export for backward compat (e.g. `crypto_reporting.py`); `F401` removes re-exported names tests depend on.
 - Type hints: modern syntax (`X | Y`) with `from __future__ import annotations`; `datetime.UTC`, `pathlib.Path`, lazy logging, f-string exceptions, named-constant magic numbers (except tests). Never default essential identifiers/indices to 0. Refactor high-complexity functions; `# noqa: PLR0912` with comment if too risky.
 - Docstrings: always for public modules/classes/`__init__`/complex functions; skip trivial getters/setters/`__repr__`/clear private methods/test functions. Google convention.
 - **Code review checklist:** required params truly required; error messages have row context; exception chaining preserves originals; logging parameterized; fail-fast vs missing-data distinction correct; no pytest fixture imports; no unused imports.
 
 ## Data Handling
 
-Missing-vs-invalid: see `docs/maintenance/project-guidelines.md` #5 for the full rules. Incremental: internal resolution sentinels (e.g. `UNKNOWN_OPERATOR_REVIEW_REQUIRED`) must NOT leak to user-facing fields - use the raw input value. See `development_lessons.md` #113.
+Missing-vs-invalid: see `docs/maintenance/project-guidelines.md` #5 for the full rules. Incremental: internal resolution sentinels (e.g. `UNKNOWN_OPERATOR_REVIEW_REQUIRED`) must NOT leak to user-facing fields - use the raw input value.
 
 
 

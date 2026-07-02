@@ -24,7 +24,7 @@ Design notes
   sliding window over lots at the same ``(timestamp, asset, wallet)`` for a
   contiguous range summing to the event amount within
   ``_RANGE_TOLERANCE_SCALE * range_size``. Tolerance is recomputed after
-  every shrink (repo lesson #108) and the shrink bound uses ``left < right``
+  every shrink and the shrink bound uses ``left < right``
   so a single-element window stays a candidate.
 - Per-lot INFO logging is CALLER-owned: the matcher returns
   ``matched_metadata`` so each caller logs per-lot with its own wording.

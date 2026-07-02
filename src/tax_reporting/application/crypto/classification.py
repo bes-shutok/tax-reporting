@@ -525,7 +525,7 @@ def classify_derivatives_event(  # noqa: PLR0911
     The classifier uses two signals only: the OGR ``Type`` column and the
     existence of a CG counterpart whose disposal proceeds match the OGR
     magnitude within tolerance. No TH-label allowlist, no asset allowlist, no
-    amount threshold (per r1 Blocker 2 and Monitor #2; these were proposed
+    amount threshold (per r1 Blocker 2 and Monitor #1; these were proposed
     in the investigation and rejected as fragile).
 
     Classification matrix:
@@ -604,7 +604,7 @@ def classify_derivatives_event(  # noqa: PLR0911
             ),
         )
 
-    # Unknown Type: defensive fallback. The plan's Monitor #2 requires that
+    # Unknown Type: defensive fallback. The plan's Monitor #1 requires that
     # unrecognized OGR shapes route to derivatives with review. Emit Ambiguous
     # with a specific reason rather than guessing. The current ByBit fixtures
     # only ever produce "Profit" or "Loss", so this branch is unreachable in

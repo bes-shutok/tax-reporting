@@ -56,10 +56,10 @@ def write_derivatives_sheet(
     per row from each entry's ``annex_hint`` and ``operation_code`` (blank when
     residency routing is disabled). When residency routing is enabled and any
     entry has a blank annex_hint, a warning is emitted so a failed/blank route is
-    surfaced loudly rather than rendered silently (development_lessons.md #77/#118).
+    surfaced loudly rather than rendered silently.
 
-    The sheet is always rendered, even when derivatives_entries is empty (per
-    development_lessons.md #93): the headers and an explicit empty-state row are
+    The sheet is always rendered, even when derivatives_entries is empty:
+    the headers and an explicit empty-state row are
     written so the reviewer can see the category was considered.
 
     Args:

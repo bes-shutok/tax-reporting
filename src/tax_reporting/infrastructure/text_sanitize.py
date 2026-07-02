@@ -8,8 +8,8 @@ substring sanitization in domain/application code) should use
 :func:`strip_control_chars` so they do not gain an unwanted dependency on the
 presentation layer.
 
-See docs/maintenance/development_lessons.md #7 for the Excel security guidance
-that motivated this split.
+See the "Excel Output Security" lesson for the guidance that motivated this
+split.
 """
 
 from __future__ import annotations

@@ -979,7 +979,7 @@ rules PT-C-033 / PT-C-034, guideline CRG-018.
 
 The original classifier design considered using OGR amount thresholds (e.g. `>100 EUR` equals
 derivatives) to distinguish futures rows from spot rows. This was rejected in r1 Blocker 2 and
-Monitor #2 because spot disposals can also produce large values and the threshold is arbitrary;
+Monitor #1 because spot disposals can also produce large values and the threshold is arbitrary;
 any chosen cutoff would over-classify legitimate large spot trades and under-classify small
 futures fees. The classifier in `src/tax_reporting/application/crypto/classification.py` instead
 uses only two signals: the OGR row `Type` (Profit/Loss) and CG-counterpart existence within a
@@ -1036,7 +1036,7 @@ than a single key-equality pass:
    (not a dict-of-scalars) is mandatory: when two derivatives events share a
    timestamp and amount with two CG lots, a dict-of-scalars would silently
    overwrite one lot, leaving it in the spot aggregate and removing the wrong
-   lot for one of the events. See `development_lessons.md` #107.
+   lot for one of the events.
 
 2. **Phase 2 (contiguous-range fallback)** runs only for events that did not
    find an exact match. It uses a two-pointer sliding window over the
@@ -1047,8 +1047,7 @@ than a single key-equality pass:
    split; a non-contiguous subset of lots at the same timestamp cannot be a
    FIFO split and must not match. The tolerance must be recomputed after
    every shrink step and the shrink bound must be `left < right` (not
-   `left <= right`) so the single-lot window survives as a candidate. See
-   `development_lessons.md` #108.
+   `left <= right`) so the single-lot window survives as a candidate.
 
 The two-phase design exists because a derivatives disposal may appear in CG
 either as one lot with the exact same amount as the TH event (phase 1 hits)
@@ -1131,7 +1130,7 @@ f"{provider}_{year}.json"` and routes the secure-load
 guards (symlink rejection and a file size limit of 1 MiB via
 `_MAX_LABELS_FILE_SIZE`) through the shared
 `infrastructure.json_loader.load_guarded_json`, supplying its own
-`_on_error` policy callback (repo lesson #105: inherit the guards,
+`_on_error` policy callback (inherit the guards,
 recalibrate exception handling). A malformed config
 file (invalid JSON, missing `derivatives_th_labels` key, wrong value
 type) raises `FileProcessingError` at startup; only a missing file
@@ -1444,7 +1443,7 @@ when their sub-day wall-clock representations differ, including a summer
 disposal in the 00:00-01:00 local window that maps to the previous UTC day.
 With both sides on the true-UTC day, the calendar-day key is timezone-robust;
 a +/-1-day window is no longer needed. See the crypto-timezone-normalization
-plan and `development_lessons.md` #132.
+plan and .
 
 ### Deque + count-equality collision-blocks-correction pattern
 
@@ -1463,7 +1462,7 @@ on a key whenever `cg_count[key] != th_count[key]`, appending ONE per-key
 review entry naming the count mismatch. This means a collision never silently
 picks the wrong twin.
 
-Per-row discipline (lesson #124): the fallible `parse_koinly_decimal` +
+Per-row discipline: the fallible `parse_koinly_decimal` +
 `_resolve_proceeds` run BEFORE `bucket.popleft()`, and the resolver RAISES an
 exception the per-row boundary catches rather than returning a sentinel used
 unconditionally. On success, `dataclasses.replace(...)` mutates the entry,
@@ -1514,7 +1513,7 @@ Required-key invariants enforced by `_load_payment_proceeds_config_from_path`:
   WARNING naming the offending tickers but the config is still loaded
   (proceeds inference may mis-route stablecoins whose peg is unset).
 
-### Loader degrades, never raises (lesson #105)
+### Loader degrades, never raises
 
 `_load_payment_proceeds_config_from_path()` routes the secure-load guards
 (symlink rejection, 1 MiB size limit via `_MAX_TOKEN_FILE_SIZE`) through the
@@ -1524,8 +1523,7 @@ DEGRADE never raise. A corrupt token file must never abort report generation.
 On ANY failure mode (missing, symlink, oversize, malformed JSON, missing keys,
 drift) the policy callback logs a WARNING naming the path and the specific
 failure, then returns the defaults: empty stablecoin set, empty peg map, the
-canonical payment tag pair `["payment", "card payment"]`. This is the deliberate
-recalibration called for by lesson #105: reuse the guards but weigh the cost
+canonical payment tag pair `["payment", "card payment"]`. This is a deliberate recalibration: reuse the guards but weigh the cost
 of silent failure at the new call site (a missing peg map means EUR-par and
 peg-rate tiers never fire - visible as unchanged zero-proceeds rows with the
 DP-013 flag, not a crashed run).

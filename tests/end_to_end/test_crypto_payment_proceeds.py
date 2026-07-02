@@ -1,7 +1,7 @@
 """End-to-end data-trace verification for the DP-014 payment-proceeds correction.
 
-Verifies (per docs/history/plans/2026-06-18-crypto-payment-proceeds.md Task 6 and
-development_lessons.md #72, #73) that the committed synthetic example case in
+Verifies (per docs/history/plans/2026-06-18-crypto-payment-proceeds.md Task 6)
+that the committed synthetic example case in
 ``resources/source/example/koinly2025_payment/`` - a Koinly Payment disposal of
 an EUR-pegged stablecoin (EUROC) whose CG ``Proceeds (EUR) == 0`` because Koinly's
 price DB had no match for the imported ticker - no longer carries a phantom
@@ -156,7 +156,7 @@ class TestPaymentProceedsE2E:
     def test_no_correction_when_flag_off_preserves_phantom_loss(self) -> None:
         """Flag off preserves today's behavior: the phantom full-cost loss survives.
 
-        Backward-compat (lesson #84): with ``infer_payment_proceeds=False``, the
+        Backward-compat: with ``infer_payment_proceeds=False``, the
         correction block is skipped entirely, so the zero-proceeds Payment CG row
         keeps proceeds==0 and gain==-cost exactly as today. This is the structural
         negative-control for the positive test above.

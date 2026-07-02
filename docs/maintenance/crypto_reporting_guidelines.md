@@ -136,7 +136,7 @@ The Other Gains Report (OGR) provides authoritative DIRECTION for crypto disposa
 - Multiple lots for the same disposal each get OGR validation attached; aggregation combines them
 - Excel conditional formatting priority: RED (direction conflict) > YELLOW (magnitude diff) > entry-level review flags
 
-**See also:** Lesson #78 in development_lessons.md, plan `docs/history/plans/2026-06-10-ogr-validation-design.md`
+**See also:** the "OGR Directional Authority vs Wholesale Replacement" lesson, plan `docs/history/plans/2026-06-10-ogr-validation-design.md`
 
 ## Derivatives P&L Tab (art. 10(1)(e))
 

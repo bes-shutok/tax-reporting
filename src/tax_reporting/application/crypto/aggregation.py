@@ -380,7 +380,7 @@ def aggregate_derivatives_entries(
         # Merge notes across group members with the same pattern as _aggregate_capital_entries
         # (aggregation.py:283-287): join unique non-empty notes with "; ". Mirrors the
         # established codebase pattern so non-first members' notes survive aggregation
-        # instead of being silently dropped (development_lessons.md #77, review r1 Medium 2).
+        # instead of being silently dropped.
         merged_notes = "; ".join(dict.fromkeys(e.notes for e in group if e.notes)) or ""
         # annex_hint/operation_code are taken from `first` below. Before this branch
         # they were group-constants (every row carried G/Q13 + G51); Feature A's
@@ -388,7 +388,7 @@ def aggregate_derivatives_entries(
         # group would silently drop non-first members' routes. Safe today because
         # operator_country is resolved deterministically per platform and platform is
         # part of the group key, but surface heterogeneity at warning+ so the latent
-        # gap is observable if that invariant ever changes (#118 / #185 shape).
+        # gap is observable if that invariant ever changes.
         routes = {(e.annex_hint, e.operation_code) for e in group}
         if len(routes) > 1:
             logger.warning(

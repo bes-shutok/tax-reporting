@@ -72,7 +72,7 @@ Reconciliation (the increase is phased, so FY2025 gets 50% of the step-up):
 Conclusion: for **FY2025 the operative cap is the folheto's note 8 (700 / 1 000 / sliding
 700 + 300 x (30 000 - RC)/21 941, RC = colectavel / 2 joint)**. The consolidated CIRS main
 text's 800 / 1 100 are the 2027 full-target figures and must NOT be used for IRS 2025.
-This is exactly the project-guidelines #3 hazard (consolidated code text vs the redacao in
+This is exactly the project-guidelines #2 hazard (consolidated code text vs the redacao in
 force for the fiscal year, including transitional norms).
 
 Later amendment (not relevant to FY2025): DL 97/2026, de 20 de maio, added art. 78.º-E
@@ -129,4 +129,4 @@ This corrects an earlier "~30 days" note (which conflated the prazo with the
 IRS-automático substituição window). A secondary LLM-search summary had also returned a
 wrong article ("art. 130"); primary-source PDF verification settled it - exactly the
 reason the consolidated codes were mirrored for offline cross-reference
-(development_lessons.md #188).
+(development_lessons.md #37).

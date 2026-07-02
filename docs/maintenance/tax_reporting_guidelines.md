@@ -65,12 +65,12 @@ The generated workbook contains the following sections. Detail lives here so `AG
 ### Report Structure
 - **Column Headers**: Clear, descriptive headers with line breaks for readability
 - **Currency Conversion**: Automatic conversion using configured exchange rates
-- **Security**: All external data string fields are wrapped with `safe_cell_value()` to prevent Excel formula injection. See `docs/maintenance/development_lessons.md` #7.
+- **Security**: All external data string fields are wrapped with `safe_cell_value()` to prevent Excel formula injection.
 - **Formulas**: Excel formulas for dynamic calculations
 - **Auto-sizing**: Column widths automatically adjusted for content with `MAX_CELL_WIDTH=50` cap and `MIN_DATA_WIDTH=12` floor (see `excel_utils.py`)
-- **Conditional Formatting**: Priority-based fill ordering for validation issues. See `development_lessons.md` #81.
-- **Column Additions**: When adding columns, update all related constants. See `development_lessons.md` #82, #83.
-- **Multi-section Rendering**: When rendering multiple independent sections, avoid early returns in optional-data branches that would skip mandatory sections. Use if/else blocks instead. See `development_lessons.md` #93.
+- **Conditional Formatting**: Priority-based fill ordering for validation issues.
+- **Column Additions**: When adding columns, update all related constants.
+- **Multi-section Rendering**: When rendering multiple independent sections, avoid early returns in optional-data branches that would skip mandatory sections. Use if/else blocks instead.
 
 ### Derivatives P&L Section
 - Per-row derivative realizations (futures, perpetual swaps, options) with operator/counterparty, event count, and net P&L.

@@ -9960,7 +9960,7 @@ class TestDerivativesAggregation:
         Mirrors the capital-entries aggregator (aggregation.py:283-287), which joins
         unique non-empty notes with '; '. Without this, two raw entries in the same
         group carrying different notes would silently lose all but the first row's
-        note (development_lessons.md #77 silent-overwrite hazard; review r1 Medium 2).
+        note (a silent-overwrite hazard).
         """
         entries = [
             DerivativesPnLEntry(
@@ -10055,7 +10055,7 @@ class TestDerivativesAggregation:
         members' routes when the aggregator takes ``first.``. Safe today (platform
         is in the group key and routes are platform-deterministic), but the warning
         makes the latent gap observable. Discriminates against an implementation
-        that takes ``first.`` with no heterogeneity check (#118 / #185 shape).
+        that takes ``first.`` with no heterogeneity check.
         """
         entries = [
             DerivativesPnLEntry(
@@ -10805,7 +10805,7 @@ class _EmptyIbData:
 
 @pytest.mark.unit
 def test_payment_proceeds_flag_off_preserves_today_behavior(tmp_path):
-    """Flag off (lesson #84): Payment row passes through unchanged."""
+    """Flag off: Payment row passes through unchanged."""
     koinly_dir = tmp_path / "koinly2025"
     koinly_dir.mkdir()
     _write_payment_fixture(
@@ -11198,7 +11198,7 @@ def test_load_koinly_crypto_report_applies_fee_filter(tmp_path):
 
 @pytest.mark.unit
 def test_load_koinly_crypto_report_skips_fee_filter_when_disabled(tmp_path):
-    """Flag off: the fee CG lot is unchanged (no-op, lesson #84)."""
+    """Flag off: the fee CG lot is unchanged (no-op)."""
     koinly_dir = tmp_path / "koinly2025"
     koinly_dir.mkdir()
     tx_hash = "0xaabbcc"
@@ -11651,7 +11651,7 @@ class TestDerivativesRouting:
         assert operation_code == "G30"
 
     def test_resident_route_country_agnostic_de(self):
-        """Country-agnostic resident case (lesson #133): DE taxpayer + DE operator -> resident codes.
+        """Country-agnostic resident case: DE taxpayer + DE operator -> resident codes.
 
         Proves residency is ``operator_country == country``, defeating both a PT literal and a
         ``{PT, DE}`` allow-list regression. Flag on + same-country operator -> ``("G/Q13", "G51")``.
@@ -11664,7 +11664,7 @@ class TestDerivativesRouting:
         assert operation_code == "G51"
 
     def test_resident_route_country_agnostic_fr(self):
-        """Second country-agnostic resident case (lesson #133): FR taxpayer + FR operator -> resident codes.
+        """Second country-agnostic resident case: FR taxpayer + FR operator -> resident codes.
 
         A second independent country closes the allow-list hole that a single DE case cannot.
         Flag on + same-country operator -> ``("G/Q13", "G51")``.
@@ -11804,7 +11804,7 @@ class TestIncomeCode:
         ``classify_rewards_with_income_codes=True`` the result must carry
         ``income_code == "E25"``; under ``classify_rewards_with_income_codes=False``
         the SAME reward must yield ``income_code == ""``. The dual assertion is the
-        discriminator (lesson #125): a single-arm test cannot catch a country-literal
+        discriminator: a single-arm test cannot catch a country-literal
         revert that re-introduces PT-gating.
         """
         from tax_reporting.application.crypto_reporting import ZERO, CryptoRewardIncomeEntry

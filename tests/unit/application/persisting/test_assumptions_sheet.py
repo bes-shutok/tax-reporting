@@ -743,7 +743,7 @@ class TestMethodologyAssumptionsSection:
     def test_methodology_includes_derivatives_legal_basis(self):
         """Methodology must cite art. 10(1)(e) for the Derivatives P&L tab and art. 10(1)(k) for the Crypto Gains tab.
 
-        Structural identification (#96): scan rendered cells for the citation
+        Structural identification: scan rendered cells for the citation
         strings rather than asserting on absolute row positions.
         """
         wb = openpyxl.Workbook()

@@ -1,7 +1,7 @@
 """End-to-end data-trace verification for the ByBit derivatives separation pipeline.
 
-Verifies (per docs/history/plans/2026-06-13-derivatives-separation.md Task 11 and
-development_lessons.md #72, #73) that the committed synthetic Koinly 2025 example
+Verifies (per docs/history/plans/2026-06-13-derivatives-separation.md Task 11)
+that the committed synthetic Koinly 2025 example
 fixture in ``resources/source/example/koinly2025/`` produces the expected split
 between Crypto Gains (spot fee disposal lots) and Derivatives P&L
 (art. 10(1)(e) realizations), and that disabling
@@ -980,7 +980,7 @@ class TestDerivativesE2E:
     operator_country for every derivatives row using the production
     ``resolve_operator_origin`` wiring (Task 2). These tests are structural
     (column population, country-code validity) so they survive fixture platform
-    changes per development_lessons.md #96.
+    changes.
     """
 
     _DERIVATIVES_SHEET_NAME = "Derivatives P&L"
@@ -991,8 +991,8 @@ class TestDerivativesE2E:
         """The Derivatives P&L sheet has 12 populated header cells in row 3.
 
         Renders the production sheet from the synthetic koinly2025 report and
-        counts populated header cells in row 3 (column population per
-        development_lessons.md #96, not hardcoded value exclusions). The
+        counts populated header cells in row 3 (column population, not
+        hardcoded value exclusions). The
         last populated header cell must sit at column 12 and read "Código".
         Annex (col 11) and Código (col 12) are written per row from each
         entry's annex_hint/operation_code.
