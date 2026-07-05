@@ -429,3 +429,54 @@ documented in `docs/maintenance/crypto_implementation_guidelines.md` "Transactio
 Filtering (DP-015)". Distinct from DP-006 (transfer fees are folded into the transferred
 asset's cost basis via a Koinly setting; DP-015 filters a realized standalone-fee disposal
 via a tool-side guard).
+
+**PT-C-037** `[IMPLEMENTATION DECISION | 2026-07-04]`
+OGR spot P&L is applied at the **disposal-event level**, not per lot. CG lots are
+grouped into events by the same `(date, asset, wallet)` key the OGR `spot_index`
+uses; the agree-vs-conflict direction decision is taken ONCE on the SIGN of
+event totals (`cg_event_gain` vs `ogr_event_gain`). The `> 1 EUR` significance
+gate is review-only (it controls the per-lot/per-event review flag), NOT part of
+the branch decision - a direction conflict is always resolved with OGR authority
+even when one side is below the noise floor. The result is distributed across
+the event's lots via **first-lot-absorbs**:
+- **Agree branch** (CG and OGR same sign): the FIRST lot (input order) receives
+  `gain_loss_eur = ogr_event_gain` and `proceeds_eur = first_lot.cost_eur +
+  ogr_event_gain`; the remaining lots receive `gain_loss_eur = 0` and
+  `proceeds_eur = lot.cost_eur`. `sum(gain_loss_eur) == ogr_event_gain` and
+  `sum(proceeds_eur) == event_cost + ogr_event_gain` byte-exactly (no
+  cost-share division, no rounding). This fixes the legacy `N x` over-count,
+  where the per-lot override wrote the FULL `ogr_gain_loss` to EVERY lot and
+  aggregation summed to `|lots| x ogr_event_gain`.
+- **Conflict branch** (opposite signs): UNCHANGED from legacy - each lot keeps
+  `±abs(lot.gain_loss_eur)` with the OGR sign. The lots sum to
+  `±sum(abs(lot.gain_loss_eur))`, which equals `±abs(cg_event_gain)` ONLY when
+  every lot shares the event's CG sign; a mixed-sign event sums absolute
+  magnitudes (matching the legacy per-lot write, unchanged here, so not a
+  Phase 1 regression).
+- **Single-lot events** (both branches) reduce exactly to the legacy output.
+
+**Event identity caveat.** The `(date, asset, wallet)` key is a collapse, not a
+no-collision proof: two genuinely distinct same-day spot disposals sharing it
+pool into one event under both legacy and Phase 1 (Phase 1 additionally
+concentrates the OGR gain on the pooled first lot). This is a pre-existing
+ambiguity owned by the deferred Transaction view; see the plan's Monitor
+section. Current FY data has 0 OGR matches, so the pooling is unobservable today.
+
+**Cross-holding-period taxable-split shift (agree branch, multi-lot events).**
+A multi-lot event whose lots span short and long holding periods is split
+across two aggregation groups (aggregation keys on `holding_period`). Legacy
+over-counted EACH group (`|group| x ogr_event_gain`); first-lot-absorbs places
+the whole `ogr_event_gain` on lot 0, so the short-vs-long taxable split
+(PT-C-011: short-term taxable, long-term exempt) shifts to wherever lot 0
+lands. This is a deliberate, documented delta from legacy's per-group
+over-count, asserted in tests - NOT a reduction-to-legacy claim.
+
+This is a surgical event-level patch; it introduces no new decision-point flag
+and no new `TaxJurisdictionConfig` field (no `decision_points/` edit). The
+full TH-anchored Transaction view (TxHash / minute-precision identity, raw-row
+threading) remains deferred.
+
+> Source: RFC feature-note `docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md`;
+> implementation plan `docs/history/plans/2026-07-04-ogr-event-level-application.md`.
+> Cross-reference: PT-C-035 (OGR as authoritative realization source), PT-C-030
+> (review-flag specificity), PT-C-011 (short-vs-long holding-period taxable split).

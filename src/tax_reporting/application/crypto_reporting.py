@@ -64,9 +64,8 @@ from .crypto.fifo_helpers import (
     _rebuild_fifo_for_loan_affected_assets,
 )
 from .crypto.loan_activity import _extract_loan_activity
+from .crypto.ogr_event_level import apply_ogr_event_level
 from .crypto.ogr_handler import (
-    _apply_ogr_direction_override,
-    _apply_ogr_overrides,  # noqa: F401
     _build_ogr_index,  # noqa: F401
     _split_ogr_index,
     _validate_capital_entries_have_valid_countries,
@@ -285,7 +284,7 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
     # key-based snapshot would also restore a genuine non-zero OGR-overridden
     # derivatives disposal that merely SHARES a (date, asset, wallet) key with a
     # zero-proceeds Payment, silently destroying a legitimate OGR-derived gain.
-    # _apply_ogr_direction_override rebuilds its result 1:1 in input order, so the
+    # apply_ogr_event_level rebuilds its result 1:1 in input order, so the
     # i-th post-OGR entry corresponds to the i-th pre-OGR entry. The snapshot+restore
     # runs only when the payment-proceeds flag is on (the residual only matters then).
     zero_proceeds_indices: set[int] = set()
@@ -310,7 +309,7 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
                     "Applying OGR directional authority: %d entries in spot_index",
                     len(spot_index),
                 )
-            capital_entries = _apply_ogr_direction_override(
+            capital_entries = apply_ogr_event_level(
                 capital_entries, spot_index, jurisdiction
             )
 

@@ -527,6 +527,46 @@ def test_normalize_preserves_other_platforms():
     assert _normalize_platform_name("ByBit Earn (2)") == "ByBit Earn (2)"
 ```
 
+### Pitfall 5: OGR `calculated_gain_loss` and `ogr_gain_loss` field contracts
+
+`OgrValidationResult` per-lot field semantics are load-bearing for aggregated
+review-flag derivation. After the event-level OGR override (`apply_ogr_event_level`,
+PT-C-037), each lot in an OGR-matched event MUST carry:
+
+- `calculated_gain_loss` == that lot's **PRE-distribution** CG gain (the value
+  the lot had BEFORE the override wrote `ogr_event_gain` onto lot 0 / zero on
+  the rest);
+- `ogr_gain_loss` == the **FULL** `ogr_event_gain` on EVERY lot of the event
+  (not just lot 0).
+
+```python
+# ❌ WRONG - copying the legacy entry.gain_loss_eur pattern AFTER distribution
+# silently suppresses every aggregated multi-lot flag.
+ogr_validation = OgrValidationResult(
+    calculated_gain_loss=entry.gain_loss_eur,  # already distributed! lot 0 == full, rest == 0
+    ogr_gain_loss=entry.gain_loss_eur,         # distributed too; not the full event value
+)
+
+# ✅ CORRECT - capture PRE-distribution CG and the full event value on every lot
+ogr_validation = OgrValidationResult(
+    calculated_gain_loss=pre_distribution_gain_loss_eur,  # lot's CG before the override
+    ogr_gain_loss=ogr_event_gain,                         # full event value, every lot
+)
+```
+
+**Why it matters.** `_aggregate_ogr_validation` (in `aggregation.py`) SUMS
+`calculated_gain_loss` across the event's lots to re-derive `cg_event_gain`,
+and reads `ogr_gain_loss` from the FIRST lot to recover `ogr_event_gain`; it
+then re-decides agree-vs-conflict direction and recomputes `magnitude_diff_percent`
+against those reconstructed totals. If `calculated_gain_loss` carries
+post-distribution values, the sum no longer reconstructs `cg_event_gain` (lot 0
+holds the full OGR value, the rest hold 0); if `ogr_gain_loss` is per-lot
+instead of the full event value, the first-lot read sees a partial magnitude.
+Either corruption silently suppresses every aggregated multi-lot review flag -
+the run exits 0 and the wrong filing is produced. This is a Family-G
+(data-loss observability) failure: exit 0, data missing. Cross-reference:
+PT-C-037, Design Invariant 3 (per-lot `OgrValidationResult` contract).
+
 ## Pre-Implementation Checklist
 
 Before implementing new crypto features, verify the plan has:

@@ -24,8 +24,6 @@ from tax_reporting.application.crypto_reporting import (
     CryptoSkippedZeroValueToken,
     OperatorOrigin,
     RewardTaxClassification,
-    _apply_ogr_direction_override,
-    _apply_ogr_overrides,
     _build_ogr_index,
     _classify_reward_tax_status,
     _collect_known_asset_tickers,
@@ -36,6 +34,7 @@ from tax_reporting.application.crypto_reporting import (
     _parse_income_file,
     _parse_transaction_date,
     _validate_capital_entries_have_valid_countries,
+    apply_ogr_event_level,
     load_koinly_crypto_report,
     resolve_operator_origin,
 )
@@ -8054,280 +8053,6 @@ def test_ogr_index_skips_unknown_types():
     assert ("2025-01-14", "BTC", "Kraken") in index
 
 
-# =============================================================================
-# Unit tests for _apply_ogr_overrides()
-# =============================================================================
-
-
-def test_ogr_loss_override_applied():
-    """CG entry with gain=+22.71 EUR and OGR index Type="Loss", value=-138.73 EUR.
-
-    Expects entry gain/loss set to -138.73 EUR.
-    """
-    from tax_reporting.infrastructure.config import TaxJurisdictionConfig
-
-    # Create a jurisdiction with use_other_gains_report enabled
-    jurisdiction = TaxJurisdictionConfig(
-        country="TEST",
-        fiscal_year=2025,
-        exclude_loan_repayment_gains=False,
-        zero_basis_review_threshold=Decimal("500"),
-        use_other_gains_report=True,
-    )
-
-    # Create OGR index with a loss entry
-    ogr_index = {
-        ("2025-01-13", "USDT", "ByBit"): Decimal("-138.73")
-    }
-
-    # Create CG entry that should be overridden
-    cg_entry = CryptoCapitalGainEntry(
-        disposal_date="2025-01-13",
-        acquisition_date="2025-01-10",
-        asset="USDT",
-        amount=Decimal("142.11"),
-        cost_eur=Decimal("165.44"),
-        proceeds_eur=Decimal("188.15"),
-        gain_loss_eur=Decimal("22.71"),  # Original gain from Koinly CG
-        holding_period="Short-term (365 days)",
-        wallet="ByBit",
-        platform="ByBit",
-        chain="Ethereum",
-        operator_origin=OperatorOrigin(
-            platform="ByBit",
-            service_scope="crypto",
-            operator_entity="Bybit group entity",
-            operator_country="AE",
-            source_url="https://bybit.com",
-            source_checked_on="2026-01-01",
-            confidence="medium",
-            review_required=False,
-        ),
-        annex_hint="J",
-        review_required=False,
-        notes="Original gain from Koinly",
-    )
-
-    # Apply OGR override
-    result = _apply_ogr_overrides([cg_entry], ogr_index, jurisdiction)
-
-    # Expected: gain/loss should be overridden to -138.73 (loss from OGR)
-    assert len(result) == 1
-    assert result[0].gain_loss_eur == Decimal("-138.73")
-    # Proceeds should be updated to maintain consistency: proceeds = cost + gain_loss
-    # So proceeds = 165.44 + (-138.73) = 26.71
-    expected_proceeds = cg_entry.cost_eur + Decimal("-138.73")
-    assert result[0].proceeds_eur == expected_proceeds
-    # Notes should mention OGR override
-    assert "OGR override" in result[0].notes or "Other Gains Report" in result[0].notes
-
-
-def test_ogr_profit_override_applied():
-    """Given CG entry with gain=+100 EUR and OGR index with Type="Profit", value=+80 EUR, expects entry gain/loss set to
-    +80 EUR.
-    """
-    from tax_reporting.infrastructure.config import TaxJurisdictionConfig
-
-    jurisdiction = TaxJurisdictionConfig(
-        country="TEST",
-        fiscal_year=2025,
-        exclude_loan_repayment_gains=False,
-        zero_basis_review_threshold=Decimal("500"),
-        use_other_gains_report=True,
-    )
-
-    ogr_index = {
-        ("2025-01-15", "ETH", "Kraken"): Decimal("80")
-    }
-
-    cg_entry = CryptoCapitalGainEntry(
-        disposal_date="2025-01-15",
-        acquisition_date="2025-01-01",
-        asset="ETH",
-        amount=Decimal("1.0"),
-        cost_eur=Decimal("400"),
-        proceeds_eur=Decimal("500"),
-        gain_loss_eur=Decimal("100"),  # Original gain
-        holding_period="Short-term (14 days)",
-        wallet="Kraken",
-        platform="Kraken",
-        chain="Ethereum",
-        operator_origin=OperatorOrigin(
-            platform="Kraken",
-            service_scope="crypto",
-            operator_entity="Payward Ireland Limited",
-            operator_country="IE",
-            source_url="https://kraken.com",
-            source_checked_on="2026-01-01",
-            confidence="high",
-            review_required=False,
-        ),
-        annex_hint="J",
-        review_required=False,
-        notes="",
-    )
-
-    result = _apply_ogr_overrides([cg_entry], ogr_index, jurisdiction)
-
-    assert len(result) == 1
-    assert result[0].gain_loss_eur == Decimal("80")
-    expected_proceeds = cg_entry.cost_eur + Decimal("80")
-    assert result[0].proceeds_eur == expected_proceeds
-
-
-def test_ogr_no_override_when_disabled():
-    """Given jurisdiction with use_other_gains_report=False, expects CG values unchanged regardless of OGR."""
-    from tax_reporting.infrastructure.config import TaxJurisdictionConfig
-
-    jurisdiction = TaxJurisdictionConfig(
-        country="TEST",
-        fiscal_year=2025,
-        exclude_loan_repayment_gains=False,
-        zero_basis_review_threshold=Decimal("500"),
-        use_other_gains_report=False,  # Disabled
-    )
-
-    ogr_index = {
-        ("2025-01-13", "USDT", "ByBit"): Decimal("-138.73")
-    }
-
-    cg_entry = CryptoCapitalGainEntry(
-        disposal_date="2025-01-13",
-        acquisition_date="2025-01-10",
-        asset="USDT",
-        amount=Decimal("142.11"),
-        cost_eur=Decimal("165.44"),
-        proceeds_eur=Decimal("188.15"),
-        gain_loss_eur=Decimal("22.71"),
-        holding_period="Short-term (365 days)",
-        wallet="ByBit",
-        platform="ByBit",
-        chain="Ethereum",
-        operator_origin=OperatorOrigin(
-            platform="ByBit",
-            service_scope="crypto",
-            operator_entity="Bybit group entity",
-            operator_country="AE",
-            source_url="https://bybit.com",
-            source_checked_on="2026-01-01",
-            confidence="medium",
-            review_required=False,
-        ),
-        annex_hint="J",
-        review_required=False,
-        notes="",
-    )
-
-    result = _apply_ogr_overrides([cg_entry], ogr_index, jurisdiction)
-
-    # No override should occur
-    assert len(result) == 1
-    assert result[0].gain_loss_eur == Decimal("22.71")
-    assert result[0].proceeds_eur == Decimal("188.15")
-
-
-def test_ogr_no_override_when_no_match():
-    """Given CG entry with no OGR match, expects CG value unchanged with warning log."""
-    from tax_reporting.infrastructure.config import TaxJurisdictionConfig
-
-    jurisdiction = TaxJurisdictionConfig(
-        country="TEST",
-        fiscal_year=2025,
-        exclude_loan_repayment_gains=False,
-        zero_basis_review_threshold=Decimal("500"),
-        use_other_gains_report=True,
-    )
-
-    # OGR index has different date/asset/wallet - no match
-    ogr_index = {
-        ("2025-01-14", "BTC", "Kraken"): Decimal("100")
-    }
-
-    cg_entry = CryptoCapitalGainEntry(
-        disposal_date="2025-01-13",
-        acquisition_date="2025-01-10",
-        asset="USDT",
-        amount=Decimal("142.11"),
-        cost_eur=Decimal("165.44"),
-        proceeds_eur=Decimal("188.15"),
-        gain_loss_eur=Decimal("22.71"),
-        holding_period="Short-term (365 days)",
-        wallet="ByBit",
-        platform="ByBit",
-        chain="Ethereum",
-        operator_origin=OperatorOrigin(
-            platform="ByBit",
-            service_scope="crypto",
-            operator_entity="Bybit group entity",
-            operator_country="AE",
-            source_url="https://bybit.com",
-            source_checked_on="2026-01-01",
-            confidence="medium",
-            review_required=False,
-        ),
-        annex_hint="J",
-        review_required=False,
-        notes="",
-    )
-
-    result = _apply_ogr_overrides([cg_entry], ogr_index, jurisdiction)
-
-    # No override - original values preserved
-    assert len(result) == 1
-    assert result[0].gain_loss_eur == Decimal("22.71")
-    assert result[0].proceeds_eur == Decimal("188.15")
-
-
-def test_ogr_skips_fee_tokens():
-    """Given OGR entry with Value=0.0, expects override not applied (fee tokens are not capital gains)."""
-    from tax_reporting.infrastructure.config import TaxJurisdictionConfig
-
-    jurisdiction = TaxJurisdictionConfig(
-        country="TEST",
-        fiscal_year=2025,
-        exclude_loan_repayment_gains=False,
-        zero_basis_review_threshold=Decimal("500"),
-        use_other_gains_report=True,
-    )
-
-    # OGR index should NOT contain zero-value entries (they're filtered by _build_ogr_index)
-    # This test verifies that zero-value OGR rows don't cause issues
-    ogr_index = {}  # Empty because zero-value rows are skipped
-
-    cg_entry = CryptoCapitalGainEntry(
-        disposal_date="2025-01-13",
-        acquisition_date="2025-01-10",
-        asset="USDT",
-        amount=Decimal("142.11"),
-        cost_eur=Decimal("165.44"),
-        proceeds_eur=Decimal("188.15"),
-        gain_loss_eur=Decimal("22.71"),
-        holding_period="Short-term (365 days)",
-        wallet="ByBit",
-        platform="ByBit",
-        chain="Ethereum",
-        operator_origin=OperatorOrigin(
-            platform="ByBit",
-            service_scope="crypto",
-            operator_entity="Bybit group entity",
-            operator_country="AE",
-            source_url="https://bybit.com",
-            source_checked_on="2026-01-01",
-            confidence="medium",
-            review_required=False,
-        ),
-        annex_hint="J",
-        review_required=False,
-        notes="",
-    )
-
-    result = _apply_ogr_overrides([cg_entry], ogr_index, jurisdiction)
-
-    # No override - original values preserved
-    assert len(result) == 1
-    assert result[0].gain_loss_eur == Decimal("22.71")
-
-
 class TestOgrValidation:
     """Test OGR validation result domain type."""
 
@@ -8513,7 +8238,7 @@ class TestApplyOgrDirectionOverride:
             notes="",
         )
 
-        result = _apply_ogr_direction_override([cg_entry], ogr_index, jurisdiction)
+        result = apply_ogr_event_level([cg_entry], ogr_index, jurisdiction)
 
         assert len(result) == 1
         # Direction override: use OGR direction (loss) with CG magnitude (100)
@@ -8573,7 +8298,7 @@ class TestApplyOgrDirectionOverride:
             notes="",
         )
 
-        result = _apply_ogr_direction_override([cg_entry], ogr_index, jurisdiction)
+        result = apply_ogr_event_level([cg_entry], ogr_index, jurisdiction)
 
         assert len(result) == 1
         # Directions agree (both loss), use OGR magnitude
@@ -8633,7 +8358,7 @@ class TestApplyOgrDirectionOverride:
             notes="",
         )
 
-        result = _apply_ogr_direction_override([cg_entry], ogr_index, jurisdiction)
+        result = apply_ogr_event_level([cg_entry], ogr_index, jurisdiction)
 
         assert len(result) == 1
         assert result[0].gain_loss_eur == Decimal("-106")
@@ -8690,7 +8415,7 @@ Given CG entry with gain=-100 and no OGR match, expects final_gain_loss=-100 (un
             notes="",
         )
 
-        result = _apply_ogr_direction_override([cg_entry], ogr_index, jurisdiction)
+        result = apply_ogr_event_level([cg_entry], ogr_index, jurisdiction)
 
         assert len(result) == 1
         # No change when no OGR match
@@ -8744,7 +8469,7 @@ Given CG entry with gain=-100 and no OGR match, expects final_gain_loss=-100 (un
             notes="",
         )
 
-        result = _apply_ogr_direction_override([cg_entry], ogr_index, jurisdiction)
+        result = apply_ogr_event_level([cg_entry], ogr_index, jurisdiction)
 
         assert len(result) == 1
         # Direction conflict should be detected
@@ -8810,7 +8535,7 @@ Given CG entry with gain=-100 and no OGR match, expects final_gain_loss=-100 (un
             lots.append(lot)
 
         # Apply OGR direction override (before aggregation)
-        result = _apply_ogr_direction_override(lots, ogr_index, jurisdiction)
+        result = apply_ogr_event_level(lots, ogr_index, jurisdiction)
 
         assert len(result) == 109
 
@@ -8879,7 +8604,7 @@ class TestOgrDisabledBackwardCompatibility:
             notes="",
         )
 
-        result = _apply_ogr_direction_override([cg_entry], ogr_index, jurisdiction)
+        result = apply_ogr_event_level([cg_entry], ogr_index, jurisdiction)
 
         assert len(result) == 1
         # Entry should have no OGR validation attached
@@ -8964,7 +8689,7 @@ class TestOgrDisabledBackwardCompatibility:
             ),
         ]
 
-        result = _apply_ogr_direction_override(entries, ogr_index, jurisdiction)
+        result = apply_ogr_event_level(entries, ogr_index, jurisdiction)
 
         assert len(result) == 2
         for entry in result:
@@ -9651,15 +9376,15 @@ class TestOgrSplit:
 class TestApplyOgrDirectionOverrideSpotProtection:
     """TDD for spot CG protection under separate_derivatives_reporting=True.
 
-    These tests exercise _split_ogr_index + _apply_ogr_direction_override together
+    These tests exercise _split_ogr_index + apply_ogr_event_level together
     to confirm that derivatives rows routed to derivatives_entries never reach the
     spot CG direction override, so spot fee disposal signs are preserved.
     """
 
     def test_spot_signs_not_flipped_by_derivatives(self):
         """Given Case 2 fixture (derivatives loss routed separately), expects spot CG signs preserved."""
+        from tax_reporting.application.crypto.ogr_event_level import apply_ogr_event_level
         from tax_reporting.application.crypto.ogr_handler import (
-            _apply_ogr_direction_override,
             _split_ogr_index,
         )
 
@@ -9696,7 +9421,7 @@ class TestApplyOgrDirectionOverrideSpotProtection:
         assert derivatives_entries == []
         assert spot_index == {("2025-01-13", "USDT", "ByBit"): Decimal("-3.00")}
 
-        result = _apply_ogr_direction_override(capital_entries, spot_index, jurisdiction)
+        result = apply_ogr_event_level(capital_entries, spot_index, jurisdiction)
 
         # Each CG lot retains its positive gain (spot signs preserved). The
         # spot_index loss is applied as direction override here, but the spot fee
@@ -9722,8 +9447,8 @@ class TestApplyOgrDirectionOverrideSpotProtection:
 
     def test_derivatives_profit_not_applied_to_spot_fee_entry(self):
         """Given Case 1 fixture (one CG fee entry + 140.18 EUR Profit), expects CG fee gain retained."""
+        from tax_reporting.application.crypto.ogr_event_level import apply_ogr_event_level
         from tax_reporting.application.crypto.ogr_handler import (
-            _apply_ogr_direction_override,
             _split_ogr_index,
         )
 
@@ -9759,7 +9484,7 @@ class TestApplyOgrDirectionOverrideSpotProtection:
         assert spot_index == {}
 
         # No spot_index entry to override, so the CG fee entry retains its original gain
-        result = _apply_ogr_direction_override(capital_entries, spot_index, jurisdiction)
+        result = apply_ogr_event_level(capital_entries, spot_index, jurisdiction)
 
         assert len(result) == 1
         assert result[0].gain_loss_eur == Decimal("2.44")
@@ -10853,7 +10578,7 @@ def test_payment_proceeds_ogr_rezero_restores_zero_before_correction(tmp_path):
 
     An OGR Loss row with near-zero magnitude on the SAME (date, asset, wallet) as a
     proceeds==0 Payment whose TH Net Value > 0. The classifier classifies Spot, so
-    _apply_ogr_direction_override mutates the Payment's proceeds. The re-zero snapshot
+    _apply_ogr_event_level mutates the Payment's proceeds. The re-zero snapshot
     must restore the zero so correction's proceeds==0 gate fires and repairs it.
     """
     koinly_dir = tmp_path / "koinly2025"
@@ -10915,7 +10640,12 @@ def test_payment_proceeds_rezero_index_based_not_key_based(tmp_path):
             _cg_row(**_PHANTOM_USDT_BYBIT),
         ],
         th_rows=[_th_payment_row(amount="50,00000000", currency="USDT", net_value_eur='"120,00"')],
-        ogr_rows=[_ogr_row("13/01/2025 13:01", "USDT", "-0,01", "0,01", "Loss", "ByBit (2)")],
+        # Phase 1 event-level: OGR value is material (>= 1 EUR) so the legitimate
+        # Long-term lot - which under event-level pooling absorbs the full OGR event
+        # value as the first lot of the pooled (date, asset, wallet) event - survives
+        # the materiality filter. Under legacy the legitimate lot was overridden
+        # independently to -abs(50); under Phase 1 it gets the full OGR event value.
+        ogr_rows=[_ogr_row("13/01/2025 13:01", "USDT", "-5,00", "5,00", "Loss", "ByBit (2)")],
     )
 
     report = load_koinly_crypto_report(
@@ -11952,4 +11682,820 @@ class TestIncomeCode:
         assert aggregated[0].income_code == "", (
             f"Classification-off production path must blank income_code, got {aggregated[0].income_code!r}"
         )
+
+
+# =============================================================================
+# Phase 1: OGR event-level application (agree-branch first-lot-absorbs fix).
+# See docs/history/plans/2026-07-04-ogr-event-level-application.md Task 1.
+# =============================================================================
+
+
+def _make_event_level_entry(  # noqa: PLR0913
+    *,
+    disposal_date: str = "2025-02-01",
+    asset: str = "USDT",
+    wallet: str = "ByBit",
+    acquisition_date: str,
+    cost_eur: Decimal,
+    proceeds_eur: Decimal,
+    gain_loss_eur: Decimal,
+    holding_period: str = "Short-term (3 days)",
+    notes: str = "",
+) -> CryptoCapitalGainEntry:
+    """Build a CryptoCapitalGainEntry for the OGR event-level fixtures."""
+    return CryptoCapitalGainEntry(
+        disposal_date=disposal_date,
+        acquisition_date=acquisition_date,
+        asset=asset,
+        amount=Decimal("1"),
+        cost_eur=cost_eur,
+        proceeds_eur=proceeds_eur,
+        gain_loss_eur=gain_loss_eur,
+        holding_period=holding_period,
+        wallet=wallet,
+        platform=wallet,
+        chain="Ethereum",
+        operator_origin=_TEST_OPERATOR,
+        annex_hint="J",
+        review_required=False,
+        notes=notes,
+    )
+
+
+def _event_level_jurisdiction(*, use_ogr: bool = True):
+    """Build a TaxJurisdictionConfig for the OGR event-level fixtures."""
+    from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+
+    return TaxJurisdictionConfig(
+        country="TEST",
+        fiscal_year=2025,
+        exclude_loan_repayment_gains=False,
+        zero_basis_review_threshold=Decimal("500"),
+        use_other_gains_report=use_ogr,
+    )
+
+
+class TestApplyOgrEventLevel:
+    """Phase 1: OGR P&L applied at the disposal-event level (first-lot-absorbs)."""
+
+    def test_agree_multi_lot_first_lot_absorbs(self):
+        """Agree branch, 3 lots, cg_event_gain +3.00 / OGR +9.00.
+
+        First lot absorbs the full ``ogr_event_gain``; remaining lots get
+        ``gain_loss_eur = 0`` and ``proceeds_eur = lot.cost_eur``. The
+        ``sum(gain_loss_eur)`` must equal ``Decimal("9.00")`` byte-exactly
+        (no division, no rounding).
+        """
+        from tax_reporting.application.crypto.ogr_event_level import apply_ogr_event_level
+
+        lots = [
+            _make_event_level_entry(
+                acquisition_date="2025-01-01",
+                cost_eur=Decimal("10"),
+                proceeds_eur=Decimal("13"),
+                gain_loss_eur=Decimal("1.00"),
+            ),
+            _make_event_level_entry(
+                acquisition_date="2025-01-05",
+                cost_eur=Decimal("30"),
+                proceeds_eur=Decimal("33"),
+                gain_loss_eur=Decimal("1.00"),
+            ),
+            _make_event_level_entry(
+                acquisition_date="2025-01-10",
+                cost_eur=Decimal("60"),
+                proceeds_eur=Decimal("63"),
+                gain_loss_eur=Decimal("1.00"),
+            ),
+        ]
+        spot_index = {("2025-02-01", "USDT", "ByBit"): Decimal("9.00")}
+
+        result = apply_ogr_event_level(lots, spot_index, _event_level_jurisdiction())
+
+        assert len(result) == 3
+        # Phase 1 event-level: first lot absorbs the full OGR event gain.
+        assert result[0].gain_loss_eur == Decimal("9.00")
+        assert result[0].proceeds_eur == result[0].cost_eur + Decimal("9.00")
+        # Remaining lots get zero gain and proceeds == cost.
+        assert result[1].gain_loss_eur == Decimal("0")
+        assert result[1].proceeds_eur == result[1].cost_eur
+        assert result[2].gain_loss_eur == Decimal("0")
+        assert result[2].proceeds_eur == result[2].cost_eur
+        # Byte-exact event total, no rounding.
+        assert sum((r.gain_loss_eur for r in result), start=Decimal("0")) == Decimal("9.00")
+
+    def test_agree_multi_lot_ogr_gain_loss_full_on_every_lot(self):
+        """Per-lot ``ogr_validation.ogr_gain_loss`` carries the FULL event value on every lot.
+
+        ``_aggregate_ogr_validation`` reads ``ogr_gain_loss`` from the first
+        lot (aggregation.py:217-218) and must see the full event value, so
+        every lot carries it. ``calculated_gain_loss`` holds each lot's
+        PRE-distribution CG gain so aggregation reconstructs ``cg_event_gain``.
+        """
+        from tax_reporting.application.crypto.ogr_event_level import apply_ogr_event_level
+
+        lots = [
+            _make_event_level_entry(
+                acquisition_date="2025-01-01",
+                cost_eur=Decimal("10"),
+                proceeds_eur=Decimal("13"),
+                gain_loss_eur=Decimal("1.00"),
+            ),
+            _make_event_level_entry(
+                acquisition_date="2025-01-05",
+                cost_eur=Decimal("30"),
+                proceeds_eur=Decimal("33"),
+                gain_loss_eur=Decimal("2.00"),
+            ),
+            _make_event_level_entry(
+                acquisition_date="2025-01-10",
+                cost_eur=Decimal("60"),
+                proceeds_eur=Decimal("63"),
+                gain_loss_eur=Decimal("0.00"),
+            ),
+        ]
+        spot_index = {("2025-02-01", "USDT", "ByBit"): Decimal("9.00")}
+
+        result = apply_ogr_event_level(lots, spot_index, _event_level_jurisdiction())
+
+        assert len(result) == 3
+        for i, lot in enumerate(result):
+            assert lot.ogr_validation is not None
+            assert lot.ogr_validation.ogr_gain_loss == Decimal("9.00"), (
+                f"lot {i}: ogr_gain_loss must be the FULL event value 9.00"
+            )
+        # calculated_gain_loss holds each lot's PRE-distribution CG gain.
+        assert result[0].ogr_validation.calculated_gain_loss == Decimal("1.00")
+        assert result[1].ogr_validation.calculated_gain_loss == Decimal("2.00")
+        assert result[2].ogr_validation.calculated_gain_loss == Decimal("0.00")
+
+    def test_conflict_multi_lot_byte_identical_to_legacy(self):
+        """Conflict branch, 109 lots (CG +500 / OGR -147.19): byte-identical to legacy.
+
+        Each lot keeps ``gain_loss_eur == -abs(per_lot_gain)`` and
+        ``proceeds_eur == cost - abs(per_lot_gain)``. The conflict branch is
+        UNCHANGED from the legacy per-lot override (Design Invariant 1).
+        """
+        from tax_reporting.application.crypto.ogr_event_level import apply_ogr_event_level
+
+        jurisdiction = _event_level_jurisdiction()
+        spot_index = {("2025-01-13", "USDT", "ByBit"): Decimal("-147.19")}
+
+        lots = []
+        per_lot_gain = Decimal("500") / Decimal("109")
+        per_lot_cost = Decimal("100")
+        per_lot_proceeds = per_lot_cost + per_lot_gain
+        for i in range(109):
+            lots.append(
+                _make_event_level_entry(
+                    disposal_date="2025-01-13",
+                    acquisition_date=f"2025-01-{(i % 10) + 1:02d}",
+                    cost_eur=per_lot_cost,
+                    proceeds_eur=per_lot_proceeds,
+                    gain_loss_eur=per_lot_gain,
+                )
+            )
+
+        result = apply_ogr_event_level(lots, spot_index, jurisdiction)
+
+        assert len(result) == 109
+        for i, lot in enumerate(result):
+            assert lot.gain_loss_eur == -abs(per_lot_gain), (
+                f"lot {i}: conflict branch keeps CG magnitude with OGR sign"
+            )
+            assert lot.proceeds_eur == lot.cost_eur - abs(per_lot_gain)
+            assert lot.ogr_validation is not None
+            assert lot.ogr_validation.ogr_gain_loss == Decimal("-147.19")
+            assert lot.ogr_validation.calculated_gain_loss == per_lot_gain
+
+    def test_conflict_mixed_sign_sums_absolute_magnitudes(self):
+        """Mixed-sign conflict event: the per-lot write sums to ``±sum(abs(lot))``,
+        NOT ``±abs(cg_event_gain)``.
+
+        The identity ``sum(±abs(lot.gain_loss_eur)) == ±abs(cg_event_gain)`` holds
+        only when every lot shares the event's CG sign. For a mixed-sign event
+        (lot A gain +5.00, lot B loss -3.00, so ``cg_event_gain = +2.00``) with an
+        opposite-sign OGR (-5.00), the conflict branch writes ``[-5.00, -3.00]``
+        which sums to ``-8.00`` (= ``-sum(abs(lot))``), not ``-2.00``
+        (= ``-abs(cg_event_gain)``). This matches the legacy per-lot write
+        (unchanged in Phase 1), so it is a documented property, not a regression.
+        The test pins the actual summed behavior so a future porter does not write
+        a ``sum == ±abs(cg_event_gain)`` assertion that fails on mixed-sign events.
+        """
+        from tax_reporting.application.crypto.ogr_event_level import apply_ogr_event_level
+
+        lot_a = _make_event_level_entry(
+            acquisition_date="2025-01-02",
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("105"),
+            gain_loss_eur=Decimal("5.00"),
+        )
+        lot_b = _make_event_level_entry(
+            acquisition_date="2025-01-03",
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("97"),
+            gain_loss_eur=Decimal("-3.00"),
+        )
+        spot_index = {("2025-02-01", "USDT", "ByBit"): Decimal("-5.00")}
+
+        result = apply_ogr_event_level(
+            [lot_a, lot_b], spot_index, _event_level_jurisdiction()
+        )
+
+        # cg_event_gain = +2.00 (gain), OGR = -5.00 (loss) -> conflict branch.
+        assert result[0].gain_loss_eur == Decimal("-5.00")  # -abs(lot_a)
+        assert result[1].gain_loss_eur == Decimal("-3.00")  # -abs(lot_b)
+        # The sum is -8.00 (sum of absolute magnitudes), NOT -abs(cg_event_gain) = -2.00.
+        assert sum((lot.gain_loss_eur for lot in result), start=Decimal("0")) == Decimal("-8.00")
+        # Each lot still carries the FULL event ogr_gain_loss (Design Invariant 3).
+        assert result[0].ogr_validation.ogr_gain_loss == Decimal("-5.00")
+        assert result[1].ogr_validation.ogr_gain_loss == Decimal("-5.00")
+        # calculated_gain_loss holds each lot's PRE-distribution CG gain so
+        # aggregation's _aggregate_ogr_validation reconstructs cg_event_gain
+        # (Design Invariant 3 / Pitfall 5 data-loss guard).
+        assert result[0].ogr_validation.calculated_gain_loss == Decimal("5.00")
+        assert result[1].ogr_validation.calculated_gain_loss == Decimal("-3.00")
+        # Per-lot direction_conflict = (ogr<0) != (lot_cg<0). OGR is negative:
+        # lot_a (CG +5) conflicts; lot_b (CG -3) sign already matches OGR.
+        # This is the unique fixture exercising the lot_b "sign matches OGR"
+        # case, which gates the per-lot review flag via the
+        # ``if not lot_direction_conflict: return False, None`` early return.
+        assert result[0].ogr_validation.direction_conflict is True
+        assert result[1].ogr_validation.direction_conflict is False
+        # Removing the early return would over-flag lot_b; pin review_required=False.
+        assert result[1].ogr_validation.review_required is False
+        assert result[1].ogr_validation.review_reason is None
+
+    def test_conflict_positive_ogr_uses_else_abs_arm(self):
+        """Positive-OGR conflict event exercises the ``else abs(lot.gain_loss_eur)``
+        arm of the production ternary at ``ogr_event_level.py:254-256``.
+
+        Every other conflict fixture uses a negative OGR, so the ``else`` arm
+        (OGR positive, conflict because CG is negative) is never exercised. A
+        sign-flip or sign-collapse regression (e.g. ``-abs(...)`` unconditionally,
+        or ``0`` in the else) would pass every other conflict test and silently
+        turn a real loss into a gain (or zero) on positive-OGR events. The
+        mixed-sign variant asserts per-lot ``+abs(lot.gain_loss_eur)`` summing
+        to ``+sum(abs(lot))`` (NOT ``+abs(cg_event_gain)``) to pin the symmetric
+        behavior of the conflict branch on both OGR signs.
+        """
+        from tax_reporting.application.crypto.ogr_event_level import apply_ogr_event_level
+
+        lot_a = _make_event_level_entry(
+            acquisition_date="2025-01-02",
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("95"),
+            gain_loss_eur=Decimal("-5.00"),
+        )
+        lot_b = _make_event_level_entry(
+            acquisition_date="2025-01-03",
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("103"),
+            gain_loss_eur=Decimal("3.00"),
+        )
+        # cg_event_gain = -2.00 (loss), OGR = +20.00 (gain) -> conflict branch.
+        spot_index = {("2025-02-01", "USDT", "ByBit"): Decimal("20.00")}
+
+        result = apply_ogr_event_level(
+            [lot_a, lot_b], spot_index, _event_level_jurisdiction()
+        )
+
+        # Positive OGR -> else abs(lot.gain_loss_eur) per lot. A sign-flip
+        # regression (writing -abs unconditionally) would yield -5.00 / -3.00.
+        assert result[0].gain_loss_eur == Decimal("5.00")  # +abs(lot_a)
+        assert result[1].gain_loss_eur == Decimal("3.00")  # +abs(lot_b)
+        # Mixed-sign sum is +sum(abs(lot)) = +8.00, NOT +abs(cg_event_gain) = +2.00.
+        assert sum((lot.gain_loss_eur for lot in result), start=Decimal("0")) == Decimal("8.00")
+        # proceeds follow the per-lot gain sign (cost + final_gain_loss).
+        assert result[0].proceeds_eur == Decimal("100") + Decimal("5.00")
+        assert result[1].proceeds_eur == Decimal("100") + Decimal("3.00")
+        # Each lot carries the FULL positive ogr_event_gain (Design Invariant 3).
+        assert result[0].ogr_validation.ogr_gain_loss == Decimal("20.00")
+        assert result[1].ogr_validation.ogr_gain_loss == Decimal("20.00")
+        # Per-lot direction_conflict mirrors (ogr<0) != (lot_cg<0); OGR positive
+        # so lot_a (CG negative) conflicts, lot_b (CG positive) does not.
+        assert result[0].ogr_validation.direction_conflict is True
+        assert result[1].ogr_validation.direction_conflict is False
+        # calculated_gain_loss holds the PRE-distribution CG gain.
+        assert result[0].ogr_validation.calculated_gain_loss == Decimal("-5.00")
+        assert result[1].ogr_validation.calculated_gain_loss == Decimal("3.00")
+
+    def test_single_lot_agree_byte_identical(self):
+        """Single-lot agree event reduces exactly to legacy output.
+
+        ``gain_loss_eur == ogr_gain_loss`` and
+        ``proceeds_eur == cost + ogr_gain_loss`` (no other lots to absorb).
+        """
+        from tax_reporting.application.crypto.ogr_event_level import apply_ogr_event_level
+
+        lot = _make_event_level_entry(
+            acquisition_date="2025-01-01",
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("104"),
+            gain_loss_eur=Decimal("4.00"),
+        )
+        spot_index = {("2025-02-01", "USDT", "ByBit"): Decimal("6.00")}
+
+        result = apply_ogr_event_level([lot], spot_index, _event_level_jurisdiction())
+
+        assert len(result) == 1
+        assert result[0].gain_loss_eur == Decimal("6.00")
+        assert result[0].proceeds_eur == Decimal("100") + Decimal("6.00")
+        assert result[0].ogr_validation is not None
+        assert result[0].ogr_validation.ogr_gain_loss == Decimal("6.00")
+        assert result[0].ogr_validation.calculated_gain_loss == Decimal("4.00")
+
+    def test_single_lot_conflict_byte_identical(self):
+        """Single-lot conflict event (CG +4.00, OGR -1.00): byte-identical to legacy.
+
+        ``gain_loss_eur == -4.00`` and ``proceeds_eur == cost - 4.00``.
+        """
+        from tax_reporting.application.crypto.ogr_event_level import apply_ogr_event_level
+
+        lot = _make_event_level_entry(
+            acquisition_date="2025-01-01",
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("104"),
+            gain_loss_eur=Decimal("4.00"),
+        )
+        spot_index = {("2025-02-01", "USDT", "ByBit"): Decimal("-1.00")}
+
+        result = apply_ogr_event_level([lot], spot_index, _event_level_jurisdiction())
+
+        assert len(result) == 1
+        assert result[0].gain_loss_eur == Decimal("-4.00")
+        assert result[0].proceeds_eur == Decimal("100") - Decimal("4.00")
+        assert result[0].ogr_validation is not None
+        assert result[0].ogr_validation.direction_conflict is True
+        # Mirror the agree-branch single-lot anchor: pin both contract fields
+        # (Design Invariant 3) so a future porter reading this anchor sees all
+        # three gain/loss surfaces (gain_loss_eur / ogr_gain_loss /
+        # calculated_gain_loss) and does not conflate them (Pitfall 5).
+        assert result[0].ogr_validation.ogr_gain_loss == Decimal("-1.00")
+        assert result[0].ogr_validation.calculated_gain_loss == Decimal("4.00")
+
+    def test_calculated_gain_loss_reconstructs_cg_event_gain_after_aggregation(self):
+        """After ``_aggregate_capital_entries``, the OgrValidationResult reconstructs ``cg_event_gain``.
+
+        Given 3 lots CG +1/+1/+1 and OGR +9.00 (agree), the aggregated
+        ``OgrValidationResult`` must be:
+        ``ogr_gain_loss == 9.00``, ``calculated_gain_loss == 3.00``,
+        ``magnitude_diff_percent == 200.0``, ``review_required is True``.
+        Per-lot ``magnitude_diff_percent`` of 800% is expected and is NOT
+        the asserted value (the assertion is on the aggregated result).
+        """
+        from tax_reporting.application.crypto.ogr_event_level import apply_ogr_event_level
+
+        lots = [
+            _make_event_level_entry(
+                acquisition_date=f"2025-01-0{i}",
+                cost_eur=Decimal("1"),
+                proceeds_eur=Decimal("2"),
+                gain_loss_eur=Decimal("1.00"),
+            )
+            for i in range(1, 4)
+        ]
+        spot_index = {("2025-02-01", "USDT", "ByBit"): Decimal("9.00")}
+
+        overridden = apply_ogr_event_level(lots, spot_index, _event_level_jurisdiction())
+        aggregated = _aggregate_capital_entries(overridden)
+
+        assert len(aggregated) == 1
+        agg = aggregated[0]
+        assert agg.ogr_validation is not None
+        assert agg.ogr_validation.ogr_gain_loss == Decimal("9.00")
+        assert agg.ogr_validation.calculated_gain_loss == Decimal("3.00")
+        assert agg.ogr_validation.magnitude_diff_percent == Decimal("200.0")
+        assert agg.ogr_validation.review_required is True
+
+    def test_direction_conflict_event_level_decision(self):
+        """Direction conflict is decided on the SIGN of EVENT totals, not per lot.
+
+        The branch decision compares signs only (``(cg<0) != (ogr<0)``); the
+        ``> 1 EUR`` significance gate is REVIEW-ONLY (it gates the per-lot
+        ``review_required`` flag in ``_conflict_review_state``), NOT part of the
+        branch decision. See ``development_lessons.md`` #42 and PT-C-037. The
+        boundary case (one side below 1 EUR) is covered by
+        ``test_single_lot_conflict_byte_identical`` (CG +4.00 / OGR -1.00).
+        """
+        from tax_reporting.application.crypto.ogr_event_level import apply_ogr_event_level
+
+        # 3 lots each +0.50 -> cg_event_gain +1.50 (gain).
+        # OGR -2.00 -> opposite sign -> conflict branch taken on SIGN,
+        # regardless of magnitude (the > 1 EUR gate does not gate the branch).
+        lots = [
+            _make_event_level_entry(
+                acquisition_date=f"2025-01-0{i}",
+                cost_eur=Decimal("1"),
+                proceeds_eur=Decimal("1.50"),
+                gain_loss_eur=Decimal("0.50"),
+            )
+            for i in range(1, 4)
+        ]
+        spot_index = {("2025-02-01", "USDT", "ByBit"): Decimal("-2.00")}
+
+        result = apply_ogr_event_level(lots, spot_index, _event_level_jurisdiction())
+
+        assert len(result) == 3
+        # Conflict branch: each lot keeps CG magnitude with OGR sign.
+        for i, lot in enumerate(result):
+            assert lot.gain_loss_eur == -abs(Decimal("0.50")), f"lot {i}: conflict branch"
+            assert lot.ogr_validation is not None
+            assert lot.ogr_validation.direction_conflict is True
+
+    def test_agree_multi_lot_zero_event_cost_no_raise(self):
+        """Zero-cost agree event: first-lot-absorbs does not divide by ``event_cost``.
+
+        Given N zero-``cost_eur`` lots sharing a key with an OGR row, the
+        event is handled (first lot absorbs ``ogr_event_gain``; no division).
+        """
+        from tax_reporting.application.crypto.ogr_event_level import apply_ogr_event_level
+
+        lots = [
+            _make_event_level_entry(
+                acquisition_date=f"2025-01-0{i}",
+                cost_eur=Decimal("0"),
+                proceeds_eur=Decimal("0"),
+                gain_loss_eur=Decimal("0"),
+            )
+            for i in range(1, 4)
+        ]
+        spot_index = {("2025-02-01", "USDT", "ByBit"): Decimal("5.00")}
+
+        result = apply_ogr_event_level(lots, spot_index, _event_level_jurisdiction())
+
+        assert len(result) == 3
+        # Phase 1 event-level: first lot absorbs the full OGR event gain, no division.
+        assert result[0].gain_loss_eur == Decimal("5.00")
+        assert result[0].proceeds_eur == Decimal("0") + Decimal("5.00")
+        assert result[1].gain_loss_eur == Decimal("0")
+        assert result[1].proceeds_eur == Decimal("0")
+        assert result[2].gain_loss_eur == Decimal("0")
+        assert result[2].proceeds_eur == Decimal("0")
+
+    def test_no_ogr_match_unchanged(self):
+        """Events with no OGR entry pass through with ``ogr_validation=None``."""
+        from tax_reporting.application.crypto.ogr_event_level import apply_ogr_event_level
+
+        lot = _make_event_level_entry(
+            disposal_date="2025-03-01",
+            acquisition_date="2025-01-01",
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("110"),
+            gain_loss_eur=Decimal("10.00"),
+        )
+        spot_index = {("2025-02-01", "USDT", "ByBit"): Decimal("9.00")}
+
+        result = apply_ogr_event_level([lot], spot_index, _event_level_jurisdiction())
+
+        assert len(result) == 1
+        assert result[0].ogr_validation is None
+        assert result[0].gain_loss_eur == Decimal("10.00")
+        assert result[0].proceeds_eur == Decimal("110")
+
+    def test_output_length_and_order_preserved(self):
+        """``len(out) == len(in)`` and each ``out[i]`` matches ``in[i]`` on the base identity tuple.
+
+        Mixed input: unmatched lot, single-lot OGR event, multi-lot OGR
+        event, zero-proceeds Payment lot. The base identity tuple is
+        ``(disposal_date, acquisition_date, cost_eur, holding_period,
+        disposal_timestamp, pre_OGR_proceeds_eur, pre_OGR_gain_loss_eur)``.
+        """
+        from tax_reporting.application.crypto.ogr_event_level import apply_ogr_event_level
+
+        unmatched = _make_event_level_entry(
+            disposal_date="2025-03-01",
+            acquisition_date="2025-01-01",
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("110"),
+            gain_loss_eur=Decimal("10.00"),
+        )
+        single = _make_event_level_entry(
+            disposal_date="2025-02-01",
+            acquisition_date="2025-01-02",
+            cost_eur=Decimal("50"),
+            proceeds_eur=Decimal("55"),
+            gain_loss_eur=Decimal("5.00"),
+        )
+        multi_a = _make_event_level_entry(
+            disposal_date="2025-04-01",
+            acquisition_date="2025-01-03",
+            cost_eur=Decimal("20"),
+            proceeds_eur=Decimal("22"),
+            gain_loss_eur=Decimal("2.00"),
+        )
+        multi_b = _make_event_level_entry(
+            disposal_date="2025-04-01",
+            acquisition_date="2025-01-04",
+            cost_eur=Decimal("30"),
+            proceeds_eur=Decimal("32"),
+            gain_loss_eur=Decimal("2.00"),
+        )
+        payment = _make_event_level_entry(
+            disposal_date="2025-05-01",
+            acquisition_date="2025-01-05",
+            cost_eur=Decimal("40"),
+            proceeds_eur=Decimal("0"),
+            gain_loss_eur=Decimal("-40.00"),
+        )
+
+        lots = [unmatched, single, multi_a, multi_b, payment]
+        spot_index = {
+            ("2025-02-01", "USDT", "ByBit"): Decimal("9.00"),
+            ("2025-04-01", "USDT", "ByBit"): Decimal("7.00"),
+        }
+
+        result = apply_ogr_event_level(lots, spot_index, _event_level_jurisdiction())
+
+        assert len(result) == len(lots)
+
+        def identity(lot: CryptoCapitalGainEntry) -> tuple:
+            return (
+                lot.disposal_date,
+                lot.acquisition_date,
+                lot.cost_eur,
+                lot.holding_period,
+                lot.disposal_timestamp,
+            )
+
+        # The base identity on the FIVE stable fields (the OGR-mutable
+        # proceeds_eur / gain_loss_eur are excluded) must match in-order.
+        # disposal_timestamp is part of the identity per the plan tuple; here
+        # all fixtures use the default (None) since _make_event_level_entry
+        # does not set it.
+        for i, (in_lot, out_lot) in enumerate(zip(lots, result, strict=True)):
+            assert identity(in_lot) == identity(out_lot), (
+                f"index {i}: base identity changed: in={identity(in_lot)} out={identity(out_lot)}"
+            )
+
+    def test_multi_event_mixed_agree_and_conflict_branches(self):
+        """A single ``apply_ogr_event_level`` call mixes an AGREE event and a
+        CONFLICT event.
+
+        ``apply_ogr_event_level`` groups lots by ``(date, asset, wallet)`` and
+        decides each event independently. Existing multi-event tests use only
+        agree events (both OGR positive on positive-CG lots), so a bug in event
+        keying or a branch-decision short-circuit that bled one event's decision
+        into another's lots would not be caught. This fixture puts an agree
+        event (key A) and a conflict event (key B) in the same call and asserts
+        each event took the correct branch via per-event sums and per-lot
+        ``direction_conflict`` flags.
+        """
+        from tax_reporting.application.crypto.ogr_event_level import apply_ogr_event_level
+
+        # Event A: AGREE. Two positive-CG lots, OGR positive.
+        agree_a = _make_event_level_entry(
+            disposal_date="2025-02-01",
+            acquisition_date="2025-01-02",
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("102"),
+            gain_loss_eur=Decimal("2.00"),
+        )
+        agree_b = _make_event_level_entry(
+            disposal_date="2025-02-01",
+            acquisition_date="2025-01-03",
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("103"),
+            gain_loss_eur=Decimal("3.00"),
+        )
+        # Event B: CONFLICT. Two positive-CG lots, OGR negative.
+        conflict_c = _make_event_level_entry(
+            disposal_date="2025-03-01",
+            acquisition_date="2025-01-04",
+            cost_eur=Decimal("50"),
+            proceeds_eur=Decimal("52"),
+            gain_loss_eur=Decimal("2.00"),
+        )
+        conflict_d = _make_event_level_entry(
+            disposal_date="2025-03-01",
+            acquisition_date="2025-01-05",
+            cost_eur=Decimal("50"),
+            proceeds_eur=Decimal("53"),
+            gain_loss_eur=Decimal("3.00"),
+        )
+        lots = [agree_a, agree_b, conflict_c, conflict_d]
+        spot_index = {
+            # Event A: OGR +9.00 same sign as CG (+5.00) -> AGREE branch.
+            ("2025-02-01", "USDT", "ByBit"): Decimal("9.00"),
+            # Event B: OGR -8.00 opposite sign to CG (+5.00) -> CONFLICT branch.
+            ("2025-03-01", "USDT", "ByBit"): Decimal("-8.00"),
+        }
+
+        result = apply_ogr_event_level(lots, spot_index, _event_level_jurisdiction())
+
+        assert len(result) == 4
+        # Event A (AGREE): first-lot-absorbs. Lot 0 = full OGR, lot 1 = 0.
+        assert result[0].gain_loss_eur == Decimal("9.00")
+        assert result[1].gain_loss_eur == Decimal("0")
+        assert sum((r.gain_loss_eur for r in result[:2]), start=Decimal("0")) == Decimal("9.00")
+        assert all(r.ogr_validation.direction_conflict is False for r in result[:2])
+        # Event B (CONFLICT): per-lot -abs(lot.gain_loss_eur), no absorption.
+        assert result[2].gain_loss_eur == Decimal("-2.00")
+        assert result[3].gain_loss_eur == Decimal("-3.00")
+        assert sum((r.gain_loss_eur for r in result[2:]), start=Decimal("0")) == Decimal("-5.00")
+        assert all(r.ogr_validation.direction_conflict is True for r in result[2:])
+        # Each event's lots carry that event's FULL ogr_gain_loss (not the other's).
+        assert result[0].ogr_validation.ogr_gain_loss == Decimal("9.00")
+        assert result[1].ogr_validation.ogr_gain_loss == Decimal("9.00")
+        assert result[2].ogr_validation.ogr_gain_loss == Decimal("-8.00")
+        assert result[3].ogr_validation.ogr_gain_loss == Decimal("-8.00")
+
+    def test_cross_holding_period_agree_event_taxable_split_delta(self):
+        """Cross-holding-period agree event: lot 0 (short-term) carries the full ``ogr_event_gain``.
+
+        Given a multi-lot agree event whose lot 0 is short-term and another
+        lot is long-term, OGR +9.00, after ``apply_ogr_event_level`` +
+        ``_aggregate_capital_entries``: the SHORT-TERM aggregated group
+        carries the full +9.00 (because lot 0 is short-term) and the
+        LONG-TERM group carries 0.00 from this event. This documents the
+        PT-C-011 split shift vs legacy's per-group over-count - it is the
+        agreed delta, NOT a regression.
+        """
+        from tax_reporting.application.crypto.ogr_event_level import apply_ogr_event_level
+
+        lots = [
+            _make_event_level_entry(
+                disposal_date="2025-02-01",
+                acquisition_date="2025-01-10",
+                cost_eur=Decimal("50"),
+                proceeds_eur=Decimal("51"),
+                gain_loss_eur=Decimal("1.00"),
+                holding_period="Short-term (3 days)",
+            ),
+            _make_event_level_entry(
+                disposal_date="2025-02-01",
+                acquisition_date="2022-01-10",
+                cost_eur=Decimal("50"),
+                proceeds_eur=Decimal("51"),
+                gain_loss_eur=Decimal("1.00"),
+                holding_period="Long-term (> 1 year)",
+            ),
+        ]
+        spot_index = {("2025-02-01", "USDT", "ByBit"): Decimal("9.00")}
+
+        overridden = apply_ogr_event_level(lots, spot_index, _event_level_jurisdiction())
+        aggregated = _aggregate_capital_entries(overridden)
+
+        # Two aggregation groups (key includes holding_period).
+        by_period = {e.holding_period: e for e in aggregated}
+        short_term = next((e for k, e in by_period.items() if k.lower().startswith("short")), None)
+        long_term = next((e for k, e in by_period.items() if k.lower().startswith("long")), None)
+        assert short_term is not None, f"expected a short-term group, got {list(by_period)}"
+        assert long_term is not None, f"expected a long-term group, got {list(by_period)}"
+        # Phase 1 event-level: lot 0 (short-term) absorbs the full OGR event gain.
+        assert short_term.gain_loss_eur == Decimal("9.00"), (
+            f"short-term group carries the full ogr_event_gain (PT-C-011 delta); "
+            f"got {short_term.gain_loss_eur}"
+        )
+        assert long_term.gain_loss_eur == Decimal("0"), (
+            f"long-term group carries 0.00 from this event; got {long_term.gain_loss_eur}"
+        )
+
+    def test_migrated_loss_override_applies(self):
+        """Migrated from ``test_ogr_loss_override_applied`` onto event-level application.
+
+        Single-lot event, CG gain +22.71, OGR loss -138.73 (CONFLICT branch:
+        CG and OGR disagree on direction). The legacy ``_apply_ogr_overrides``
+        wrote the OGR value verbatim (``-138.73``); event-level conflict
+        branch instead writes the per-lot CG magnitude with the OGR sign
+        (``-abs(22.71) == -22.71``), which already sums to
+        ``±abs(cg_event_gain)`` (Design Invariant 1, conflict branch
+        UNCHANGED from legacy per-lot direction override).
+        """
+        from tax_reporting.application.crypto.ogr_event_level import apply_ogr_event_level
+
+        cg_entry = CryptoCapitalGainEntry(
+            disposal_date="2025-01-13",
+            acquisition_date="2025-01-10",
+            asset="USDT",
+            amount=Decimal("142.11"),
+            cost_eur=Decimal("165.44"),
+            proceeds_eur=Decimal("188.15"),
+            gain_loss_eur=Decimal("22.71"),  # CG shows a gain
+            holding_period="Short-term (365 days)",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="Ethereum",
+            operator_origin=OperatorOrigin(
+                platform="ByBit",
+                service_scope="crypto",
+                operator_entity="Bybit group entity",
+                operator_country="AE",
+                source_url="https://bybit.com",
+                source_checked_on="2026-01-01",
+                confidence="medium",
+                review_required=False,
+            ),
+            annex_hint="J",
+            review_required=False,
+            notes="Original gain from Koinly",
+        )
+        ogr_index = {("2025-01-13", "USDT", "ByBit"): Decimal("-138.73")}
+
+        result = apply_ogr_event_level([cg_entry], ogr_index, _event_level_jurisdiction())
+
+        assert len(result) == 1
+        # Phase 1 event-level conflict branch: CG magnitude with OGR (loss) sign.
+        assert result[0].gain_loss_eur == Decimal("-22.71")
+        # proceeds = cost + gain_loss = 165.44 - 22.71
+        assert result[0].proceeds_eur == cg_entry.cost_eur + Decimal("-22.71")
+        assert result[0].ogr_validation is not None
+        assert result[0].ogr_validation.direction_conflict is True
+        assert result[0].ogr_validation.ogr_gain_loss == Decimal("-138.73")
+        assert result[0].ogr_validation.calculated_gain_loss == Decimal("22.71")
+
+    def test_migrated_no_override_when_disabled(self):
+        """Migrated from ``test_ogr_no_override_when_disabled`` onto event-level application.
+
+        When ``use_other_gains_report`` is ``False``, ``apply_ogr_event_level``
+        returns the entries unchanged with no ``ogr_validation`` attached,
+        regardless of any OGR index entry.
+        """
+        from tax_reporting.application.crypto.ogr_event_level import apply_ogr_event_level
+
+        cg_entry = CryptoCapitalGainEntry(
+            disposal_date="2025-01-13",
+            acquisition_date="2025-01-10",
+            asset="USDT",
+            amount=Decimal("142.11"),
+            cost_eur=Decimal("165.44"),
+            proceeds_eur=Decimal("188.15"),
+            gain_loss_eur=Decimal("22.71"),
+            holding_period="Short-term (365 days)",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="Ethereum",
+            operator_origin=OperatorOrigin(
+                platform="ByBit",
+                service_scope="crypto",
+                operator_entity="Bybit group entity",
+                operator_country="AE",
+                source_url="https://bybit.com",
+                source_checked_on="2026-01-01",
+                confidence="medium",
+                review_required=False,
+            ),
+            annex_hint="J",
+            review_required=False,
+            notes="",
+        )
+        ogr_index = {("2025-01-13", "USDT", "ByBit"): Decimal("-138.73")}
+
+        result = apply_ogr_event_level([cg_entry], ogr_index, _event_level_jurisdiction(use_ogr=False))
+
+        # No override should occur; entries returned unchanged.
+        assert len(result) == 1
+        assert result[0].gain_loss_eur == Decimal("22.71")
+        assert result[0].proceeds_eur == Decimal("188.15")
+        assert result[0].ogr_validation is None
+
+    def test_migrated_skips_fee_tokens(self):
+        """Migrated from ``test_ogr_skips_fee_tokens`` onto event-level application.
+
+        Zero-value OGR rows are filtered out by ``_build_ogr_index`` /
+        ``_split_ogr_index`` (fee tokens are not capital gains), so the
+        ``spot_index`` is empty for that key. ``apply_ogr_event_level`` finds
+        no OGR match and passes the lot through unchanged with
+        ``ogr_validation=None``. This is the no-match path (same invariant
+        as ``test_no_ogr_match_unchanged``) exercised on the legacy
+        fee-token scenario.
+        """
+        from tax_reporting.application.crypto.ogr_event_level import apply_ogr_event_level
+
+        cg_entry = CryptoCapitalGainEntry(
+            disposal_date="2025-01-13",
+            acquisition_date="2025-01-10",
+            asset="USDT",
+            amount=Decimal("142.11"),
+            cost_eur=Decimal("165.44"),
+            proceeds_eur=Decimal("188.15"),
+            gain_loss_eur=Decimal("22.71"),
+            holding_period="Short-term (365 days)",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="Ethereum",
+            operator_origin=OperatorOrigin(
+                platform="ByBit",
+                service_scope="crypto",
+                operator_entity="Bybit group entity",
+                operator_country="AE",
+                source_url="https://bybit.com",
+                source_checked_on="2026-01-01",
+                confidence="medium",
+                review_required=False,
+            ),
+            annex_hint="J",
+            review_required=False,
+            notes="",
+        )
+        # Empty because zero-value fee-token OGR rows are skipped at index build time.
+        ogr_index: dict[tuple[str, str, str], Decimal] = {}
+
+        result = apply_ogr_event_level([cg_entry], ogr_index, _event_level_jurisdiction())
+
+        # No match - original values preserved, no ogr_validation attached.
+        assert len(result) == 1
+        assert result[0].gain_loss_eur == Decimal("22.71")
+        assert result[0].proceeds_eur == Decimal("188.15")
+        assert result[0].ogr_validation is None
 

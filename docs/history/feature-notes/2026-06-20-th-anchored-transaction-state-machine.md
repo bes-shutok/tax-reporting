@@ -1,9 +1,9 @@
 # Proposal: TH-anchored transaction model for crypto reporting
 
-- **Status:** SHELVED (exploratory RFC; to be set aside after this write-up)
+- **Status:** PHASE 1 (OGR over-count fix) LANDED AND ARCHIVED. Executed via plan [2026-07-04-ogr-event-level-application.md](../plans/completed/2026-07-04-ogr-event-level-application.md) (commits `2d95847`..`76248cd`, archived `dcaec03`); passed 4 review rounds (r1/r2 findings resolved, r3/r4 clear). The fix is a surgical event-level patch (first-lot-absorbs agree-branch), NOT the full TH-anchored Transaction view, which remains deferred - prior review rounds showed its minute-precision / raw-row mechanisms generate edge cases the OGR fix does not need. Weakness #2 (agree-branch multi-lot over-counting) structurally fixed; the cross-holding-period shift on agree-branch multi-lot events is a deliberate Phase 1 delta (documented in PT-C-037, asserted in tests), NOT deferred. Weaknesses #1/#5 and the Transaction-view cross-holding-period reallocation remain deferred to the Transaction view.
 - **Date:** 2026-06-20
 - **Branch:** 2026-06-19-doc-hierarchy-migration
-- **Related:** DP-014 payment-proceeds correction; review findings #5, #10, #11, #14; `crypto_fifo.py` (loan-affected FIFO rebuild)
+- **Related:** DP-014 payment-proceeds correction; review findings #5, #10, #11, #14; `crypto_fifo.py` (loan-affected FIFO rebuild); Phase 1 plan [2026-07-04-ogr-event-level-application.md](../plans/completed/2026-07-04-ogr-event-level-application.md)
 
 ## Purpose
 

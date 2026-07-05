@@ -555,3 +555,25 @@ When reviewing for operator precedence bugs involving logical `or` and `and`, ve
 3. In code review, treat "field A raises but field B flags on the same record" as a finding to raise, not an implementation detail.
 
 **Distinguishing from the partial/uncertain-results indicator rule (CLAUDE.md §1):** That rule says partial/uncertain rows must carry an explicit in-band indicator. This lesson says that when the partial row's incompleteness is a MISSING MANDATORY field, the indicator is not enough - the row should not reach the filing surface at all unless every mandatory field on its record uses the same accepted flag-and-continue contract.
+
+## 42. A Magnitude/Materiality Gate That Belongs to One Decision Must Not Be Propagated to a Sibling Decision When Porting the Surrounding Logic
+
+**Principle:** Family B (Error-policy propagation) - a fallible threshold check (the `> 1 EUR` materiality gate) was reused at a new decision site (branch routing) without carrying over the original code's policy that the gate never applied there.
+
+**Trigger:** You are porting, refactoring, or "elevating" a function (e.g. per-lot to event-level, single-call to multi-call, inline to extracted helper) whose body combines TWO independent decisions: a discrete routing decision (e.g. agree vs conflict branch) and a separate reporting decision (e.g. whether to set a review flag) that happens to share a discriminator with the first. The original code applied a magnitude/materiality gate to only ONE of the two decisions.
+
+**Rule:** When porting logic that contains a threshold gate, identify EVERY decision the original code made and confirm which decisions the gate did and did not apply to. The gate's scope must be preserved verbatim at the new call site. Do NOT let the gate "naturally extend" to a sibling decision because the sibling reads the same fields or because the gate "feels like a sensible significance check" for that branch. Branch routing that the original code made PURELY on sign (or another primitive comparator) must remain sign-only; the magnitude gate stays on the review-flag decision where the original put it.
+
+**What happened (2026-07-05 OGR event-level port, Task 1):** The legacy `_apply_ogr_direction_override` decided `direction_conflict` PURELY on sign - `(ogr < 0) != (cg < 0)` - and applied the `> 1 EUR` absolute-magnitude gate ONLY to the review flag (so trivially small conflicts do not produce a noisy "YES: ..." review row). When porting to `apply_ogr_event_level` (event-level aggregation), the first draft applied the `> 1 EUR` gate to the BRANCH decision too, treating sub-1-EUR sign conflicts as "agree". This broke `test_single_lot_conflict_byte_identical`: a CG +4.00 / OGR -1.00 event must take the conflict branch (final = -4.00, material), but the gated draft routed it to the agree branch and produced +4.00. The fix made `_decide_event_branch` sign-only and kept the `> 1 EUR` gate on the review flag via `_conflict_review_state` / `_agree_review_state`. See user-level #54 for the dual-decision structure (this lesson is the threshold-scope refinement that #54 does not state).
+
+**Why this happens:** When a function is rewritten at a higher abstraction level, the porter reads the original top-to-bottom and tends to fold "similar-looking" checks together. A magnitude gate that reads `if abs(...) > 1 EUR` next to a sign check feels like a unified "is this significant?" guard, so the porter applies it to the branch condition as well as the flag. The original code's separation (sign = routing policy; magnitude = reporting/noise policy) is implicit and easy to collapse.
+
+**Required behavior:**
+1. Before porting, enumerate the decisions in the original function (routing, flagging, value selection) and, for each threshold gate, record WHICH decision(s) it gates by reading every branch the gate's result flows into.
+2. Write that mapping as a comment on the new helper (e.g. `# branch decision is sign-only; the > 1 EUR gate applies only to the review flag`).
+3. Add a byte-identical RED test for the boundary case (a sub-gate-magnitude conflict that the original routed to the conflict branch, not the agree branch) so a future collapse fails loudly.
+4. In code review, treat "this draft added a magnitude check to a branch condition that the original made on sign alone" as a finding, even when the new test suite passes overall - the new tests may not include the boundary case.
+
+**Distinguishing from Family C (sentinel vs None vs exception):** Family C is about how "absent/invalid" is represented differently across two consumers. This lesson is about a threshold whose SCOPE (which decision it controls) is the policy distinction that drifted, not the threshold's representation.
+
+**See also:** User-level lesson #54 (OGR Directional Authority vs Wholesale Replacement - the dual-decision structure this refines), CLAUDE.md §4 Agent Workflow Rules (re-read each RED test against current design invariants before flipping GREEN).

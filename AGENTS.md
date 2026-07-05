@@ -94,7 +94,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - When IB data has no current-year trades (`tax_year_hint` is None), the Koinly directory year hint falls back to `TaxJurisdictionConfig.fiscal_year`, which drives Koinly directory selection for crypto-only runs.
 - Run `_validate_capital_entries_have_valid_countries()`, `_aggregate_capital_entries()`, and `_filter_immaterial_entries()` only after FIFO-derived entries are merged with raw CG rows.
 - Keep pipeline stages decoupled: run value corrections and data recovery passes before manual review flags or suspect-identification passes, to prevent clobbering and reason-joining hacks.
-- OGR overrides apply BEFORE `_aggregate_capital_entries()` when `jurisdiction.use_other_gains_report=True` (OGR holds the disposal-event total; CG rows are FIFO lots summed in aggregation).
+- OGR overrides apply BEFORE `_aggregate_capital_entries()` when `jurisdiction.use_other_gains_report=True` (OGR holds the disposal-event total; CG rows are FIFO lots summed in aggregation). When porting the override logic, preserve the original scope of every threshold gate: the `> 1 EUR` materiality gate applies ONLY to the review flag, not to the agree-vs-conflict branch decision (sign-only). See `development_lessons.md` #42.
 - When plan pseudocode compares two same-unit fields by name across domain objects, confirm they represent the same economic quantity before implementing; set candidate fields to DIFFERENT realistic values in RED fixtures so a field-name conflation fails visibly.
 - Cross-asset FIFO carry-over matches by TH transaction identifier, never by day-level date alone.
 - Any excluded asset yielding zero FIFO output must log at warning+.

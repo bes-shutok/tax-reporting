@@ -1,6 +1,6 @@
 # Proposal: Desegment the Lessons Corpus into Cohesive Per-Family Files
 
-- **Status:** PROPOSAL / NOT YET ADOPTED (forward-looking; written after the principle-generalization-system run produced the family catalog, the `generalize` skill, and `principle-index.md`)
+- **Status:** SUPERSEDED. The literal design proposed here (desegment into cohesive per-family files) was **not** adopted. A different approach shipped via plan [2026-06-29-lessons-corpus-derived-index.md](../plans/completed/2026-06-29-lessons-corpus-derived-index.md) (commit `fc2a136`): a two-layer corpus (cross-project lessons promoted to the user-level corpus, project-specific lessons retained in a single `development_lessons.md` with greppable in-band family tags) and the hand-maintained `principle-index.md` replaced by a source-derived grep index. Kept as a record of the design explored and rejected. (Original status: PROPOSAL / NOT YET ADOPTED, written after the principle-generalization-system run produced the family catalog, the `generalize` skill, and `principle-index.md`.)
 - **Date:** 2026-06-21
 - **Related:**
   - Plan: [2026-06-21-principle-generalization-system.md](../plans/completed/2026-06-21-principle-generalization-system.md)
