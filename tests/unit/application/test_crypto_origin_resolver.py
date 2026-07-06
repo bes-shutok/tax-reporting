@@ -429,6 +429,14 @@ class TestOriginResolverGracefulDegradation:
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
 
     def test_asymmetric_bybit_alias_normalization(self, tmp_path) -> None:
+        """'ByBit' (TH) and 'ByBit (2)' (lookup) no longer collapse (CRG-008 retired).
+
+        Before Phase A Task 8, normalize_platform_name collapsed both forms
+        to "ByBit" so the resolver matched. After Task 8, platform
+        consolidation lives in the platform-level resolver (Invariant 4); the
+        token-origin resolver does not alias wallets, so the lookup returns
+        UNKNOWN when the wallet label does not match exactly.
+        """
         path = _write_th(
             tmp_path,
             "2025-01-01 00:15:00 UTC,crypto_deposit,Reward,,,,,"
@@ -436,7 +444,7 @@ class TestOriginResolverGracefulDegradation:
         )
         resolver = TokenOriginResolver(path)
         origin = resolver.resolve("2025-01-01", "USDT", "ByBit (2)")
-        assert origin.acquisition_method == AcquisitionMethod.REWARD
+        assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
 
     def test_empty_acquisition_date_returns_unknown(self, tmp_path) -> None:
         path = _write_th(

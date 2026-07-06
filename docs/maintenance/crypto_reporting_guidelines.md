@@ -62,9 +62,6 @@ Taxable-now reward aggregates must be IRS-ready when projected to the `Reporting
 
 ## Data Normalization Guidance
 
-**CRG-008**
-`ByBit` and `ByBit (2)` are the same logical account in this repository and must be normalized before aggregation, country resolution, and workbook rendering.
-
 **CRG-009**
 `chain` is a normalized reporting field distinct from the raw wallet name. Keep the raw wallet label, but derive the candidate chain from that label and resolve the final chain against trusted archived sources under `docs/maintenance/tax/crypto-origin/`.
 

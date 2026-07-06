@@ -68,47 +68,9 @@ When testing fiat classification, include:
 
 ## Wallet Normalization
 
-### ByBit Alias Normalization (CRG-008)
-
-**ONLY normalize the exact pattern `ByBit (n)`** where `n` is any digit.
-
-Do NOT normalize:
-- Other platforms' numbered wallets (`Kraken (2)`, `Ethereum (ETH) - 0xabc (2)`)
-- ByBit sub-products (`ByBit Earn (2)`, `ByBit Savings (3)`)
-
-### Implementation Pattern
-
-```python
-def _normalize_platform_name(wallet: str) -> str:
-    """Normalize wallet names for aggregation.
-
-    ONLY normalizes the specific ByBit case authorized in CRG-008.
-    All other wallets are preserved as-is.
-    """
-    cleaned = wallet.strip()
-
-    # EXACT pattern: "ByBit (n)" where n is any digit
-    if re.match(r"^ByBit \(\d+\)$", cleaned):
-        return "ByBit"
-
-    return cleaned
-```
-
-### What NOT to Do
-
-| Anti-Pattern | Why It's Wrong |
-|--------------|----------------|
-| `re.search(r" \(\d+\)$", cleaned)` | Matches ANY wallet with (n) suffix |
-| `cleaned.startswith("ByBit")` | Also matches "ByBit Earn (2)" |
-| Manual string slicing | Fragile, doesn't handle edge cases |
-
-### Testing Requirements
-
-Include negative tests to verify over-normalization doesn't occur:
-- ByBit (2) → ByBit (normalized)
-- ByBit Earn (2) → ByBit Earn (2) (preserved)
-- Kraken (2) → Kraken (2) (preserved)
-- Ethereum (ETH) - 0xabc (2) → preserved (content after parentheses)
+`normalize_platform_name` performs whitespace trimming only; empty inputs
+return `"Unknown"`. Platform consolidation is handled by the platform-level
+resolver (see Phase A Invariant 4), not at parse time.
 
 ## Error Handling and Cleanup
 
@@ -515,16 +477,16 @@ except Exception as e:
 
 ```python
 # ❌ INCOMPLETE - Only tests what should happen
-def test_normalize_bybit():
-    assert _normalize_platform_name("ByBit (2)") == "ByBit"
+def test_normalize_whitespace():
+    assert normalize_platform_name("  Kraken  ") == "Kraken"
 
 # ✅ COMPLETE - Also tests what should NOT happen
-def test_normalize_bybit():
-    assert _normalize_platform_name("ByBit (2)") == "ByBit"
-
-def test_normalize_preserves_other_platforms():
-    assert _normalize_platform_name("Kraken (2)") == "Kraken (2)"
-    assert _normalize_platform_name("ByBit Earn (2)") == "ByBit Earn (2)"
+def test_normalize_preserves_numbered_aliases():
+    # Numbered platform aliases (e.g., "ByBit (2)", "Kraken (2)") are NOT
+    # collapsed; they are distinct platform rows at the platform-level resolver.
+    assert normalize_platform_name("ByBit (2)") == "ByBit (2)"
+    assert normalize_platform_name("Kraken (2)") == "Kraken (2)"
+    assert normalize_platform_name("ByBit Earn (2)") == "ByBit Earn (2)"
 ```
 
 ### Pitfall 5: OGR `calculated_gain_loss` and `ogr_gain_loss` field contracts
@@ -1188,9 +1150,10 @@ The match key is `(timestamp, asset, wallet, amount)`:
   zone and converts to UTC; TH explicit-UTC dates pass through)
   then `strftime("%Y-%m-%d %H:%M")`.
 - **Asset** is normalized via `normalize_asset_ticker`.
-- **Wallet** is normalized via `normalize_platform_name` (ByBit-specific:
-  collapses `ByBit (2)` to `ByBit`; Kraken and Binance keep numbered
-  suffixes).
+- **Wallet** is normalized via `normalize_platform_name` (whitespace-trimmed
+  only; numbered platform aliases like `ByBit (2)` and `Kraken (2)` are NOT
+  collapsed - they remain distinct platform rows for the platform-level
+  resolver).
 - **Amount** is quantized to 6 decimals via
   `Decimal.quantize(Decimal("0.000001"))` for the exact-match phase.
 

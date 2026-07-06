@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from dataclasses import FrozenInstanceError, fields
 from decimal import Decimal
 
@@ -617,3 +618,74 @@ class TestCryptoTaxReportDerivativesEntries:
             capital_gain_stats=stats,
         )
         assert report.derivatives_entries == []
+
+
+class TestCryptoEntitiesReExports:
+    """Verify Phase A domain types are re-exported from ``crypto.entities``.
+
+    Each re-export must refer to the canonical module path so callers can
+    import either path without forking identity. ``# noqa: F401`` on the
+    re-export lines in ``entities.py`` keeps the names visible; running
+    ``ruff check --fix`` would strip them, so the production module is
+    excluded from that auto-fix (per CLAUDE.md).
+    """
+
+    def test_transaction_re_exported(self) -> None:
+        """``Transaction`` re-exported from entities points to the domain module."""
+        module = importlib.import_module("tax_reporting.application.crypto.entities")
+        assert (
+            module.Transaction
+            is __import__(
+                "tax_reporting.domain.transaction",
+                fromlist=["Transaction"],
+            ).Transaction
+        )
+
+    def test_transaction_history_row_re_exported(self) -> None:
+        """``TransactionHistoryRow`` re-exported from entities points to the domain module."""
+        module = importlib.import_module("tax_reporting.application.crypto.entities")
+        domain = __import__("tax_reporting.domain.transaction", fromlist=["TransactionHistoryRow"])
+        assert module.TransactionHistoryRow is domain.TransactionHistoryRow
+
+    def test_tx_correlation_key_and_composite_re_exported(self) -> None:
+        """``TxCorrelationKey`` and ``TxCompositeKey`` re-exported from entities."""
+        module = importlib.import_module("tax_reporting.application.crypto.entities")
+        domain = __import__(
+            "tax_reporting.domain.transaction",
+            fromlist=["TxCorrelationKey", "TxCompositeKey"],
+        )
+        assert module.TxCorrelationKey is domain.TxCorrelationKey
+        assert module.TxCompositeKey is domain.TxCompositeKey
+
+    def test_wallet_kind_re_exported(self) -> None:
+        """``WalletKind`` re-exported from entities points to the domain module."""
+        module = importlib.import_module("tax_reporting.application.crypto.entities")
+        domain = __import__("tax_reporting.domain.transaction", fromlist=["WalletKind"])
+        assert module.WalletKind is domain.WalletKind
+
+    def test_wallet_classification_re_exported(self) -> None:
+        """``WalletClassification`` re-exported from entities points to ``wallet_kind``."""
+        module = importlib.import_module("tax_reporting.application.crypto.entities")
+        wk = __import__(
+            "tax_reporting.application.crypto.wallet_kind",
+            fromlist=["WalletClassification"],
+        )
+        assert module.WalletClassification is wk.WalletClassification
+
+    def test_tx_correlation_key_resolver_re_exported(self) -> None:
+        """``TxCorrelationKeyResolver`` re-exported from entities points to its module."""
+        module = importlib.import_module("tax_reporting.application.crypto.entities")
+        resolver_mod = __import__(
+            "tax_reporting.application.crypto.tx_correlation_key_resolver",
+            fromlist=["TxCorrelationKeyResolver"],
+        )
+        assert module.TxCorrelationKeyResolver is resolver_mod.TxCorrelationKeyResolver
+
+    def test_build_transaction_re_exported(self) -> None:
+        """``build_transaction`` re-exported from entities points to ``transaction_factory``."""
+        module = importlib.import_module("tax_reporting.application.crypto.entities")
+        factory = __import__(
+            "tax_reporting.application.crypto.transaction_factory",
+            fromlist=["build_transaction"],
+        )
+        assert module.build_transaction is factory.build_transaction

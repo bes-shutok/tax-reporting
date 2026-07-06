@@ -270,8 +270,9 @@ def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[Cr
     The holding_period is included in the aggregation key to preserve the taxable vs exempt breakdown
     needed for correct filing (PT-C-011: short-term gains are taxable, long-term gains are exempt).
 
-    Uses normalized platform name in aggregation key so wallet aliases (e.g., "ByBit" and "ByBit (2)")
-    collapse into the same logical account.
+    Uses the platform field in the aggregation key so wallets that share a
+    platform consolidate (platform consolidation is handled by the
+    platform-level resolver; see Phase A Invariant 4).
     """
     groups: dict[tuple[str, str, str, str], list[CryptoCapitalGainEntry]] = {}
     for entry in entries:

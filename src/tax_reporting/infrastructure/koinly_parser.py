@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 from ..application.crypto.entities import ParsedOgrRow
 from ..domain.exceptions import FileProcessingError
+from ..domain.transaction import TransactionHistoryRow
 
 # File size limits for security (prevent DoS via large files)
 _MAX_CSV_BYTES: Final = 50 * 1024 * 1024  # 50 MB limit for CSV files
@@ -30,6 +31,7 @@ __all__ = [
     "normalize_asset_ticker",
     "normalize_platform_name",
     "parse_koinly_decimal",
+    "parse_th_row",
     "_extract_ogr_gain_loss",
     "_parse_other_gains_row",
     "_find_and_parse_other_gains_file",
@@ -239,33 +241,22 @@ def contains_non_latin_characters(asset: str) -> bool:
 
 
 def normalize_platform_name(wallet: str) -> str:
-    """Normalize platform aliases for consistent operator resolution and aggregation.
+    """Normalize a Koinly wallet label for downstream processing.
 
-    This function normalizes only the ByBit platform alias (e.g., "ByBit (2)" -> "ByBit")
-    where the suffix represents a duplicate account in Koinly, not a distinct wallet.
-    This is a repository-specific normalization per CRG-008.
-
-    For all other wallets, including distinct numbered wallets like "Kraken (2)",
-    the full wallet name is preserved to prevent incorrect aggregation of separate
-    disposal events. Koinly may use numbered suffixes for genuinely distinct wallets
-    on the same platform.
+    Performs whitespace trimming only; no platform-specific normalization is
+    applied. Platform consolidation is handled by the platform-level resolver
+    (see Phase A Invariant 4). Returns ``"Unknown"`` for empty inputs so that
+    downstream operator resolution can flag missing wallet labels.
 
     Args:
         wallet: The raw wallet name from Koinly.
 
     Returns:
-        Normalized platform name for ByBit aliases, or the original wallet name.
-        Returns "Unknown" for empty wallets.
+        The trimmed wallet name, or ``"Unknown"`` for empty inputs.
     """
     cleaned = wallet.strip()
     if not cleaned:
         return "Unknown"
-
-    # Normalize only ByBit numbered aliases (repository-specific rule per CRG-008)
-    # "ByBit (2)", "ByBit (3)", etc. -> "ByBit"
-    # This must NOT match other ByBit-prefixed wallets like "ByBit Earn (2)"
-    if re.match(r"^ByBit \(\d+\)$", cleaned):
-        return "ByBit"
 
     return cleaned
 
@@ -382,8 +373,8 @@ def _parse_other_gains_row(
       provided the date is localized to that zone and converted to UTC so the
       OGR index key lands on the same true-UTC day as the CG/TH keys.
     - ``asset`` is normalized via ``normalize_asset_ticker``
-    - ``wallet`` is normalized via ``normalize_platform_name`` so platform
-      aliases like "ByBit (2)" collapse to "ByBit" at parse time
+    - ``wallet`` is normalized via ``normalize_platform_name`` (whitespace
+      trimming only; empty values become ``"Unknown"``)
     - ``gain_loss`` carries the signed EUR value (negative for ``Loss``,
       positive for ``Profit``) from ``_extract_ogr_gain_loss``
 
@@ -408,8 +399,9 @@ def _parse_other_gains_row(
 
         row_type = ogr_row.get("Type", "").strip()
         # Wallet normalization MUST happen here (not in _build_ogr_index) so the
-        # rewritten index builder can be a pure summing loop. Without this,
-        # "ByBit (2)" and "ByBit" would not collapse into the same key.
+        # rewritten index builder can be a pure summing loop. The wallet label
+        # is trimmed (and empties mapped to "Unknown") at parse time; platform
+        # consolidation is handled downstream by the platform-level resolver.
         wallet = normalize_platform_name(ogr_row.get("Wallet Name", ""))
 
         return ParsedOgrRow(
@@ -480,3 +472,87 @@ def _find_and_parse_other_gains_file(
         result.append(parsed)
 
     return result
+
+
+def _normalize_optional_id(value: str) -> str | None:
+    """Strip whitespace and return None for empty/whitespace-only strings.
+
+    Used for the three identifying TH columns (TxHash, TxSrc, TxDest) which
+    Invariant 3 requires to normalize blanks to None rather than empty strings.
+    """
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _normalize_optional_amount(value: str) -> Decimal | None:
+    """Parse a Koinly decimal and return None for blank sending/receiving sides.
+
+    A TH row may have only a sending side (e.g. ``crypto_withdrawal``) or only a
+    receiving side (e.g. ``crypto_deposit``); the blank side is normalized to
+    None for both amount and currency. ``parse_koinly_decimal`` already returns
+    ``Decimal("0")`` for empty input, so we map the empty-string case to None
+    before delegating.
+    """
+    if value.strip() == "":
+        return None
+    return parse_koinly_decimal(value)
+
+
+def _normalize_optional_currency(value: str) -> str | None:
+    """Return the stripped currency ticker, or None when the side is absent."""
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def parse_th_row(row: dict[str, str], *, row_index: int) -> TransactionHistoryRow:
+    """Parse a Koinly Transaction History CSV row into a ``TransactionHistoryRow``.
+
+    Reuses the existing ``parse_koinly_datetime``, ``parse_koinly_decimal`` and
+    ``normalize_platform_name`` helpers (Invariant 6) so date/decimal/platform
+    normalization stays in one place. Empty or whitespace-only values for the
+    identifying fields (TxHash, TxSrc, TxDest) and for an absent sending or
+    receiving side normalize to None (Invariant 3).
+
+    Args:
+        row: Row dictionary from a Koinly Transaction History CSV (as produced
+            by ``read_koinly_rows``).
+        row_index: 0-based source CSV row index, stored on the dataclass so two
+            empty-tx-id rows never collide downstream.
+
+    Returns:
+        Frozen ``TransactionHistoryRow`` with all normalization applied.
+
+    Raises:
+        ValueError: If ``Date`` or a present amount field cannot be parsed by
+            the underlying ``parse_koinly_datetime`` / ``parse_koinly_decimal``
+            helpers. The error is surfaced unchanged from the helper.
+    """
+    utc_instant = parse_koinly_datetime(row.get("Date", ""))
+
+    sending_amount = _normalize_optional_amount(row.get("Sent Amount", ""))
+    sending_currency = _normalize_optional_currency(row.get("Sent Currency", ""))
+    receiving_amount = _normalize_optional_amount(row.get("Received Amount", ""))
+    receiving_currency = _normalize_optional_currency(row.get("Received Currency", ""))
+
+    sending_wallet = normalize_platform_name(row.get("Sending Wallet", ""))
+    receiving_wallet = normalize_platform_name(row.get("Receiving Wallet", ""))
+
+    tx_hash = _normalize_optional_id(row.get("TxHash", ""))
+    tx_src = _normalize_optional_id(row.get("TxSrc", ""))
+    tx_dest = _normalize_optional_id(row.get("TxDest", ""))
+
+    return TransactionHistoryRow(
+        utc_instant=utc_instant,
+        type=row.get("Type", "").strip(),
+        tag=row.get("Tag", "").strip(),
+        sending_wallet=sending_wallet,
+        sending_amount=sending_amount,
+        sending_currency=sending_currency,
+        receiving_wallet=receiving_wallet,
+        receiving_amount=receiving_amount,
+        receiving_currency=receiving_currency,
+        tx_hash=tx_hash,
+        tx_src=tx_src,
+        tx_dest=tx_dest,
+        row_index=row_index,
+    )

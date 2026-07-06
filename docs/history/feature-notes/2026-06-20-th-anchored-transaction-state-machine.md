@@ -1,9 +1,40 @@
 # Proposal: TH-anchored transaction model for crypto reporting
 
-- **Status:** PHASE 1 (OGR over-count fix) LANDED AND ARCHIVED. Executed via plan [2026-07-04-ogr-event-level-application.md](../plans/completed/2026-07-04-ogr-event-level-application.md) (commits `2d95847`..`76248cd`, archived `dcaec03`); passed 4 review rounds (r1/r2 findings resolved, r3/r4 clear). The fix is a surgical event-level patch (first-lot-absorbs agree-branch), NOT the full TH-anchored Transaction view, which remains deferred - prior review rounds showed its minute-precision / raw-row mechanisms generate edge cases the OGR fix does not need. Weakness #2 (agree-branch multi-lot over-counting) structurally fixed; the cross-holding-period shift on agree-branch multi-lot events is a deliberate Phase 1 delta (documented in PT-C-037, asserted in tests), NOT deferred. Weaknesses #1/#5 and the Transaction-view cross-holding-period reallocation remain deferred to the Transaction view.
-- **Date:** 2026-06-20
-- **Branch:** 2026-06-19-doc-hierarchy-migration
+- **Status:**
+  - PHASE 1 (OGR over-count fix) LANDED AND ARCHIVED. Executed via plan [2026-07-04-ogr-event-level-application.md](../plans/completed/2026-07-04-ogr-event-level-application.md) (commits `2d95847`..`76248cd`, archived `dcaec03`); passed 4 review rounds (r1/r2 findings resolved, r3/r4 clear). The fix is a surgical event-level patch (first-lot-absorbs agree-branch), NOT the full TH-anchored Transaction view, which remains deferred - prior review rounds showed its minute-precision / raw-row mechanisms generate edge cases the OGR fix does not need. Weakness #2 (agree-branch multi-lot over-counting) structurally fixed; the cross-holding-period shift on agree-branch multi-lot events is a deliberate Phase 1 delta (documented in PT-C-037, asserted in tests), NOT deferred.
+  - UN-SHELVED 2026-07-05 for the full Transaction view (weaknesses #1/#4/#5 and deferred review findings #5/#10/#11/#14). Decision: this is proactive structural work, not gated on a confirmed trigger firing. Rollout recorded below in **Rollout plan (2026-07-05)**.
+- **Date:** 2026-06-20 (un-shelved 2026-07-05)
+- **Branch:** 2026-06-19-doc-hierarchy-migration (original); `2026-07-05-th-tx-view-phase-a` (un-shelve rollout)
 - **Related:** DP-014 payment-proceeds correction; review findings #5, #10, #11, #14; `crypto_fifo.py` (loan-affected FIFO rebuild); Phase 1 plan [2026-07-04-ogr-event-level-application.md](../plans/completed/2026-07-04-ogr-event-level-application.md)
+
+## Rollout plan (2026-07-05)
+
+The full Transaction view is rolled out in five phases, one plan file per phase
+under `docs/history/plans/`. Each phase is independently reviewable and shippable.
+
+| Phase | Lands | Behavior change |
+|---|---|---|
+| **A. Foundation** | TH tx-id parsing (`TxHash`/`TxSrc`/`TxDest`); `Transaction` domain object anchored on TH; `tx_correlation_key` resolver (tx-id primary, normalized-UTC-instant + asset/wallet/amount fallback) with DEX-aware missing-id flagging (highlight for DEX, silent for CEX). | No (pure plumbing; characterization tests prove byte-identical legacy path) |
+| **B. State machine** | `TreatmentResolver` mapping `(Type, Tag)` to a treatment enum (spot_disposal / payment / loan_repayment / derivatives_close / reward_airdrop_lp). Pure logic, fully unit-tested. Hangs off the Phase-A `Transaction` object. | No |
+| **C. Corpus + one-shot shadow** | Comprehensive synthetic fixtures (multi-lot-OGR, Payment/OGR collision, summer-time 00:00 local drift, DEX/CEX tx-id absence, loan-affected rebuild, derivatives). Throwaway shadow script runs both legacy and new paths on `resources/source/koinly*`; writes discrepancy CSV + WARNING logs. **Not a permanent pipeline stage** - script lives under `docs/tmp/`, deleted after per-phase verification. | No (verification only) |
+| **D. Switch per treatment** | Each treatment whose synthetic corpus + one-shot shadow agree flips its authoritative source to the new path under a `TaxJurisdictionConfig` flag; the corresponding legacy adapter (re-zero block / count-equality gate / OGR 1:1 assumption) is removed per-treatment. Treatments with disagreement keep legacy + emit a review flag carrying both numbers - surfaced to the user, not auto-resolved. | Yes, gated per treatment |
+| **E. Drop legacy** | Delete dead adapters and the legacy path once a clean tax year closes. | Yes |
+
+**Safety-net choice (2026-07-05):** the primary regression net is the
+comprehensive synthetic corpus (Phase C), not a permanent legacy shadow path in
+production code. A one-shot shadow script verifies unknown-unknowns against real
+data per phase and is then discarded. Legacy code remains reachable via git
+history for forensic comparison. Rationale: a permanent shadow path is debt;
+the project precedent (`exclude_loan_repayment_gains` parallel path) is gated by
+treatment, not by code path, and Phase D follows that precedent.
+
+**Tx-id fallback policy (2026-07-05):** tx-ids are standard for DEX (Ledger,
+SUI) and routinely absent for CEX (Kraken, ByBit, Wirex). Missing tx-id on a
+DEX-sourced row raises a review flag; missing tx-id on a CEX-sourced row falls
+back silently to the composite key. DEX/CEX classification reuses the existing
+wallet-label / operator-origin machinery in `operator_origin.py`.
+
+**Phase A plan:** [2026-07-05-th-tx-view-phase-a.md](../plans/2026-07-05-th-tx-view-phase-a.md).
 
 ## Purpose
 

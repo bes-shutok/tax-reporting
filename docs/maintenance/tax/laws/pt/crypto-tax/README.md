@@ -66,7 +66,7 @@ At least one of these two files must be present or the crypto dataset is skipped
 - Wirex is split by service scope:
   - crypto transactions -> Wirex crypto operator mapping
   - fiat/card transactions -> Wirex fiat operator mapping
-- `ByBit` and `ByBit (2)` must be normalized to the same wallet before any country resolution or aggregation.
+- Numbered platform aliases (e.g., `ByBit (2)`, `Kraken (2)`) are NOT collapsed; the platform-level WalletKind resolver treats them as distinct platform rows.
 - `País da Fonte` must be determined from the payer / operator / protocol side, not from taxpayer residence.
 - For DeFi rows, use the hierarchy `interface legal entity -> protocol / foundation / sponsor -> validator operator`.
 - Known EEA-facing CeFi defaults collected so far:
@@ -81,7 +81,7 @@ At least one of these two files must be present or the crypto dataset is skipped
 - Chain derivation uses deterministic normalization rules:
   - Strip transport suffixes such as address tails (`- 0x...`, `- 5R39...`)
   - Strip asset tickers in parentheses when they are only wallet-label noise
-  - Normalize wallet aliases (e.g., `ByBit (2)` -> `ByBit`)
+  - Trim whitespace (and map empty input to `Unknown`) via `normalize_platform_name`
   - Look up the candidate chain name against the trusted origin archive
 - If the wallet label does not allow a reasonable derivation, `chain` is set to `Unknown` explicitly.
 - The raw wallet name is preserved unchanged in the workbook; `chain` is an additional normalized field.

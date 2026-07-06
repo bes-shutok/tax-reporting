@@ -55,11 +55,11 @@ def _derive_chain(wallet: str) -> str:  # noqa: PLR0911, PLR0912
     - Strip platform aliases like "Ledger " prefix
     - Strip asset tickers in parentheses (e.g., "(ETH)", "(SOL)")
     - Strip address suffixes after " - " (e.g., " - 0x6ABd...")
-    - Normalize platform aliases (e.g., "ByBit (2)" -> "ByBit")
+    - Trim whitespace (and map empty input to "Unknown") via normalize_platform_name
 
     Args:
         wallet: The raw wallet name from Koinly (e.g., "Ledger Berachain (BERA)",
-               "Ethereum (ETH) - 0x6ABd...", "ByBit (2)").
+               "Ethereum (ETH) - 0x6ABd...", "Binance (2)").
 
     Returns:
         The normalized chain name if matched against known chains,
@@ -70,7 +70,7 @@ def _derive_chain(wallet: str) -> str:  # noqa: PLR0911, PLR0912
 
     normalized = wallet.strip()
 
-    # Normalize wallet aliases (e.g., "ByBit (2)" -> "ByBit")
+    # Trim whitespace and map empty input to "Unknown" (no platform-specific normalization).
     normalized = normalize_platform_name(normalized)
 
     # Strip "Ledger " prefix if present (common Koinly pattern)

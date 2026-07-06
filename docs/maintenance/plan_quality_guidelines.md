@@ -287,10 +287,10 @@ When implementing threshold-based logic (`>=`, `<=`, `>`, `<`), always include t
 | Rate limits | Exactly at limit (not just below/above) |
 
 Off-by-one errors at boundaries are a common source of incorrect tax classifications and business logic bugs.
-- ByBit (2) → ByBit (normalized)
+- "  Kraken  " → "Kraken" (whitespace trimmed)
 
 **Negative tests** (what should NOT happen):
-- Kraken (2) → Kraken (2) (preserved - not ByBit)
+- Kraken (2) → Kraken (2) (preserved - numbered alias not collapsed)
 - ByBit Earn (2) → ByBit Earn (2) (preserved - sub-product)
 
 **Edge cases**:

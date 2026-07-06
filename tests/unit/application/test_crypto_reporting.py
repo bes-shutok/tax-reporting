@@ -2748,15 +2748,44 @@ def test_derive_chain_case_insensitive():
 
 
 def test_normalize_platform_name_bybit_aliases():
-    """ByBit wallet aliases should be normalized to ByBit."""
+    """ByBit numbered aliases are NO LONGER collapsed (CRG-008 retired).
+
+    After Phase A Task 8, normalize_platform_name performs no
+    platform-specific normalization. Numbered ByBit aliases such as
+    "ByBit (2)" are returned unchanged so the platform-level resolver
+    (Invariant 4) is the single place where platforms are consolidated.
+    """
     from tax_reporting.infrastructure.koinly_parser import normalize_platform_name
 
-    assert normalize_platform_name("ByBit (2)") == "ByBit"
-    assert normalize_platform_name("ByBit (3)") == "ByBit"
-    assert normalize_platform_name("ByBit (4)") == "ByBit"
-    assert normalize_platform_name("ByBit (5)") == "ByBit"
-    assert normalize_platform_name("ByBit (10)") == "ByBit"
+    assert normalize_platform_name("ByBit (2)") == "ByBit (2)"
+
+
+def test_normalize_platform_name_bybit_plain_unchanged():
+    """A plain "ByBit" wallet label is returned unchanged (trimmed)."""
+    from tax_reporting.infrastructure.koinly_parser import normalize_platform_name
+
     assert normalize_platform_name("ByBit") == "ByBit"
+
+
+@pytest.mark.parametrize(
+    "wallet",
+    [
+        "ByBit (3)",
+        "ByBit (4)",
+        "ByBit (5)",
+        "ByBit (10)",
+    ],
+)
+def test_normalize_platform_name_bybit3_through_bybit10_no_longer_collapsed(wallet):
+    """ByBit (3..10) numbered aliases are NO LONGER collapsed (CRG-008 retired).
+
+    These were assertion lines inside the original
+    test_normalize_platform_name_bybit_aliases before Phase A Task 8;
+    preserved here as parametrized coverage.
+    """
+    from tax_reporting.infrastructure.koinly_parser import normalize_platform_name
+
+    assert normalize_platform_name(wallet) == wallet
 
 
 def test_normalize_platform_name_preserves_distinct_wallets():
@@ -2788,11 +2817,10 @@ def test_normalize_platform_name_no_alias():
 
 
 def test_normalize_platform_name_preserves_non_bybit_numbered_wallets():
-    """Numbered wallets other than ByBit should be preserved as distinct wallets.
+    """Numbered wallets are preserved as distinct wallets.
 
-    This test verifies that only ByBit numbered aliases are normalized per CRG-008.
-    Other platforms like Kraken may have genuinely distinct numbered wallets that
-    should not be merged during aggregation.
+    normalize_platform_name performs no platform-specific normalization,
+    so platforms like Kraken keep their numbered wallets distinct.
     """
     from tax_reporting.infrastructure.koinly_parser import normalize_platform_name
 
@@ -2803,11 +2831,11 @@ def test_normalize_platform_name_preserves_non_bybit_numbered_wallets():
 
 
 def test_normalize_platform_name_preserves_bybit_prefixed_wallets():
-    """ByBit-prefixed wallets that are NOT the simple 'ByBit (n)' pattern should be preserved.
+    """ByBit-prefixed wallets are preserved unchanged.
 
-    This test verifies that only the exact pattern 'ByBit (n)' is normalized per CRG-008.
-    Other ByBit-prefixed wallets like 'ByBit Earn (2)' or 'ByBit Savings (3)' represent
-    distinct products and should not be collapsed into the main ByBit account.
+    normalize_platform_name performs no platform-specific normalization;
+    ByBit-prefixed wallets like 'ByBit Earn (2)' or 'ByBit Savings (3)'
+    represent distinct products and are returned as-is.
     """
     from tax_reporting.infrastructure.koinly_parser import normalize_platform_name
 
@@ -7973,15 +8001,12 @@ def test_ogr_index_skips_zero_value_rows():
 
 
 def test_ogr_index_handles_wallet_aliases(tmp_path):
-    """Wallet aliases like 'ByBit (2)' normalize to 'ByBit' at parse time.
+    """'ByBit (2)' and 'ByBit' are NO LONGER collapsed at parse time (CRG-008 retired).
 
-    Under the Task 6 refactor, ``normalize_platform_name`` runs in
-    ``_parse_other_gains_row`` (not in ``_build_ogr_index``), so the alias
-    collapse is verified end-to-end by writing a real OGR CSV and running it
-    through ``_find_and_parse_other_gains_file``. Both rows share the resulting
-    ``(2025-01-13, USDT, ByBit)`` key; the new pure-summing ``_build_ogr_index``
-    adds their signed values (-138.73 + 100 = -38.73), matching the old
-    composed-pipeline behavior for keys that collapse together.
+    After Phase A Task 8, normalize_platform_name performs only whitespace
+    trimming; platform consolidation is the responsibility of the
+    platform-level resolver (Invariant 4). The pure-summing _build_ogr_index
+    therefore keeps the two rows as distinct (date, asset, wallet) keys.
     """
     import csv as _csv
 
@@ -8016,11 +8041,13 @@ def test_ogr_index_handles_wallet_aliases(tmp_path):
     ogr_rows = _find_and_parse_other_gains_file(tmp_path)
     index = _build_ogr_index(ogr_rows)
 
-    # Both wallets normalize to "ByBit" at parse time and share one key.
-    assert len(index) == 1
+    # Wallets no longer collapse; each (date, asset, wallet) tuple is its own key.
+    assert len(index) == 2
+    assert ("2025-01-13", "USDT", "ByBit (2)") in index
     assert ("2025-01-13", "USDT", "ByBit") in index
-    # Summed value: -138.73 (Loss) + 100 (Profit) = -38.73
-    assert index[("2025-01-13", "USDT", "ByBit")] == Decimal("-38.73")
+    # Values are kept per-key, NOT summed across aliases.
+    assert index[("2025-01-13", "USDT", "ByBit (2)")] == Decimal("-138.73")
+    assert index[("2025-01-13", "USDT", "ByBit")] == Decimal("100.00")
 
 
 def test_ogr_index_skips_unknown_types():
@@ -10125,7 +10152,7 @@ def test_payment_match_survives_summer_midnight_drift(tmp_path):
     matches = [
         e
         for e in report.capital_entries
-        if e.asset == "USDT" and e.disposal_date == "2025-06-14" and e.platform == "ByBit"
+        if e.asset == "USDT" and e.disposal_date == "2025-06-14" and e.platform == "ByBit (2)"
     ]
     assert matches, (
         "Expected the corrected Payment disposal on 2025-06-14 (the true UTC day); "
@@ -10658,7 +10685,7 @@ def test_payment_proceeds_rezero_index_based_not_key_based(tmp_path):
         for e in report.capital_entries
         if e.asset == "USDT"
         and e.disposal_date == "2025-01-13"
-        and e.platform == "ByBit"
+        and e.platform == "ByBit (2)"
         and e.holding_period.lower().startswith("long")
     ]
     assert len(legitimate) == 1, (

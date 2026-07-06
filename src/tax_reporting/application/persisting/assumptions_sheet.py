@@ -14,15 +14,33 @@ to the top so they are immediately visible.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import openpyxl
 
 if TYPE_CHECKING:
+    from tax_reporting.application.crypto.wallet_kind import (
+        RegistrySnapshot,
+        WalletClassification,
+    )
+    from tax_reporting.domain.transaction import TransactionHistoryRow
+
     from ..crypto_reporting import CryptoCapitalGainEntry, CryptoRewardIncomeEntry
 
+from .assumptions_kind_column import classify_platforms_for_summaries
 from .excel_utils import REVIEW_ROW_FILL, auto_column_width, safe_cell_value
+
+_KIND_LOW_CONFIDENCE_NOTE_PREFIX = "Kind classification below threshold"
+"""Prefix for the Note-column append when kind classification is low-confidence.
+
+CLAUDE.md: review reasons must be specific and actionable; this prefix is
+joined with the resolver's evidence reason (e.g. vote tallies or 'no rows').
+"""
+
+_NOTE_SEPARATOR = "; "
+"""Separator between an existing assumption and the kind-low-confidence note."""
 
 
 @dataclass
@@ -36,17 +54,31 @@ class _PlatformSummary:
     platform_review_required: bool
     assumption: str | None
     transaction_count: int
+    classification: WalletClassification | None = None
+    """Two-tier WalletKind resolver result for this platform. None when the
+    caller did not supply TH rows (Phase A production caller) - in that case
+    the Kind column renders empty and no kind-low-confidence signal fires."""
 
 
 def _collect_platform_summaries(
     capital_entries: list[CryptoCapitalGainEntry] | None = None,
     reward_entries: list[CryptoRewardIncomeEntry] | None = None,
+    th_rows: Iterable[TransactionHistoryRow] | None = None,
+    registry: RegistrySnapshot | None = None,
 ) -> list[_PlatformSummary]:
     """Collect one summary row per unique platform seen in the data.
 
     Aggregates counts and unions review flags across all entries for the same platform.
     If any entry for a platform has platform_review_required=True, the summary row
     is marked as requiring review.
+
+    When ``th_rows`` is supplied, each summary is also decorated with a
+    ``WalletClassification`` from the two-tier resolver. The kind-low-confidence
+    signal (``not classification.is_high_probability()``) is OR'd into the
+    existing ``platform_review_required`` flag (Design Invariant 15); a Note
+    fragment is appended so the user sees a specific reason. When ``th_rows``
+    is omitted (Phase A production caller), no classification runs and the
+    existing columns render byte-identically to the pre-Phase-A baseline.
     """
     summaries: dict[tuple[str, str], _PlatformSummary] = {}
 
@@ -76,6 +108,27 @@ def _collect_platform_summaries(
     for entry in reward_entries or []:
         _accumulate(entry)
 
+    if th_rows is not None:
+        platform_names = [s.platform for s in summaries.values()]
+        classifications = classify_platforms_for_summaries(platform_names, th_rows, registry)
+        # `classify_platforms_for_summaries` always returns an entry for every
+        # requested platform (UNKNOWN at confidence 0.0 when TH-row evidence is
+        # absent), so capital-vs-TH platform-name drift (e.g., capital entries
+        # see "ByBit" while TH rows are attributed to "ByBit (2)") surfaces via
+        # the user-visible Kind-column UNKNOWN + red Review Required + Note
+        # text below, not via a logger.warning. Family G + H.
+        for s in summaries.values():
+            classification = classifications[s.platform]
+            s.classification = classification
+            if not classification.is_high_probability():
+                # OR the kind-low-confidence signal into the existing flag.
+                s.platform_review_required = True
+                kind_note = f"{_KIND_LOW_CONFIDENCE_NOTE_PREFIX} ({classification.reason})"
+                if s.assumption:
+                    s.assumption = f"{s.assumption}{_NOTE_SEPARATOR}{kind_note}"
+                else:
+                    s.assumption = kind_note
+
     return list(summaries.values())
 
 
@@ -83,6 +136,8 @@ def write_assumptions_and_methodology_sheet(
     workbook: openpyxl.Workbook,
     capital_entries: list[CryptoCapitalGainEntry] | None = None,
     reward_entries: list[CryptoRewardIncomeEntry] | None = None,
+    th_rows: Iterable[TransactionHistoryRow] | None = None,
+    registry: RegistrySnapshot | None = None,
 ) -> None:
     """Create and populate an 'Assumptions & Methodology' worksheet.
 
@@ -97,8 +152,17 @@ def write_assumptions_and_methodology_sheet(
             country, confidence, and review flags.
         reward_entries: Reward income entries used to discover platform metadata.
             Combined with capital_entries to build the complete platform manifest.
+        th_rows: Optional iterable of ``TransactionHistoryRow`` used to classify
+            each platform's WalletKind (CEX/DEX/UNKNOWN) via the two-tier
+            resolver. When omitted (Phase A production caller), the Kind column
+            is left blank and no kind-low-confidence signal fires. Passing
+            ``th_rows`` from any non-``assumptions_sheet.py`` call site violates
+            Phase A Design Invariant 1.
+        registry: Optional ``RegistrySnapshot`` for tier-1 WalletKind lookup.
+            ``None`` in Phase A because ``operator_origin`` does not classify
+            CEX/DEX; every platform falls through to tier-2 auto-discovery.
     """
-    summaries = _collect_platform_summaries(capital_entries, reward_entries)
+    summaries = _collect_platform_summaries(capital_entries, reward_entries, th_rows, registry)
 
     worksheet = workbook.create_sheet("Assumptions & Methodology")
     row_no = 1
@@ -131,6 +195,7 @@ def write_assumptions_and_methodology_sheet(
             "Review Required",
             "Assumption / Verification Note",
             "Transaction Count",
+            "Kind",
         ]
         for col_idx, header in enumerate(headers, 1):
             cell = worksheet.cell(row_no, col_idx, header)
@@ -148,8 +213,11 @@ def write_assumptions_and_methodology_sheet(
             worksheet.cell(row_no, 5, "YES" if s.platform_review_required else "NO")
             worksheet.cell(row_no, 6, safe_cell_value(s.assumption or ""))
             worksheet.cell(row_no, 7, s.transaction_count)
+            # Kind column (col 8). Empty when no TH rows were supplied.
+            kind_value = s.classification.kind.name if s.classification is not None else ""
+            worksheet.cell(row_no, 8, kind_value)
             if s.platform_review_required:
-                for col_idx in range(1, 8):
+                for col_idx in range(1, 9):
                     worksheet.cell(row_no, col_idx).fill = REVIEW_ROW_FILL  # type: ignore[assignment]
             row_no += 1
 
