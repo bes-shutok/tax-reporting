@@ -20,12 +20,17 @@ from ...domain.transaction import (  # noqa: F401  (re-export; do not strip)
     TxCorrelationKey,
     WalletKind,
 )
+from ...domain.treatment import Treatment  # noqa: F401  (re-export; do not strip)
 from ...infrastructure.config import DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD
 
 # Local import for validation function (required to avoid circular import)
 from . import validation as _validation
 from .constants import ZERO
 from .transaction_factory import build_transaction  # noqa: F401  (re-export; do not strip)
+from .treatment_resolver import (  # noqa: F401  (re-export; do not strip)
+    TreatmentConfig,
+    resolve_treatment,
+)
 from .tx_correlation_key_resolver import TxCorrelationKeyResolver  # noqa: F401  (re-export; do not strip)
 from .wallet_kind import WalletClassification  # noqa: F401  (re-export; do not strip)
 

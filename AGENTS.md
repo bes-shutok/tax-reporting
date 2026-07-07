@@ -190,6 +190,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - **Do not import pytest fixtures**; they are injected by name (`tmp_path`, `capsys`, `caplog`, `monkeypatch`, `request`).
 - Tests must not read gitignored data; inline expected values, commit the fixture, or generate it deterministically. See `coding_guidelines.md` #26, `development_lessons.md` #38.
 - Test class names must match `python_classes = ["Test*"]` in `pyproject.toml`; non-`Test*`-prefix names are silently deselected.
+- Pair `pytest.raises(ExceptionType, match=<regex>)` with a `match=` argument whose substring comes from the intended raise site; Ruff PT011 flags bare-type raises for over-broad assertion. See `python_guidelines.md` #14.
 - Remove unused imports (Ruff F401). Only import `Path` when instantiating or type-annotating.
 - Test meaningful business logic and real edge cases; avoid duplicating coverage. High-value: complex IB CSV formats, tax calculations, error handling; low-value: zero amounts, trivial parsing.
 - Excel output tests: structural identification over hardcoded value exclusions; default-empty cell assertions accept `None` and `""`; reuse the production validator for domain-validity predicates.

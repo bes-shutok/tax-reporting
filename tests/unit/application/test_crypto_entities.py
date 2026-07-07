@@ -689,3 +689,31 @@ class TestCryptoEntitiesReExports:
             fromlist=["build_transaction"],
         )
         assert module.build_transaction is factory.build_transaction
+
+    # -----------------------------------------------------------------------
+    # Phase B re-exports: Treatment / TreatmentConfig / resolve_treatment.
+    # -----------------------------------------------------------------------
+
+    def test_treatment_re_exported(self) -> None:
+        """``Treatment`` re-exported from entities points to the domain module."""
+        module = importlib.import_module("tax_reporting.application.crypto.entities")
+        domain = __import__("tax_reporting.domain.treatment", fromlist=["Treatment"])
+        assert module.Treatment is domain.Treatment
+
+    def test_treatment_config_re_exported(self) -> None:
+        """``TreatmentConfig`` re-exported from entities points to ``treatment_resolver``."""
+        module = importlib.import_module("tax_reporting.application.crypto.entities")
+        resolver = __import__(
+            "tax_reporting.application.crypto.treatment_resolver",
+            fromlist=["TreatmentConfig"],
+        )
+        assert module.TreatmentConfig is resolver.TreatmentConfig
+
+    def test_resolve_treatment_re_exported(self) -> None:
+        """``resolve_treatment`` re-exported from entities points to ``treatment_resolver``."""
+        module = importlib.import_module("tax_reporting.application.crypto.entities")
+        resolver = __import__(
+            "tax_reporting.application.crypto.treatment_resolver",
+            fromlist=["resolve_treatment"],
+        )
+        assert module.resolve_treatment is resolver.resolve_treatment

@@ -3,6 +3,9 @@
 - **Status:**
   - PHASE 1 (OGR over-count fix) LANDED AND ARCHIVED. Executed via plan [2026-07-04-ogr-event-level-application.md](../plans/completed/2026-07-04-ogr-event-level-application.md) (commits `2d95847`..`76248cd`, archived `dcaec03`); passed 4 review rounds (r1/r2 findings resolved, r3/r4 clear). The fix is a surgical event-level patch (first-lot-absorbs agree-branch), NOT the full TH-anchored Transaction view, which remains deferred - prior review rounds showed its minute-precision / raw-row mechanisms generate edge cases the OGR fix does not need. Weakness #2 (agree-branch multi-lot over-counting) structurally fixed; the cross-holding-period shift on agree-branch multi-lot events is a deliberate Phase 1 delta (documented in PT-C-037, asserted in tests), NOT deferred.
   - UN-SHELVED 2026-07-05 for the full Transaction view (weaknesses #1/#4/#5 and deferred review findings #5/#10/#11/#14). Decision: this is proactive structural work, not gated on a confirmed trigger firing. Rollout recorded below in **Rollout plan (2026-07-05)**.
+  - PHASE A LANDED on master at commit `bb46bdd` (typed `Transaction` + `TxCorrelationKey` + `WalletKind` / `WalletKindResolver` + Assumptions & Methodology Kind column; characterization suite byte-identical). Plan archived at `docs/history/plans/completed/2026-07-05-th-tx-view-phase-a.md`.
+  - PHASE B LANDED on master at commit `cdb10bf` (squash merge from branch `2026-07-06-th-tx-view-phase-b`; 7 branch commits). Closed 6-member `Treatment` enum, `TreatmentConfig` frozen dataclass, total `resolve_treatment` pure function; no production caller (Invariant 7; Phase D flips each per-treatment classifier). Suite 1510 passed (baseline 1438 + delta 72); Phase 3 review loop 2 consecutive clear rounds, 0 Medium+ residual. Plan archived at `docs/history/plans/completed/2026-07-06-th-tx-view-phase-b.md`; reviews `r1` / `r2`.
+  - NEXT: Phase C (synthetic corpus + one-shot shadow script under `docs/tmp/`); plan not yet authored.
 - **Date:** 2026-06-20 (un-shelved 2026-07-05)
 - **Branch:** 2026-06-19-doc-hierarchy-migration (original); `2026-07-05-th-tx-view-phase-a` (un-shelve rollout)
 - **Related:** DP-014 payment-proceeds correction; review findings #5, #10, #11, #14; `crypto_fifo.py` (loan-affected FIFO rebuild); Phase 1 plan [2026-07-04-ogr-event-level-application.md](../plans/completed/2026-07-04-ogr-event-level-application.md)
@@ -34,7 +37,13 @@ DEX-sourced row raises a review flag; missing tx-id on a CEX-sourced row falls
 back silently to the composite key. DEX/CEX classification reuses the existing
 wallet-label / operator-origin machinery in `operator_origin.py`.
 
-**Phase A plan:** [2026-07-05-th-tx-view-phase-a.md](../plans/2026-07-05-th-tx-view-phase-a.md).
+**Phase A plan:** [2026-07-05-th-tx-view-phase-a.md](../plans/completed/2026-07-05-th-tx-view-phase-a.md).
+LANDED on master at commit `bb46bdd` (typed `Transaction` + `TxCorrelationKey` + `WalletKind`/`WalletKindResolver` + Assumptions & Methodology Kind column; characterization suite byte-identical; only production caller is the Kind column).
+
+**Phase B plan:** [2026-07-06-th-tx-view-phase-b.md](../plans/completed/2026-07-06-th-tx-view-phase-b.md).
+LANDED on master at commit `cdb10bf` (squash merge from branch `2026-07-06-th-tx-view-phase-b`; 7 branch commits). Adds closed 6-member `Treatment` enum (`domain/treatment.py`), `TreatmentConfig` + total `resolve_treatment` pure function (`application/crypto/treatment_resolver.py`), and `entities.py` re-exports. Defaults mirror `payment_proceeds.py` / `crypto_fifo/contexts.py` / `token_origin.py` precedents; `derivatives_tags` defaults to empty (Invariant 5; production injects the JSON labels). Suite 1510 passed (baseline 1438 + delta 72). Phase 3 review loop: 2 consecutive clear rounds; 0 Medium+ residual; 4 Low notes applied. **No production caller** (Invariant 7); Phase D flips each per-treatment classifier to delegate to the resolver.
+
+Code reviews: [r1](../reviews/2026-07-06-code-review-th-tx-view-phase-b-r1.md), [r2](../reviews/2026-07-06-code-review-th-tx-view-phase-b-r2.md).
 
 ## Purpose
 
