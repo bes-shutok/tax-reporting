@@ -1,0 +1,6 @@
+Transaction report 2025
+
+Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),TxSrc,TxDest,TxHash,Description
+2025-04-10 10:00:00 UTC,crypto_deposit,Loan,,,,,ByBit,"0,10000000",WBTC,"4000,00",,,,"0,00","4000,00","0,00",,,,,Synthetic borrowing-side principal creation: 0.1 WBTC received at ByBit (Tag="Loan" - Phase B Invariant 9: NOT LOAN_REPAYMENT)
+2025-05-20 14:00:00 UTC,crypto_withdrawal,Loan Repayment,ByBit,"0,10000000",WBTC,"4000,00",,,,,,"0,00","5000,00","0,00",,,,,Synthetic loan-repayment disposal: 0.1 WBTC sent from ByBit (Tag="Loan Repayment" - DP-001 non-taxable scope; resolver -> LOAN_REPAYMENT)
+2025-06-15 11:00:00 UTC,crypto_exchange,,ByBit,"0,05000000",ETH,"100,00",ByBit,"150,00",EUR,"150,00",,,"50,00","150,00","0,00",,,,,Synthetic plain spot disposal: 0.05 ETH sold on ByBit for 150 EUR (Tag="" -> SPOT_DISPOSAL)

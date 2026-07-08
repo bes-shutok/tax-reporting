@@ -63,6 +63,8 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Keep `docs/maintenance/tax/crypto-origin/` source manifest, registry, and decision log synchronized when changing chain/operator mappings.
 - Chain derivation uses deterministic normalization and validates against trusted sources in `docs/maintenance/tax/crypto-origin/`.
 - Wallet labels are discovery hints only; final chain/country mappings come from archived operator origin documents, not asset symbols. Use `Unknown` explicitly when labels don't allow reasonable chain derivation.
+- Test-side per-row platform attribution must mirror `wallet_kind._row_platform` (skip empty OR case-insensitive `"unknown"`); never use bare `tr.sending_wallet or tr.receiving_wallet`, which misattributes borrowing-side deposits because the `"Unknown"` literal is truthy. See `development_lessons.md` #44.
+- Throwaway shadow/verification/diff scripts that re-parse an external-report CSV (Koinly TH, IB, etc.) must call the production reader (`read_koinly_rows`, etc.), not `csv.DictReader`; the production reader carries preamble/header-index handling a naive `DictReader` does not, and the divergence surfaces as a phantom row or a row-count mismatch. See `development_lessons.md` #45.
 - Operator mapping temporal validity: `service_start_date` (matching) vs `valid_from` (audit-only); set `service_start_date <= valid_from`, leave `valid_from` null when unknown.
 - Module size: when a module exceeds 1,000 lines or 50 functions/classes, extract cohesive responsibilities into separate modules.
 - Orchestration layers stay thin (~500 lines max); extract sub-orchestrators or move domain logic to dedicated services when coordination grows.
@@ -108,6 +110,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Bug fixes follow TDD: failing test first (RED), then fix (GREEN). See `development_lessons.md` #27 (revert a RED break on an untracked file via Edit, not `git checkout`).
 - When a plan is revised between RED and GREEN, re-read each RED test against current design invariants before flipping GREEN. Update changed assertions and cite the invariant.
 - A committed RED test that is itself the deliverable (a later task flips it GREEN) must fail via `pytest.fail(<message>)` naming the resolving task, never an unhandled exception.
+- A regression test must exercise the production call site it claims to guard (not an adjacent derived value); before merging, revert the guarded change and confirm the test fails. When a fix has two halves, scope each assertion to the half it exercises and do not claim the join is verified. See `development_lessons.md` #46.
 - When building an index from source data, handle duplicate keys by summing, never silent overwrite.
 - Test string sanitization/validation/parsing for edge cases: empty, whitespace-only, multi-byte, control chars, multi-char prefixes, padded.
 - Test error paths including double-failure (e.g. aggregation fails AND workbook.close fails).

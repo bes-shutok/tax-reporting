@@ -1,0 +1,5 @@
+Transaction report 2025
+
+Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),TxSrc,TxDest,TxHash,Description
+2025-03-10 12:00:00 UTC,crypto_withdrawal,Realized gain,ByBit,"0,00100000",ETH,"3,00",,,,,,"2,00","5,00","0,00",,,,,Synthetic derivatives close: 0.001 ETH sent from ByBit tagged Realized gain (DP-010/DP-012 Quadro 13 routing; Phase B Invariant 5/6 - DERIVATIVES_CLOSE wins over REWARD_AIRDROP_LP at this tag when derivatives_tags injected from koinly_2025.json)
+2025-03-12 12:00:00 UTC,crypto_exchange,Futures fee,ByBit,"0,00010000",ETH,"0,30",ByBit,"0,25",EUR,"0,25",,,"-0,05","0,25","0,00",,,,,Synthetic derivatives close: 0.0001 ETH sent from ByBit tagged Futures fee (DP-010/DP-012 Quadro 13 routing; matches koinly_2025.json derivatives label set)

@@ -1,0 +1,4 @@
+Transaction report 2025
+
+Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),TxSrc,TxDest,TxHash,Description
+2025-03-10 12:00:00 UTC,crypto_withdrawal,,Kraken,"1,00000000",ETH,"1650,00",,,,,,"350,00","2000,00","0,00",,,,synth-txhash-multilot-001,Synthetic 1.0 ETH disposal (multi-lot OGR collision)

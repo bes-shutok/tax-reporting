@@ -1,0 +1,5 @@
+Transaction report 2025
+
+Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),TxSrc,TxDest,TxHash,Description
+2025-03-10 12:00:00 UTC,crypto_withdrawal,,Ledger Berachain (BERA),"0,50000000",BERA,"100,00",,,,,,"50,00","150,00","0,00",,,,,Synthetic DEX disposal: Ledger Berachain (BERA) with empty TxHash (Phase A: requires_review=True)
+2025-03-12 12:00:00 UTC,crypto_withdrawal,,Kraken,"0,50000000",ETH,"400,00",,,,,,"100,00","500,00","0,00",,,,,Synthetic CEX disposal: Kraken with empty TxHash (Phase A: silent composite fallback)

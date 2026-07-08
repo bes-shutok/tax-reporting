@@ -1,0 +1,4 @@
+Transaction report 2025
+
+Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),TxSrc,TxDest,TxHash,Description
+2025-07-14 23:30:00 UTC,crypto_withdrawal,,Kraken,"1,00000000",ETH,"200,00",,,,,,"100,00","300,00","0,00",,,,synth-txhash-summer-drift-001,Synthetic 1.0 ETH disposal (summer-time drift: 2025-07-15 00:30 WEST = 2025-07-14 23:30 UTC)
