@@ -102,7 +102,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Cross-asset FIFO carry-over matches by TH transaction identifier, never by day-level date alone.
 - Any excluded asset yielding zero FIFO output must log at warning+.
 - Crypto derivatives/futures liquidations reporting losses are disposals of collateral even at a loss; this is correct tax treatment, not an error. See `development_lessons.md` #26.
-- Crypto tests MUST read committed synthetic data under `resources/source/example/koinly<year>_<scenario>/`; never reference gitignored personal data. See `crypto_implementation_guidelines.md`.
+- Crypto tests MUST read committed synthetic data under `resources/source/example/<year>/koinly/[<scenario>/]`; never reference gitignored personal data. See `crypto_implementation_guidelines.md`.
 
 
 ### 4. Agent Workflow Rules
@@ -144,6 +144,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Re-run feasibility checks against the mutated post-phase-1 input set.
 - When a task changes data flow semantics (filter/dedup/transformation split), grep ALL test files (`tests/`) for assertions referencing the affected data identity tuple, not just current task's file scope.
 - When a plan task changes an existing function signature OR rendered output text (a description/label cell), grep ALL test tiers: callers (`grep -rn "<func>(" tests/`) for signature changes, and row-locators matching the stale label (`grep -rn "<old label>" tests/`) for output-text changes. A dedicated test file is not exhaustive. A wording/staleness review also greps method/function identifiers, not just prose.
+- When renaming fixture paths or filenames, grep ALL test files AND docs for every shape the rename touches (directory, filename, filename-stem-as-glob-prefix, docstring prose); update conftest constants AND scattered references together; evolve (not delete) any hygiene check that enforced the renamed token as a synthetic-data marker. See `development_lessons.md` #47.
 - For verification-only tasks inspecting `git diff <base>..HEAD` with missing expected files, check if a prior same-session commit already applied the change.
 - For comparing tool output against the committed baseline (linter/formatter), pipe the committed blob or use `git worktree add`; never use `git stash`.
 - Before `execute-plan` Step 1.1 on a pre-migration plan, grep and translate moved path prefixes (`docs/tax/`, etc.) to their migrated locations in the plan body and `execute-plan` Step 0.4b.

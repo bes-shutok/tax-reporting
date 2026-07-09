@@ -6,7 +6,7 @@ see DP-013 and `_build_zero_basis_review_reason` in `application/crypto/fifo_hel
 without any personal data. Backs `tests/end_to_end/test_crypto_zero_basis_materiality.py`
 (migrated by plan Task 4).
 
-All three files use the `_synth.csv` filename token. `TxHash`, `TxSrc`, and `TxDest`
+All three files follow the canonical Koinly export naming (`koinly_<year>_<report>.csv`). `TxHash`, `TxSrc`, and `TxDest`
 are empty for every Transaction History row. `Sending Wallet` / `Receiving Wallet`
 use only the synthetic label `Demo Spot`. There is no Other Gains Report: the loader's
 all-or-nothing validation only requires the three mandatory files (CG, income, TH);
@@ -16,9 +16,9 @@ OGR is optional.
 
 | File | Mandatory | Purpose |
 |------|-----------|---------|
-| `koinly_2025_capital_gains_report_synth.csv` | yes | Three zero-cost disposal rows |
-| `koinly_2025_income_report_synth.csv` | yes | The two reward acquisitions |
-| `koinly_2025_transaction_history_synth.csv` | yes | Matching disposal events (no derivatives labels) |
+| `koinly_2025_capital_gains_report.csv` | yes | Three zero-cost disposal rows |
+| `koinly_2025_income_report.csv` | yes | The two reward acquisitions |
+| `koinly_2025_transaction_history.csv` | yes | Matching disposal events (no derivatives labels) |
 
 ## Test cases and the zero-basis rule they exercise
 

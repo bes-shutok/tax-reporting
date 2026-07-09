@@ -176,9 +176,9 @@ def make_operator_origin(**overrides: object):
 # materiality / payment-proceeds) per Design Invariant #8 of the
 # 2026-06-22-crypto-tests-off-local-fixtures plan.
 # ---------------------------------------------------------------------------
-KOINLY_2025_EXAMPLE_DIR = Path("resources/source/example/koinly2025")
-KOINLY_2025_ZERO_BASIS_EXAMPLE_DIR = Path("resources/source/example/koinly2025_zero_basis")
-KOINLY_2025_PAYMENT_EXAMPLE_DIR = Path("resources/source/example/koinly2025_payment")
+KOINLY_2025_EXAMPLE_DIR = Path("resources/source/example/2025/koinly")
+KOINLY_2025_ZERO_BASIS_EXAMPLE_DIR = Path("resources/source/example/2025/koinly/zero_basis")
+KOINLY_2025_PAYMENT_EXAMPLE_DIR = Path("resources/source/example/2025/koinly/payment")
 
 
 def build_koinly_jurisdiction(**overrides: object):

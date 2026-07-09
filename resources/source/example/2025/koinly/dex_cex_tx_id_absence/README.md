@@ -51,11 +51,11 @@ classification policy under test (DEX-flag vs CEX-silent) is unchanged.
 
 | File | Mandatory | Purpose |
 |------|-----------|---------|
-| `koinly_2025_capital_gains_report_synth.csv` | yes | Two disposals: `0,50000000` BERA on Ledger Berachain (BERA) at `10/03/2025 12:00` (cost 100 EUR, proceeds 150 EUR, gain 50 EUR) and `0,50000000` ETH on Kraken at `12/03/2025 12:00` (cost 400 EUR, proceeds 500 EUR, gain 100 EUR) |
-| `koinly_2025_income_report_synth.csv` | yes | One synthetic cashback row (loader's all-or-nothing validation) |
-| `koinly_2025_transaction_history_synth.csv` | yes | TWO `crypto_withdrawal` rows: `0,50000000` BERA from `Ledger Berachain (BERA)` at `2025-03-10 12:00:00 UTC` with EMPTY `TxHash` (DEX branch); `0,50000000` ETH from `Kraken` at `2025-03-12 12:00:00 UTC` with EMPTY `TxHash` (CEX branch); both `Tag=""` |
+| `koinly_2025_capital_gains_report.csv` | yes | Two disposals: `0,50000000` BERA on Ledger Berachain (BERA) at `10/03/2025 12:00` (cost 100 EUR, proceeds 150 EUR, gain 50 EUR) and `0,50000000` ETH on Kraken at `12/03/2025 12:00` (cost 400 EUR, proceeds 500 EUR, gain 100 EUR) |
+| `koinly_2025_income_report.csv` | yes | One synthetic cashback row (loader's all-or-nothing validation) |
+| `koinly_2025_transaction_history.csv` | yes | TWO `crypto_withdrawal` rows: `0,50000000` BERA from `Ledger Berachain (BERA)` at `2025-03-10 12:00:00 UTC` with EMPTY `TxHash` (DEX branch); `0,50000000` ETH from `Kraken` at `2025-03-12 12:00:00 UTC` with EMPTY `TxHash` (CEX branch); both `Tag=""` |
 
-No `koinly_2025_other_gains_report_synth.csv` is shipped: OGR is optional
+No `koinly_2025_other_gains_report.csv` is shipped: OGR is optional
 for this scenario (loader's all-or-nothing validation only requires
 CG/Income/TH; the absence of an OGR file is permitted). The scenario's
 purpose is the tx-id-fallback policy divergence, which is observable purely

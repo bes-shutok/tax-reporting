@@ -3,7 +3,7 @@
 Verifies that the ``zero_basis_review_min_proceeds`` threshold (DP-013,
 default 10 EUR via ``ZERO_BASIS_REVIEW_MIN_PROCEEDS`` in ``config.ini``)
 correctly suppresses the zero-basis review flag for FEE token disposals
-and small rewards when the committed synthetic ``koinly2025_zero_basis``
+and small rewards when the committed synthetic ``2025/koinly/zero_basis``
 fixtures are run through the full pipeline, and that the backward-compat escape
 hatch (``min_proceeds=0``) restores the prior flag-everything behavior.
 
@@ -54,7 +54,7 @@ def test_synthetic_fixture_contains_zero_basis_scenarios() -> None:
     Parses the committed example CSVs and asserts each zero-basis scenario is
     present.
     """
-    cg_path = _FIXTURE_DIR / "koinly_2025_capital_gains_report_synth.csv"
+    cg_path = _FIXTURE_DIR / "koinly_2025_capital_gains_report.csv"
     assert cg_path.exists(), f"Zero-basis CG report not found: {cg_path}"
     with cg_path.open(encoding="utf-8") as f:
         content = f.read()

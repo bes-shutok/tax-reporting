@@ -31,7 +31,7 @@ Even a mostly passive crypto user can end up with hundreds of yearly lines once 
 
 A Koinly capital-gains export for one tax year can contain 900+ FIFO rows for just a handful of actual sale events. Each row describes one matched part of a sale, not a separate reportable sale. Koinly and similar tools often already calculate the hard part: gain or loss for each disposal and, where relevant, the holding-period split. The Portuguese bottleneck is different: the taxpayer still needs to turn this generic export detail into lines that can be entered into the right Modelo 3 annex, determine the `País da Fonte` for each line under Portuguese rules, and prepare the result for manual entry.
 
-Demo asset: `resources/source/example/koinly2024/koinly_2024_capital_gains_report_xY9kLm2pQr_1700000000.csv` -- 900 rows of synthetic FIFO-lot data representing 4 actual disposals.
+Demo asset: `resources/source/example/2024/koinly/koinly_2024_capital_gains_report_xY9kLm2pQr_1700000000.csv` -- 900 rows of synthetic FIFO-lot data representing 4 actual disposals.
 
 ---
 
@@ -109,7 +109,7 @@ Disposal: 15/03/2024 | BTC | Kraken | Short term | Amount: 0.00350000 | Cost: 35
 
 This single line is what goes on Anexo J Quadro 9.4 for foreign-source capital gains. The aggregation collapses the 350 FIFO rows into one reporting row. The official form only has Ano/Mês/Dia date columns (modelo3_anexo_j_2025.pdf), so the code groups by day-level date, matching the form's granularity. The underlying detail remains in the Koinly CSV source file for auditability.
 
-Source: `resources/source/example/koinly2024/koinly_2024_capital_gains_report_xY9kLm2pQr_1700000000.csv` (rows 1-350).
+Source: `resources/source/example/2024/koinly/koinly_2024_capital_gains_report_xY9kLm2pQr_1700000000.csv` (rows 1-350).
 
 ---
 

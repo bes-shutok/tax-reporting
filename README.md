@@ -135,7 +135,7 @@ The repository ships fully synthetic example data in `resources/source/example/`
 **Example files:**
 - `resources/source/example/ib_export.csv` - Fake IB export with shares trades and dividends
 - `resources/source/example/shares-leftover.csv` - Leftover trades from a prior year for rollover integration
-- `resources/source/example/koinly2024/` - Fake Koinly exports for crypto capital gains, rewards, and transaction history (for token origin resolution)
+- `resources/source/example/2024/koinly/` - Fake Koinly exports for crypto capital gains, rewards, and transaction history (for token origin resolution)
 
 **Features demonstrated:**
 - Shares capital gains (FIFO buy/sell matching)

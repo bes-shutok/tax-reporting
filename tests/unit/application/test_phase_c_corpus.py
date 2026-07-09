@@ -1,7 +1,7 @@
 """Phase C corpus characterization tests.
 
 Loads each of the six committed synthetic Koinly scenario directories under
-``resources/source/example/koinly2025_<scenario>/`` and asserts the
+``resources/source/example/2025/koinly/<scenario>/`` and asserts the
 sanctioned Phase A + Phase B chain produces a stable ``Treatment`` member
 and a stable ``TxCorrelationKey`` per TH row. The tests are
 verification-only: no production code is changed by this module or by the
@@ -77,7 +77,7 @@ _SCENARIOS: tuple[str, ...] = (
     "derivatives_close",
 )
 
-_EXAMPLE_ROOT = Path("resources/source/example")
+_EXAMPLE_ROOT = Path("resources/source/example/2025/koinly")
 
 # Reward / airdrop / lp tag literals replicated inline from
 # ``src/tax_reporting/application/token_origin.py`` lines 243, 248, 253.
@@ -100,7 +100,7 @@ _LOAN_REPAYMENT_TAGS: frozenset[str] = frozenset(t for t in _LOAN_PRINCIPAL_TAGS
 
 def _scenario_dir(scenario: str) -> Path:
     """Return the committed synthetic fixture directory for ``scenario``."""
-    return _EXAMPLE_ROOT / f"koinly2025_{scenario}"
+    return _EXAMPLE_ROOT / scenario
 
 
 def _th_csv(scenario: str) -> Path:
@@ -108,9 +108,9 @@ def _th_csv(scenario: str) -> Path:
 
     Per CLAUDE.md, Koinly TH files use the ``*transaction_history*.csv``
     filename token. The committed scenario fixtures follow the
-    ``koinly_2025_transaction_history_synth.csv`` naming convention.
+    ``koinly_2025_transaction_history.csv`` naming convention.
     """
-    return _scenario_dir(scenario) / "koinly_2025_transaction_history_synth.csv"
+    return _scenario_dir(scenario) / "koinly_2025_transaction_history.csv"
 
 
 class _StubRegistry:
@@ -151,7 +151,7 @@ def _row_platform(transaction_history_row: object) -> str | None:
     to the production evidence aggregator.
 
     A ``crypto_deposit`` row (e.g. the borrowing-side ``Tag="Loan"`` row in
-    ``koinly2025_loan_affected_rebuild/``) has a blank sending side, so its
+    ``2025/koinly/loan_affected_rebuild/``) has a blank sending side, so its
     platform signal is the receiving wallet; without the ``"Unknown"``
     skip the row would attribute to ``"Unknown"`` and the stub would return
     None, classifying the row as UNKNOWN instead of the production CEX.
@@ -358,7 +358,7 @@ class TestPhaseCCorpus:
         Phase A policy: DEX wallets SHOULD carry ``TxHash``; a missing
         tx-id is a data-quality oddity the correlation-key resolver
         surfaces loudly via the review flag. The Ledger Berachain (BERA)
-        DEX row in ``koinly2025_dex_cex_tx_id_absence/`` has an empty
+        DEX row in ``2025/koinly/dex_cex_tx_id_absence/`` has an empty
         ``TxHash``.
         """
         transactions = _build_transactions("dex_cex_tx_id_absence")
@@ -375,7 +375,7 @@ class TestPhaseCCorpus:
 
         Phase A policy: CEX wallets routinely omit ``TxHash`` for internal
         movements; missing tx-id is expected and silent. The Kraken CEX
-        row in ``koinly2025_dex_cex_tx_id_absence/`` has an empty
+        row in ``2025/koinly/dex_cex_tx_id_absence/`` has an empty
         ``TxHash`` and must NOT trip the review flag.
         """
         transactions = _build_transactions("dex_cex_tx_id_absence")
@@ -389,7 +389,7 @@ class TestPhaseCCorpus:
     def test_summer_time_drift_uses_utc_instant(self) -> None:
         """The TH composite key and the localized CG instant agree on UTC.
 
-        The ``koinly2025_summer_time_drift/`` TH row encodes a
+        The ``2025/koinly/summer_time_drift/`` TH row encodes a
         ``2025-07-14 23:30:00 UTC`` disposal (which is ``2025-07-15 00:30
         WEST`` in mainland-Portugal summer time). The legacy local-date
         key would use ``2025-07-15``; the new path's composite key MUST
@@ -444,7 +444,7 @@ class TestPhaseCCorpus:
         )
         from tax_reporting.application.token_origin import TokenOriginResolver
 
-        cg_path = _scenario_dir("summer_time_drift") / "koinly_2025_capital_gains_report_synth.csv"
+        cg_path = _scenario_dir("summer_time_drift") / "koinly_2025_capital_gains_report.csv"
         context = CapitalGainsParsingContext(
             skipped_assets={},
             origin_resolver=TokenOriginResolver(),
@@ -464,7 +464,7 @@ class TestPhaseCCorpus:
     def test_multi_lot_ogr_one_event_many_lots(self) -> None:
         """Pin the TH-side identity: one TH row -> one tx-id-anchored key.
 
-        The ``koinly2025_multi_lot_ogr/`` TH row's legacy key
+        The ``2025/koinly/multi_lot_ogr/`` TH row's legacy key
         ``(2025-03-10, ETH, Kraken)`` joins to TWO CG lots in the CG
         report, but the TH row's ``TxCorrelationKey`` is one stable
         Transaction identity anchored on the TH ``TxHash``. The key's
@@ -492,7 +492,7 @@ class TestPhaseCCorpus:
         # lots on the same legacy key. This is a fixture-shape check; it
         # does NOT prove the new path joins both lots onto the key below
         # (that join is Phase D work, not implemented in this diff).
-        cg_rows = read_koinly_rows(_scenario_dir("multi_lot_ogr") / "koinly_2025_capital_gains_report_synth.csv")
+        cg_rows = read_koinly_rows(_scenario_dir("multi_lot_ogr") / "koinly_2025_capital_gains_report.csv")
         assert len(cg_rows) == 2, f"expected 2 CG lots in multi_lot_ogr, found {len(cg_rows)}; scenario shape drifted"
 
         key, _requires_review = TxCorrelationKeyResolver.resolve(transaction)

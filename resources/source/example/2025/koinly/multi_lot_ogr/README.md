@@ -8,7 +8,7 @@ OGR Profit row on the same legacy key. The scenario is the structural backstop
 for the per-Transaction grouping the Phase D OGR override flip depends on.
 Backs `tests/unit/application/test_phase_c_corpus.py::test_corpus_scenario[multi_lot_ogr]`.
 
-All four files use the `_synth.csv` filename token. The TH `TxHash` is the
+All four files follow the canonical Koinly export naming (`koinly_<year>_<report>.csv`). The TH `TxHash` is the
 synthetic identifier `synth-txhash-multilot-001` - deliberately NOT a real
 hash shape (no `0x` prefix, no 64-hex run) so it cannot trip the Phase C
 Invariant 4 regex; no real wallet addresses or on-chain identifiers appear
@@ -23,10 +23,10 @@ the contested join target.
 
 | File | Mandatory | Purpose |
 |------|-----------|---------|
-| `koinly_2025_capital_gains_report_synth.csv` | yes | Two FIFO lots on the same `(2025-03-10, ETH, Kraken)` key (0.5 ETH cost 800 EUR + 0.5 ETH cost 850 EUR, total proceeds 2000 EUR) |
-| `koinly_2025_income_report_synth.csv` | yes | One synthetic cashback row (loader's all-or-nothing validation) |
-| `koinly_2025_other_gains_report_synth.csv` | yes | One OGR Profit row matching the same key (`Value (EUR)=1000`, `Type=Profit`) |
-| `koinly_2025_transaction_history_synth.csv` | yes | A `crypto_withdrawal` of 1.0 ETH from Kraken with empty `Tag` and the placeholder `TxHash` |
+| `koinly_2025_capital_gains_report.csv` | yes | Two FIFO lots on the same `(2025-03-10, ETH, Kraken)` key (0.5 ETH cost 800 EUR + 0.5 ETH cost 850 EUR, total proceeds 2000 EUR) |
+| `koinly_2025_income_report.csv` | yes | One synthetic cashback row (loader's all-or-nothing validation) |
+| `koinly_2025_other_gains_report.csv` | yes | One OGR Profit row matching the same key (`Value (EUR)=1000`, `Type=Profit`) |
+| `koinly_2025_transaction_history.csv` | yes | A `crypto_withdrawal` of 1.0 ETH from Kraken with empty `Tag` and the placeholder `TxHash` |
 
 ## Scenario and the test it backs
 

@@ -414,8 +414,9 @@ def _resolve_koinly_directory(
         if year_subdir.is_dir():
             return year_subdir
 
-    # Legacy personal layout (``koinly<year>``) and the committed synthetic
-    # ``example/koinly<year>_*`` fixtures: scan ``base_dir`` for ``koinly*`` dirs.
+    # Legacy personal layout fallback: ``base_dir`` itself is a ``koinly<year>`` dir.
+    # Modern layouts (real data and committed synthetic fixtures) resolve via the
+    # ``<year>/koinly`` subdir lookup above; this glob only catches the legacy flat form.
     candidates = [path for path in base_dir.iterdir() if path.is_dir() and path.name.lower().startswith("koinly")]
     if not candidates:
         return None

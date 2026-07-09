@@ -2,7 +2,7 @@
 
 Verifies (per docs/history/plans/2026-06-18-crypto-payment-proceeds.md Task 6)
 that the committed synthetic example case in
-``resources/source/example/koinly2025_payment/`` - a Koinly Payment disposal of
+``resources/source/example/2025/koinly/payment/`` - a Koinly Payment disposal of
 an EUR-pegged stablecoin (EUROC) whose CG ``Proceeds (EUR) == 0`` because Koinly's
 price DB had no match for the imported ticker - no longer carries a phantom
 full-cost loss after the correction is wired into ``load_koinly_crypto_report``.
@@ -32,8 +32,9 @@ _FIXTURE_DIR = KOINLY_2025_PAYMENT_EXAMPLE_DIR
 def _find_fixture(pattern: str) -> Path:
     """Find a synthetic Koinly fixture CSV by glob pattern.
 
-    The committed synthetic example directory uses the fixed ``_synth.csv``
-    filename token, so glob discovery resolves exactly one file per pattern.
+    The committed synthetic example directory uses the canonical Koinly
+    export naming (``koinly_<year>_<report>.csv``), so glob discovery
+    resolves exactly one file per pattern.
     """
     matches = sorted(_FIXTURE_DIR.glob(pattern))
     assert matches, f"Expected exactly one synthetic fixture matching {pattern!r} under {_FIXTURE_DIR}"
@@ -49,8 +50,8 @@ def _require_payment_pair() -> tuple[Path, Path, dict[str, str]]:
     """
     from tax_reporting.infrastructure.koinly_parser import read_koinly_rows
 
-    cg_path = _find_fixture("koinly_2025_capital_gains_report_*.csv")
-    th_path = _find_fixture("koinly_2025_transaction_history_*.csv")
+    cg_path = _find_fixture("koinly_2025_capital_gains_report*.csv")
+    th_path = _find_fixture("koinly_2025_transaction_history*.csv")
 
     # Locate the Payment-tagged TH disposal row (the motivating case).
     th_rows = read_koinly_rows(th_path)
@@ -65,7 +66,7 @@ def test_synthetic_fixture_contains_payment_scenarios() -> None:
     Parses the committed example CSVs and asserts the payment scenario is
     present.
     """
-    cg_path = _FIXTURE_DIR / "koinly_2025_capital_gains_report_synth.csv"
+    cg_path = _FIXTURE_DIR / "koinly_2025_capital_gains_report.csv"
     assert cg_path.exists(), f"Payment CG report not found: {cg_path}"
     with cg_path.open(encoding="utf-8") as f:
         content = f.read()

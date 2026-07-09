@@ -674,3 +674,42 @@ When reviewing for operator precedence bugs involving logical `or` and `and`, ve
 4. In code review of regression tests, treat "test name claims to guard X but no assertion invokes X's production path" as a finding even when all assertions pass; green is not sufficient when the assertion is on an adjacent path.
 
 **See also:** `src/tax_reporting/application/crypto_reporting.py::_parse_capital_gains_file` (production CG-date parsing with `zone=`), `src/tax_reporting/infrastructure/koinly_parser.py::parse_koinly_datetime`, `tests/unit/application/test_phase_c_corpus.py::test_summer_time_drift_uses_utc_instant`, `docs/history/reviews/2026-07-08-th-tx-view-phase-c-code-review-r1.md` Finding 1.
+
+## 47. Renaming Fixture Paths or Filenames Requires a Multi-Pattern Grep Across All Tests (Conftest Constants Are an Abstraction Over Scattered References)
+
+**Principle:** Family H (Verify the real thing, not the abstraction) - a conftest path constant (`KOINLY_2025_ZERO_BASIS_EXAMPLE_DIR = Path("...")`) is an abstraction over the many concrete places that reference the fixture path or filenames: test docstrings, inline `_FIXTURE_DIR / "koinly_..._synth.csv"` joins, glob patterns (`glob("koinly_2025_capital_gains_report_*.csv")`), and prose comments. Updating the constant alone leaves the scattered references stale. Compounded by Family G (Data-loss observability) - a stale glob pattern silently matches zero files, so a test that should load the fixture either skips silently or fails with a confusing "file not found" that does not name the rename as the cause.
+
+**Trigger:** You are renaming or moving fixture files/directories (e.g. `koinly2025_zero_basis/` -> `2025/koinly/zero_basis/`, or dropping a `_synth.csv` filename suffix). The natural reflex is to update the conftest path constant, update the test files you remember touch this fixture, and run the suite. Before stopping, ask: "Have I grepped ALL test files (`tests/`) for EVERY shape the rename touches - the directory name, the filename, the filename stem, and the glob pattern - not just the conftest constant?"
+
+**Rule:**
+1. When renaming a fixture path or filename, run a multi-pattern grep across ALL test files for EVERY shape the rename touches, in one pass:
+   - the directory name (old and new): `grep -rn 'koinly2025_zero_basis\|2025/koinly/zero_basis' tests/`
+   - the full filename (old and new): `grep -rn 'koinly_2025_capital_gains_report_synth\|koinly_2025_capital_gains_report\.csv' tests/`
+   - the filename stem as a glob prefix: `grep -rn 'koinly_2025_capital_gains_report_\*\|koinly_2025_capital_gains_report\*' tests/`
+   - any docstring or prose mention of the old path/filename
+2. Update conftest constants AND every scattered reference in the same commit; do not leave a follow-up "I'll catch the rest later" because the test suite will not surface all stale references at once (some are in `@pytest.mark.skip`'d tests, some in docstrings that are never executed).
+3. When the rename drops a token that a hygiene check enforces as a synthetic-data marker (e.g. `_synth.csv` suffix), the hygiene check MUST evolve in the same commit - either to scope by path (`under example/<year>/koinly/`) or to validate canonical naming via regex. Deleting the hygiene check entirely (on the theory that "the path now identifies it") loses the canonical-naming enforcement and lets non-canonical filenames leak in later.
+4. After the rename, run the full test suite (not just the obviously-affected test file); stale glob patterns in unrelated test files fail only when those tests run.
+
+**What happened (2026-07-08 fixture-layout-realign refactor):** The refactor moved 10 fixture folders to a new layout (`koinly2025_<scenario>/` -> `2025/koinly/<scenario>/`) and dropped the `_synth.csv` filename suffix. The initial sweep updated `tests/conftest.py` constants and the obviously-affected test files, but missed:
+- `tests/end_to_end/test_crypto_zero_basis_materiality.py` - docstring still named `koinly2025_zero_basis` and an inline `_FIXTURE_DIR / "koinly_2025_capital_gains_report_synth.csv"` reference; caught only in a final verification sweep after unrelated tests started failing.
+- Multiple test files used glob patterns like `koinly_2025_capital_gains_report_*.csv` that required the `_` separator before the wildcard; after the `_synth` suffix was dropped the filename became `koinly_2025_capital_gains_report.csv` (no match). The patterns had to be relaxed to `koinly_2025_capital_gains_report*.csv`.
+- `test_example_report_generation.py` had a hygiene check enforcing `_synth.csv` / `_example.csv` as the synthetic-data marker; dropping the suffix broke the check, which had to be reworked to scope by path (`example/<year>/koinly/`) and validate canonical naming via regex `^koinly_\d{4}_.*\.csv$`.
+- `README.md:138` and a walkthrough doc still referenced `example/koinly2024/`; missed in the initial doc sweep.
+
+The conftest path constant looked like a single source of truth, but the fixture path was referenced in 5+ test files plus docs in shapes the constant did not cover (docstring prose, glob patterns, inline joins, hygiene regex).
+
+**Why this happens:** Test fixtures are referenced in more shapes than production code: production code reads fixtures through one reader function with one glob; tests reference them through conftest constants, inline path joins, glob patterns, docstring examples, and hygiene assertions. A rename that "follows the imports" finds the conftest and direct callers but misses the prose and glob references. The conftest constant is an abstraction; the scattered references are the real thing.
+
+**Distinguishing from lesson #44 (Test-Helper Platform Attribution Must Mirror Production):** #44 is about a test HELPER diverging from production's skip rule. This lesson is about scattered REFERENCES to a fixture path/filename diverging from the conftest constant after a rename. #44's fix is to mirror the production skip rule; this lesson's fix is to grep every shape of the rename across all tests and docs.
+
+**Distinguishing from CLAUDE.md "grep ALL test files" rules (function signature changes, output text changes, data-flow semantics):** Those rules cover three specific shapes (callers of changed functions, row-locators matching stale labels, assertions referencing affected identity tuples). None of them cover fixture path/filename renames. This lesson extends the same discipline to a fourth shape: fixture path and filename references in docstrings, globs, inline joins, and hygiene checks.
+
+**Required behavior:**
+1. Before committing a fixture rename, grep ALL test files for the directory name, the filename, the filename stem as a glob prefix, and prose mentions - in one multi-pattern pass per shape.
+2. Update conftest constants AND every scattered reference in the same commit; do not defer.
+3. When the rename invalidates a hygiene check that enforced the renamed token as a marker, evolve the check in the same commit (path-scope + canonical-naming regex), do not delete it.
+4. Run the full test suite after the rename, not just the obviously-affected test file; stale references in unrelated tests surface only when those tests run.
+5. Grep docs (`README.md`, walkthrough docs, maintenance docs) in the same pass; the conftest constant does not cover prose references.
+
+**See also:** `tests/conftest.py` (`KOINLY_2025_*_EXAMPLE_DIR` constants), `tests/end_to_end/test_example_report_generation.py` (synthetic-filename hygiene check, reworked to path-scope + canonical-naming regex), `tests/end_to_end/test_crypto_zero_basis_materiality.py` (missed in initial sweep), branch `2026-07-08-fixture-layout-realign` commit `df1982a`.

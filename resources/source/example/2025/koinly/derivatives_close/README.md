@@ -93,12 +93,12 @@ Phase B Invariant 6 precedence at the overlap.
 
 | File | Mandatory | Purpose |
 |------|-----------|---------|
-| `koinly_2025_capital_gains_report_synth.csv` | yes | Two disposals on ByBit: `0,00100000` ETH at `10/03/2025 12:00` (cost 3 EUR, proceeds 5 EUR, gain 2 EUR - the realized-PnL close CG row) and `0,00010000` ETH at `12/03/2025 12:00` (cost 0,30 EUR, proceeds 0,25 EUR, loss 0,05 EUR - the futures-fee settlement CG row). Production routes both through OGR when `use_other_gains_report=True`; the CG rows are support detail. |
-| `koinly_2025_income_report_synth.csv` | yes | One synthetic cashback row (loader's all-or-nothing validation) |
-| `koinly_2025_other_gains_report_synth.csv` | yes | TWO OGR rows: one Profit (`Value (EUR)=2,00`, `Type=Profit`) matching the realized-gain key, one Loss (`Value (EUR)=-0,05`, `Type=Loss`) matching the futures-fee key |
-| `koinly_2025_transaction_history_synth.csv` | yes | TWO rows: (a) `crypto_withdrawal` `Tag="Realized gain"` sending `0,00100000` ETH from ByBit at `2025-03-10 12:00:00 UTC`; (b) `crypto_exchange` `Tag="Futures fee"` sending `0,00010000` ETH from ByBit for `0,25` EUR at `2025-03-12 12:00:00 UTC`. All `TxHash`, `TxSrc`, `TxDest` empty (CEX-style; ByBit is CEX in the stub registry) |
+| `koinly_2025_capital_gains_report.csv` | yes | Two disposals on ByBit: `0,00100000` ETH at `10/03/2025 12:00` (cost 3 EUR, proceeds 5 EUR, gain 2 EUR - the realized-PnL close CG row) and `0,00010000` ETH at `12/03/2025 12:00` (cost 0,30 EUR, proceeds 0,25 EUR, loss 0,05 EUR - the futures-fee settlement CG row). Production routes both through OGR when `use_other_gains_report=True`; the CG rows are support detail. |
+| `koinly_2025_income_report.csv` | yes | One synthetic cashback row (loader's all-or-nothing validation) |
+| `koinly_2025_other_gains_report.csv` | yes | TWO OGR rows: one Profit (`Value (EUR)=2,00`, `Type=Profit`) matching the realized-gain key, one Loss (`Value (EUR)=-0,05`, `Type=Loss`) matching the futures-fee key |
+| `koinly_2025_transaction_history.csv` | yes | TWO rows: (a) `crypto_withdrawal` `Tag="Realized gain"` sending `0,00100000` ETH from ByBit at `2025-03-10 12:00:00 UTC`; (b) `crypto_exchange` `Tag="Futures fee"` sending `0,00010000` ETH from ByBit for `0,25` EUR at `2025-03-12 12:00:00 UTC`. All `TxHash`, `TxSrc`, `TxDest` empty (CEX-style; ByBit is CEX in the stub registry) |
 
-`koinly_2025_other_gains_report_synth.csv` is mandatory for this scenario:
+`koinly_2025_other_gains_report.csv` is mandatory for this scenario:
 the OGR rows are the production P&L carrier under DP-010/DP-012 Quadro 13
 routing, and the loader's all-or-nothing validation requires OGR alongside
 CG/Income/TH when any OGR row is present.

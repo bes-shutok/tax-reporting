@@ -30,11 +30,11 @@ corpus test asserts this by inspecting `TxCorrelationKey.composite`.
 
 | File | Mandatory | Purpose |
 |------|-----------|---------|
-| `koinly_2025_capital_gains_report_synth.csv` | yes | One ETH disposal on `(2025-07-15 local = 2025-07-14 UTC, ETH, Kraken)` with `proceeds=300, cost=200 EUR` (summer-midnight drift shape) |
-| `koinly_2025_income_report_synth.csv` | yes | One synthetic cashback row (loader's all-or-nothing validation) |
-| `koinly_2025_transaction_history_synth.csv` | yes | A `crypto_withdrawal` of `1,00000000` ETH from `Kraken` at `2025-07-14 23:30:00 UTC`, `Tag=""`, with the placeholder `TxHash` |
+| `koinly_2025_capital_gains_report.csv` | yes | One ETH disposal on `(2025-07-15 local = 2025-07-14 UTC, ETH, Kraken)` with `proceeds=300, cost=200 EUR` (summer-midnight drift shape) |
+| `koinly_2025_income_report.csv` | yes | One synthetic cashback row (loader's all-or-nothing validation) |
+| `koinly_2025_transaction_history.csv` | yes | A `crypto_withdrawal` of `1,00000000` ETH from `Kraken` at `2025-07-14 23:30:00 UTC`, `Tag=""`, with the placeholder `TxHash` |
 
-No `koinly_2025_other_gains_report_synth.csv` is shipped: OGR is optional
+No `koinly_2025_other_gains_report.csv` is shipped: OGR is optional
 for this scenario (loader's all-or-nothing validation only requires
 CG/Income/TH; the absence of an OGR file is permitted).
 

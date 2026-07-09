@@ -7,7 +7,7 @@ personal data. Backs `tests/end_to_end/test_crypto_derivatives_separation.py` an
 the six real-data tests in `tests/unit/application/test_crypto_reporting.py`
 (migrated by plan Tasks 3 and 6).
 
-All four files use the `_synth.csv` filename token. `TxHash`, `TxSrc`, and `TxDest`
+All four files follow the canonical Koinly export naming (`koinly_<year>_<report>.csv`). `TxHash`, `TxSrc`, and `TxDest`
 are empty for every Transaction History row. `Sending Wallet` / `Receiving Wallet`
 use only the synthetic labels `Demo Spot` and `Demo Futures` (never real exchange
 names).
@@ -16,10 +16,10 @@ names).
 
 | File | Mandatory | Purpose |
 |------|-----------|---------|
-| `koinly_2025_capital_gains_report_synth.csv` | yes | CG disposal lots |
-| `koinly_2025_income_report_synth.csv` | yes | One synthetic reward row |
-| `koinly_2025_transaction_history_synth.csv` | yes | Derivatives-label events + spot purchases |
-| `koinly_2025_other_gains_report_synth.csv` | yes (OGR path) | Profit + Loss rows for the derivatives P&L split |
+| `koinly_2025_capital_gains_report.csv` | yes | CG disposal lots |
+| `koinly_2025_income_report.csv` | yes | One synthetic reward row |
+| `koinly_2025_transaction_history.csv` | yes | Derivatives-label events + spot purchases |
+| `koinly_2025_other_gains_report.csv` | yes (OGR path) | Profit + Loss rows for the derivatives P&L split |
 
 ## Scenarios and the tests they back
 

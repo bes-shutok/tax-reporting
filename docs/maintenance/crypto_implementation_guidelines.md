@@ -583,14 +583,14 @@ Multiple review iterations were necessary: fixes in one pass revealed new issues
 ### Committed Synthetic Fixtures & CI Independence
 
 To ensure tests execute reliably in Continuous Integration (CI) and are not coupled to user-specific exports, all crypto tests MUST read committed synthetic data instead of gitignored personal exports:
-- **Zero Local-Data Dependency**: Tests must never load files from gitignored personal directories like `resources/source/koinly<year>/` or check for their presence. All test fixtures must reside under `resources/source/example/koinly<year>_<scenario>/`.
+- **Zero Local-Data Dependency**: Tests must never load files from gitignored personal directories like `resources/source/<year>/koinly/` or check for their presence. All test fixtures must reside under `resources/source/example/<year>/koinly/[<scenario>/]`.
 - **Enforcement Mechanisms**:
-  - The `test_example_data_is_synthetic` hygiene assertion scans all committed example CSVs to verify filenames end in `_synth.csv` or `_example.csv`, sensitive transaction fields are empty, and wallets match a strict synthetic allowlist.
-  - The validation script (moving personal `koinly2025` aside using a trap) ensures no tests implicitly read local folders.
+  - The `test_example_data_is_synthetic` hygiene assertion scans committed example CSVs under `example/<year>/koinly/` to verify filenames follow the canonical Koinly export shape (`koinly_<year>_<report>.csv`), sensitive transaction fields are empty, and wallets match a strict synthetic allowlist. The path structure (under `example/<year>/koinly/`) is the synthetic-vs-real marker; no `_synth.csv` filename suffix is required.
+  - The validation script (moving personal `<year>/koinly` aside using a trap) ensures no tests implicitly read local folders.
 
 ### Synthetic Example Data Generation & Maintenance Workflow
 
-When creating or updating example files (e.g., under `resources/source/example/koinly2025/`):
+When creating or updating example files (e.g., under `resources/source/example/2025/koinly/`):
 1. **Fabricate Details**: Use fictional wallet/exchange labels (e.g. `Demo Spot`, `Demo Futures`, `Demo Payment`, `Wirex`) and simulated asset quantities.
 2. **Clear Sensitive Data**: All blockchain-specific unique identifiers (`TxHash`, `TxSrc`, `TxDest`) must be completely empty (empty strings) in every row of the transaction history CSV.
 3. **Decouple Scenarios**: Keep distinct test behaviors (e.g., derivatives separation, zero-basis materiality, payment-proceeds correction) in separate subdirectories to avoid test pollution or unintended lot matching.

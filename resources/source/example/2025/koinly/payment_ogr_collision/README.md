@@ -27,9 +27,9 @@ NOT in `crypto_fifo/`; the agree-branch over-count defense (commit `7f9b8b8`,
 (`_apply_agree_first_lot` first-lot-absorbs distribution). Phase D's
 removal targets those sites.
 
-All four files use the `_synth.csv` filename token. The TH `TxHash`, `TxSrc`,
+All four files follow the canonical Koinly export naming (`koinly_<year>_<report>.csv`). The TH `TxHash`, `TxSrc`,
 and `TxDest` are EMPTY - the established CEX convention from
-`koinly2025_payment/` (no real hash shape, no `0x` prefix, no 64-hex run, so
+`2025/koinly/payment/` (no real hash shape, no `0x` prefix, no 64-hex run, so
 the Phase C Invariant 4 regex
 `(0x[0-9a-fA-F]{40,})|([0-9a-fA-F]{64})` cannot trip). No real wallet
 addresses or on-chain identifiers appear anywhere. `Sending Wallet` /
@@ -44,10 +44,10 @@ target.
 
 | File | Mandatory | Purpose |
 |------|-----------|---------|
-| `koinly_2025_capital_gains_report_synth.csv` | yes | One EUROC disposal on `(2025-06-15, EUROC, Wirex)` with `proceeds=0, cost=20 EUR` (phantom-loss shape; Koinly could not price EUROC) |
-| `koinly_2025_income_report_synth.csv` | yes | One synthetic cashback row (loader's all-or-nothing validation) |
-| `koinly_2025_other_gains_report_synth.csv` | yes | One OGR Loss row matching the same key (`Value (EUR)=15,00`, `Type=Loss`) |
-| `koinly_2025_transaction_history_synth.csv` | yes | A `crypto_withdrawal` of `100,00000000` EUROC from `Wirex` with `Tag="Payment"`, `Net Value (EUR) == "0,00"`, and empty `TxHash` (CEX, falls back silently per Phase A policy) |
+| `koinly_2025_capital_gains_report.csv` | yes | One EUROC disposal on `(2025-06-15, EUROC, Wirex)` with `proceeds=0, cost=20 EUR` (phantom-loss shape; Koinly could not price EUROC) |
+| `koinly_2025_income_report.csv` | yes | One synthetic cashback row (loader's all-or-nothing validation) |
+| `koinly_2025_other_gains_report.csv` | yes | One OGR Loss row matching the same key (`Value (EUR)=15,00`, `Type=Loss`) |
+| `koinly_2025_transaction_history.csv` | yes | A `crypto_withdrawal` of `100,00000000` EUROC from `Wirex` with `Tag="Payment"`, `Net Value (EUR) == "0,00"`, and empty `TxHash` (CEX, falls back silently per Phase A policy) |
 
 ## Scenario and the test it backs
 
@@ -90,7 +90,7 @@ block is NOT removed in Phase C.
 
 Per Phase C Invariant 4: no real wallet addresses, no real tx hashes, no
 amounts traceable to personal data. `TxHash`, `TxSrc`, and `TxDest` are
-EMPTY (the established CEX convention from `koinly2025_payment/`; passes the
+EMPTY (the established CEX convention from `2025/koinly/payment/`; passes the
 `test_no_real_data_in_fixtures` regex
 `(0x[0-9a-fA-F]{40,})|([0-9a-fA-F]{64})` trivially because no `0x`-prefixed
 or 64-hex string appears anywhere). Amounts (100 EUROC, 20 EUR cost, 0

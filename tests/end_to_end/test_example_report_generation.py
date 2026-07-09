@@ -28,22 +28,24 @@ from tax_reporting.domain.collections import TradeCyclePerCompany
 
 EXAMPLE_DIR = Path("resources", "source", "example")
 EXAMPLE_IB_EXPORT = EXAMPLE_DIR / "ib_export.csv"
-EXAMPLE_KOINLY_DIR = EXAMPLE_DIR / "koinly2024"
+EXAMPLE_KOINLY_DIR = EXAMPLE_DIR / "2024" / "koinly"
 
 # Directories created by the crypto-tests-off-local-fixtures plan (2026-06-22) that ship
 # committed, fully-synthetic Koinly exports. The synthetic-data hygiene checks below are
-# scoped to these directories only: the legacy example/koinly2024/ files predate the
-# _synth.csv filename convention and use real-looking wallet names (Kraken, Binance) and
+# scoped to these directories only: the legacy example/2024/koinly/ files predate the
+# synthetic-data convention and use real-looking wallet names (Kraken, Binance) and
 # non-empty TxHash/TxSrc/TxDest values, so applying the checks globally would false-fail on
 # pre-existing legacy data (scope a new-convention validator to new work, or
 # accept-list the legacy token).
 SYNTHETIC_KOINLY_2025_DIRS = [
-    EXAMPLE_DIR / "koinly2025",
-    EXAMPLE_DIR / "koinly2025_zero_basis",
-    EXAMPLE_DIR / "koinly2025_payment",
+    EXAMPLE_DIR / "2025" / "koinly",
+    EXAMPLE_DIR / "2025" / "koinly" / "zero_basis",
+    EXAMPLE_DIR / "2025" / "koinly" / "payment",
 ]
-# Fixed, obviously-synthetic filename token suffixes permitted for the new example CSVs.
-SYNTHETIC_FILENAME_SUFFIXES = ("_synth.csv", "_example.csv")
+# The path structure (example/<year>/koinly/[<scenario>/]) is the synthetic marker;
+# no filename suffix is required. Suffix retained empty for backward-compat with any
+# downstream tooling that referenced the constant.
+SYNTHETIC_FILENAME_SUFFIXES = (".csv",)
 # Blockchain/personal-detail columns that must be empty in synthetic data.
 SENSITIVE_COLUMN_NAMES = ("TxHash", "TxSrc", "TxDest")
 # Wallet-bearing columns whose values must come from a small synthetic allowlist.
@@ -228,31 +230,32 @@ def test_example_data_is_synthetic():
     koinly_income = sorted(EXAMPLE_KOINLY_DIR.glob("*income_report*.csv"))[0]
     assert "aB3cDn5oEf" in koinly_income.name
 
-    # --- Synthetic-data hygiene for the new committed koinly2025* example fixtures ---
+    # --- Synthetic-data hygiene for the new committed example/2025/koinly/ fixtures ---
     # (Design Invariant #1: synthesis, not sanitization; Evaluation Criteria
     # "Synthetic-data hygiene"). Scoped to the directories created by the
-    # crypto-tests-off-local-fixtures plan: the legacy example/koinly2024/ files use a
+    # crypto-tests-off-local-fixtures plan: the legacy example/2024/koinly/ files use a
     # 10-char token, real wallet names (Kraken/Binance), and non-empty TxHash/TxSrc/TxDest,
     # so a global check would false-fail on pre-existing legacy data.
     scanned_csvs: list[Path] = []
     for synth_dir in SYNTHETIC_KOINLY_2025_DIRS:
         scanned_csvs.extend(sorted(synth_dir.glob("koinly_*.csv")))
     assert scanned_csvs, (
-        "Pre-condition failed: no koinly_*.csv files found under the synthetic koinly2025* "
-        "directories; the hygiene checks cannot run."
+        "Pre-condition failed: no koinly_*.csv files found under the synthetic "
+        "example/2025/koinly/ directories; the hygiene checks cannot run."
     )
 
-    # Sub-check 1: filename suffix. Every new example CSV must end in a fixed, obviously
-    # synthetic suffix (_synth.csv or _example.csv), never a 10-char mixed-case token.
+    # Sub-check 1: filename shape. Synthetic CSVs must follow the canonical Koinly export
+    # naming (koinly_<year>_<report>.csv), not the legacy 10-char mixed-case token form
+    # used by example/2024/koinly/. The path structure (under example/<year>/koinly/) is
+    # the synthetic-vs-real marker; no _synth suffix is required.
     bad_filenames = [
         csv_path
         for csv_path in scanned_csvs
-        if not csv_path.name.endswith(SYNTHETIC_FILENAME_SUFFIXES)
+        if not re.match(r"^koinly_\d{4}_.*\.csv$", csv_path.name)
     ]
     assert not bad_filenames, (
-        "Synthetic example CSVs must end in a fixed synthetic suffix "
-        f"({SYNTHETIC_FILENAME_SUFFIXES}); offending files: "
-        f"{[p.name for p in bad_filenames]}"
+        "Synthetic example CSVs must follow the koinly_<year>_<report>.csv naming; "
+        f"offending files: {[p.name for p in bad_filenames]}"
     )
 
     # Sub-checks 2 and 3 run per-file. Both gracefully skip columns that are absent from a

@@ -2,7 +2,7 @@
 
 Verifies (per docs/history/plans/2026-06-13-derivatives-separation.md Task 11)
 that the committed synthetic Koinly 2025 example
-fixture in ``resources/source/example/koinly2025/`` produces the expected split
+fixture in ``resources/source/example/2025/koinly/`` produces the expected split
 between Crypto Gains (spot fee disposal lots) and Derivatives P&L
 (art. 10(1)(e) realizations), and that disabling
 ``separate_derivatives_reporting`` reproduces the legacy mixed value exactly.
@@ -70,8 +70,9 @@ _FIXTURE_DIR = KOINLY_2025_EXAMPLE_DIR
 def _find_fixture(pattern: str) -> Path:
     """Find a synthetic Koinly fixture CSV by glob pattern.
 
-    The committed synthetic example directory uses the fixed ``_synth.csv``
-    filename token, so glob discovery resolves exactly one file per pattern.
+    The committed synthetic example directory uses the canonical Koinly
+    export naming (``koinly_<year>_<report>.csv``), so glob discovery
+    resolves exactly one file per pattern.
     """
     matches = sorted(_FIXTURE_DIR.glob(pattern))
     assert matches, (
@@ -83,15 +84,15 @@ def _find_fixture(pattern: str) -> Path:
 
 
 def _ogr_path() -> Path:
-    return _find_fixture("koinly_2025_other_gains_report_*.csv")
+    return _find_fixture("koinly_2025_other_gains_report*.csv")
 
 
 def _cg_path() -> Path:
-    return _find_fixture("koinly_2025_capital_gains_report_*.csv")
+    return _find_fixture("koinly_2025_capital_gains_report*.csv")
 
 
 def _th_path() -> Path:
-    return _find_fixture("koinly_2025_transaction_history_*.csv")
+    return _find_fixture("koinly_2025_transaction_history*.csv")
 
 
 _CASE1_DATE = "2025-01-12"

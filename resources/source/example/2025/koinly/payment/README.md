@@ -5,7 +5,7 @@ payment-proceeds correction (`infer_payment_proceeds`; see
 `application/crypto/payment_proceeds.py`) without any personal data. Backs
 `tests/end_to_end/test_crypto_payment_proceeds.py` (migrated by plan Task 5).
 
-All three files use the `_synth.csv` filename token. `TxHash`, `TxSrc`, and `TxDest`
+All three files follow the canonical Koinly export naming (`koinly_<year>_<report>.csv`). `TxHash`, `TxSrc`, and `TxDest`
 are empty for every Transaction History row. `Sending Wallet` / `Receiving Wallet`
 use only the synthetic label `Wirex` (the operator the real motivating case uses;
 `Wirex` IS registered in the operator platform map, so the disposal resolves a
@@ -17,9 +17,9 @@ the loader's all-or-nothing validation only requires the three mandatory files
 
 | File | Mandatory | Purpose |
 |------|-----------|---------|
-| `koinly_2025_capital_gains_report_synth.csv` | yes | One EUROC disposal with `proceeds=0, cost>0` |
-| `koinly_2025_income_report_synth.csv` | yes | One synthetic cashback row |
-| `koinly_2025_transaction_history_synth.csv` | yes | A `Payment`-tagged EUROC disposal with `Net Value (EUR) == 0` |
+| `koinly_2025_capital_gains_report.csv` | yes | One EUROC disposal with `proceeds=0, cost>0` |
+| `koinly_2025_income_report.csv` | yes | One synthetic cashback row |
+| `koinly_2025_transaction_history.csv` | yes | A `Payment`-tagged EUROC disposal with `Net Value (EUR) == 0` |
 
 ## Scenario and the tests it backs
 

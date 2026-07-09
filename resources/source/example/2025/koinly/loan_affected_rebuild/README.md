@@ -58,11 +58,11 @@ divergence through the production reader chain
 
 | File | Mandatory | Purpose |
 |------|-----------|---------|
-| `koinly_2025_capital_gains_report_synth.csv` | yes | Two disposals: `0,10000000` WBTC on ByBit at `20/05/2025 14:00` (cost 4000 EUR, proceeds 5000 EUR, gain 1000 EUR - the loan repayment CG row that production rebuilds from TH and excludes under DP-001 when `exclude_loan_repayment_gains=True`), and `0,05000000` ETH on ByBit at `15/06/2025 11:00` (cost 100 EUR, proceeds 150 EUR, gain 50 EUR - the contrast spot disposal) |
-| `koinly_2025_income_report_synth.csv` | yes | One synthetic cashback row (loader's all-or-nothing validation) |
-| `koinly_2025_transaction_history_synth.csv` | yes | THREE rows: (a) `crypto_deposit` `Tag="Loan"` receiving `0,10000000` WBTC at ByBit at `2025-04-10 10:00:00 UTC`; (b) `crypto_withdrawal` `Tag="Loan Repayment"` sending `0,10000000` WBTC from ByBit at `2025-05-20 14:00:00 UTC`; (c) `crypto_exchange` `Tag=""` sending `0,05000000` ETH from ByBit for `150,00` EUR at `2025-06-15 11:00:00 UTC`. All `TxHash`, `TxSrc`, `TxDest` empty (CEX-style; ByBit is CEX in the stub registry) |
+| `koinly_2025_capital_gains_report.csv` | yes | Two disposals: `0,10000000` WBTC on ByBit at `20/05/2025 14:00` (cost 4000 EUR, proceeds 5000 EUR, gain 1000 EUR - the loan repayment CG row that production rebuilds from TH and excludes under DP-001 when `exclude_loan_repayment_gains=True`), and `0,05000000` ETH on ByBit at `15/06/2025 11:00` (cost 100 EUR, proceeds 150 EUR, gain 50 EUR - the contrast spot disposal) |
+| `koinly_2025_income_report.csv` | yes | One synthetic cashback row (loader's all-or-nothing validation) |
+| `koinly_2025_transaction_history.csv` | yes | THREE rows: (a) `crypto_deposit` `Tag="Loan"` receiving `0,10000000` WBTC at ByBit at `2025-04-10 10:00:00 UTC`; (b) `crypto_withdrawal` `Tag="Loan Repayment"` sending `0,10000000` WBTC from ByBit at `2025-05-20 14:00:00 UTC`; (c) `crypto_exchange` `Tag=""` sending `0,05000000` ETH from ByBit for `150,00` EUR at `2025-06-15 11:00:00 UTC`. All `TxHash`, `TxSrc`, `TxDest` empty (CEX-style; ByBit is CEX in the stub registry) |
 
-No `koinly_2025_other_gains_report_synth.csv` is shipped: OGR is optional
+No `koinly_2025_other_gains_report.csv` is shipped: OGR is optional
 for this scenario (loader's all-or-nothing validation only requires
 CG/Income/TH; the absence of an OGR file is permitted). The scenario's
 purpose is the loan-tag-vs-repayment-tag resolver divergence, which is
