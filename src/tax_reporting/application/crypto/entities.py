@@ -233,6 +233,11 @@ class OperatorOrigin:
     service_start_date: str | None = None
     valid_from: str | None = None
     valid_until: str | None = None
+    # Platform-level WalletKind (CEX/DEX) sourced from the per-platform
+    # _PLATFORM_KIND mapping in operator_origin.py. Default None so existing
+    # constructors do not break; consumed by the production WalletKind
+    # registry adapter (Phase D Task 1).
+    wallet_kind: WalletKind | None = None
 
     def __post_init__(self) -> None:
         """Validate temporal validity fields and review_reason."""

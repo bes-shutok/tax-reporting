@@ -21,6 +21,7 @@ from ...domain.exceptions import ConfigurationError, ReportGenerationError
 from ...infrastructure.config import Config, load_configuration_from_file
 from ...infrastructure.logging_config import create_module_logger
 from ..crypto.aggregation import aggregate_taxable_rewards
+from ..crypto.wallet_kind_registry import ProductionWalletKindRegistry
 from .assumptions_sheet import write_assumptions_and_methodology_sheet
 from .crypto_gains_sheet import write_crypto_gains_sheet
 from .crypto_reconciliation_sheet import write_crypto_reconciliation_sheet
@@ -170,6 +171,7 @@ def generate_tax_report(  # noqa: PLR0912, PLR0915
                     workbook,
                     capital_entries=crypto_tax_report.capital_entries,
                     reward_entries=crypto_tax_report.reward_entries,
+                    registry=ProductionWalletKindRegistry(),
                 )
                 crypto_sheet_created = True
             except Exception as e:

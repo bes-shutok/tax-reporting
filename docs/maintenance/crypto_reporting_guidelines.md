@@ -189,3 +189,61 @@ Origin resolution uses the `TokenOriginResolver` class:
 - **Fallback**: When no matching transaction history row exists (CEX internal fills, history gaps, pre-Koinly acquisition dates, or epoch date `1970-01-01`), the resolver returns `unknown` with `low` confidence. It never guesses.
 - **Output format**: The `Token origin` column shows `"FROM_ASSET (method, confidence confidence)"` for resolved rows, or blank for unknown.
 - **Disclaimer**: Origin values are best-effort correlation from Koinly export data and should be reviewed against source documents before filing.
+
+## Per-Treatment Resolver Bypass (Phase D)
+
+**CRG-019**
+Each pipeline stage that identifies rows by treatment has a per-flag bypass
+that delegates identification to `resolve_treatment`
+(`application/crypto/treatment_resolver.py`) when the corresponding
+`treatment_*_via_resolver` flag (DP-019) is on. The legacy identification
+path for that treatment is unreachable while the flag is on; setting the flag
+to `false` restores it. The six flags map 1:1 to the six `Treatment` members
+and default to `true`.
+
+Per-stage bypass notes:
+
+- **OGR 1:1 override** (`apply_ogr_event_level` in
+  `application/crypto/ogr_event_level.py`, called from
+  `crypto_reporting.py::load_koinly_crypto_report`): when
+  `treatment_spot_disposal_via_resolver` is on, the override is applied only
+  to rows whose resolver treatment is `SPOT_DISPOSAL`; a non-SPOT_DISPOSAL
+  row sharing the same `(date, asset, wallet)` key is NOT overridden.
+- **Payment-proceeds correction** (`correct_payment_proceeds` in
+  `application/crypto/payment_proceeds.py`): when
+  `treatment_payment_via_resolver` is on, identification comes from the
+  resolver (PAYMENT-treatment TH rows); the count-equality gate is
+  unreachable. The re-zero snapshot/restore block in
+  `crypto_reporting.py::load_koinly_crypto_report` is bypassed ONLY when
+  BOTH `treatment_payment_via_resolver` AND
+  `treatment_spot_disposal_via_resolver` are on (under both-on, OGR skips
+  PAYMENT rows so the residual the re-zero block exists to close cannot
+  occur); under partial rollback `(spot_off, payment_on)` the re-zero block
+  still runs.
+- **Loan-affected asset discovery** (`discover_loan_affected_assets` in
+  `application/crypto_fifo/parsing.py`): when
+  `treatment_loan_repayment_via_resolver` is on, discovery consults
+  `Treatment.LOAN_REPAYMENT` rows AND `Treatment.OTHER` rows whose normalized
+  tag is `"loan"` (the borrowing-side principal creation); the
+  `_LOAN_PRINCIPAL_TAGS` membership check is unreachable. The extra
+  `OTHER + tag=loan` clause preserves the legacy asset set so borrow-only
+  assets remain in the FIFO rebuild.
+- **Derivatives dedup** (`apply_derivatives_dedup` in
+  `application/crypto/derivatives_dedup.py`): when
+  `treatment_derivatives_close_via_resolver` is on, identification delegates
+  to the resolver; the internal tag classifier is unreachable. The lot-level
+  dedup algorithm itself is unchanged.
+- **Reward/airdrop/LP identification** (`application/token_origin.py`): when
+  `treatment_reward_airdrop_lp_via_resolver` is on, identification delegates
+  to the resolver; the inline tag literals (`_DEFAULT_REWARD_TAGS`,
+  `_DEFAULT_AIRDROP_TAGS`, `_DEFAULT_LP_TAGS`) are unreachable for
+  identification (they remain the single source of truth the resolver reads
+  from).
+- **OTHER**: no legacy adapter exists; `treatment_other_via_resolver` is a
+  true no-op on output and exists for symmetry and forward-compatibility.
+
+The legacy adapters are bypassed, not deleted; Phase E owns deletion after a
+clean tax year closes. A required-presence loader guard in
+`infrastructure/config.py` raises `ConfigurationError` if any of the six
+flags is absent from a country section of the decision-points TOML.
+Cross-reference: DP-019, PT-C-038.

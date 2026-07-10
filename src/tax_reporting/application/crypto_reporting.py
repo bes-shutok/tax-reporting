@@ -10,6 +10,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from ..domain.exceptions import FileProcessingError
+from ..domain.transaction import Transaction
+from ..domain.treatment import Treatment
 from ..infrastructure.config import (
     DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS,
     DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD,
@@ -24,6 +26,7 @@ from ..infrastructure.koinly_parser import (
     normalize_platform_name,
     parse_koinly_datetime,
     parse_koinly_decimal,
+    parse_th_row,
     read_koinly_rows,
 )
 from .crypto.aggregation import (
@@ -40,7 +43,10 @@ from .crypto.classification import (
     _load_popular_crypto_tokens,  # noqa: F401
 )
 from .crypto.constants import ZERO
-from .crypto.derivatives_dedup import apply_derivatives_dedup
+from .crypto.derivatives_dedup import (
+    _load_derivatives_labels_config,
+    apply_derivatives_dedup,
+)
 from .crypto.entities import (
     AggregatedRewardIncomeEntry,  # noqa: F401
     CapitalGainPeriodStats,  # noqa: F401
@@ -83,10 +89,14 @@ from .crypto.payment_proceeds import (
     _get_payment_proceeds_config,
     correct_payment_proceeds,
 )
+from .crypto.transaction_factory import build_transaction
+from .crypto.treatment_resolver import TreatmentConfig, resolve_treatment
 from .crypto.validation import (
     _is_temporally_valid,  # noqa: F401
     _parse_transaction_date,  # noqa: F401
 )
+from .crypto.wallet_kind import aggregate_platform_evidence, classify_platform
+from .crypto.wallet_kind_registry import ProductionWalletKindRegistry
 from .crypto_fifo import (
     discover_loan_affected_assets,
 )
@@ -154,7 +164,73 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
     skipped_assets: dict[tuple[str, str], dict] = {}
     review_entries: list[CryptoReviewEntry] = []
 
-    origin_resolver = TokenOriginResolver(transaction_history_file)
+    # ---- Phase D: SINGLE production Transaction-construction site (post-Phase D).
+    # r8 Medium #1: ``load_koinly_crypto_report`` is the ONLY production caller of
+    # the Phase A sanctioned ``build_transaction(row, classification)`` factory.
+    # Tasks 4/5/6/7 consume this same ``transactions`` list (Family D
+    # single-source-of-truth); NONE of them constructs ``Transaction`` objects
+    # internally. r9 Monitor #1: gate the construction on ``any_resolver_on``
+    # so a full rollback (every flag off) skips the per-row cost entirely.
+    # Cost: thin factory + O(1) ``classify_platform`` per row; bounded by TH row
+    # count.
+    any_resolver_on = False
+    transactions: list[Transaction] = []
+    treatment_config: TreatmentConfig | None = None
+    if jurisdiction is not None:
+        any_resolver_on = any(
+            getattr(jurisdiction, f"treatment_{t.name.lower()}_via_resolver", False)
+            for t in Treatment
+        )
+    if any_resolver_on:
+        treatment_config = TreatmentConfig(
+            derivatives_tags=_load_derivatives_labels_config("koinly", year),
+        )
+        _th_rows_raw = read_koinly_rows(transaction_history_file)
+        # Parse each TH row defensively: a malformed row (e.g. ambiguous
+        # decimal) MUST NOT abort Transaction construction for the rest of
+        # the file. The production FIFO/payment-proceeds paths handle bad
+        # rows separately; the resolver-based filters consume only the rows
+        # that parse cleanly. Family G (data-loss observability): skip with
+        # a warning so the bad row is visible.
+        _parsed_th_rows: list = []
+        _construction_logger = logging.getLogger(__name__)
+        for _index, _raw_row in enumerate(_th_rows_raw):
+            try:
+                _parsed_th_rows.append(parse_th_row(_raw_row, row_index=_index))
+            except ValueError as _parse_exc:
+                _construction_logger.warning(
+                    "Skipping TH row %d during Phase D Transaction construction: %s. "
+                    "The row will not participate in resolver-based treatment filters.",
+                    _index,
+                    _parse_exc,
+                )
+        _evidence = aggregate_platform_evidence(_parsed_th_rows)
+        _registry = ProductionWalletKindRegistry()
+        for _row in _parsed_th_rows:
+            _sending = _row.sending_wallet.strip()
+            _platform_raw = (
+                _sending
+                if _sending and _sending.lower() != "unknown"
+                else _row.receiving_wallet.strip()
+            )
+            _platform = normalize_platform_name(_platform_raw) if _platform_raw else ""
+            _classification = classify_platform(
+                _platform,
+                _evidence.get(_platform) if _platform else None,
+                _registry,
+            )
+            transactions.append(build_transaction(_row, _classification))
+
+    origin_resolver = TokenOriginResolver(
+        transaction_history_file,
+        transactions=transactions,
+        config=treatment_config,
+        via_resolver=(
+            jurisdiction.treatment_reward_airdrop_lp_via_resolver
+            if jurisdiction is not None
+            else False
+        ),
+    )
 
     # Collect known asset tickers from both files BEFORE parsing
     # This allows zero-value entries for known tokens to be flagged for review
@@ -166,8 +242,17 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
 
     loan_affected_assets: frozenset[str] = frozenset()
     if fifo_rebuild_active:
+        # When ``treatment_loan_repayment_via_resolver=True``, ``any_resolver_on``
+        # is also True (the flag is one of the six driving the construction gate),
+        # so ``treatment_config`` is populated. When the flag is off, the legacy
+        # path ignores ``config``; pass a default to satisfy the keyword contract.
+        _loan_config = treatment_config if treatment_config is not None else TreatmentConfig()
         loan_affected_assets = discover_loan_affected_assets(
-            transaction_history_file, fiat_currency_codes=_get_all_fiat_currency_codes()
+            transaction_history_file,
+            fiat_currency_codes=_get_all_fiat_currency_codes(),
+            transactions=transactions,
+            config=_loan_config,
+            via_resolver=jurisdiction.treatment_loan_repayment_via_resolver,
         )
         if not loan_affected_assets:
             _fifo_logger.warning(
@@ -245,11 +330,29 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
 
     # Derivatives CG dedup must run after validation and before OGR split so
     # the classifier sees the filtered list (Design Invariant 2, 3).
+    # Phase D Task 6 (r8 Medium #1 carry-forward): when
+    # ``treatment_derivatives_close_via_resolver`` is on, identification
+    # delegates to the resolver over the pre-built ``transactions`` list
+    # (built ONCE in the Task 3 wiring step); the legacy internal classifier
+    # inside ``find_derivatives_th_events`` is bypassed. The dedup algorithm
+    # itself is unchanged. ``treatment_config`` was populated when
+    # ``any_resolver_on`` was True (Task 3 wiring step); when the flag is
+    # off, pass a default to satisfy the keyword contract (the legacy path
+    # ignores ``config``).
+    _derivatives_config = (
+        treatment_config if treatment_config is not None else TreatmentConfig()
+    )
     capital_entries = apply_derivatives_dedup(
         capital_entries=capital_entries,
         jurisdiction=jurisdiction,
         transaction_history_file=transaction_history_file,
         year=year,
+        transactions=transactions,
+        config=_derivatives_config,
+        via_resolver=(
+            jurisdiction is not None
+            and jurisdiction.treatment_derivatives_close_via_resolver
+        ),
     )
 
     # DP-015 fee removal runs EARLY, after derivatives dedup and BEFORE the
@@ -287,8 +390,24 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
     # apply_ogr_event_level rebuilds its result 1:1 in input order, so the
     # i-th post-OGR entry corresponds to the i-th pre-OGR entry. The snapshot+restore
     # runs only when the payment-proceeds flag is on (the residual only matters then).
+    #
+    # Phase D Task 4 PAYMENT flip (Invariant 8 + r7 Medium #2): NEST a new
+    # guard INSIDE the existing ``infer_payment_proceeds_active`` guard. The
+    # snapshot+restore block is bypassed ONLY when BOTH the PAYMENT and
+    # SPOT_DISPOSAL flags are ON: under both-ON, the OGR override skips
+    # PAYMENT rows (Task 3 spot_disposal_keys filter excludes them), so the
+    # residual the re-zero block exists to close cannot occur. Under partial
+    # rollback ``(spot_off, payment_on)``, the OGR override STILL mutates
+    # PAYMENT rows (Task 3 OFF means no spot_disposal_keys filter), so the
+    # re-zero block MUST still run to restore proceeds=0 before the
+    # payment-proceeds correction fires (otherwise the candidate gate at
+    # ``payment_proceeds.py`` skips the row).
     zero_proceeds_indices: set[int] = set()
-    if infer_payment_proceeds_active:
+    if infer_payment_proceeds_active and not (
+        jurisdiction is not None
+        and jurisdiction.treatment_payment_via_resolver
+        and jurisdiction.treatment_spot_disposal_via_resolver
+    ):
         zero_proceeds_indices = {
             i
             for i, e in enumerate(capital_entries)
@@ -309,8 +428,45 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
                     "Applying OGR directional authority: %d entries in spot_index",
                     len(spot_index),
                 )
+            # Phase D Task 3 SPOT_DISPOSAL flip: when the flag is on, gate the
+            # OGR override on the resolver identifying each TH row as
+            # SPOT_DISPOSAL. ``spot_disposal_keys`` is the set of
+            # ``(date, asset, wallet)`` keys whose TH rows resolve to
+            # SPOT_DISPOSAL; ``apply_ogr_event_level`` treats any spot_index
+            # key NOT in this set as "no match" so non-SPOT_DISPOSAL disposal
+            # events (e.g. PAYMENT rows sharing an OGR key) are NOT overridden
+            # (r7 Medium #6). Flag off = legacy path (spot_disposal_keys=None,
+            # no filtering).
+            spot_disposal_keys: set[tuple[str, str, str]] | None = None
+            if (
+                jurisdiction.treatment_spot_disposal_via_resolver
+                and treatment_config is not None
+            ):
+                spot_disposal_keys = set()
+                for tx in transactions:
+                    if resolve_treatment(tx, treatment_config) is Treatment.SPOT_DISPOSAL:
+                        _sending = tx.row.sending_wallet.strip()
+                        _wallet_raw = (
+                            _sending
+                            if _sending and _sending.lower() != "unknown"
+                            else tx.row.receiving_wallet.strip()
+                        )
+                        _wallet = (
+                            normalize_platform_name(_wallet_raw) if _wallet_raw else ""
+                        )
+                        if tx.row.sending_currency is not None:
+                            spot_disposal_keys.add(
+                                (
+                                    tx.row.utc_instant.strftime("%Y-%m-%d"),
+                                    normalize_asset_ticker(tx.row.sending_currency),
+                                    _wallet,
+                                )
+                            )
             capital_entries = apply_ogr_event_level(
-                capital_entries, spot_index, jurisdiction
+                capital_entries,
+                spot_index,
+                jurisdiction,
+                spot_disposal_keys=spot_disposal_keys,
             )
 
     # Re-zero restore: for each originally-zero-proceeds index where the post-OGR
@@ -348,16 +504,47 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
     # derivatives dedup (safe: the original proceeds==0 entry already passed
     # validation; payments are spot disposals; country inherited unchanged) and
     # flow into aggregation + the materiality filter.
+    #
+    # Phase D Task 4 PAYMENT flip: when ``treatment_payment_via_resolver`` is
+    # on, identification comes from the resolver (the caller passes the set of
+    # PAYMENT-treatment TH rows); the count-equality gate in
+    # ``correct_payment_proceeds`` is bypassed (``via_resolver=True``). r8
+    # Medium #1: filter the pre-built ``transactions: list[Transaction]``
+    # (built ONCE in the Task 3 wiring step) by
+    # ``resolve_treatment == Treatment.PAYMENT`` and project to raw TH-row
+    # dicts via the row_index correspondence. Do NOT re-build ``Transaction``
+    # objects inside this branch; the raw row re-read is O(file size) and is
+    # the same shape ``build_payment_tag_index`` already consumes.
     if infer_payment_proceeds_active:
         pp_config = _get_payment_proceeds_config()
         peg_to_eur_rates = _derive_peg_to_eur_rates(rates or [], pp_config.stablecoin_pegs)
+        payment_via_resolver = (
+            jurisdiction is not None
+            and jurisdiction.treatment_payment_via_resolver
+            and treatment_config is not None
+        )
+        if payment_via_resolver:
+            _all_th_rows = read_koinly_rows(transaction_history_file)
+            _payment_row_indices = {
+                tx.row.row_index
+                for tx in transactions
+                if resolve_treatment(tx, treatment_config) is Treatment.PAYMENT
+            }
+            payment_th_rows = [
+                row
+                for index, row in enumerate(_all_th_rows)
+                if index in _payment_row_indices
+            ]
+        else:
+            payment_th_rows = read_koinly_rows(transaction_history_file)
         capital_entries = correct_payment_proceeds(
             capital_entries,
-            read_koinly_rows(transaction_history_file),
+            payment_th_rows,
             config=pp_config,
             peg_to_eur_rates=peg_to_eur_rates,
             loan_affected_assets=loan_affected_assets,
             review_entries=review_entries,
+            via_resolver=payment_via_resolver,
         )
 
     # DP-015 fee suspect flagging runs LATE, after payment-proceeds and BEFORE

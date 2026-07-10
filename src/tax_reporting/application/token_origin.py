@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Final
 
 from ..domain.token_origin import AcquisitionMethod, TokenOrigin
+from ..domain.transaction import Transaction
+from ..domain.treatment import Treatment
 from ..infrastructure.koinly_parser import (
     format_datetime,
     normalize_asset_ticker,
@@ -23,6 +25,28 @@ from ..infrastructure.koinly_parser import (
     parse_koinly_datetime,
     read_koinly_rows,
 )
+
+# Local import (not top-level) would be acceptable to avoid a load cycle,
+# but ``crypto.treatment_resolver`` imports only from ``domain/`` so there
+# is no cycle. Top-level import keeps ruff PLC0415 clean.
+from .crypto.treatment_resolver import TreatmentConfig, resolve_treatment  # noqa: E402
+
+# Phase D Task 7 co-opportunistic extraction: mirror the resolver-side
+# names in ``application/crypto/treatment_resolver.py:70,73,76`` so there
+# is ONE naming scheme across the codebase. INVARIANT 4 TENSION: the plan
+# also asks to remove the resolver-side definitions and import them from
+# here (single source of truth), but ``treatment_resolver.py`` is on the
+# Phase D frozen list ("CR guard: reject any edit to ...
+# treatment_resolver.py"). Per the task instructions' CRITICAL note, the
+# Invariant-4-safe interpretation is: extract the token_origin-side
+# duplicates to module-level constants with the SAME names, but do NOT
+# modify the resolver-side definitions. The "single source of truth"
+# intent is documented here; the resolver frozen state takes precedence.
+# Values verified byte-identical to the inline literals the branches in
+# ``_index_row`` used pre-extraction (no silent drift).
+_DEFAULT_REWARD_TAGS: Final[frozenset[str]] = frozenset({"reward", "cashback", "realized gain"})
+_DEFAULT_AIRDROP_TAGS: Final[frozenset[str]] = frozenset({"airdrop"})
+_DEFAULT_LP_TAGS: Final[frozenset[str]] = frozenset({"liquidity in", "liquidity out"})
 
 _MAX_TXHASH_LENGTH: Final = 128
 _MAX_WITHDRAWALS_PER_TXHASH: Final = 100
@@ -59,10 +83,55 @@ class TokenOriginResolver:
     then matches capital gains rows to acquisition events and returns a ``TokenOrigin``.
     """
 
-    def __init__(self, transaction_history_path: Path | None = None) -> None:
-        """Build the acquisition-event lookup from the transaction history CSV."""
+    def __init__(
+        self,
+        transaction_history_path: Path | None = None,
+        *,
+        transactions: list[Transaction] | None = None,
+        config: TreatmentConfig | None = None,
+        via_resolver: bool = False,
+    ) -> None:
+        """Build the acquisition-event lookup from the transaction history CSV.
+
+        Phase D Task 7 r8 Medium #1 carry-forward: when ``via_resolver=True``,
+        the reward / airdrop / lp branches in ``_index_row`` delegate to
+        ``resolve_treatment`` over the pre-built ``transactions`` list
+        (built ONCE in Task 3's wiring step in
+        ``crypto_reporting.load_koinly_crypto_report``). The ``transactions``
+        list is NOT re-built here; the caller supplies it. The
+        ``TreatmentConfig`` is required only when ``via_resolver=True``.
+
+        Args:
+            transaction_history_path: Path to the Koinly TH CSV.
+            transactions: Pre-built ``list[Transaction]`` from Task 3's
+                wiring step. Required when ``via_resolver=True``; ignored
+                otherwise. Order MUST match ``read_koinly_rows`` output so
+                each ``Transaction.row.row_index`` correlates to the raw
+                row dict at the same enumeration position.
+            config: ``TreatmentConfig`` for ``resolve_treatment``. Required
+                when ``via_resolver=True``; ignored otherwise.
+            via_resolver: When True, reward / airdrop / lp identification
+                delegates to ``resolve_treatment`` (bypassing the inline
+                tag literals). When False (default), legacy inline-literal
+                identification runs unchanged (Invariant 1: bypass, not
+                deletion).
+        """
         self._lookup: dict[tuple[str, str, str], list[_AcquisitionRecord]] = {}
         self._withdrawal_by_txhash: dict[str, list[_WithdrawalRecord]] = {}
+        self._via_resolver = via_resolver
+        self._treatment_by_row_index: dict[int, Treatment] = {}
+        if via_resolver:
+            if transactions is None or config is None:
+                raise ValueError(
+                    "via_resolver=True requires both `transactions` and `config`"
+                )
+            self._treatment_config = config
+            for tx in transactions:
+                row_index = tx.row.row_index
+                self._treatment_by_row_index[row_index] = resolve_treatment(tx, config)
+        else:
+            self._treatment_config = None
+
         if transaction_history_path is not None and transaction_history_path.exists():
             try:
                 self._build_lookup(transaction_history_path)
@@ -79,8 +148,8 @@ class TokenOriginResolver:
         rows = read_koinly_rows(path)
         for row in rows:
             self._index_withdrawal(row)
-        for row in rows:
-            self._index_row(row)
+        for index, row in enumerate(rows):
+            self._index_row(row, row_index=index)
 
     def _index_withdrawal(self, row: dict[str, str]) -> None:
         """Index crypto_withdrawal rows by TxHash for provenance lookup.
@@ -177,7 +246,7 @@ class TokenOriginResolver:
         # Fallback for unrecognized tags
         return ("Unknown", receiving_wallet if receiving_wallet else "Unknown")
 
-    def _index_row(self, row: dict[str, str]) -> None:  # noqa: PLR0911, PLR0912, PLR0915
+    def _index_row(self, row: dict[str, str], *, row_index: int = 0) -> None:  # noqa: PLR0911, PLR0912, PLR0915
         logger = logging.getLogger(__name__)
         tx_type = row.get("Type", "").strip().lower()
         date_str = row.get("Date", "").strip()
@@ -240,26 +309,85 @@ class TokenOriginResolver:
             from_asset = normalize_asset_ticker(sent_currency)
             from_platform = normalize_platform_name(sent_wallet) if sent_wallet else normalized_wallet
         elif tx_type in ("crypto_deposit", "fiat_deposit"):
-            if tag in ("reward", "cashback", "realized gain"):
-                method = AcquisitionMethod.REWARD
-                from_asset = "Unknown"
-                from_platform = "Unknown"
-                tx_hash = ""  # Clear tx_hash to force medium confidence (no paired transaction)
-            elif tag == "airdrop":
-                method = AcquisitionMethod.AIRDROP
-                from_asset = "Unknown"
-                from_platform = "Unknown"
-                tx_hash = ""  # Clear tx_hash to force medium confidence (no paired transaction)
-            elif tag in ("liquidity out", "liquidity in"):
-                if tag == "liquidity out":
-                    method = AcquisitionMethod.LIQUIDITY_WITHDRAWAL
-                else:  # liquidity in
-                    method = AcquisitionMethod.LIQUIDITY_PROVISION
-                from_asset, from_platform = self._resolve_lp_provenance(tx_hash, normalized_wallet, tag)
-                # For LP operations, use medium confidence if no matching withdrawal was found
-                # (from_asset is "LP position" or "Unknown" in those cases)
-                if from_asset in ("LP position", "Unknown"):
-                    tx_hash = ""  # Clear tx_hash to force medium confidence
+            # Phase D Task 7: when ``via_resolver=True``, the reward /
+            # airdrop / lp IDENTIFICATION (the discriminator) delegates to
+            # ``resolve_treatment`` over the pre-built ``transactions`` list
+            # (r8 Medium #1 carry-forward). The resolver returns
+            # ``Treatment.REWARD_AIRDROP_LP`` for ALL reward / airdrop / lp
+            # rows (the three tag sets route to one Treatment member). The
+            # specific ``AcquisitionMethod`` is then selected by the raw tag
+            # literal (reward vs airdrop vs liquidity in/out) WITHOUT
+            # consulting the inline-set membership - the discriminator and
+            # the method selection are decoupled under the flag-on path so
+            # the inline literals are NOT consulted as an identification
+            # signal. When the resolver does NOT identify the row as
+            # REWARD_AIRDROP_LP, fall through to the remaining branches
+            # (lending / fiat_deposit / transfer) unchanged.
+            is_reward_airdrop_lp = False
+            if self._via_resolver:
+                treatment = self._treatment_by_row_index.get(row_index)
+                is_reward_airdrop_lp = treatment is Treatment.REWARD_AIRDROP_LP
+            else:
+                # Legacy inline-literal identification (Invariant 1: bypass,
+                # not deletion). Uses the module-level constants so there is
+                # ONE naming scheme across the codebase (co-opportunistic
+                # extraction; the values mirror treatment_resolver.py:70,73,76).
+                is_reward_airdrop_lp = (
+                    tag in _DEFAULT_REWARD_TAGS
+                    or tag in _DEFAULT_AIRDROP_TAGS
+                    or tag in _DEFAULT_LP_TAGS
+                )
+
+            if is_reward_airdrop_lp:
+                if self._via_resolver:
+                    # Flag-on path: method selection uses the RAW tag literal
+                    # (not the inline-set membership) so the inline literals
+                    # are NOT consulted as an identification signal. The
+                    # discriminator came from the resolver; the tag only
+                    # disambiguates reward vs airdrop vs liquidity direction.
+                    if tag == "airdrop":
+                        method = AcquisitionMethod.AIRDROP
+                        from_asset = "Unknown"
+                        from_platform = "Unknown"
+                        tx_hash = ""
+                    elif tag in ("liquidity out", "liquidity in"):
+                        if tag == "liquidity out":
+                            method = AcquisitionMethod.LIQUIDITY_WITHDRAWAL
+                        else:
+                            method = AcquisitionMethod.LIQUIDITY_PROVISION
+                        from_asset, from_platform = self._resolve_lp_provenance(
+                            tx_hash, normalized_wallet, tag
+                        )
+                        if from_asset in ("LP position", "Unknown"):
+                            tx_hash = ""
+                    else:
+                        # Default to REWARD for the reward-tag family
+                        # (reward / cashback / realized gain).
+                        method = AcquisitionMethod.REWARD
+                        from_asset = "Unknown"
+                        from_platform = "Unknown"
+                        tx_hash = ""
+                elif tag in _DEFAULT_REWARD_TAGS:
+                    # Legacy path: method selection also via inline-set membership.
+                    method = AcquisitionMethod.REWARD
+                    from_asset = "Unknown"
+                    from_platform = "Unknown"
+                    tx_hash = ""
+                elif tag in _DEFAULT_AIRDROP_TAGS:
+                    method = AcquisitionMethod.AIRDROP
+                    from_asset = "Unknown"
+                    from_platform = "Unknown"
+                    tx_hash = ""
+                else:  # LP tags
+                    if tag == "liquidity out":
+                        method = AcquisitionMethod.LIQUIDITY_WITHDRAWAL
+                    else:
+                        method = AcquisitionMethod.LIQUIDITY_PROVISION
+                    from_asset, from_platform = self._resolve_lp_provenance(
+                        tx_hash, normalized_wallet, tag
+                    )
+                    if from_asset in ("LP position", "Unknown"):
+                        tx_hash = ""
             elif tag in ("lending", "lending_interest", "lending interest", "interest"):
                 method = AcquisitionMethod.DEFI_YIELD
                 from_asset = normalize_asset_ticker(sent_currency) if sent_currency else asset

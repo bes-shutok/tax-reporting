@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tax_reporting.application.crypto.fifo_helpers import _apply_phantom_lot_flags
+from tax_reporting.application.crypto.treatment_resolver import TreatmentConfig
 from tax_reporting.application.crypto_fifo import (
     AcquisitionContext,
     ConsumptionContext,
@@ -1389,7 +1390,13 @@ class TestDiscoverLoanAffectedAssets:
         th_path = tmp_path / "th.csv"
         th_path.write_text(content, encoding="utf-8")
 
-        result = discover_loan_affected_assets(th_path, frozenset())
+        result = discover_loan_affected_assets(
+            th_path,
+            frozenset(),
+            transactions=[],
+            config=TreatmentConfig(),
+            via_resolver=False,
+        )
 
         assert result == frozenset({"WBTC", "SUI"})
 
@@ -1403,7 +1410,13 @@ class TestDiscoverLoanAffectedAssets:
         th_path = tmp_path / "th.csv"
         th_path.write_text(content, encoding="utf-8")
 
-        result = discover_loan_affected_assets(th_path, frozenset())
+        result = discover_loan_affected_assets(
+            th_path,
+            frozenset(),
+            transactions=[],
+            config=TreatmentConfig(),
+            via_resolver=False,
+        )
 
         assert result == frozenset()
 
@@ -1424,7 +1437,13 @@ class TestDiscoverLoanAffectedAssets:
         th_path = tmp_path / "th.csv"
         th_path.write_text(content, encoding="utf-8")
 
-        result = discover_loan_affected_assets(th_path, frozenset())
+        result = discover_loan_affected_assets(
+            th_path,
+            frozenset(),
+            transactions=[],
+            config=TreatmentConfig(),
+            via_resolver=False,
+        )
 
         assert "LBTC" not in result
         assert len(result) == 0
@@ -1450,7 +1469,13 @@ class TestDiscoverLoanAffectedAssets:
         th_path = tmp_path / "th.csv"
         th_path.write_text(content, encoding="utf-8")
 
-        result = discover_loan_affected_assets(th_path, frozenset())
+        result = discover_loan_affected_assets(
+            th_path,
+            frozenset(),
+            transactions=[],
+            config=TreatmentConfig(),
+            via_resolver=False,
+        )
 
         assert result == frozenset({"WBTC"})
         assert "ETH" not in result
@@ -1465,7 +1490,13 @@ class TestDiscoverLoanAffectedAssets:
         th_path = tmp_path / "th.csv"
         th_path.write_text(content, encoding="utf-8")
 
-        result = discover_loan_affected_assets(th_path, fiat_currency_codes=frozenset({"EUR"}))
+        result = discover_loan_affected_assets(
+            th_path,
+            fiat_currency_codes=frozenset({"EUR"}),
+            transactions=[],
+            config=TreatmentConfig(),
+            via_resolver=False,
+        )
 
         assert result == frozenset({"BTC"})
         assert "EUR" not in result

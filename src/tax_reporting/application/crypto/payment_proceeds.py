@@ -545,6 +545,7 @@ def correct_payment_proceeds(  # noqa: PLR0912, PLR0913, PLR0915, C901
     peg_to_eur_rates: dict[str, Decimal],
     loan_affected_assets: frozenset[str],
     review_entries: list[CryptoReviewEntry],
+    via_resolver: bool = False,
 ) -> list[CryptoCapitalGainEntry]:
     """Correct zero-proceeds payment disposals using TH Net Value / peg rates.
 
@@ -577,9 +578,23 @@ def correct_payment_proceeds(  # noqa: PLR0912, PLR0913, PLR0915, C901
              ``CryptoReviewEntry`` (NOT per-key guarded). On exception: warn,
              emit the entry unchanged, do NOT pop, no review entry.
 
+    Phase D Task 4 PAYMENT flip (``via_resolver=True``): identification comes
+    from the Phase B resolver (the caller passes the pre-filtered set of
+    PAYMENT-treatment TH rows in ``th_rows``). The count-equality gate is
+    UNREACHABLE under flag-on: every ``th_rows`` entry is already a PAYMENT
+    row by construction, so the gate's contract (count CG candidates vs
+    payment-tagged TH rows on the same key) degenerates to "consume one TH
+    row per CG lot until the bucket is empty" - the per-bucket ``popleft``
+    already enforces this consumption discipline. The legacy count-equality
+    branch is bypassed, NOT deleted (Invariant 1 + 8); callers with
+    ``via_resolver=False`` (the default) still consult it.
+
     Args:
         entries: CG capital-gain entries (order preserved in the output).
-        th_rows: Koinly Transaction History rows.
+        th_rows: Koinly Transaction History rows. Under ``via_resolver=True``,
+            the caller pre-filters this list to PAYMENT-treatment rows
+            (Phase D Task 4 r8 Medium #1: built ONCE in
+            ``load_koinly_crypto_report``, not re-built here).
         config: Injected ``PaymentProceedsConfig``.
         peg_to_eur_rates: Peg currency -> finite positive EUR rate map
             (typically the output of :func:`_derive_peg_to_eur_rates`).
@@ -587,6 +602,8 @@ def correct_payment_proceeds(  # noqa: PLR0912, PLR0913, PLR0915, C901
             (rebuilt from TH by a separate pipeline).
         review_entries: List to append ``CryptoReviewEntry`` audit rows to
             (mutated in place).
+        via_resolver: When True, the count-equality gate is bypassed (Phase D
+            Task 4 PAYMENT flip). Defaults False (legacy behavior).
 
     Returns:
         New list of entries (untouched/unmatched entries preserved in order;
@@ -620,13 +637,29 @@ def correct_payment_proceeds(  # noqa: PLR0912, PLR0913, PLR0915, C901
         bucket = _match_payment_disposal(entry, tag_index)
 
         # No payment-tagged TH row for this key: leave unchanged, no review.
-        if bucket is None or th_count.get(key, 0) == 0:
+        # Under ``via_resolver=True``, the per-bucket ``popleft`` may have
+        # drained the deque on a prior candidate (the count-equality gate is
+        # unreachable, so a CG key with more lots than PAYMENT TH rows sees
+        # the surplus lots fall through here unchanged). The static
+        # ``th_count`` was captured once before the loop, so the live
+        # ``len(bucket) == 0`` check is required to detect the drained state.
+        if bucket is None or th_count.get(key, 0) == 0 or len(bucket) == 0:
             result.append(entry)
             continue
 
         # Count-equality gate runs BEFORE the try. Mismatch in
         # EITHER direction blocks correction for ALL candidates on the key.
-        if cg_count.get(key, 0) != th_count.get(key, 0):
+        # Phase D Task 4 PAYMENT flip: when ``via_resolver=True``, the caller
+        # pre-filtered ``th_rows`` to PAYMENT-treatment rows (resolver-based
+        # identification); the count-equality gate is unreachable because the
+        # per-bucket ``popleft`` already enforces one-TH-per-CG-lot
+        # consumption discipline. The legacy branch is bypassed, NOT deleted
+        # (Invariant 1 + 8); callers with ``via_resolver=False`` still
+        # consult it.
+        if (
+            not via_resolver
+            and cg_count.get(key, 0) != th_count.get(key, 0)
+        ):
             if key not in reviewed_keys:
                 reviewed_keys.add(key)
                 reason = (

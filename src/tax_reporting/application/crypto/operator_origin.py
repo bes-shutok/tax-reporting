@@ -6,8 +6,114 @@ import logging
 import re
 from dataclasses import replace
 
+from ...domain.transaction import WalletKind
 from .entities import OperatorOrigin
 from .validation import _is_temporally_valid, _parse_transaction_date
+
+# ---------------------------------------------------------------------------
+# Platform -> WalletKind mapping (Phase D Task 1)
+# ---------------------------------------------------------------------------
+#
+# Source of truth for the platform-level CEX/DEX signal. Keyed by the
+# lowercase brand substring the entity-chain branch matches on (e.g.
+# ``"kraken"``, ``"binance"``); the canonical ``platform`` string each
+# branch sets on the returned ``OperatorOrigin`` (``"Kraken"``,
+# ``"Binance"``) is the title-cased form of the same key. The lookup helper
+# ``_kind_for_platform`` normalizes to lowercase so both the entity-chain
+# canonical name and the raw brand substring resolve to the same kind.
+#
+# Binance=CEX per the operator-entity classification at the ``if "binance" in
+# normalized:`` branch below: "Binance Spain, S.L." is a centralized exchange
+# operator (a licensed fiat-facing custodian), so its WalletKind is CEX.
+#
+# DEX entries are on-chain protocols / foundations / self-custody wallets:
+# berachain, starknet, zksync, solana, ton, ethereum, aptos, sui, arbitrum,
+# mantle, polygon, base, filecoin, tonkeeper, plus "ledger" (hardware wallet
+# self-custody - no operator entity; on-chain by definition).
+#
+# CEX entries are off-chain centralized exchanges: wirex, bybit, kraken,
+# binance, gate.io.
+#
+# This table is the explicit kind signal per CLAUDE.md "never introduce a
+# hardcoded value without first flagging it and asking the user". The user
+# decision (2026-07-08, B2 option 1) is the flag-and-ask resolution that
+# authorizes this mapping.
+_PLATFORM_KIND: dict[str, WalletKind] = {
+    # CEX (centralized exchanges - fiat-facing custodial operators)
+    "wirex": WalletKind.CEX,
+    "bybit": WalletKind.CEX,
+    "kraken": WalletKind.CEX,
+    "binance": WalletKind.CEX,
+    "gate.io": WalletKind.CEX,
+    # DEX (on-chain protocols / foundations / self-custody wallets)
+    "berachain": WalletKind.DEX,
+    "starknet": WalletKind.DEX,
+    "zksync": WalletKind.DEX,
+    "solana": WalletKind.DEX,
+    "ton": WalletKind.DEX,
+    "ethereum": WalletKind.DEX,
+    "aptos": WalletKind.DEX,
+    "sui": WalletKind.DEX,
+    "arbitrum": WalletKind.DEX,
+    "mantle": WalletKind.DEX,
+    "polygon": WalletKind.DEX,
+    "base": WalletKind.DEX,
+    "filecoin": WalletKind.DEX,
+    "tonkeeper": WalletKind.DEX,
+    # Self-custody hardware/software wallets without an operator entity.
+    # "ledger" has no entity-chain branch (chain_derivation.py strips the
+    # prefix); it is on-chain by definition.
+    "ledger": WalletKind.DEX,
+}
+
+# Known-exclusions: the entity-chain branches below also match on regex /
+# conditional logic that the frozenset cannot mechanically encode. These are
+# intentionally NOT in _KNOWN_PLATFORM_BRANDS:
+#   - ``re.search(r"\bton\b", ...) and "tonkeeper" not in normalized``
+#     (the bare "ton" branch is guarded by a tonkeeper exclusion; the brand
+#     name "ton" IS in the set, the exclusion logic is not)
+#   - ``re.search(r"\bbase\b", ...) and "coinbase" not in normalized``
+#     (the bare "base" brand IS in the set; the coinbase exclusion is not)
+#   - ``"gate.io" in normalized or normalized == "gate"``
+#     (both substrings collapse to canonical "Gate.io"; brand "gate.io" plus
+#     the normalized-equality form would require duplicate keys)
+_KNOWN_PLATFORM_BRANDS: frozenset[str] = frozenset(
+    {
+        # Simple-substring match keys (branch head is ``if "<key>" in normalized``)
+        "wirex",
+        "bybit",
+        "berachain",
+        "ethereum",
+        "aptos",
+        "polygon",
+        "filecoin",
+        "binance",
+        "kraken",
+        # Regex-keyed brand names (branch head is ``re.search(...)``, possibly
+        # with a word-boundary pattern). The frozenset holds the plain brand
+        # name; word-boundary / exclusion logic is documented above.
+        "ton",
+        "sui",
+        "mantle",
+        "base",
+        "arbitrum",
+        "starknet",
+        "zksync",
+        "solana",
+        "tonkeeper",
+    }
+)
+
+
+def _kind_for_platform(platform: str) -> WalletKind | None:
+    """Return the WalletKind for ``platform`` (canonical name or raw brand).
+
+    Normalizes to lowercase so both the entity-chain canonical name (e.g.
+    ``"Kraken"``, ``"BASE"``) and the lowercase brand substring resolve to
+    the same kind.
+    """
+    return _PLATFORM_KIND.get(platform.lower())
+
 
 
 def resolve_operator_origin(  # noqa: PLR0911, PLR0912
@@ -73,6 +179,11 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
         When out of validity, returns a modified origin with review_required=True to
         surface the ambiguity in the workbook's manual-review flag.
 
+        Also stamps ``origin.wallet_kind`` from ``_PLATFORM_KIND`` (Phase D Task 1).
+        When a platform matched the entity chain but has NO ``_PLATFORM_KIND``
+        entry, logs at warning level (data-loss at warning+, per CLAUDE.md) so a
+        future addition forgotten in the mapping surfaces loudly (r7 Medium #7).
+
         Args:
             origin: The operator origin to validate.
 
@@ -80,12 +191,26 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
             The origin, potentially with review_required=True if outside validity period
             or if date parsing failed.
         """
+        # Stamp wallet_kind from _PLATFORM_KIND (Phase D Task 1). Warn when an
+        # entity-chain-matched platform has no kind entry (r7 Medium #7 coverage
+        # guard). The unknown-fallback branch is identified by its sentinel
+        # operator_entity; it is expected to have no kind.
+        kind = _kind_for_platform(origin.platform)
+        if kind is None and origin.operator_entity != "UNKNOWN_OPERATOR_REVIEW_REQUIRED":
+            logger.warning(
+                "Platform '%s' matched the operator-origin entity chain but has "
+                "no _PLATFORM_KIND entry; wallet_kind will be None. Add the "
+                "platform to _PLATFORM_KIND in operator_origin.py to close the "
+                "coverage gap (r7 Medium #7).",
+                origin.platform,
+            )
+        stamped = replace(origin, wallet_kind=kind) if kind is not None else origin
         # If date parsing failed, mark for review to ensure correct tax reporting
         if date_parse_failed:
             reason = "Transaction date format could not be parsed; temporal validity check skipped"
-            combined = f"{origin.review_reason}; {reason}" if origin.review_reason else reason
+            combined = f"{stamped.review_reason}; {reason}" if stamped.review_reason else reason
             return replace(
-                origin,
+                stamped,
                 review_required=True,
                 review_reason=combined,
             )
@@ -93,32 +218,32 @@ def resolve_operator_origin(  # noqa: PLR0911, PLR0912
         # Use service_start_date only for transaction matching (valid_from is for audit trail only)
         # When service_start_date is None, skip lower-bound check to avoid false positives
         # on long-running mappings that only have verification dates (e.g., Ethereum, Arbitrum)
-        lower_bound = origin.service_start_date
-        is_valid = parsed_date is None or _is_temporally_valid(lower_bound, origin.valid_until, parsed_date)
+        lower_bound = stamped.service_start_date
+        is_valid = parsed_date is None or _is_temporally_valid(lower_bound, stamped.valid_until, parsed_date)
         if not is_valid:
             logger.warning(
                 "Transaction date %s for platform '%s' (service_scope: %s) is outside "
                 "the service period [%s, %s]. Marking for manual review. "
                 "Please verify the operator origin is correct for this historical transaction.",
                 parsed_date,
-                origin.platform,
-                origin.service_scope,
+                stamped.platform,
+                stamped.service_scope,
                 lower_bound or "unknown",
-                origin.valid_until or "present",
+                stamped.valid_until or "present",
             )
             # Return a modified origin with review_required=True to surface in the workbook
             reason = (
                 f"Transaction date {parsed_date} is outside known service period "
-                f"[{lower_bound or 'unknown'}, {origin.valid_until or 'present'}] for {origin.platform}"
+                f"[{lower_bound or 'unknown'}, {stamped.valid_until or 'present'}] for {stamped.platform}"
             )
-            combined = f"{origin.review_reason}; {reason}" if origin.review_reason else reason
+            combined = f"{stamped.review_reason}; {reason}" if stamped.review_reason else reason
             return replace(
-                origin,
+                stamped,
                 review_required=True,
                 review_reason=combined,
             )
 
-        return origin
+        return stamped
 
     if "wirex" in normalized:
         if transaction_type_normalized.startswith("fiat"):

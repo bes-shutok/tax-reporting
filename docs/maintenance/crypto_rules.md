@@ -480,3 +480,47 @@ threading) remains deferred.
 > implementation plan `docs/history/plans/2026-07-04-ogr-event-level-application.md`.
 > Cross-reference: PT-C-035 (OGR as authoritative realization source), PT-C-030
 > (review-flag specificity), PT-C-011 (short-vs-long holding-period taxable split).
+
+**PT-C-038** `[IMPLEMENTATION DECISION | 2026-07-08]`
+Per-treatment identification is authoritative from the TH-anchored resolver
+(`resolve_treatment` in `application/crypto/treatment_resolver.py`) when the
+corresponding `treatment_*_via_resolver` flag is on (DP-019). The six flags
+map 1:1 to the six `Treatment` members and default to `true`:
+
+- `treatment_spot_disposal_via_resolver` -> OGR 1:1 override identifies
+  SPOT_DISPOSAL rows via the resolver instead of the legacy per-row
+  `_apply_ogr_direction_override` form;
+- `treatment_payment_via_resolver` -> payment-proceeds correction identifies
+  PAYMENT rows via the resolver instead of the count-equality gate
+  (`_DEFAULT_PAYMENT_TAGS` index); the re-zero snapshot/restore block is
+  bypassed when BOTH this flag and `treatment_spot_disposal_via_resolver` are
+  on (the OGR override skips PAYMENT rows, so the residual the re-zero block
+  exists to close cannot occur);
+- `treatment_loan_repayment_via_resolver` -> loan-affected asset discovery
+  consults `Treatment.LOAN_REPAYMENT` rows AND `Treatment.OTHER` rows whose
+  normalized tag is `"loan"` (the borrowing-side principal creation) instead
+  of the `_LOAN_PRINCIPAL_TAGS` membership check; the extra clause preserves
+  the legacy asset set (borrow-only assets otherwise drop out);
+- `treatment_derivatives_close_via_resolver` -> derivatives dedup
+  identification delegates to the resolver instead of the internal tag
+  classifier (the lot-level dedup algorithm itself is unchanged);
+- `treatment_reward_airdrop_lp_via_resolver` -> reward/airdrop/LP
+  identification delegates to the resolver instead of the inline tag literals
+  in `token_origin.py`;
+- `treatment_other_via_resolver` -> no legacy adapter exists for OTHER; the
+  flag exists for symmetry and forward-compatibility (a future OTHER-routed
+  behavior would use it) and is a true no-op on output today.
+
+The legacy adapters are BYPASSED, not deleted, when the corresponding flag is
+on; setting a flag to `false` restores the legacy identification path for that
+treatment only (rollback granularity). Phase E owns deletion after a clean tax
+year closes. A required-presence loader guard in `infrastructure/config.py`
+raises `ConfigurationError` if any of the six flags is absent from a country
+section of the decision-points TOML, so a future-year TOML copy cannot
+silently revert a treatment to legacy. Cross-reference: DP-019; Phase D plan
+`docs/history/plans/completed/2026-07-08-th-tx-view-phase-d.md`.
+
+> Source: RFC feature-note `docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md`;
+> implementation plan `docs/history/plans/completed/2026-07-08-th-tx-view-phase-d.md`.
+> Cross-reference: PT-C-035 (payment-proceeds correction), PT-C-037 (OGR
+> event-level application), DP-019 (six per-treatment resolver flags).

@@ -58,6 +58,7 @@ import pytest
 
 from tax_reporting.application.crypto.classification import _is_valid_tabela_x_country
 from tax_reporting.application.crypto.entities import CryptoCapitalGainEntry, DerivativesEventType
+from tax_reporting.application.crypto.treatment_resolver import TreatmentConfig
 from tax_reporting.application.crypto_reporting import load_koinly_crypto_report
 from tax_reporting.application.persisting.derivatives_sheet import write_derivatives_sheet
 from tests.conftest import KOINLY_2025_EXAMPLE_DIR, build_koinly_jurisdiction
@@ -105,10 +106,22 @@ _PRESERVED_PLATFORM = "Demo Spot"
 
 
 def _load_with_separation(*, separate_derivatives: bool):
-    """Load the synthetic koinly2025 report under the requested jurisdiction setting."""
+    """Load the synthetic koinly2025 report under the requested jurisdiction setting.
+
+    Phase D Task 3: ``treatment_spot_disposal_via_resolver=False`` opts the
+    backward-compat trace into the LEGACY OGR override path. The default-on
+    flag-on path filters OGR keys whose TH rows are not SPOT_DISPOSAL; this
+    trace exercises derivatives-tagged rows (``Futures fee``, ``Realized
+    gain``, ``Funding fee``) that the flag-on filter would exclude. The
+    backward-compat golden values (Case A 136.01 EUR) are the legacy target,
+    so the flag is off here.
+    """
     report = load_koinly_crypto_report(
         _FIXTURE_DIR,
-        jurisdiction=build_koinly_jurisdiction(separate_derivatives_reporting=separate_derivatives),
+        jurisdiction=build_koinly_jurisdiction(
+            separate_derivatives_reporting=separate_derivatives,
+            treatment_spot_disposal_via_resolver=False,
+        ),
     )
     assert report is not None, "load_koinly_crypto_report returned None for the synthetic koinly2025 fixtures"
     return report
@@ -874,6 +887,9 @@ class TestPipelineIntegration:
                 jurisdiction=build_koinly_jurisdiction(separate_derivatives_reporting=True),
                 transaction_history_file=None,
                 year=2025,
+                transactions=[],
+                config=TreatmentConfig(),
+                via_resolver=False,
             )
 
         assert result is entries_in, (
@@ -921,6 +937,9 @@ class TestPipelineIntegration:
                 jurisdiction=build_koinly_jurisdiction(separate_derivatives_reporting=True),
                 transaction_history_file=_th_path(),
                 year=2025,
+                transactions=[],
+                config=TreatmentConfig(),
+                via_resolver=False,
             )
 
         assert result is entries_in, (

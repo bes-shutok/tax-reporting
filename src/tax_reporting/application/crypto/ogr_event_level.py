@@ -67,6 +67,8 @@ def apply_ogr_event_level(
     capital_entries: list[CryptoCapitalGainEntry],
     spot_index: dict[tuple[str, str, str], Decimal],
     jurisdiction: TaxJurisdictionConfig,
+    *,
+    spot_disposal_keys: set[tuple[str, str, str]] | None = None,
 ) -> list[CryptoCapitalGainEntry]:
     """Apply OGR gain/loss authority at the disposal-event level.
 
@@ -77,6 +79,17 @@ def apply_ogr_event_level(
     ``_apply_ogr_direction_override`` so it is a drop-in replacement at the
     call site (``crypto_reporting.py``).
 
+    Phase D Task 3 SPOT_DISPOSAL flip: when
+    ``jurisdiction.treatment_spot_disposal_via_resolver`` is True, the
+    caller passes ``spot_disposal_keys`` - the set of ``(date, asset,
+    wallet)`` keys whose TH rows resolve to ``Treatment.SPOT_DISPOSAL``.
+    Any key in ``spot_index`` that is NOT in ``spot_disposal_keys`` is
+    treated as "no OGR match" so the corresponding lots pass through
+    unchanged. This is the per-key treatment filter for the OGR override
+    (r7 Medium #6: a non-SPOT_DISPOSAL disposal event sharing an OGR key
+    MUST NOT be overridden). When ``spot_disposal_keys`` is ``None``
+    (legacy path, flag off), no filtering is applied.
+
     Args:
         capital_entries: Pre-aggregation CG lots (one CG row = one FIFO lot).
         spot_index: Summed OGR index keyed by ``(date, asset, wallet)``
@@ -85,6 +98,10 @@ def apply_ogr_event_level(
         jurisdiction: Tax jurisdiction config. When
             ``use_other_gains_report`` is ``False``, entries are returned
             unchanged.
+        spot_disposal_keys: Optional set of ``(date, asset, wallet)`` keys
+            whose TH rows the resolver classified as ``SPOT_DISPOSAL``.
+            When non-None, ``spot_index`` lookups are restricted to these
+            keys (Phase D Task 3). When None, no treatment filtering.
 
     Returns:
         Lots in original input order with ``len(out) == len(in)``. Each
@@ -112,6 +129,15 @@ def apply_ogr_event_level(
         ogr_event_gain = spot_index.get(key)
         if ogr_event_gain is None:
             # No OGR match - lots pass through unchanged (ogr_validation stays None).
+            for i in indices:
+                indexed_result[i] = capital_entries[i]
+            continue
+
+        # Phase D Task 3 SPOT_DISPOSAL flip: when the flag-on caller passed
+        # spot_disposal_keys, a key NOT in that set is treated as "no OGR
+        # match" even if spot_index has an entry. The corresponding lots
+        # pass through unchanged. r7 Medium #6.
+        if spot_disposal_keys is not None and key not in spot_disposal_keys:
             for i in indices:
                 indexed_result[i] = capital_entries[i]
             continue

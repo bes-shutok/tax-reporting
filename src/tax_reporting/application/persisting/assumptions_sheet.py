@@ -56,8 +56,8 @@ class _PlatformSummary:
     transaction_count: int
     classification: WalletClassification | None = None
     """Two-tier WalletKind resolver result for this platform. None when the
-    caller did not supply TH rows (Phase A production caller) - in that case
-    the Kind column renders empty and no kind-low-confidence signal fires."""
+    caller supplied NEITHER ``th_rows`` NOR ``registry`` - in that case the
+    Kind column renders empty and no kind-low-confidence signal fires."""
 
 
 def _collect_platform_summaries(
@@ -77,8 +77,9 @@ def _collect_platform_summaries(
     signal (``not classification.is_high_probability()``) is OR'd into the
     existing ``platform_review_required`` flag (Design Invariant 15); a Note
     fragment is appended so the user sees a specific reason. When ``th_rows``
-    is omitted (Phase A production caller), no classification runs and the
-    existing columns render byte-identically to the pre-Phase-A baseline.
+    is omitted but ``registry`` is supplied, the Kind column resolves via
+    tier-1 registry lookup; when BOTH are omitted, no classification runs and
+    the existing columns render byte-identically to the pre-Phase-A baseline.
     """
     summaries: dict[tuple[str, str], _PlatformSummary] = {}
 
@@ -108,9 +109,15 @@ def _collect_platform_summaries(
     for entry in reward_entries or []:
         _accumulate(entry)
 
-    if th_rows is not None:
+    if th_rows is not None or registry is not None:
+        # Normalize th_rows to () when None so the registry-only call path
+        # (workbook_builder.py production caller, which has no th_rows to
+        # pass) does not crash aggregate_platform_evidence (r7 Blocker #1).
+        effective_th_rows = th_rows or ()
         platform_names = [s.platform for s in summaries.values()]
-        classifications = classify_platforms_for_summaries(platform_names, th_rows, registry)
+        classifications = classify_platforms_for_summaries(
+            platform_names, effective_th_rows, registry
+        )
         # `classify_platforms_for_summaries` always returns an entry for every
         # requested platform (UNKNOWN at confidence 0.0 when TH-row evidence is
         # absent), so capital-vs-TH platform-name drift (e.g., capital entries
@@ -154,13 +161,14 @@ def write_assumptions_and_methodology_sheet(
             Combined with capital_entries to build the complete platform manifest.
         th_rows: Optional iterable of ``TransactionHistoryRow`` used to classify
             each platform's WalletKind (CEX/DEX/UNKNOWN) via the two-tier
-            resolver. When omitted (Phase A production caller), the Kind column
-            is left blank and no kind-low-confidence signal fires. Passing
-            ``th_rows`` from any non-``assumptions_sheet.py`` call site violates
-            Phase A Design Invariant 1.
+            resolver. When ``th_rows`` is omitted but ``registry`` is supplied,
+            the Kind column resolves via tier-1 registry lookup; when BOTH are
+            omitted, the Kind column is left blank and no kind-low-confidence
+            signal fires.
         registry: Optional ``RegistrySnapshot`` for tier-1 WalletKind lookup.
-            ``None`` in Phase A because ``operator_origin`` does not classify
-            CEX/DEX; every platform falls through to tier-2 auto-discovery.
+            Phase D Task 1 constructs a ``ProductionWalletKindRegistry`` backed
+            by ``operator_origin`` so each platform's kind is sourced from the
+            operator-entity classification (closing the 540-row Binance gap).
     """
     summaries = _collect_platform_summaries(capital_entries, reward_entries, th_rows, registry)
 

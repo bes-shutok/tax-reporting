@@ -529,6 +529,45 @@ the run exits 0 and the wrong filing is produced. This is a Family-G
 (data-loss observability) failure: exit 0, data missing. Cross-reference:
 PT-C-037, Design Invariant 3 (per-lot `OgrValidationResult` contract).
 
+### Pitfall 6: Per-treatment resolver bypass is bypass-not-delete
+
+When a `treatment_*_via_resolver` flag (DP-019) is on, the corresponding
+legacy adapter is UNREACHABLE but NOT deleted. Do not add new code that
+depends on the legacy path running for that treatment while the flag is on.
+Phase E owns deletion after a clean tax year closes; until then the legacy
+path must remain reachable when the flag is flipped to `false` (rollback
+granularity).
+
+There is exactly ONE production site that constructs `list[Transaction]`:
+`crypto_reporting.py::load_koinly_crypto_report` (Phase D Invariant 12). The
+Phase-A sanctioned factory `build_transaction(row, classification)`
+(`application/crypto/transaction_factory.py`) is called only there; every
+per-treatment flip task (SPOT_DISPOSAL, PAYMENT, LOAN_REPAYMENT,
+DERIVATIVES_CLOSE, REWARD_AIRDROP_LP) consumes that pre-built list. Do NOT
+introduce a second production `build_transaction` caller, and do NOT push
+`Transaction` construction down into `crypto_fifo/` or `infrastructure/`
+(Family F layering: `crypto_fifo/ -> application/crypto/` is a reverse-
+direction reach for the resolver/factory). A second construction site drifts
+on classification-registry wiring, fee handling, and row-typing edge cases
+(Family D single-source-of-truth failure).
+
+```python
+# WRONG - re-building Transaction objects inside a per-treatment flip
+def apply_derivatives_dedup(entries, transaction_history_path, ...):
+    rows = read_koinly_rows(transaction_history_path)
+    transactions = [build_transaction(r, classify_platform(...)) for r in rows]
+    # ^ second construction site; drifts from the caller's list
+
+# CORRECT - consume the pre-built list from load_koinly_crypto_report
+def apply_derivatives_dedup(entries, *, transactions, config, via_resolver):
+    if via_resolver:
+        target = [tx for tx in transactions
+                  if resolve_treatment(tx, config) == Treatment.DERIVATIVES_CLOSE]
+    ...
+```
+
+Cross-reference: DP-019, PT-C-038, CRG-019, Phase D plan Invariant 12.
+
 ## Pre-Implementation Checklist
 
 Before implementing new crypto features, verify the plan has:

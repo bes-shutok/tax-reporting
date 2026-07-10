@@ -103,6 +103,27 @@ class TaxJurisdictionConfig:
             ``config.ini``; ``None`` for non-PT countries without an explicit key (naive dates
             then keep the legacy UTC-stamp behavior). Resolved exactly once at config-load and
             passed to the parser as a value object; never re-constructed at call sites.
+        treatment_spot_disposal_via_resolver: When True (default), the SPOT_DISPOSAL treatment
+            is identified via the Phase B ``resolve_treatment`` resolver and the legacy
+            adapter is bypassed (Phase D Task 3). When False, the legacy adapter runs
+            unchanged. Gates ``Treatment.SPOT_DISPOSAL`` (CIRS art. 10(1)(k) general disposal).
+        treatment_payment_via_resolver: When True (default), the PAYMENT treatment is
+            identified via the resolver. Gates ``Treatment.PAYMENT`` (DP-014 payment/card
+            payment proceeds correction).
+        treatment_loan_repayment_via_resolver: When True (default), the LOAN_REPAYMENT
+            treatment is identified via the resolver and loan-affected asset discovery
+            consults BOTH ``Treatment.LOAN_REPAYMENT`` rows AND ``Treatment.OTHER`` rows whose
+            normalized tag is ``"loan"`` (the borrowing-side principal creation, per
+            Invariant 11). Gates ``Treatment.LOAN_REPAYMENT`` (DP-001 / CIRS art. 10(20)).
+        treatment_derivatives_close_via_resolver: When True (default), the DERIVATIVES_CLOSE
+            treatment is identified via the resolver. Gates ``Treatment.DERIVATIVES_CLOSE``
+            (DP-010 / DP-012 crypto-derivatives disposal under CIRS art. 10(1)(e)).
+        treatment_reward_airdrop_lp_via_resolver: When True (default), the REWARD_AIRDROP_LP
+            treatment is identified via the resolver. Gates ``Treatment.REWARD_AIRDROP_LP``
+            (DP-005 / PT-C-005 reward/airdrop/lending income classification).
+        treatment_other_via_resolver: When True (default), the OTHER treatment is identified
+            via the resolver. Gates ``Treatment.OTHER`` (non-disposal rows and unmatched
+            tags; the explicit landing for unmatched rows so the resolver is total).
     """
 
     country: str
@@ -120,3 +141,9 @@ class TaxJurisdictionConfig:
     exclude_transaction_fee_default_max_eur: Decimal = Decimal("0.5")
     exclude_transaction_fee_max_eur_per_asset: dict[str, Decimal] = field(default_factory=dict)
     timezone: ZoneInfo | None = None
+    treatment_spot_disposal_via_resolver: bool = True
+    treatment_payment_via_resolver: bool = True
+    treatment_loan_repayment_via_resolver: bool = True
+    treatment_derivatives_close_via_resolver: bool = True
+    treatment_reward_airdrop_lp_via_resolver: bool = True
+    treatment_other_via_resolver: bool = True

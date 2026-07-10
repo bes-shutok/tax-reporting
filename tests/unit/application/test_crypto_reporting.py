@@ -6938,9 +6938,14 @@ def test_load_koinly_crypto_report_uses_dynamic_discovery_not_hardcoded_constant
     )
     (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(cg_content, encoding="utf-8")
 
-    # TH has a loan-tagged TESTTOK row → dynamic discovery returns {"TESTTOK"}
+    # TH has a borrow-only loan-tagged TESTTOK row (no sending side). Phase D Task 5
+    # Invariant 11: under flag-on default, dynamic discovery catches this row because
+    # it resolves to OTHER (empty sending side) AND its normalized tag is "loan". A
+    # row WITH a sending side would resolve to SPOT_DISPOSAL and drop out under the
+    # flag-on path - the documented exception clause covers only borrow-side principal
+    # creation. Borrow-only shape keeps this test meaningful under both flag states.
     testtok_loan_row = ",".join([
-        "2025-01-01 10:00:00 UTC", "exchange", "loan", "Kraken", "500", "EUR", "500",
+        "2025-01-01 10:00:00 UTC", "crypto_deposit", "loan", "", "", "", "",
         "Kraken", "1", "TESTTOK", "500", "", "", "", "500", "", "", "", "tx_loan_testtok", "",
     ])
     th_content = "\n".join(
@@ -8744,6 +8749,14 @@ def _build_characterization_jurisdiction():
     gated on this flag at crypto_reporting.py:203). The flags mirror
     docs/maintenance/tax/decision_points/2025.toml [countries.PT] so the captured values
     reflect what main.py produces when run against the koinly2025 fixtures.
+
+    Phase D Task 3: ``treatment_spot_disposal_via_resolver=False`` opts this
+    characterization fixture into the LEGACY OGR override path so the golden
+    values remain the legacy backward-compat target. The default-on flag-on
+    path gates the override on SPOT_DISPOSAL treatment, which would filter
+    out the derivatives-tagged ``Futures fee`` rows this corpus exercises;
+    the characterization is about the pre-Phase-D behavior, so the flag is
+    off here.
     """
     from tax_reporting.infrastructure.config import TaxJurisdictionConfig
 
@@ -8754,6 +8767,7 @@ def _build_characterization_jurisdiction():
         zero_basis_review_threshold=Decimal("500"),
         futures_derivatives_taxable=True,
         use_other_gains_report=True,
+        treatment_spot_disposal_via_resolver=False,
     )
 
 
@@ -8866,6 +8880,12 @@ class TestSeparateDerivativesReportingFlag:
             "futures_derivatives_taxable = true\n"
             "use_other_gains_report = true\n"
             "separate_derivatives_reporting = true\n"
+            "treatment_spot_disposal_via_resolver = true\n"
+            "treatment_payment_via_resolver = true\n"
+            "treatment_loan_repayment_via_resolver = true\n"
+            "treatment_derivatives_close_via_resolver = true\n"
+            "treatment_reward_airdrop_lp_via_resolver = true\n"
+            "treatment_other_via_resolver = true\n"
         )
         monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
         (tmp_path / "2025.toml").write_text(toml_content, encoding="utf-8")
@@ -8916,6 +8936,12 @@ class TestSeparateDerivativesReportingFlag:
             "exclude_loan_repayment_gains = true\n"
             "route_derivatives_by_counterparty_residency = true\n"
             "classify_rewards_with_income_codes = true\n"
+            "treatment_spot_disposal_via_resolver = true\n"
+            "treatment_payment_via_resolver = true\n"
+            "treatment_loan_repayment_via_resolver = true\n"
+            "treatment_derivatives_close_via_resolver = true\n"
+            "treatment_reward_airdrop_lp_via_resolver = true\n"
+            "treatment_other_via_resolver = true\n"
         )
         assert result_true.route_derivatives_by_counterparty_residency is True
         assert result_true.classify_rewards_with_income_codes is True
@@ -8926,6 +8952,12 @@ class TestSeparateDerivativesReportingFlag:
             "fiscal_year = 2025\n"
             "[countries.PT]\n"
             "exclude_loan_repayment_gains = true\n"
+            "treatment_spot_disposal_via_resolver = true\n"
+            "treatment_payment_via_resolver = true\n"
+            "treatment_loan_repayment_via_resolver = true\n"
+            "treatment_derivatives_close_via_resolver = true\n"
+            "treatment_reward_airdrop_lp_via_resolver = true\n"
+            "treatment_other_via_resolver = true\n"
         )
         assert result_omitted.route_derivatives_by_counterparty_residency is False
         assert result_omitted.classify_rewards_with_income_codes is False
@@ -8982,7 +9014,16 @@ def _make_ogr_split_entry(  # noqa: PLR0913
 
 
 def _ogr_split_jurisdiction(*, separate: bool):
-    """Build a TaxJurisdictionConfig with use_other_gains_report and optional separate_derivatives_reporting."""
+    """Build a TaxJurisdictionConfig with use_other_gains_report and optional separate_derivatives_reporting.
+
+    Phase D Task 3: ``treatment_spot_disposal_via_resolver=False`` opts this
+    fixture into the LEGACY OGR override path. The default-on flag-on path
+    filters OGR keys whose TH rows are not SPOT_DISPOSAL; the
+    ``TestPipelineIntegration::test_derivatives_entries_empty_when_flag_off``
+    backward-compat test exercises derivatives-tagged rows that the flag-on
+    filter would exclude, so the flag is off here to preserve the legacy
+    golden values.
+    """
     from tax_reporting.infrastructure.config import TaxJurisdictionConfig
 
     return TaxJurisdictionConfig(
@@ -8993,6 +9034,7 @@ def _ogr_split_jurisdiction(*, separate: bool):
         futures_derivatives_taxable=True,
         use_other_gains_report=True,
         separate_derivatives_reporting=separate,
+        treatment_spot_disposal_via_resolver=False,
     )
 
 

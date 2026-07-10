@@ -39,10 +39,11 @@ from pathlib import Path
 
 from ...domain.exceptions import FileProcessingError
 from ...domain.jurisdiction import TaxJurisdictionConfig
+from ...domain.transaction import Transaction
+from ...domain.treatment import Treatment
 from ...infrastructure.json_loader import DEGRADED, load_guarded_json
 from ...infrastructure.koinly_parser import (
     normalize_asset_ticker,
-    normalize_platform_name,
     parse_koinly_datetime,
     parse_koinly_decimal,
     read_koinly_rows,
@@ -50,6 +51,7 @@ from ...infrastructure.koinly_parser import (
 from .classification import _REPOSITORY_ROOT
 from .entities import CryptoCapitalGainEntry
 from .th_lot_matcher import IndexedLot, remove_matched_lots
+from .treatment_resolver import TreatmentConfig, resolve_treatment
 
 logger = logging.getLogger(__name__)
 
@@ -352,12 +354,91 @@ def remove_derivatives_flagged_lots(
     return result.remaining_entries, removed_count
 
 
-def apply_derivatives_dedup(
+def find_derivatives_th_events_from_transactions(
+    transactions: list[Transaction],
+    config: TreatmentConfig,
+) -> list[DerivativesThEvent]:
+    """Build derivatives events from pre-built ``Transaction`` objects via the resolver.
+
+    Phase D Task 6 (r8 Medium #1 carry-forward): when
+    ``treatment_derivatives_close_via_resolver=True``, identification
+    delegates to ``resolve_treatment`` instead of the legacy internal
+    tag classifier inside :func:`find_derivatives_th_events`. The dedup
+    algorithm itself is unchanged - it consumes the same
+    :class:`DerivativesThEvent` shape regardless of how the list was
+    produced.
+
+    Family D / F: this function consumes the ``list[Transaction]`` built
+    ONCE by the production caller
+    (:func:`crypto_reporting.load_koinly_crypto_report`, Task 3 wiring
+    step). It does NOT construct ``Transaction`` objects and does NOT
+    re-read the TH CSV - the resolver is a pure free function over a
+    pre-built typed row.
+
+    Args:
+        transactions: Pre-built ``list[Transaction]`` from the production
+            caller (Task 3 wiring step). Only rows whose
+            ``resolve_treatment(tx, config) == Treatment.DERIVATIVES_CLOSE``
+            AND whose Type is ``crypto_withdrawal`` are emitted (the
+            matcher pairs events with CG lots by ``(timestamp, asset,
+            wallet, amount)``; a non-withdrawal row has no asset movement
+            to match a CG disposal lot).
+        config: ``TreatmentConfig`` carrying the JSON-loaded
+            ``derivatives_tags`` frozenset (Phase B Invariant 5: the
+            resolver never hardcodes derivatives tags; production injects
+            them from
+            ``docs/maintenance/tax/derivatives_labels/<provider>_<year>.json``).
+
+    Returns:
+        List of :class:`DerivativesThEvent` instances, one per
+        ``crypto_withdrawal`` TH row whose resolver treatment is
+        ``DERIVATIVES_CLOSE``. The event list is byte-identical in shape
+        to :func:`find_derivatives_th_events`'s output (same fields, same
+        normalization) so the downstream matcher and logger behave
+        identically regardless of identification path.
+    """
+    events: list[DerivativesThEvent] = []
+    for tx in transactions:
+        if tx.row.type != _DERIVATIVES_TH_TYPE:
+            continue
+        if resolve_treatment(tx, config) is not Treatment.DERIVATIVES_CLOSE:
+            continue
+        # A ``crypto_withdrawal`` row always carries a sending side (the asset
+        # movement); ``sending_amount`` is therefore non-None for rows that
+        # passed the Type guard. Defensive guard kept so a malformed row does
+        # not silently emit an event with a None amount (Family G: data-loss
+        # observability).
+        if tx.row.sending_amount is None:
+            logger.warning(
+                "Skipping derivatives event with no Sent Amount: row_index=%d tag=%s",
+                tx.row.row_index,
+                tx.row.tag,
+            )
+            continue
+        timestamp = tx.row.utc_instant.strftime("%Y-%m-%d %H:%M")
+        asset = normalize_asset_ticker(tx.row.sending_currency or "")
+        wallet = tx.row.sending_wallet.strip()
+        events.append(
+            DerivativesThEvent(
+                timestamp=timestamp,
+                asset=asset,
+                wallet=wallet,
+                amount=tx.row.sending_amount,
+                label=tx.row.tag,
+            )
+        )
+    return events
+
+
+def apply_derivatives_dedup(  # noqa: PLR0913
     *,
     capital_entries: list[CryptoCapitalGainEntry],
     jurisdiction: TaxJurisdictionConfig | None,
     transaction_history_file: Path | None,
     year: int,
+    transactions: list[Transaction],
+    config: TreatmentConfig,
+    via_resolver: bool,
 ) -> list[CryptoCapitalGainEntry]:
     """Pipeline entry point for the derivatives TH-label CG dedup.
 
@@ -384,6 +465,19 @@ def apply_derivatives_dedup(
     only the missing-config WARNING (1x per run, non-aggregatable because
     it has a single remediation action: add the config file).
 
+    Phase D Task 6 (r8 Medium #1 carry-forward): the signature gains
+    three keyword-only params - ``transactions``, ``config``,
+    ``via_resolver``. When ``via_resolver=True``, identification
+    delegates to :func:`find_derivatives_th_events_from_transactions`
+    (which calls ``resolve_treatment`` over the pre-built
+    ``list[Transaction]``) and the legacy internal tag classifier inside
+    :func:`find_derivatives_th_events` is NOT consulted. The dedup
+    algorithm itself (lot-level matching via
+    :func:`remove_derivatives_flagged_lots`) is unchanged; only the
+    identification source differs. When ``via_resolver=False``, today's
+    legacy path runs unchanged. Family F layering: this function NEVER
+    constructs ``Transaction`` objects; the caller supplies them.
+
     Args:
         capital_entries: Capital-gains entries (CG lots) AFTER country
             validation and FIFO rebuild. The dedup filters this list
@@ -396,6 +490,17 @@ def apply_derivatives_dedup(
             CSV, or ``None`` when the caller did not locate one.
         year: Four-digit fiscal year. Used to resolve the per-provider-
             per-year label config file.
+        transactions: Pre-built ``list[Transaction]`` from the production
+            caller (Task 3 wiring step). Consumed ONLY when
+            ``via_resolver=True``; ignored on the legacy path (kept
+            keyword-only-required so callers cannot accidentally fall
+            back to the legacy path by omitting it).
+        config: ``TreatmentConfig`` for ``resolve_treatment``. Consumed
+            ONLY when ``via_resolver=True``.
+        via_resolver: When True, identification comes from
+            ``resolve_treatment``; the legacy internal classifier inside
+            :func:`find_derivatives_th_events` is bypassed. When False,
+            the legacy classifier runs unchanged.
 
     Returns:
         The filtered list (input unchanged if any gate failed or no
@@ -419,7 +524,12 @@ def apply_derivatives_dedup(
         )
         return capital_entries
 
-    derivatives_events = find_derivatives_th_events(transaction_history_file, labels)
+    if via_resolver:
+        derivatives_events = find_derivatives_th_events_from_transactions(
+            transactions, config
+        )
+    else:
+        derivatives_events = find_derivatives_th_events(transaction_history_file, labels)
     if not derivatives_events:
         return capital_entries
 

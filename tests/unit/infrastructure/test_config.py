@@ -157,6 +157,19 @@ class TestConfigValidation:
         assert ".csv" in cfg.security.allowed_extensions
 
 
+# Phase D Task 2: the six per-treatment resolver flags. Required in every country section
+# by the loader's required-presence guard (Invariant 10). Appended to test TOMLs so they
+# satisfy the guard; tests that exercise the guard's missing-flag path override this.
+_SIX_TREATMENT_FLAGS_TOML = (
+    "treatment_spot_disposal_via_resolver = true\n"
+    "treatment_payment_via_resolver = true\n"
+    "treatment_loan_repayment_via_resolver = true\n"
+    "treatment_derivatives_close_via_resolver = true\n"
+    "treatment_reward_airdrop_lp_via_resolver = true\n"
+    "treatment_other_via_resolver = true\n"
+)
+
+
 @pytest.mark.unit
 class TestLoadTaxJurisdictionConfig:
     """Tests for TaxJurisdictionConfig parsing from config file."""
@@ -164,6 +177,7 @@ class TestLoadTaxJurisdictionConfig:
     _PT_TOML = (
     "[meta]\nfiscal_year = 2025\n[countries.PT]\n"
     "exclude_loan_repayment_gains = true\nexclude_transaction_fees = true\n"
+    + _SIX_TREATMENT_FLAGS_TOML
 )
     _NO_COUNTRY_TOML = "[meta]\nfiscal_year = 2025\n"
 
@@ -229,7 +243,8 @@ class TestLoadTaxJurisdictionConfig:
         (tmp_path / "2025.toml").write_text(
             "[meta]\nfiscal_year = 2025\n[countries.PT]\n"
             "exclude_loan_repayment_gains = true\nexclude_transaction_fees = true\n"
-            "[countries.PT.exclude_transaction_fee_max_eur_per_asset]\n"
+            + _SIX_TREATMENT_FLAGS_TOML
+            + "[countries.PT.exclude_transaction_fee_max_eur_per_asset]\n"
             "ETH = 1.0\nSOL = 0.5\n"
         )
         cp = self._make_config({"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025"})
@@ -343,7 +358,7 @@ class TestLoadTaxJurisdictionConfig:
         from tax_reporting.infrastructure.config import load_configuration_from_file
 
         dp_dir = tmp_path / "decision_points"
-        _write_toml(dp_dir, _MINIMAL_VALID_TOML + "[countries.PT]\nexclude_loan_repayment_gains = true\n")
+        _write_toml(dp_dir, _MINIMAL_VALID_TOML + _PT_VALID_SECTION_TOML)
         monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
 
         (tmp_path / "config.ini").write_text(
@@ -526,6 +541,13 @@ _MINIMAL_VALID_TOML = (
     'last_verified = "2026-05-26"\n'
 )
 
+# A minimal PT country section that satisfies BOTH the exclude_loan_repayment_gains required-
+# presence check (config.py:321) AND the Phase D six-treatment-flag required-presence guard
+# (Invariant 10). Reused by several TestLoadDecisionPointsFlags / WithToml fixtures.
+_PT_VALID_SECTION_TOML = (
+    "[countries.PT]\nexclude_loan_repayment_gains = true\n" + _SIX_TREATMENT_FLAGS_TOML
+)
+
 
 @pytest.mark.unit
 class TestLoadDecisionPointsFlags:
@@ -537,13 +559,25 @@ class TestLoadDecisionPointsFlags:
         from tax_reporting.infrastructure.config import _load_decision_points_flags
 
         dp_dir = tmp_path / "decision_points"
-        _write_toml(dp_dir, _MINIMAL_VALID_TOML + "[countries.PT]\nexclude_loan_repayment_gains = true\n")
+        _write_toml(dp_dir, _MINIMAL_VALID_TOML + _PT_VALID_SECTION_TOML)
         monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
 
         logger = logging.getLogger(__name__)
         flags = _load_decision_points_flags("PT", 2025, logger)
 
-        assert flags == {"exclude_loan_repayment_gains": True}
+        assert flags["exclude_loan_repayment_gains"] is True
+        # The six Phase D per-treatment resolver flags are present in the test TOML and
+        # returned verbatim (this isolates _load_decision_points_flags from the required-
+        # presence guard, which lives in _load_tax_jurisdiction_config).
+        for treatment_flag in (
+            "treatment_spot_disposal_via_resolver",
+            "treatment_payment_via_resolver",
+            "treatment_loan_repayment_via_resolver",
+            "treatment_derivatives_close_via_resolver",
+            "treatment_reward_airdrop_lp_via_resolver",
+            "treatment_other_via_resolver",
+        ):
+            assert flags[treatment_flag] is True
 
     def test_missing_toml_raises_file_not_found(self, tmp_path, monkeypatch) -> None:
         """FileNotFoundError is raised when no TOML exists for the requested fiscal year."""
@@ -564,7 +598,7 @@ class TestLoadDecisionPointsFlags:
         from tax_reporting.infrastructure.config import _load_decision_points_flags
 
         dp_dir = tmp_path / "decision_points"
-        _write_toml(dp_dir, _MINIMAL_VALID_TOML + "[countries.PT]\nexclude_loan_repayment_gains = true\n")
+        _write_toml(dp_dir, _MINIMAL_VALID_TOML + _PT_VALID_SECTION_TOML)
         monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
 
         logger = logging.getLogger(__name__)
@@ -768,7 +802,10 @@ class TestLoadTaxJurisdictionConfigWithToml:
         import tax_reporting.infrastructure.config as config_module
 
         dp_dir = tmp_path / "decision_points"
-        _write_toml(dp_dir, _MINIMAL_VALID_TOML + "[countries.PT]\nexclude_loan_repayment_gains = false\n")
+        _write_toml(
+            dp_dir,
+            _MINIMAL_VALID_TOML + "[countries.PT]\nexclude_loan_repayment_gains = false\n" + _SIX_TREATMENT_FLAGS_TOML,
+        )
         monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
 
         cp = self._make_config({"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025"})
@@ -798,7 +835,7 @@ class TestLoadTaxJurisdictionConfigWithToml:
 
         dp_dir = tmp_path / "decision_points"
         # TOML with [countries.US] section but no exclude flag (valid for non-PT)
-        _write_toml(dp_dir, _MINIMAL_VALID_TOML + "[countries.US]\n")
+        _write_toml(dp_dir, _MINIMAL_VALID_TOML + "[countries.US]\n" + _SIX_TREATMENT_FLAGS_TOML)
         monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
 
         cp = self._make_config({"TAX_COUNTRY": "US", "FISCAL_YEAR": "2025"})
