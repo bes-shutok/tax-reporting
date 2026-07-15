@@ -189,7 +189,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 
 ## Configuration
 
-- `configparser` INI files: `config.ini` (prod), `tests/config.ini` (test). Four sections: `[COMMON]`, `[EXCHANGE RATES]`, `[SECURITY]`, `[TAX JURISDICTION]` (fields and defaults documented in `README.md`). Update exchange rates annually.
+- `configparser` INI files: `config.ini` (prod), `tests/config.ini` (test). Three sections: `[COMMON]`, `[EXCHANGE RATES]`, `[TAX JURISDICTION]` (fields and defaults documented in `README.md`). Update exchange rates annually.
 - `IANA_TIMEZONE`: auto-deduces `Europe/Lisbon` for `TAX_COUNTRY=PT`; REQUIRED for other countries with crypto data, else fails fast.
 - **Law-driven flags** (e.g. `exclude_loan_repayment_gains`) live in `docs/maintenance/tax/decision_points/<fiscal_year>.toml`, NOT `config.ini` (user preferences only); update the `.md` and `.toml` sidecar together.
 - TOML schema: `[meta].fiscal_year` (integer) + `[countries.XX]` boolean tables (multi-type loader also accepts `dict[str, Decimal]` subtables); copy `2025.toml` per year. Missing TOML raises `MissingDecisionPointsError`; invalid `[TAX JURISDICTION]` raises `ConfigurationError`; both surface unwrapped from `main()`.

@@ -265,7 +265,6 @@ def _build_test_config(*, separate_derivatives_reporting: bool):
     """Build a Config with the requested separate_derivatives_reporting flag."""
     from tax_reporting.domain.jurisdiction import TaxJurisdictionConfig
     from tax_reporting.infrastructure.config import Config
-    from tax_reporting.infrastructure.validation import SecurityConfig
 
     tax_jurisdiction = TaxJurisdictionConfig(
         country="PT",
@@ -280,7 +279,6 @@ def _build_test_config(*, separate_derivatives_reporting: bool):
         base="EUR",
         rates=[],
         tax_jurisdiction=tax_jurisdiction,
-        security=SecurityConfig(),
     )
 
 

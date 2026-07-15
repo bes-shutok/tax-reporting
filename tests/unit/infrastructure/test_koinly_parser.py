@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from tax_reporting.infrastructure.koinly_parser import (
     _extract_ogr_gain_loss,
     _find_and_parse_other_gains_file,
+    _find_report_path,
     _parse_other_gains_row,
     parse_koinly_datetime,
 )
@@ -204,6 +205,54 @@ class TestKoinlyParser:
         key_2025_01_14 = ("2025-01-14", "USDT", "ByBit")
         assert key_2025_01_14 in index
         assert index[key_2025_01_14] == Decimal("-10.00")
+
+
+class TestFindReportPath:
+    """Tests for ``_find_report_path`` (the canonical Koinly report-file discovery helper).
+
+    Ported from ``tests/unit/application/test_crypto_parsing.py`` when the
+    duplicate copy in ``application/crypto/parsing.py`` was removed. The four
+    cases below are the only coverage of this helper's behavior; the
+    ``multiple_matches`` case is the sole pin on the helper's
+    alphabetically-first-via-``sorted()`` ordering.
+    """
+
+    def test_find_report_path_csv(self, tmp_path: Path) -> None:
+        """Given directory with '*income_report*.csv' file, returns the path."""
+        report_file = tmp_path / "koinly_2024_income_report.csv"
+        report_file.write_text("data\n")
+
+        result = _find_report_path(tmp_path, "income_report", ".csv")
+
+        assert result == report_file
+
+    def test_find_report_path_pdf(self, tmp_path: Path) -> None:
+        """Given directory with '*complete_tax_report*.pdf' file, returns the path."""
+        report_file = tmp_path / "koinly_complete_tax_report.pdf"
+        report_file.write_bytes(b"%PDF-1.4\n")
+
+        result = _find_report_path(tmp_path, "complete_tax_report", ".pdf")
+
+        assert result == report_file
+
+    def test_find_report_path_missing(self, tmp_path: Path) -> None:
+        """Given directory without a matching file, returns ``None``."""
+        result = _find_report_path(tmp_path, "missing_marker", ".csv")
+
+        assert result is None
+
+    def test_find_report_path_multiple_matches(self, tmp_path: Path) -> None:
+        """Given multiple matching files, returns the alphabetically-first via ``sorted()``.
+
+        This is the ONLY test pinning the helper's ordering behavior; do not drop it.
+        """
+        (tmp_path / "B-File.csv").write_text("b\n")
+        (tmp_path / "A-File.csv").write_text("a\n")
+        (tmp_path / "C-File.csv").write_text("c\n")
+
+        result = _find_report_path(tmp_path, "File", ".csv")
+
+        assert result == tmp_path / "A-File.csv"
 
 
 _LISBON = ZoneInfo("Europe/Lisbon")

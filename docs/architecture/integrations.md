@@ -7,7 +7,6 @@ This is a local batch tool with **no service-to-service integrations** at runtim
 - **Interactive Brokers CSV exports** - flex-query-style CSVs in `resources/source/`. Numeric fields from external reports are parsed with thousands/decimal-separator detection that fails clearly on ambiguity (see `docs/maintenance/development_lessons.md`).
 - **Koinly CSV exports** - `*transaction_history*.csv` (TH), capital-gains export, and the Other Gains Report (OGR). Optional and non-blocking.
 - **Exchange rates** - static, configured in `config.ini` `[EXCHANGE RATES]`; updated annually from the national central bank.
-- **ISIN mapping** - static `[SECURITY]` table in `config.ini`.
 
 ## Referenced source archives (not loaded at runtime)
 

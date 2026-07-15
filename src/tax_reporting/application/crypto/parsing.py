@@ -23,39 +23,6 @@ _MAX_PDF_BYTES: Final = 20 * 1024 * 1024
 _MAX_ASCII_CODE: Final = 128
 
 
-def _find_report_file(koinly_dir: Path, marker: str) -> Path | None:
-    """Find a Koinly report file by marker and .csv extension.
-
-    Thin wrapper around _find_report_path for CSV files.
-
-    Args:
-        koinly_dir: Directory containing Koinly exports.
-        marker: File name marker to search for (e.g., "capital_gains_report").
-
-    Returns:
-        Path to the first matching file, or None if no matches found.
-    """
-    return _find_report_path(koinly_dir, marker, ".csv")
-
-
-def _find_report_path(koinly_dir: Path, marker: str, suffix: str) -> Path | None:
-    """Find a Koinly report file by marker and suffix.
-
-    Searches for files matching the pattern "*marker*suffix" in the given directory.
-    Returns the first match when sorted alphabetically, or None if no matches found.
-
-    Args:
-        koinly_dir: Directory containing Koinly exports.
-        marker: File name marker to search for (e.g., "capital_gains_report").
-        suffix: File suffix including the dot (e.g., ".csv", ".pdf").
-
-    Returns:
-        Path to the first matching file, or None if no matches found.
-    """
-    matches = sorted(koinly_dir.glob(f"*{marker}*{suffix}"))
-    return matches[0] if matches else None
-
-
 def _extract_tax_year(
     koinly_dir: Path,
     capital_file: Path | None,

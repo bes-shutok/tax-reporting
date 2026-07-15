@@ -7,7 +7,7 @@ import dataclasses
 import logging
 import re
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, NamedTuple, get_args, get_type_hints
@@ -16,7 +16,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from ..domain.exceptions import MissingDecisionPointsError
 from ..domain.jurisdiction import DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS, TaxJurisdictionConfig
 from .logging_config import create_module_logger
-from .validation import DEFAULT_SECURITY_CONFIG, SecurityConfig
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DECISION_POINTS_DIR = _REPO_ROOT / "docs/maintenance/tax/decision_points"
@@ -83,13 +82,11 @@ class Config:
         tax_jurisdiction: Country-specific tax jurisdiction settings. Required; always
             set via load_configuration_from_file() which reads law-driven flags from
             the per-year TOML decision points file.
-        security: Security configuration settings.
     """
 
     base: str
     rates: list[ConversionRate]
     tax_jurisdiction: TaxJurisdictionConfig
-    security: SecurityConfig = field(default_factory=lambda: DEFAULT_SECURITY_CONFIG)
 
 
 def _load_decision_points_flags(
@@ -430,55 +427,11 @@ def load_configuration_from_file() -> Config:
 
         logger.info("Loaded %d exchange rates for base currency %s", len(rates), target)
 
-        # Load security settings
-        security_config = _load_security_config(config, logger)
-
         # Load tax jurisdiction settings
         tax_jurisdiction = _load_tax_jurisdiction_config(config, logger)
 
-        return Config(base=target, rates=rates, security=security_config, tax_jurisdiction=tax_jurisdiction)
+        return Config(base=target, rates=rates, tax_jurisdiction=tax_jurisdiction)
 
     except (KeyError, ValueError) as e:
         logger.error("Configuration parsing error: %s", e)
         raise
-
-
-def _load_security_config(config: configparser.ConfigParser, logger: logging.Logger) -> SecurityConfig:
-    """Load security configuration from config file or use defaults."""
-    try:
-        security_section = config["SECURITY"]
-
-        # Parse security settings with fallback to defaults
-        max_file_size_mb = int(security_section.get("MAX_FILE_SIZE_MB", "100"))
-        max_ticker_length = int(security_section.get("MAX_TICKER_LENGTH", "10"))
-        max_currency_length = int(security_section.get("MAX_CURRENCY_LENGTH", "3"))
-        max_quantity_value = int(security_section.get("MAX_QUANTITY_VALUE", "10000000000"))
-        max_price_value = int(security_section.get("MAX_PRICE_VALUE", "1000000000"))
-        max_filename_length = int(security_section.get("MAX_FILENAME_LENGTH", "255"))
-
-        # Parse allowed extensions
-        extensions_str = security_section.get("ALLOWED_EXTENSIONS", ".csv,.txt")
-        allowed_extensions = [ext.strip() for ext in extensions_str.split(",")]
-
-        security_config = SecurityConfig(
-            max_file_size_mb=max_file_size_mb,
-            max_ticker_length=max_ticker_length,
-            max_currency_length=max_currency_length,
-            max_quantity_value=max_quantity_value,
-            max_price_value=max_price_value,
-            max_filename_length=max_filename_length,
-            allowed_extensions=allowed_extensions,
-        )
-
-        logger.info(
-            "Loaded security configuration: max_file_size=%sMB, max_ticker_length=%s, allowed_extensions=%s",
-            max_file_size_mb,
-            max_ticker_length,
-            allowed_extensions,
-        )
-
-        return security_config
-
-    except (KeyError, ValueError) as e:
-        logger.warning("Failed to load security configuration, using defaults: %s", e)
-        return DEFAULT_SECURITY_CONFIG

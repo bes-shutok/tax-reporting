@@ -59,12 +59,6 @@ def build_transaction(
     of source (e.g. zero-evidence platforms return UNKNOWN at 0.0 confidence
     from the auto tier).
 
-    Wallet attribution reads ``row.sending_wallet`` when non-empty, else
-    ``row.receiving_wallet``. The factory uses this ONLY to confirm the row
-    carries a platform signal; the classification itself is supplied by the
-    caller (the upstream resolver attributes rows to platforms identically
-    via ``_row_platform`` in ``wallet_kind.py``).
-
     Args:
         row: The typed ``TransactionHistoryRow`` this transaction is anchored on.
         classification: The pre-computed ``WalletClassification`` for the
@@ -78,15 +72,6 @@ def build_transaction(
     is_unrecognized_wallet = (
         classification.source == "auto" and not classification.is_high_probability()
     ) or classification.kind is WalletKind.UNKNOWN
-
-    # Wallet attribution sanity: this factory rule and the upstream
-    # ``_row_platform`` rule both pick sending_wallet-if-non-empty else
-    # receiving_wallet. The factory does not need the resolved value to
-    # build the Transaction (the classification is supplied), but reading
-    # it confirms the row has a platform signal and documents the
-    # attribution rule next to the factory for reviewer cross-checks.
-    _attributed_wallet = row.sending_wallet if row.sending_wallet else row.receiving_wallet
-    del _attributed_wallet  # documented for the reader; not used downstream
 
     return Transaction(
         row=row,

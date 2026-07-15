@@ -12,11 +12,9 @@ from tax_reporting.infrastructure.config import (
     Config,
     ConversionRate,
     TaxJurisdictionConfig,
-    _load_security_config,
     _load_tax_jurisdiction_config,
     _parse_jurisdiction_section,
 )
-from tax_reporting.infrastructure.validation import SecurityConfig
 
 _TEST_JURISDICTION = TaxJurisdictionConfig(
     country="PT", fiscal_year=2025, exclude_loan_repayment_gains=False, zero_basis_review_threshold=Decimal("50")
@@ -38,18 +36,6 @@ class TestConfig:
         config = Config(base=base_currency, rates=rates, tax_jurisdiction=_TEST_JURISDICTION)
         assert config.base == base_currency
         assert len(config.rates) == 2
-        assert config.security is not None  # Should have default security config
-
-    def test_config_with_custom_security(self):
-        """Test Config object with custom security settings."""
-        base_currency = "EUR"
-        rates = []
-        security = SecurityConfig(max_file_size_mb=50)
-
-        config = Config(base=base_currency, rates=rates, tax_jurisdiction=_TEST_JURISDICTION, security=security)
-        assert config.base == base_currency
-        assert len(config.rates) == 0
-        assert config.security.max_file_size_mb == 50
 
     def test_decision_points_toml_loads_without_via_resolver_flags(self, tmp_path, monkeypatch) -> None:
         """Phase E Task 6 characterization: the committed 2025.toml (with the six
@@ -126,62 +112,6 @@ class TestConversionRate:
 
 
 @pytest.mark.unit
-class TestLoadSecurityConfig:
-    """Test loading security configuration section."""
-
-    def test_load_security_config_with_values(self):
-        """Test loading security config with all values."""
-        config = configparser.ConfigParser()
-        config["SECURITY"] = {
-            "MAX_FILE_SIZE_MB": "50",
-            "MAX_TICKER_LENGTH": "8",
-            "MAX_CURRENCY_LENGTH": "5",
-            "ALLOWED_EXTENSIONS": ".csv,.xlsx",
-            "MAX_QUANTITY_VALUE": "1000000",
-            "MAX_PRICE_VALUE": "100000",
-            "MAX_FILENAME_LENGTH": "100",
-        }
-
-        logger = logging.getLogger(__name__)
-        security_config = _load_security_config(config, logger)
-
-        assert security_config.max_file_size_mb == 50
-        assert security_config.max_ticker_length == 8
-        assert security_config.max_currency_length == 5
-        assert ".csv" in security_config.allowed_extensions
-        assert ".xlsx" in security_config.allowed_extensions
-        assert security_config.max_quantity_value == 1000000
-        assert security_config.max_price_value == 100000
-        assert security_config.max_filename_length == 100
-
-    def test_load_security_config_missing_section(self):
-        """Test loading security config when section is missing."""
-        config = configparser.ConfigParser()
-        config["OTHER"] = {"something": "value"}
-
-        logger = logging.getLogger(__name__)
-        security_config = _load_security_config(config, logger)
-
-        # Should return default config
-        assert security_config.max_file_size_mb > 0
-        assert security_config.max_ticker_length > 0
-
-    def test_load_security_config_with_invalid_values(self):
-        """Test loading security config with invalid values."""
-        config = configparser.ConfigParser()
-        config["SECURITY"] = {
-            "MAX_FILE_SIZE_MB": "invalid_number",
-            "ALLOWED_EXTENSIONS": ".csv,.txt",
-        }
-
-        logger = logging.getLogger(__name__)
-        # Should fall back to defaults when values are invalid
-        security_config = _load_security_config(config, logger)
-        assert security_config.max_file_size_mb > 0
-        assert ".csv" in security_config.allowed_extensions
-
-
-@pytest.mark.unit
 class TestConfigValidation:
     """Test configuration validation logic."""
 
@@ -214,8 +144,6 @@ class TestConfigValidation:
         assert cfg.rates[0].rate == Decimal("1.2")
         assert cfg.rates[1].calculated == "GBP"
         assert cfg.rates[1].rate == Decimal("0.85")
-        assert cfg.security.max_file_size_mb > 0
-        assert ".csv" in cfg.security.allowed_extensions
 
 
 # Phase E Task 6: the six per-treatment resolver flags were removed from
@@ -313,7 +241,10 @@ class TestLoadTaxJurisdictionConfig:
     def test_exclude_transaction_fees_defaults_to_false(self) -> None:
         """TaxJurisdictionConfig defaults exclude_transaction_fees to False when not provided."""
         config = TaxJurisdictionConfig(
-            country="US", fiscal_year=2025, exclude_loan_repayment_gains=False, zero_basis_review_threshold=Decimal("50")
+            country="US",
+            fiscal_year=2025,
+            exclude_loan_repayment_gains=False,
+            zero_basis_review_threshold=Decimal("50"),
         )
         assert config.exclude_transaction_fees is False
 

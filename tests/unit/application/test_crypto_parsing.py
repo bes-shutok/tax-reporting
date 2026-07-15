@@ -11,88 +11,10 @@ from tax_reporting.application.crypto.parsing import (
     _MAX_PDF_BYTES,
     _decode_pdf_hex_token,
     _extract_tax_year,
-    _find_report_file,
-    _find_report_path,
 )
 from tax_reporting.infrastructure.koinly_parser import (
     _find_and_parse_other_gains_file,
 )
-
-
-class TestFindReportFile:
-    """Tests for _find_report_file()."""
-
-    def test_find_report_file_exists(self, tmp_path: Path) -> None:
-        """Given directory with '*capital_gains_report*.csv', returns path to file."""
-        # Arrange: create directory with matching file (marker in filename)
-        report_file = tmp_path / "koinly_2024_capital_gains_report.csv"
-        report_file.write_text("header\nrow1\nrow2\n")
-
-        # Act
-        result = _find_report_file(tmp_path, "capital_gains_report")
-
-        # Assert
-        assert result == report_file
-
-    def test_find_report_file_missing(self, tmp_path: Path) -> None:
-        """Given directory without matching file, returns None."""
-        # Arrange: empty directory
-        assert not list(tmp_path.iterdir())
-
-        # Act
-        result = _find_report_file(tmp_path, "capital_gains_report")
-
-        # Assert
-        assert result is None
-
-
-class TestFindReportPath:
-    """Tests for _find_report_path()."""
-
-    def test_find_report_path_csv(self, tmp_path: Path) -> None:
-        """Given directory with '*marker*.csv' file, returns path to file."""
-        # Arrange
-        report_file = tmp_path / "koinly_2024_income_report.csv"
-        report_file.write_text("data\n")
-
-        # Act
-        result = _find_report_path(tmp_path, "income_report", ".csv")
-
-        # Assert
-        assert result == report_file
-
-    def test_find_report_path_pdf(self, tmp_path: Path) -> None:
-        """Given directory with '*complete_tax_report*.pdf' file, returns path to file."""
-        # Arrange: marker must be in filename
-        report_file = tmp_path / "koinly_complete_tax_report.pdf"
-        report_file.write_bytes(b"%PDF-1.4\n")
-
-        # Act
-        result = _find_report_path(tmp_path, "complete_tax_report", ".pdf")
-
-        # Assert
-        assert result == report_file
-
-    def test_find_report_path_missing(self, tmp_path: Path) -> None:
-        """Given directory without matching file, returns None."""
-        # Act
-        result = _find_report_path(tmp_path, "missing_marker", ".csv")
-
-        # Assert
-        assert result is None
-
-    def test_find_report_path_multiple_matches(self, tmp_path: Path) -> None:
-        """Given directory with multiple matching files, returns first sorted match."""
-        # Arrange: create multiple matching files
-        (tmp_path / "B-File.csv").write_text("b\n")
-        (tmp_path / "A-File.csv").write_text("a\n")
-        (tmp_path / "C-File.csv").write_text("c\n")
-
-        # Act
-        result = _find_report_path(tmp_path, "File", ".csv")
-
-        # Assert: should return "A-File.csv" (alphabetically first)
-        assert result == tmp_path / "A-File.csv"
 
 
 class TestExtractTaxYear:

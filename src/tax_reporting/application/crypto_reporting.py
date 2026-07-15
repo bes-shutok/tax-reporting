@@ -20,6 +20,7 @@ from ..infrastructure.config import (
 )
 from ..infrastructure.koinly_parser import (
     _find_and_parse_other_gains_file,
+    _find_report_path,
     contains_non_latin_characters,
     format_datetime,
     normalize_asset_ticker,
@@ -79,8 +80,6 @@ from .crypto.ogr_handler import (
 from .crypto.operator_origin import resolve_operator_origin
 from .crypto.parsing import (
     _extract_tax_year,
-    _find_report_file,
-    _find_report_path,
     _parse_complete_tax_report_pdf,
     _register_skipped_zero_asset,
 )
@@ -202,9 +201,9 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
     if not koinly_dir.exists() or not koinly_dir.is_dir():
         return None
 
-    capital_file = _find_report_file(koinly_dir, "capital_gains_report")
-    income_file = _find_report_file(koinly_dir, "income_report")
-    transaction_history_file = _find_report_file(koinly_dir, "transaction_history")
+    capital_file = _find_report_path(koinly_dir, "capital_gains_report", ".csv")
+    income_file = _find_report_path(koinly_dir, "income_report", ".csv")
+    transaction_history_file = _find_report_path(koinly_dir, "transaction_history", ".csv")
 
     _required = {
         "capital_gains_report (Capital gains report)": capital_file,
@@ -551,20 +550,23 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
     derivatives_entries = aggregate_derivatives_entries(derivatives_entries)
 
     opening = _parse_holdings_file(
-        _find_report_file(koinly_dir, "beginning_of_year_holdings_report"),
+        _find_report_path(koinly_dir, "beginning_of_year_holdings_report", ".csv"),
         "holdings_opening",
         skipped_assets,
     )
     closing = _parse_holdings_file(
-        _find_report_file(koinly_dir, "end_of_year_holdings_report"),
+        _find_report_path(koinly_dir, "end_of_year_holdings_report", ".csv"),
         "holdings_closing",
         skipped_assets,
     )
 
-    short_term_rows = sum(1 for row in capital_entries if row.holding_period.lower().startswith("short"))
-    long_term_rows = sum(1 for row in capital_entries if row.holding_period.lower().startswith("long"))
-    mixed_rows = sum(1 for row in capital_entries if row.holding_period.lower() == "mixed")
-    unknown_rows = sum(1 for row in capital_entries if row.holding_period.lower() == "unknown")
+    # startswith on "short"/"long" is load-bearing: actual values are "Short term"/"Long term"
+    # (space-separated, not hyphenated). Tightening to == "short" would silently break matching.
+    period_counts = Counter(row.holding_period.lower() for row in capital_entries)
+    short_term_rows = sum(c for k, c in period_counts.items() if k.startswith("short"))
+    long_term_rows = sum(c for k, c in period_counts.items() if k.startswith("long"))
+    mixed_rows = period_counts.get("mixed", 0)
+    unknown_rows = period_counts.get("unknown", 0)
 
     _recon_logger = logging.getLogger(__name__)
     categorised = short_term_rows + long_term_rows + mixed_rows + unknown_rows
