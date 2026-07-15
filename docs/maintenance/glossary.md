@@ -20,7 +20,10 @@ See `docs/maintenance/crypto_rules.md` for authority levels and `docs/maintenanc
 - **FIFO** - First-in-first-out lot matching, applied per-wallet per-institution (PT statutory basis: CIRS art. 43 n.9).
 - **Holding period** - Short-term (< 365 days, taxable) vs long-term (exempt). In PT the exempt threshold is CIRS art. 10 n.6/n.19.
 - **Materiality threshold** - Entries with `|gain/loss| < 1 EUR` are filtered post-aggregation (see `crypto_rules.md`).
-- **Zero-basis review** - Zero-cost disposals flagged for manual review when proceeds meet `ZERO_BASIS_REVIEW_MIN_PROCEEDS`.
+- **Zero-basis review** - Zero-cost disposals flagged for manual review when proceeds meet `ZERO_BASIS_REVIEW_MIN_PROCEEDS`. Per-lot flag; re-evaluated at the aggregation boundary so that one noisy lot does not flag an aggregated disposal whose summed cost/proceeds/gain are material.
+- **Aggregated review flag** - The `review_required` / `review_reason` rendered on a user-visible Excel row. Distinct from the per-lot flag living on in-memory entries; re-derived from aggregated values (summed cost, proceeds, gain) rather than joined from per-lot reasons.
+- **Reward dust** - Reward-income row whose Koinly-exported `Value (EUR)` rounds to `0,00` because the reward's true EUR value is below €0.005, not because the price feed is missing. Distinct from a genuinely unpriced reward (no price feed for the asset at all).
+- **In-asset interest** - Loan repayment overshoot where a DeFi variable-rate loan accrues interest in the borrowed asset, so `repaid_amount` exceeds `received_amount` by a small percentage. Not a cross-year anomaly; classified separately from genuine cross-year loans and from loans Koinly could not price.
 - **Annex hint** - Repo workbook column (`Annex hint = J | G1`) indicating which IRS schedule each row targets (routing guide, not a filed value). Under PT, `J` = taxable Anexo J Quadro 9; `G1` = exempt long-term crypto (Anexo G1 Q7).
 - **LP** - Liquidity provision / pool tokens (add/remove liquidity).
 - **Derivatives** - Futures/perpetuals; losses on liquidation are disposals of collateral (a taxable disposal), not an error.
