@@ -389,15 +389,17 @@ stablecoins, or the fiscal year-end peg->EUR rate conversion (from `[EXCHANGE RA
 the same source shares/dividends use) for non-EUR-pegged stablecoins whose peg currency
 has a configured rate; both fallbacks are `review_required=True` approximations of the
 disposal-date FMV; (3) review flag for a non-EUR stablecoin whose peg has no config rate,
-and for any non-stablecoin. Stablecoin membership, peg annotation, and the payment tag set
-are reused from `docs/maintenance/tax/popular_crypto_tokens.json`; no new config file.
+and for any non-stablecoin. Stablecoin membership and peg annotation are reused from
+`docs/maintenance/tax/popular_crypto_tokens.json`; the payment tag pair (`payment`,
+`card payment`) lives in `TreatmentConfig.payment_tags`
+(`application/crypto/treatment_resolver.py`). No new config file.
 Rationale: a goods/services purchase paid in crypto is a taxable alienação onerosa (PT-C-004)
 and must carry a non-zero valor de realização; Koinly's price-DB miss (often a token-rename
 alias such as EUROC -> EURC) must not silently produce a phantom full-cost loss. Every
 inferred proceeds value is `review_required=True` with a reason naming the tier, so the
-user can verify the approximation. Full mechanism (deque + count-equality collision gate,
-day-key timezone rationale, loader degrade-never-raise, re-zero snapshot, DP-013 branch
-interaction) is documented in `docs/maintenance/crypto_implementation_guidelines.md`
+user can verify the approximation. Full post-Phase-E mechanism (deque + popleft
+consumption discipline, day-key timezone rationale, loader degrade-never-raise, DP-013
+branch interaction) is documented in `docs/maintenance/crypto_implementation_guidelines.md`
 "Payment Proceeds Correction (DP-014)". Out of scope: LP-token unstaking is a distinct
 non-taxable-deferred case (DP-005 / PT-C-005).
 
@@ -481,46 +483,43 @@ threading) remains deferred.
 > Cross-reference: PT-C-035 (OGR as authoritative realization source), PT-C-030
 > (review-flag specificity), PT-C-011 (short-vs-long holding-period taxable split).
 
-**PT-C-038** `[IMPLEMENTATION DECISION | 2026-07-08]`
+**PT-C-038** `[IMPLEMENTATION DECISION | 2026-07-08, updated 2026-07-11 Phase E]`
 Per-treatment identification is authoritative from the TH-anchored resolver
-(`resolve_treatment` in `application/crypto/treatment_resolver.py`) when the
-corresponding `treatment_*_via_resolver` flag is on (DP-019). The six flags
-map 1:1 to the six `Treatment` members and default to `true`:
+(`resolve_treatment` in `application/crypto/treatment_resolver.py`);
+identification is resolver-only with no legacy fallback. The six per-stage
+adapters consume the pre-built `list[Transaction]` from
+`crypto_reporting.py::load_koinly_crypto_report`:
 
-- `treatment_spot_disposal_via_resolver` -> OGR 1:1 override identifies
-  SPOT_DISPOSAL rows via the resolver instead of the legacy per-row
-  `_apply_ogr_direction_override` form;
-- `treatment_payment_via_resolver` -> payment-proceeds correction identifies
-  PAYMENT rows via the resolver instead of the count-equality gate
-  (`_DEFAULT_PAYMENT_TAGS` index); the re-zero snapshot/restore block is
-  bypassed when BOTH this flag and `treatment_spot_disposal_via_resolver` are
-  on (the OGR override skips PAYMENT rows, so the residual the re-zero block
-  exists to close cannot occur);
-- `treatment_loan_repayment_via_resolver` -> loan-affected asset discovery
-  consults `Treatment.LOAN_REPAYMENT` rows AND `Treatment.OTHER` rows whose
-  normalized tag is `"loan"` (the borrowing-side principal creation) instead
-  of the `_LOAN_PRINCIPAL_TAGS` membership check; the extra clause preserves
-  the legacy asset set (borrow-only assets otherwise drop out);
-- `treatment_derivatives_close_via_resolver` -> derivatives dedup
-  identification delegates to the resolver instead of the internal tag
-  classifier (the lot-level dedup algorithm itself is unchanged);
-- `treatment_reward_airdrop_lp_via_resolver` -> reward/airdrop/LP
-  identification delegates to the resolver instead of the inline tag literals
-  in `token_origin.py`;
-- `treatment_other_via_resolver` -> no legacy adapter exists for OTHER; the
-  flag exists for symmetry and forward-compatibility (a future OTHER-routed
-  behavior would use it) and is a true no-op on output today.
+- OGR 1:1 override identifies SPOT_DISPOSAL rows via the resolver; a
+  non-SPOT_DISPOSAL row sharing the same `(date, asset, wallet)` key is NOT
+  overridden;
+- payment-proceeds correction identifies PAYMENT rows via the resolver; the
+  re-zero snapshot/restore block is gone (Phase E Task 7); the OGR override
+  skips PAYMENT rows so the residual the re-zero block existed to close
+  cannot occur;
+- loan-affected asset discovery consults `Treatment.LOAN_REPAYMENT` rows AND
+  `Treatment.OTHER` rows whose normalized tag is `"loan"` (the
+  borrowing-side principal creation); the extra clause (Invariant 11)
+  preserves borrow-only assets so they remain in the FIFO rebuild;
+- derivatives dedup identification delegates to the resolver via
+  `find_derivatives_th_events_from_transactions`; the legacy internal tag
+  classifier is gone (the lot-level dedup algorithm itself is unchanged);
+- reward/airdrop/LP identification delegates to the resolver; `TreatmentConfig.reward_tags` / `.airdrop_tags` / `.lp_tags` (in `application/crypto/treatment_resolver.py`) are the single source of truth. Phase E Task 5 deleted the former `token_origin.py` duplicates.
+- OTHER rows flow through the standard pipeline without a dedicated override.
 
-The legacy adapters are BYPASSED, not deleted, when the corresponding flag is
-on; setting a flag to `false` restores the legacy identification path for that
-treatment only (rollback granularity). Phase E owns deletion after a clean tax
-year closes. A required-presence loader guard in `infrastructure/config.py`
-raises `ConfigurationError` if any of the six flags is absent from a country
-section of the decision-points TOML, so a future-year TOML copy cannot
-silently revert a treatment to legacy. Cross-reference: DP-019; Phase D plan
+History (Phase D): the six `treatment_*_via_resolver` flags (DP-019) mapped
+1:1 to the six `Treatment` members and provided per-treatment rollback
+granularity (flipping a flag to `false` restored the legacy identification
+path for that treatment). Phase E (2026-07-11, plan
+`docs/history/plans/completed/2026-07-10-th-tx-view-phase-e.md`) deleted the six legacy
+adapters AND the six flags, the `_REQUIRED_TREATMENT_FLAGS` tuple, the
+`_enforce_required_treatment_flags` loader guard, and the `_countries_table_for`
+helper. The pre-Phase-E flag-mechanic behavior is preserved in
+`docs/maintenance/development_lessons.md` lessons #49-#52 (append-only
+history). Cross-reference: DP-019 (removed); Phase D plan
 `docs/history/plans/completed/2026-07-08-th-tx-view-phase-d.md`.
 
 > Source: RFC feature-note `docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md`;
-> implementation plan `docs/history/plans/completed/2026-07-08-th-tx-view-phase-d.md`.
+> implementation plan `docs/history/plans/completed/2026-07-10-th-tx-view-phase-e.md` (Phase E).
 > Cross-reference: PT-C-035 (payment-proceeds correction), PT-C-037 (OGR
-> event-level application), DP-019 (six per-treatment resolver flags).
+> event-level application), CRG-019 (post-Phase-E identification notes).

@@ -22,9 +22,7 @@ Cases (synthetic fixture, all USDT on ``Demo Futures`` unless noted):
         TH-label CG dedup, the profit routes to Derivatives P&L and the single
         CG fee-disposal lot (+2.44 EUR) is REMOVED from Crypto Gains because
         its TH event carries Tag="Futures fee". The -4.17 EUR OGR Loss row
-        classifies as Derivatives (cg_matches == 0 after dedup). Without
-        separation, the legacy path mixes profit plus fee into a single
-        136.01 EUR Crypto Gains entry (140.18 + -4.17 = 136.01).
+        classifies as Derivatives (cg_matches == 0 after dedup).
     Case B = (2025-01-13, USDT, Demo Futures): three OGR Loss rows
         (1.50 + 2.50 + 4.00 = 8.00 EUR) and four CG lots: one exact-match
         Funding-fee lot (0.5 at 08:00) plus three contiguous-range lots at
@@ -108,19 +106,19 @@ _PRESERVED_PLATFORM = "Demo Spot"
 def _load_with_separation(*, separate_derivatives: bool):
     """Load the synthetic koinly2025 report under the requested jurisdiction setting.
 
-    Phase D Task 3: ``treatment_spot_disposal_via_resolver=False`` opts the
-    backward-compat trace into the LEGACY OGR override path. The default-on
-    flag-on path filters OGR keys whose TH rows are not SPOT_DISPOSAL; this
-    trace exercises derivatives-tagged rows (``Futures fee``, ``Realized
-    gain``, ``Funding fee``) that the flag-on filter would exclude. The
-    backward-compat golden values (Case A 136.01 EUR) are the legacy target,
-    so the flag is off here.
+    Phase E: the ``treatment_spot_disposal_via_resolver`` flag is gone; OGR
+    override gating now keys on the resolver identifying the TH row as
+    SPOT_DISPOSAL. The backward-compat trace (separate_derivatives=False)
+    short-circuits the dedup entirely (no derivatives CG removal, no
+    Derivatives P&L entries) but no longer reproduces the legacy mixed
+    Case A 136.01 EUR value, because the OGR override only fires on
+    SPOT_DISPOSAL rows (the Case A ``Futures fee`` TH row classifies as
+    DERIVATIVES_CLOSE and is excluded).
     """
     report = load_koinly_crypto_report(
         _FIXTURE_DIR,
         jurisdiction=build_koinly_jurisdiction(
             separate_derivatives_reporting=separate_derivatives,
-            treatment_spot_disposal_via_resolver=False,
         ),
     )
     assert report is not None, "load_koinly_crypto_report returned None for the synthetic koinly2025 fixtures"
@@ -261,12 +259,12 @@ class TestByBitCase1Trace:
         )
 
     def test_no_derivatives_value_in_capital_entries(self) -> None:
-        """No CryptoCapitalGainEntry in capital_entries equals the legacy 136.01 EUR mixed value.
+        """No CryptoCapitalGainEntry in capital_entries equals the pre-separation 136.01 EUR mixed value.
 
         Golden value (136.01) recomputed from the synthetic OGR CSV: Case A
-        flag-OFF mixes OGR Profit 140.18 + OGR Loss -4.17 = 136.01 EUR (asserted
-        green in TestBackwardCompatTrace). Under flag-ON this value must NOT
-        appear in capital_entries (the profit routes to derivatives_entries).
+        under no-separation mixes OGR Profit 140.18 + OGR Loss -4.17 = 136.01 EUR.
+        Under separation this value must NOT appear in capital_entries (the
+        profit routes to derivatives_entries).
         """
         _assert_csv_contains_value(_ogr_path(), "140,18")
 
@@ -379,7 +377,7 @@ class TestByBitCase2Trace:
         to the TH Realized amount (delta 0.000025), so removing the tolerance
         window would break the match.
         """
-        import tax_reporting.application.crypto.derivatives_dedup as dd_mod
+        import tax_reporting.application.crypto.derivatives_filter as dd_mod
 
         orig_remove = dd_mod.remove_derivatives_flagged_lots
         removed_count = {"value": 0}
@@ -416,20 +414,20 @@ class TestByBitCase2Trace:
     def test_range_removal_count_load_bearing(self, caplog: pytest.LogCaptureFixture) -> None:
         """Phase-2 contiguous-range removal count is >= 2 (proves the fallback is load-bearing).
 
-        Observes the per-lot removal INFO logs from ``derivatives_dedup`` (each
+        Observes the per-lot removal INFO logs from ``derivatives_filter`` (each
         removal logs ``match_type=exact`` or ``match_type=range``). For Case B
         the synthetic fixture produces 1 exact + 3 range removals; asserting
         >= 2 range removals proves phase-2 matched a multi-lot window within
         tolerance. A lot set that summed exactly to the TH Realized amount
         would defeat the test (Design Invariant #2).
         """
-        with caplog.at_level(logging.INFO, logger="tax_reporting.application.crypto.derivatives_dedup"):
+        with caplog.at_level(logging.INFO, logger="tax_reporting.application.crypto.derivatives_filter"):
             _load_with_separation(separate_derivatives=True)
 
         removal_records = [
             r
             for r in caplog.records
-            if r.name == "tax_reporting.application.crypto.derivatives_dedup"
+            if r.name == "tax_reporting.application.crypto.derivatives_filter"
             and "Removed derivatives-flagged CG lot" in r.getMessage()
         ]
         range_records = [
@@ -531,50 +529,6 @@ class TestByBitCase2Trace:
         )
 
 
-class TestBackwardCompatTrace:
-    """Flag-off path reproduces the legacy mixed Crypto Gains value for Case A."""
-
-    def test_flag_off_matches_golden_values(self) -> None:
-        """With separate_derivatives_reporting=False, Case A reproduces 136.01 EUR.
-
-        Golden value (136.01) recomputed from the synthetic OGR CSV: Case A
-        flag-OFF mixes the OGR Profit 140.18 (row 4) with the OGR Loss -4.17
-        (row 5) into a single Crypto Gains entry: 140.18 + (-4.17) = 136.01.
-
-        Note: the real-fixture Case 2 backward-compat value (-26.64 EUR) does
-        NOT reproduce against the synthetic fixture because the synthetic Case
-        B CG lots all have gain 0.00, so the flag-OFF direction-override output
-        is filtered by the PT-C-028 materiality filter (|gain| < 1 EUR). The
-        Case A 136.01 EUR guard is the sole positive backward-compat
-        characterization (preserved per Task 6's note).
-        """
-        _assert_csv_contains_value(_ogr_path(), "140,18")
-
-        report = _load_with_separation(separate_derivatives=False)
-
-        case1_matches = [
-            e
-            for e in report.capital_entries
-            if e.disposal_date == _CASE1_DATE and e.asset == _ASSET and e.platform == _PLATFORM
-        ]
-        assert len(case1_matches) == 1, (
-            "Expected exactly one Crypto Gains entry for Case A under the legacy path, "
-            f"got {len(case1_matches)}"
-        )
-        # CSV arithmetic: OGR Profit 140.18 + OGR Loss -4.17 = 136.01 EUR.
-        assert case1_matches[0].gain_loss_eur == Decimal("136.01"), (
-            "Case A backward-compat drift: expected 136.01 EUR (mixed Profit + fee) in "
-            f"Crypto Gains, got {case1_matches[0].gain_loss_eur} EUR"
-        )
-
-        # No derivatives_entries should be populated under the legacy path.
-        assert report.derivatives_entries == [], (
-            "Legacy path (separate_derivatives_reporting=False) must not populate "
-            "derivatives_entries; got: "
-            f"{[(e.date, e.asset, e.platform, e.pnl_eur) for e in report.derivatives_entries]}"
-        )
-
-
 class TestByBitCase3Trace:
     """Case C (2025-01-24, USDT, Demo Futures): derivatives CG dedup via TH Tags.
 
@@ -598,8 +552,9 @@ class TestByBitCase3Trace:
     def test_derivatives_th_events_identified(self) -> None:
         """TH scanner identifies the 3 derivatives events on 2025-01-24 via the config-driven tag set.
 
-        Guards against future tag-vocabulary drift; ``find_derivatives_th_events``
-        is implemented in ``derivatives_dedup.py``.
+        Guards against future tag-vocabulary drift;
+        ``find_derivatives_th_events_from_transactions`` is implemented in
+        ``derivatives_filter.py``.
         """
         _assert_csv_contains_value(_th_path(), "Funding fee")
         _assert_csv_contains_value(_th_path(), "Futures fee")
@@ -692,10 +647,10 @@ class TestByBitCase3Trace:
         proceeds and gain removed.
 
         Expected caplog contents against the synthetic fixture:
-          - 3 INFO records from ``derivatives_dedup`` for the Case C lots
+          - 3 INFO records from ``derivatives_filter`` for the Case C lots
             (Funding fee 0.08838575 USDT at 20:00, Futures fee 0.41424953
             USDT at 23:40, Realized gain 40.75540000 USDT at 23:40).
-          - 1 WARNING record from ``derivatives_dedup`` with the summary
+          - 1 WARNING record from ``derivatives_filter`` with the summary
             text including the word ``removed`` and a count greater than
             or equal to 3 (the summary covers ALL removals for the year,
             not just Case C).
@@ -704,7 +659,7 @@ class TestByBitCase3Trace:
         _assert_csv_contains_value(_th_path(), "Futures fee")
         _assert_csv_contains_value(_th_path(), "Realized gain")
 
-        with caplog.at_level(logging.INFO, logger="tax_reporting.application.crypto.derivatives_dedup"):
+        with caplog.at_level(logging.INFO, logger="tax_reporting.application.crypto.derivatives_filter"):
             report = _load_with_separation(separate_derivatives=True)
 
         # Sanity: the dedup actually ran (otherwise no removals are expected).
@@ -738,15 +693,15 @@ class TestByBitCase3Trace:
                 f"got INFO records: {[r.getMessage() for r in info_records]}"
             )
 
-        # Exactly one summary WARNING from derivatives_dedup covering the aggregate.
+        # Exactly one summary WARNING from derivatives_filter covering the aggregate.
         warning_records = [
             r
             for r in caplog.records
             if r.levelno >= logging.WARNING
-            and r.name == "tax_reporting.application.crypto.derivatives_dedup"
+            and r.name == "tax_reporting.application.crypto.derivatives_filter"
         ]
         assert len(warning_records) == 1, (
-            "Expected exactly one derivatives_dedup summary WARNING per pipeline run; "
+            "Expected exactly one derivatives_filter summary WARNING per pipeline run; "
             f"got {len(warning_records)}: {[r.getMessage() for r in warning_records]}"
         )
         warning_text = warning_records[0].getMessage()
@@ -837,13 +792,11 @@ class TestPipelineIntegration:
         """With separate_derivatives_reporting=False, the dedup is a no-op.
 
         The pipeline must produce byte-identical output to the predecessor
-        plan. The TestBackwardCompatTrace#test_flag_off_matches_golden_values
-        test already covers this for the legacy Case A value (136.01 EUR).
-        This test additionally asserts that no derivatives_dedup summary
-        WARNING fires (the dedup short-circuits on the gate before reaching
+        plan. This test asserts that no derivatives_filter summary WARNING
+        fires (the dedup short-circuits on the gate before reaching
         remove_derivatives_flagged_lots).
         """
-        from tax_reporting.application.crypto import derivatives_dedup as dd_mod
+        from tax_reporting.application.crypto import derivatives_filter as dd_mod
 
         # Track whether remove_derivatives_flagged_lots is invoked at all.
         invoked: list[bool] = []
@@ -873,7 +826,7 @@ class TestPipelineIntegration:
         the dedup (the gate failure is silent; the missing TH is already
         surfaced by the pipeline's required-files check).
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             apply_derivatives_dedup,
         )
 
@@ -881,15 +834,13 @@ class TestPipelineIntegration:
         # fails, so we pass a non-None list and check identity.
         entries_in: list[CryptoCapitalGainEntry] = []
 
-        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto.derivatives_dedup"):
+        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto.derivatives_filter"):
             result = apply_derivatives_dedup(
                 capital_entries=entries_in,
                 jurisdiction=build_koinly_jurisdiction(separate_derivatives_reporting=True),
                 transaction_history_file=None,
-                year=2025,
                 transactions=[],
                 config=TreatmentConfig(),
-                via_resolver=False,
             )
 
         assert result is entries_in, (
@@ -918,8 +869,8 @@ class TestPipelineIntegration:
         remediation hint, then returns the input list unchanged. This
         verifies the graceful-degradation path (Design Invariant 9).
         """
-        from tax_reporting.application.crypto import derivatives_dedup as dd_mod
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto import derivatives_filter as dd_mod
+        from tax_reporting.application.crypto.derivatives_filter import (
             apply_derivatives_dedup,
         )
 
@@ -931,15 +882,13 @@ class TestPipelineIntegration:
 
         entries_in: list[CryptoCapitalGainEntry] = []
 
-        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto.derivatives_dedup"):
+        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto.derivatives_filter"):
             result = apply_derivatives_dedup(
                 capital_entries=entries_in,
                 jurisdiction=build_koinly_jurisdiction(separate_derivatives_reporting=True),
                 transaction_history_file=_th_path(),
-                year=2025,
                 transactions=[],
                 config=TreatmentConfig(),
-                via_resolver=False,
             )
 
         assert result is entries_in, (
@@ -949,11 +898,12 @@ class TestPipelineIntegration:
         missing_config_warnings = [
             r
             for r in caplog.records
-            if r.levelno >= logging.WARNING and "koinly_2025.json" in r.getMessage()
+            if r.levelno >= logging.WARNING
+            and "Derivatives tags empty in TreatmentConfig" in r.getMessage()
         ]
         assert len(missing_config_warnings) == 1, (
-            "Expected exactly one missing-config WARNING naming the file "
-            "koinly_2025.json; got "
+            "Expected exactly one missing-config WARNING naming the empty "
+            "TreatmentConfig.derivatives_tags; got "
             f"{len(missing_config_warnings)}: {[r.getMessage() for r in missing_config_warnings]}"
         )
 

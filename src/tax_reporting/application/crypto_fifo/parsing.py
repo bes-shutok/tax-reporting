@@ -39,7 +39,6 @@ from ..crypto.treatment_resolver import (
 )
 from ._emitters import _add_cross_asset_fee_consumption, _build_composite_tx_key, _handle_exchange, _handle_transfer
 from .contexts import (
-    _LOAN_PRINCIPAL_TAGS,
     LOAN_TAGS,
     ZERO,
     AcquisitionContext,
@@ -51,100 +50,51 @@ logger = logging.getLogger(__name__)
 
 
 def discover_loan_affected_assets(
-    transaction_history_path: Path,
     fiat_currency_codes: frozenset[str],
     *,
     transactions: list[Transaction],
     config: TreatmentConfig,
-    via_resolver: bool,
 ) -> frozenset[str]:
-    """Discover which assets are loan-affected by scanning loan-tagged rows in the TH CSV.
+    """Discover loan-affected assets by iterating pre-built ``Transaction`` objects.
 
-    Reads the Koinly Transaction History CSV and collects the Sent Currency and
-    Received Currency from every row whose Tag is in ``_LOAN_PRINCIPAL_TAGS`` (i.e.
-    ``"loan"`` and ``"loan repayment"``). ``"loan fee"`` rows are intentionally excluded
-    from discovery: a fee-tagged row's Sent Currency is the gas/service fee asset (e.g.
-    ETH for a WBTC loan gas payment), not the loan principal, and including it would
-    incorrectly pull the fee asset into the FIFO rebuild scope. Fee Currency is also
+    Identification is delegated to ``resolve_treatment(tx, config)``: an asset is
+    included when the row's treatment is ``LOAN_REPAYMENT`` OR
+    (``Treatment.OTHER`` AND ``_normalize_tag(tx.row.tag) == "loan"``).
+
+    The second clause is the Phase D Invariant 11 (r7 Medium #1) preserved by
+    Phase E Task 4 / Design Invariant 5: the borrowing-side ``Tag="Loan"`` row
+    resolves to OTHER (Phase B Invariant 9: principal creation, not a repayment
+    disposal); without this clause, borrow-only assets (those whose only loan
+    activity in the tax year is a borrow) would drop out of the FIFO rebuild
+    scope (user decision 2026-07-08: preserve legacy asset set).
+
+    Fee-tagged rows (``"loan fee"``) are intentionally excluded: a fee-tagged
+    row's Sent Currency is the gas/service fee asset (e.g. ETH for a WBTC loan
+    gas payment), not the loan principal, and including it would incorrectly
+    pull the fee asset into the FIFO rebuild scope. Fee Currency is also
     excluded for the same reason.
 
-    Fiat currencies are excluded from the result: a loan repayment modelled as an
-    exchange (e.g. EUR->WBTC tagged "loan repayment") would otherwise pull EUR into
-    the FIFO rebuild scope, treating every EUR-involving TH row as a loan-affected
-    acquisition or consumption.
+    Fiat currencies are excluded from the result: a loan repayment modelled as
+    an exchange (e.g. EUR->WBTC tagged "loan repayment") would otherwise pull
+    EUR into the FIFO rebuild scope, treating every EUR-involving TH row as a
+    loan-affected acquisition or consumption.
 
-    Phase D Task 5 (r8 Medium #1 Option A): the signature gains three keyword-only
-    params - ``transactions``, ``config``, ``via_resolver``. When ``via_resolver=True``,
-    the function iterates the pre-built ``transactions`` list (constructed ONCE by the
-    production caller in ``crypto_reporting.load_koinly_crypto_report``) and includes
-    an asset when ``resolve_treatment(tx, config) == Treatment.LOAN_REPAYMENT`` OR
-    (``resolve_treatment(tx, config) == Treatment.OTHER`` AND
-    ``_normalize_tag(tx.row.tag) == "loan"``). The second clause is Invariant 11
-    (r7 Medium #1): the borrowing-side ``Tag="Loan"`` row resolves to OTHER (Phase B
-    Invariant 9: principal creation, not a repayment disposal); without this clause,
-    borrow-only assets would drop out of the FIFO rebuild scope (user decision
-    2026-07-08: preserve legacy asset set). When ``via_resolver=False``, today's
-    legacy path runs unchanged (``read_koinly_rows`` + ``_LOAN_PRINCIPAL_TAGS``
-    membership). Family F layering: this function NEVER constructs ``Transaction``
-    objects; the caller supplies them.
+    Family F layering: this function NEVER constructs ``Transaction`` objects;
+    the caller supplies them (constructed ONCE by
+    ``crypto_reporting.load_koinly_crypto_report``).
 
     Args:
-        transaction_history_path: Path to the Koinly transaction history CSV.
         fiat_currency_codes: Set of ISO 4217 fiat currency codes to exclude.
             Pass _get_all_fiat_currency_codes() from the caller to exclude all fiat
             currencies. Pass frozenset() explicitly if no fiat filtering is desired
             (e.g. in tests where only crypto tickers appear in loan rows).
-        transactions: Pre-built ``list[Transaction]`` from the production caller
-            (Task 3 wiring step). Consumed ONLY when ``via_resolver=True``; ignored
-            on the legacy path (kept keyword-only-required so callers cannot
-            accidentally fall back to the legacy path by omitting it).
-        config: ``TreatmentConfig`` for ``resolve_treatment``. Consumed ONLY when
-            ``via_resolver=True``.
-        via_resolver: When True, identification comes from ``resolve_treatment``
-            (plus the Invariant 11 OTHER+tag=loan clause); when False, the legacy
-            ``_LOAN_PRINCIPAL_TAGS`` membership runs unchanged.
+        transactions: Pre-built ``list[Transaction]`` from the production caller.
+        config: ``TreatmentConfig`` for ``resolve_treatment``.
 
     Returns:
         Frozenset of normalized asset tickers that appeared as Sent or Received
-        Currency in loan principal-tagged rows, excluding any fiat currencies.
-    """
-    if via_resolver:
-        return _discover_loan_affected_assets_via_resolver(
-            transactions, config, fiat_currency_codes
-        )
-    return _discover_loan_affected_assets_legacy(transaction_history_path, fiat_currency_codes)
-
-
-def _discover_loan_affected_assets_legacy(
-    transaction_history_path: Path,
-    fiat_currency_codes: frozenset[str],
-) -> frozenset[str]:
-    """Legacy membership path (Phase D Invariant 1: bypass, not deletion)."""
-    rows = read_koinly_rows(transaction_history_path)
-    found: set[str] = set()
-    for row in rows:
-        tag = row.get("Tag", "").strip().lower()
-        if tag not in _LOAN_PRINCIPAL_TAGS:
-            continue
-        for col in ("Sent Currency", "Received Currency"):
-            ticker = normalize_asset_ticker(row.get(col, ""))
-            if ticker and ticker not in fiat_currency_codes:
-                found.add(ticker)
-    return frozenset(found)
-
-
-def _discover_loan_affected_assets_via_resolver(
-    transactions: list[Transaction],
-    config: TreatmentConfig,
-    fiat_currency_codes: frozenset[str],
-) -> frozenset[str]:
-    """Resolver-based path (Phase D Task 5, Invariant 11 r7 Medium #1).
-
-    Includes an asset when the row's treatment is ``LOAN_REPAYMENT`` OR
-    (``OTHER`` AND ``_normalize_tag(tag) == "loan"``). The OTHER clause is
-    the documented exception: the borrowing-side ``Tag="Loan"`` row resolves
-    to OTHER (Phase B Invariant 9), so without this clause borrow-only
-    assets would drop out of the FIFO rebuild scope.
+        Currency on LOAN_REPAYMENT rows or OTHER+tag=loan borrow rows, excluding
+        any fiat currencies.
     """
     found: set[str] = set()
     for tx in transactions:

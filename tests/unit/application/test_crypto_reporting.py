@@ -38,13 +38,12 @@ from tax_reporting.application.crypto_reporting import (
     load_koinly_crypto_report,
     resolve_operator_origin,
 )
-from tax_reporting.application.token_origin import TokenOriginResolver
 from tax_reporting.domain.token_origin import (
     AcquisitionMethod,
     TokenOrigin,
 )
 from tax_reporting.infrastructure.koinly_parser import format_datetime, parse_koinly_decimal
-from tests.conftest import build_koinly_jurisdiction
+from tests.conftest import build_koinly_jurisdiction, build_origin_resolver
 
 _TEST_OPERATOR = OperatorOrigin(
     platform="TestPlatform",
@@ -380,6 +379,148 @@ def test_load_koinly_crypto_report_raises_on_incomplete_koinly_export(tmp_path):
         load_koinly_crypto_report(two_of_three_dir)
 
     assert "transaction_history (Transaction history)" in str(exc_info.value)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("jurisdiction_kwargs", "expect_raises"),
+    [
+        # Derivatives reporting ON (both flags True): malformed labels must
+        # fail loudly as ConfigurationError so the run aborts instead of
+        # silently double-counting derivatives disposals.
+        (
+            {"separate_derivatives_reporting": True, "use_other_gains_report": True},
+            True,
+        ),
+        # Derivatives reporting OFF (one flag False): malformed labels must
+        # degrade to empty derivatives_tags with a WARNING, not abort.
+        (
+            {"separate_derivatives_reporting": False, "use_other_gains_report": True},
+            False,
+        ),
+    ],
+)
+def test_load_koinly_crypto_report_labels_error_branching(
+    tmp_path, monkeypatch, jurisdiction_kwargs, expect_raises
+):
+    """F6 (Q1-NO-TEST) + F1 regression pin: the malformed-derivatives-labels
+    ``FileProcessingError`` from ``_load_derivatives_labels_config`` must
+    branch on ``TaxJurisdictionConfig.derivatives_dedup_enabled``. When
+    derivatives reporting is ON, the caller re-raises as ``ConfigurationError``
+    so ``main.py`` fails loudly; when OFF, it degrades to empty
+    ``derivatives_tags`` with a WARNING.
+
+    Under the pre-F1 bug, the ON-path re-raised ``FileProcessingError`` was
+    swallowed by ``main.py``'s broad handler and the entire crypto report was
+    silently dropped; this test pins the ON-path exception type as
+    ``ConfigurationError`` so the swallow cannot recur (``main.py`` re-raises
+    ``ConfigurationError`` at line 361-366).
+    """
+    import tax_reporting.application.crypto_reporting as cr_module
+    from tax_reporting.domain.exceptions import ConfigurationError, FileProcessingError
+
+    def _raise(*_args, **_kwargs):
+        raise FileProcessingError("malformed labels JSON (simulated)")
+
+    monkeypatch.setattr(cr_module, "_load_derivatives_labels_config", _raise)
+
+    koinly_dir = tmp_path / "labels_branch"
+    koinly_dir.mkdir()
+    _write_minimal_capital_gains_report(koinly_dir)
+    _write_minimal_income_report(koinly_dir)
+    _write_minimal_transaction_history(koinly_dir)
+
+    jurisdiction = build_koinly_jurisdiction(**jurisdiction_kwargs)
+
+    if expect_raises:
+        with pytest.raises(ConfigurationError, match="Derivatives labels JSON"):
+            load_koinly_crypto_report(koinly_dir, jurisdiction=jurisdiction)
+    else:
+        report = load_koinly_crypto_report(koinly_dir, jurisdiction=jurisdiction)
+        assert report is not None, (
+            "OFF-path must not abort the run; expected a populated report with "
+            "empty derivatives_tags (graceful degradation)."
+        )
+
+
+@pytest.mark.unit
+def test_transaction_construction_is_unconditional(tmp_path, monkeypatch):
+    """Phase E Task 6 characterization: ``Transaction`` objects are always built
+    when a ``transaction_history_file`` is located, regardless of whether a
+    ``jurisdiction`` is supplied. The Phase D ``any_resolver_on`` gate (which
+    skipped per-row construction when every per-treatment resolver flag was
+    off) is gone.
+
+    Discriminating assertion (r3 Medium): patch ``build_transaction`` to count
+    calls, write a TH CSV with one row, call with ``jurisdiction=None``, and
+    assert ``build_transaction`` was invoked once. Under a Phase D regression
+    that re-gated construction on ``any_resolver_on``, the call count would be
+    zero with ``jurisdiction=None`` and this test would fail. Source-text
+    inspections (``inspect.getsource`` substring checks) were retired because
+    they pass under renamed-local regressions and trivially pass once the
+    construction is extracted to a helper (lesson #46, Family H).
+    """
+    import tax_reporting.application.crypto as crypto_pkg
+    import tax_reporting.application.crypto_reporting as cr_module
+
+    real_build = crypto_pkg.transaction_factory.build_transaction
+    calls: list = []
+
+    def _capturing_build(row, classification):
+        calls.append((row, classification))
+        return real_build(row, classification)
+
+    monkeypatch.setattr(
+        cr_module, "build_transaction", _capturing_build
+    )
+
+    koinly_dir = tmp_path / "koinly2025"
+    koinly_dir.mkdir()
+    _write_minimal_capital_gains_report(koinly_dir)
+    _write_minimal_income_report(koinly_dir)
+    # Write a TH file with at least one row so construction has work to do;
+    # an empty TH would make call-count zero for innocent reasons.
+    th_path = koinly_dir / "koinly_2025_transaction_history.csv"
+    row = ",".join(
+        [
+            "2025-04-10 10:00:00 UTC",
+            "crypto_deposit",
+            "Reward",
+            "",
+            "",
+            "",
+            "",
+            "Kraken",
+            '"5,00000000"',
+            "USDC",
+            '"5,00"',
+            "",
+            "",
+            '"0,00"',
+            '"5,00"',
+            '"0,00"',
+            "",
+            "",
+            "",
+            "Reward income",
+        ]
+    )
+    th_path.write_text(
+        "\n".join(["Transaction report 2025", "", _TH_HEADER, row]),
+        encoding="utf-8",
+    )
+
+    # jurisdiction=None is the discriminating case: under Phase D the
+    # ``any_resolver_on`` gate evaluated False and the Transaction list was
+    # never populated.
+    report = load_koinly_crypto_report(koinly_dir, jurisdiction=None)
+    assert report is not None
+    assert len(calls) == 1, (
+        f"Phase E Task 6: build_transaction must be called once for the TH row "
+        f"even with jurisdiction=None (unconditional construction). Got "
+        f"{len(calls)} calls; a Phase D-style any_resolver_on gate would "
+        f"produce zero calls here."
+    )
 
 
 @pytest.mark.unit
@@ -3883,9 +4024,8 @@ def test_parse_capital_gains_file_with_populated_resolver(tmp_path):
 
     from collections import Counter
 
-    from tax_reporting.application.crypto_reporting import TokenOriginResolver
 
-    resolver = TokenOriginResolver(th_csv)
+    resolver = build_origin_resolver(th_csv)
     skipped: Counter[tuple[str, str]] = Counter()
     review_entries: list = []
     context = CapitalGainsParsingContext(
@@ -4014,13 +4154,12 @@ def test_capital_entry_review_reason_missing_cost_basis(tmp_path):
 
     from collections import Counter
 
-    from tax_reporting.application.crypto_reporting import TokenOriginResolver
 
     skipped = Counter()
     review_entries: list = []
     context = CapitalGainsParsingContext(
         skipped_assets=skipped,
-        origin_resolver=TokenOriginResolver(),
+        origin_resolver=build_origin_resolver(None),
         review_entries=review_entries,
     )
     entries, _ = _parse_capital_gains_file(csv_file, context)
@@ -4118,13 +4257,12 @@ def test_bybit_review_reason_propagates_through_capital_gains_csv(tmp_path):
 
     from collections import Counter
 
-    from tax_reporting.application.crypto_reporting import TokenOriginResolver
 
     skipped = Counter()
     review_entries: list = []
     context = CapitalGainsParsingContext(
         skipped_assets=skipped,
-        origin_resolver=TokenOriginResolver(),
+        origin_resolver=build_origin_resolver(None),
         review_entries=review_entries,
     )
     entries, _ = _parse_capital_gains_file(csv_file, context)
@@ -4396,13 +4534,12 @@ def test_zero_value_entries_never_reach_report(tmp_path):
     csv_file = tmp_path / "capital_gains.csv"
     csv_file.write_text(csv_content, encoding="utf-8")
 
-    from tax_reporting.application.crypto_reporting import TokenOriginResolver
 
     skipped = {}
     review_entries: list = []
     context = CapitalGainsParsingContext(
         skipped_assets=skipped,
-        origin_resolver=TokenOriginResolver(),
+        origin_resolver=build_origin_resolver(None),
         review_entries=review_entries,
     )
     entries, _ = _parse_capital_gains_file(csv_file, context)
@@ -5944,7 +6081,7 @@ class TestTokenOriginResolver:
             '2025-01-15 10:30:00 UTC,exchange,,Kraken,100,BTC,5000,'
             "Kraken,2.5,ETH,5000,,,,,,abc,def,hash123,trade\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = build_origin_resolver(path)
         origin = resolver.resolve("2025-01-15", "ETH", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.SWAP_CONVERSION
         assert origin.acquired_from_asset == "BTC"
@@ -5957,7 +6094,7 @@ class TestTokenOriginResolver:
             "2025-03-10 08:00:00 UTC,crypto_deposit,Reward,,,,,"
             'ByBit,5,SOL,50,,,,,,,,,\n',
         )
-        resolver = TokenOriginResolver(path)
+        resolver = build_origin_resolver(path)
         origin = resolver.resolve("2025-03-10", "SOL", "ByBit")
         assert origin.acquisition_method == AcquisitionMethod.REWARD
         assert origin.confidence == "medium"
@@ -5968,20 +6105,20 @@ class TestTokenOriginResolver:
             '2025-01-15 10:30:00 UTC,exchange,,Kraken,100,BTC,5000,'
             "Kraken,2.5,ETH,5000,,,,,,abc,def,hash123,trade\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = build_origin_resolver(path)
         origin = resolver.resolve("2025-06-01", "BTC", "UnknownWallet")
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
         assert origin.confidence == "low"
 
     def test_token_origin_resolver_unknown_when_no_transaction_history(self) -> None:
-        resolver = TokenOriginResolver(None)
+        resolver = build_origin_resolver(None)
         origin = resolver.resolve("2025-01-15", "BTC", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
         assert origin.confidence == "low"
 
     def test_token_origin_resolver_epoch_date_returns_unknown(self, tmp_path) -> None:
         path = self._write_th(tmp_path, "")
-        resolver = TokenOriginResolver(path)
+        resolver = build_origin_resolver(path)
         origin = resolver.resolve("1970-01-01", "BTC", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
         assert origin.confidence == "low"
@@ -5992,7 +6129,7 @@ class TestTokenOriginResolver:
             '2025-02-20 14:00:00 UTC,fiat_deposit,,Bank,5000,EUR,5000,'
             "Kraken,0.5,BTC,5000,,,,,,,,,\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = build_origin_resolver(path)
         origin = resolver.resolve("2025-02-20", "BTC", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.DIRECT_PURCHASE
         assert origin.acquired_from_asset == "EUR"
@@ -6003,7 +6140,7 @@ class TestTokenOriginResolver:
             "2025-04-01 00:00:00 UTC,crypto_deposit,Lending interest,,,,,"
             'Ethereum,0.1,USDT,100,,,,,,,,,\n',
         )
-        resolver = TokenOriginResolver(path)
+        resolver = build_origin_resolver(path)
         origin = resolver.resolve("2025-04-01", "USDT", "Ethereum")
         assert origin.acquisition_method == AcquisitionMethod.DEFI_YIELD
 
@@ -6013,7 +6150,7 @@ class TestTokenOriginResolver:
             "2025-05-10 09:00:00 UTC,crypto_deposit,Reward,,,,,"
             'Kraken,10,ETH,200,,,,,,,,,\n',
         )
-        resolver = TokenOriginResolver(path)
+        resolver = build_origin_resolver(path)
         origin = resolver.resolve("2025-05-10", "ETH", "Kraken")
         assert origin.confidence == "medium"
 
@@ -6023,7 +6160,7 @@ class TestTokenOriginResolver:
             '2025-01-15 10:30:00 UTC,exchange,,Kraken,100,BTC,5000,'
             "Kraken,2.5,ETH,5000,,,,,,abc,def,hash123,trade\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = build_origin_resolver(path)
         origin = resolver.resolve("2025-01-15", "ETH", "Kraken", notes="Missing cost basis")
         assert origin.confidence == "low"
 
@@ -6033,7 +6170,7 @@ class TestTokenOriginResolver:
             "2025-06-01 12:00:00 UTC,crypto_deposit,Cashback,,,,,"
             'Wirex,10,WXT,5,,,,,,,,,\n',
         )
-        resolver = TokenOriginResolver(path)
+        resolver = build_origin_resolver(path)
         origin = resolver.resolve("2025-06-01", "WXT", "Wirex")
         assert origin.acquisition_method == AcquisitionMethod.REWARD
 
@@ -6043,7 +6180,7 @@ class TestTokenOriginResolver:
             "2025-07-01 09:00:00 UTC,crypto_deposit,,,,,,"
             'Binance,1,BTC,50000,,,,,,,,,\n',
         )
-        resolver = TokenOriginResolver(path)
+        resolver = build_origin_resolver(path)
         origin = resolver.resolve("2025-07-01", "BTC", "Binance")
         assert origin.acquisition_method == AcquisitionMethod.TRANSFER
 
@@ -6071,7 +6208,7 @@ class TestTokenOriginResolver:
             "2025-01-01 00:15:00 UTC,crypto_deposit,Reward,,,,,"
             '"ByBit (2)","0,25",USDT,"0,24",,,,,,,,,\n',
         )
-        resolver = TokenOriginResolver(path)
+        resolver = build_origin_resolver(path)
         origin = resolver.resolve("2025-01-01", "USDT", "ByBit (2)")
         assert origin.acquisition_method == AcquisitionMethod.REWARD
 
@@ -6083,7 +6220,7 @@ class TestTokenOriginResolver:
             '2025-01-15 10:30:00 UTC,exchange,,Kraken,100,BTC,5000,'
             "Kraken,10,ETH,5000,,,,,,abc,def,hash123,trade\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = build_origin_resolver(path)
         origin = resolver.resolve("2025-01-15", "ETH", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.SWAP_CONVERSION
         assert origin.confidence == "high"
@@ -6868,7 +7005,6 @@ def test_parse_capital_gains_file_skips_dynamically_discovered_assets(tmp_path):
     from collections import Counter
 
     from tax_reporting.application.crypto_reporting import _parse_capital_gains_file
-    from tax_reporting.application.token_origin import TokenOriginResolver
 
     newasset_row = ",".join([
         "13/01/2025 13:01",
@@ -6901,7 +7037,7 @@ def test_parse_capital_gains_file_skips_dynamically_discovered_assets(tmp_path):
     )
 
     skipped: Counter[tuple[str, str]] = Counter()
-    resolver = TokenOriginResolver(None)
+    resolver = build_origin_resolver(None)
     review_entries: list = []
     context = CapitalGainsParsingContext(
         skipped_assets=skipped,
@@ -7047,7 +7183,6 @@ def test_rebuild_fifo_resolves_same_asset_cross_platform_transfer_after_sender_p
 ):
     """Integration: WBTC transferred Kraken→ByBit; ByBit sale should use Kraken's cost basis."""
     from tax_reporting.application.crypto_reporting import _rebuild_fifo_for_loan_affected_assets
-    from tax_reporting.application.token_origin import TokenOriginResolver
 
     koinly_dir = tmp_path / "koinly2025"
     koinly_dir.mkdir()
@@ -7080,7 +7215,7 @@ def test_rebuild_fifo_resolves_same_asset_cross_platform_transfer_after_sender_p
     th_path = koinly_dir / "koinly_2025_transaction_history.csv"
     th_path.write_text(th_content, encoding="utf-8")
 
-    resolver = TokenOriginResolver(th_path)
+    resolver = build_origin_resolver(th_path)
     loan_affected = frozenset({"WBTC"})
 
     entries, _ = _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
@@ -7107,7 +7242,6 @@ def test_rebuild_fifo_resolves_same_asset_cross_platform_transfer_after_sender_p
 def test_apply_phantom_flags_only_for_unresolved_transfers(tmp_path):
     """Phantom flags appear only for unknown-receiver transfers, not resolved ones."""
     from tax_reporting.application.crypto_reporting import _rebuild_fifo_for_loan_affected_assets
-    from tax_reporting.application.token_origin import TokenOriginResolver
 
     koinly_dir = tmp_path / "koinly2025"
     koinly_dir.mkdir()
@@ -7144,7 +7278,7 @@ def test_apply_phantom_flags_only_for_unresolved_transfers(tmp_path):
     th_path = koinly_dir / "koinly_2025_transaction_history.csv"
     th_path.write_text(th_content, encoding="utf-8")
 
-    resolver = TokenOriginResolver(th_path)
+    resolver = build_origin_resolver(th_path)
     loan_affected = frozenset({"WBTC"})
 
     entries, _ = _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
@@ -7169,7 +7303,6 @@ def test_rebuild_fifo_threads_zero_basis_min_proceeds_into_review_flag(tmp_path)
     and the FIFO rebuild path end-to-end inside ``_rebuild_fifo_for_loan_affected_assets``.
     """
     from tax_reporting.application.crypto_reporting import _rebuild_fifo_for_loan_affected_assets
-    from tax_reporting.application.token_origin import TokenOriginResolver
 
     koinly_dir = tmp_path / "koinly2025"
     koinly_dir.mkdir()
@@ -7196,7 +7329,7 @@ def test_rebuild_fifo_threads_zero_basis_min_proceeds_into_review_flag(tmp_path)
     th_path = koinly_dir / "koinly_2025_transaction_history.csv"
     th_path.write_text(th_content, encoding="utf-8")
 
-    resolver = TokenOriginResolver(th_path)
+    resolver = build_origin_resolver(th_path)
     loan_affected = frozenset({"WBTC"})
 
     # Above-threshold case: min_proceeds=10, proceeds=15 → flags with zero-cost reason.
@@ -8732,121 +8865,9 @@ class TestOgrDisabledBackwardCompatibility:
 
 
 # =============================================================================
-# Characterization tests for OGR override (golden values captured BEFORE
-# derivatives separation, see docs/history/plans/completed/2026-06-13-derivatives-separation.md
-# Task 1). These tests pin the flag-off (separate_derivatives_reporting=False)
-# pipeline output so the backward-compatibility path stays byte-identical.
-# Values are inlined below (no external snapshot file) so the contract holds on
-# any clean checkout.
 # =============================================================================
-
-
-def _build_characterization_jurisdiction():
-    """Build a PT/2025 jurisdiction matching the production decision-point flags.
-
-    The characterization test must capture the REAL production OGR override
-    behavior, which requires use_other_gains_report=True (the override path is
-    gated on this flag at crypto_reporting.py:203). The flags mirror
-    docs/maintenance/tax/decision_points/2025.toml [countries.PT] so the captured values
-    reflect what main.py produces when run against the koinly2025 fixtures.
-
-    Phase D Task 3: ``treatment_spot_disposal_via_resolver=False`` opts this
-    characterization fixture into the LEGACY OGR override path so the golden
-    values remain the legacy backward-compat target. The default-on flag-on
-    path gates the override on SPOT_DISPOSAL treatment, which would filter
-    out the derivatives-tagged ``Futures fee`` rows this corpus exercises;
-    the characterization is about the pre-Phase-D behavior, so the flag is
-    off here.
-    """
-    from tax_reporting.infrastructure.config import TaxJurisdictionConfig
-
-    return TaxJurisdictionConfig(
-        country="PT",
-        fiscal_year=2025,
-        exclude_loan_repayment_gains=True,
-        zero_basis_review_threshold=Decimal("500"),
-        futures_derivatives_taxable=True,
-        use_other_gains_report=True,
-        treatment_spot_disposal_via_resolver=False,
-    )
-
-
-class TestOgrCharacterizationGolden:
-    """Golden-value characterization tests for the OGR direction override.
-
-    Pins the flag-off (separate_derivatives_reporting=False) pipeline output for
-    the ByBit Case 1 and Case 2 example fixtures. These inlined values are the
-    backward-compatibility target: the flag-off path must keep reproducing them.
-    """
-
-    def test_case1_gain_before_separation(self) -> None:
-        """ByBit Case 1 aggregated gain for (2025-01-12, USDT, Demo Futures).
-
-        The current pipeline mixes the OGR Profit row (+140.18 EUR futures P&L)
-        with the OGR Loss row (-4.17 EUR futures fee) into a single summed key
-        (140.18 + -4.17 = 136.01 EUR) and applies the direction override to the
-        single CG fee-disposal lot. The aggregated Crypto Gains entry therefore
-        reports 136.01 EUR, the mixed value this test captures.
-        """
-        from tests.conftest import KOINLY_2025_EXAMPLE_DIR
-
-        report = load_koinly_crypto_report(
-            KOINLY_2025_EXAMPLE_DIR,
-            jurisdiction=_build_characterization_jurisdiction(),
-        )
-        assert report is not None, "Failed to load koinly2025 example report"
-
-        matches = [
-            e
-            for e in report.capital_entries
-            if e.disposal_date == "2025-01-12"
-            and e.asset == "USDT"
-            and e.platform == "Demo Futures"
-        ]
-        assert len(matches) == 1, (
-            f"Expected exactly one aggregated entry for (2025-01-12, USDT, Demo Futures), "
-            f"got {len(matches)}: {[(e.gain_loss_eur, e.holding_period) for e in matches]}"
-        )
-        expected = Decimal("136.01")
-        assert matches[0].gain_loss_eur == expected, (
-            f"Case 1 golden value drift: expected {expected} EUR, got "
-            f"{matches[0].gain_loss_eur} EUR. The OGR override behavior has changed; "
-            "investigate the regression."
-        )
-
-    def test_case2_gain_before_separation(self) -> None:
-        """ByBit Case 2 aggregated gain for (2025-01-13, USDT, Demo Futures).
-
-        The current pipeline flips the sign of each CG lot when OGR reports a
-        net loss for the same key. The CG lots sum to a positive gain
-        pre-override; the direction override negates each lot's magnitude,
-        producing an aggregated -1.00 EUR post-override.
-        """
-        from tests.conftest import KOINLY_2025_EXAMPLE_DIR
-
-        report = load_koinly_crypto_report(
-            KOINLY_2025_EXAMPLE_DIR,
-            jurisdiction=_build_characterization_jurisdiction(),
-        )
-        assert report is not None, "Failed to load koinly2025 example report"
-
-        matches = [
-            e
-            for e in report.capital_entries
-            if e.disposal_date == "2025-01-13"
-            and e.asset == "USDT"
-            and e.platform == "Demo Futures"
-        ]
-        assert len(matches) == 1, (
-            f"Expected exactly one aggregated entry for (2025-01-13, USDT, Demo Futures), "
-            f"got {len(matches)}: {[(e.gain_loss_eur, e.holding_period) for e in matches]}"
-        )
-        expected = Decimal("-1.00")
-        assert matches[0].gain_loss_eur == expected, (
-            f"Case 2 golden value drift: expected {expected} EUR, got "
-            f"{matches[0].gain_loss_eur} EUR. The OGR override behavior has changed; "
-            "investigate the regression."
-        )
+# TDD coverage for the separate_derivatives_reporting jurisdiction flag (DP-012).
+# =============================================================================
 
 
 class TestSeparateDerivativesReportingFlag:
@@ -8880,12 +8901,6 @@ class TestSeparateDerivativesReportingFlag:
             "futures_derivatives_taxable = true\n"
             "use_other_gains_report = true\n"
             "separate_derivatives_reporting = true\n"
-            "treatment_spot_disposal_via_resolver = true\n"
-            "treatment_payment_via_resolver = true\n"
-            "treatment_loan_repayment_via_resolver = true\n"
-            "treatment_derivatives_close_via_resolver = true\n"
-            "treatment_reward_airdrop_lp_via_resolver = true\n"
-            "treatment_other_via_resolver = true\n"
         )
         monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
         (tmp_path / "2025.toml").write_text(toml_content, encoding="utf-8")
@@ -8936,12 +8951,6 @@ class TestSeparateDerivativesReportingFlag:
             "exclude_loan_repayment_gains = true\n"
             "route_derivatives_by_counterparty_residency = true\n"
             "classify_rewards_with_income_codes = true\n"
-            "treatment_spot_disposal_via_resolver = true\n"
-            "treatment_payment_via_resolver = true\n"
-            "treatment_loan_repayment_via_resolver = true\n"
-            "treatment_derivatives_close_via_resolver = true\n"
-            "treatment_reward_airdrop_lp_via_resolver = true\n"
-            "treatment_other_via_resolver = true\n"
         )
         assert result_true.route_derivatives_by_counterparty_residency is True
         assert result_true.classify_rewards_with_income_codes is True
@@ -8952,12 +8961,6 @@ class TestSeparateDerivativesReportingFlag:
             "fiscal_year = 2025\n"
             "[countries.PT]\n"
             "exclude_loan_repayment_gains = true\n"
-            "treatment_spot_disposal_via_resolver = true\n"
-            "treatment_payment_via_resolver = true\n"
-            "treatment_loan_repayment_via_resolver = true\n"
-            "treatment_derivatives_close_via_resolver = true\n"
-            "treatment_reward_airdrop_lp_via_resolver = true\n"
-            "treatment_other_via_resolver = true\n"
         )
         assert result_omitted.route_derivatives_by_counterparty_residency is False
         assert result_omitted.classify_rewards_with_income_codes is False
@@ -9016,13 +9019,8 @@ def _make_ogr_split_entry(  # noqa: PLR0913
 def _ogr_split_jurisdiction(*, separate: bool):
     """Build a TaxJurisdictionConfig with use_other_gains_report and optional separate_derivatives_reporting.
 
-    Phase D Task 3: ``treatment_spot_disposal_via_resolver=False`` opts this
-    fixture into the LEGACY OGR override path. The default-on flag-on path
-    filters OGR keys whose TH rows are not SPOT_DISPOSAL; the
-    ``TestPipelineIntegration::test_derivatives_entries_empty_when_flag_off``
-    backward-compat test exercises derivatives-tagged rows that the flag-on
-    filter would exclude, so the flag is off here to preserve the legacy
-    golden values.
+    Phase E: ``treatment_spot_disposal_via_resolver`` is gone; OGR override
+    gating now keys on the resolver identifying the TH row as SPOT_DISPOSAL.
     """
     from tax_reporting.infrastructure.config import TaxJurisdictionConfig
 
@@ -9034,7 +9032,6 @@ def _ogr_split_jurisdiction(*, separate: bool):
         futures_derivatives_taxable=True,
         use_other_gains_report=True,
         separate_derivatives_reporting=separate,
-        treatment_spot_disposal_via_resolver=False,
     )
 
 
@@ -9992,11 +9989,13 @@ class TestPipelineIntegration:
     def test_derivatives_entries_empty_when_flag_off(self) -> None:
         """Given separate_derivatives_reporting=False, derivatives_entries is empty.
 
-        Backward compatibility: when the flag is OFF, the pipeline must behave
-        byte-identically to pre-Task-9. The derivatives_entries field must be
-        empty and the capital_entries path must apply the combined OGR index
-        to capital_entries as before (Task 1 golden values: case1=136.01,
-        case2=-1.00).
+        Backward compatibility: when the flag is OFF, the dedup short-circuits
+        at its gate (Design Invariant 14) so no CG lot is removed and no
+        Derivatives P&L entry is produced. ``derivatives_entries`` must be
+        empty. (Capital-side values under the resolver-keyed OGR override are
+        characterized elsewhere; the legacy mixed-value 136.01 EUR backward-
+        compat target was a Phase-D flag-off artifact and is no longer
+        asserted.)
         """
         from tests.conftest import KOINLY_2025_EXAMPLE_DIR
 
@@ -10009,39 +10008,6 @@ class TestPipelineIntegration:
             f"Expected empty derivatives_entries when "
             f"separate_derivatives_reporting=False, got "
             f"{len(report.derivatives_entries)} entries"
-        )
-
-        # Task 1 backward-compat: case1=136.01 EUR, case2=-1.00 EUR.
-        case1_matches = [
-            e
-            for e in report.capital_entries
-            if e.disposal_date == "2025-01-12"
-            and e.asset == "USDT"
-            and e.platform == "Demo Futures"
-        ]
-        assert len(case1_matches) == 1, (
-            f"Expected exactly one aggregated capital entry for Case 1, got "
-            f"{len(case1_matches)}"
-        )
-        assert case1_matches[0].gain_loss_eur == Decimal("136.01"), (
-            f"Case 1 backward-compat drift: expected 136.01 EUR, got "
-            f"{case1_matches[0].gain_loss_eur} EUR"
-        )
-
-        case2_matches = [
-            e
-            for e in report.capital_entries
-            if e.disposal_date == "2025-01-13"
-            and e.asset == "USDT"
-            and e.platform == "Demo Futures"
-        ]
-        assert len(case2_matches) == 1, (
-            f"Expected exactly one aggregated capital entry for Case 2, got "
-            f"{len(case2_matches)}"
-        )
-        assert case2_matches[0].gain_loss_eur == Decimal("-1.00"), (
-            f"Case 2 backward-compat drift: expected -1.00 EUR, got "
-            f"{case2_matches[0].gain_loss_eur} EUR"
         )
 
 
@@ -10073,7 +10039,7 @@ def test_parse_capital_gains_file_summer_midnight_disposal_true_utc_day(tmp_path
         encoding="utf-8",
     )
 
-    resolver = TokenOriginResolver(th_csv)
+    resolver = build_origin_resolver(th_csv)
     context = CapitalGainsParsingContext(
         skipped_assets=Counter(),
         origin_resolver=resolver,
@@ -10110,7 +10076,7 @@ def test_parse_capital_gains_file_winter_disposal_unchanged(tmp_path):
         encoding="utf-8",
     )
 
-    resolver = TokenOriginResolver(th_csv)
+    resolver = build_origin_resolver(th_csv)
     context = CapitalGainsParsingContext(
         skipped_assets=Counter(),
         origin_resolver=resolver,
@@ -10164,7 +10130,7 @@ def test_payment_match_survives_summer_midnight_drift(tmp_path):
     The Payment disposal's CG Date Sold is 15/06/2025 00:30 (WEST, local
     midnight); its TH twin declares the true UTC instant 2025-06-14 23:30:00 UTC.
     With ``zone=Europe/Lisbon`` the CG disposal_date becomes 2025-06-14, matching
-    the TH day, so the DP-014 correction fires and rezeros proceeds to the TH Net
+    the TH day, so the DP-014 correction fires and repairs proceeds to the TH Net
     Value. Without the zone, CG reads 2025-06-15 vs TH 2025-06-14 -> no match ->
     correction skipped -> proceeds stay 0.
 
@@ -10201,7 +10167,7 @@ def test_payment_match_survives_summer_midnight_drift(tmp_path):
         "the summer-midnight drift broke the cross-report match so the correction was skipped"
     )
     assert matches[0].proceeds_eur == Decimal("120.00"), (
-        "DP-014 correction must have rezeroed proceeds to the TH Net Value (120.00); "
+        "DP-014 correction must have repaired proceeds to the TH Net Value (120.00); "
         f"got {matches[0].proceeds_eur}"
     )
 
@@ -10210,10 +10176,11 @@ def test_payment_match_survives_summer_midnight_drift(tmp_path):
 #
 # These tests exercise the wiring of ``correct_payment_proceeds`` into
 # ``load_koinly_crypto_report`` (after the OGR override, before aggregation,
-# guarded by ``jurisdiction.infer_payment_proceeds``) plus the re-zero snapshot
-# that closes the OGR pre-mutation residual. Synthetic tickers/amounts only;
-# no real transaction data. See docs/history/plans/2026-06-18-crypto-payment-proceeds.md
-# Task 6.
+# guarded by ``jurisdiction.infer_payment_proceeds``). Post-Phase-E the OGR
+# override uses resolver-keyed SPOT_DISPOSAL identification, so PAYMENT rows
+# are structurally excluded from OGR mutation and no re-zero snapshot/restore
+# is needed. Synthetic tickers/amounts only; no real transaction data.
+# See docs/history/plans/2026-06-18-crypto-payment-proceeds.md Task 6.
 
 _OGR_HEADER = "Date,Asset,Amount,Value (EUR),Type,Wallet Name"
 
@@ -10240,14 +10207,13 @@ def _pp_jurisdiction(
 ):
     """Build a PT/2025 jurisdiction with the payment-proceeds flag toggled.
 
-    ``use_ogr`` enables the OGR override path so the re-zero mitigation can be
-    exercised. ``separate_derivatives_reporting`` is left False so the OGR path
-    is the legacy combined-index override (the contract the re-zero snapshot
-    was designed against). ``timezone`` defaults to ``ZoneInfo("Europe/Lisbon")``
-    (the production PT default; a configured jurisdiction without a resolved
-    timezone now fails fast at crypto load rather than silently UTC-stamping).
-    Existing fixtures use winter dates, so Lisbon localization is byte-identical
-    to the prior UTC-stamp for them.
+    ``use_ogr`` enables the OGR override path so the resolver-keyed SPOT_DISPOSAL
+    identification can be exercised. ``separate_derivatives_reporting`` is left
+    False so the OGR path is the legacy combined-index override. ``timezone``
+    defaults to ``ZoneInfo("Europe/Lisbon")`` (the production PT default; a
+    configured jurisdiction without a resolved timezone now fails fast at crypto
+    load rather than silently UTC-stamping). Existing fixtures use winter dates,
+    so Lisbon localization is byte-identical to the prior UTC-stamp for them.
     """
     from tax_reporting.infrastructure.config import TaxJurisdictionConfig
 
@@ -10366,8 +10332,9 @@ def _ogr_row(date: str, asset: str, amount: str, value_eur: str, row_type: str, 
     split the row. Real Koinly OGR exports quote both (e.g.
     ``...,USD,"-17,05260000","16,48",Loss,Kraken``); unquoted commas produced a
     malformed row that csv parsing silently turned into garbage fields, leaving
-    the OGR override inert (and the re-zero restore it is meant to trigger never
-    firing). Callers pass bare European decimals, e.g. ``"-0,01"`` / ``"0,01"``.
+    the OGR override inert (and the resolver-keyed SPOT_DISPOSAL identification
+    it feeds never firing). Callers pass bare European decimals, e.g.
+    ``"-0,01"`` / ``"0,01"``.
     """
     return ",".join([date, asset, f'"{amount}"', f'"{value_eur}"', row_type, wallet])
 
@@ -10642,13 +10609,18 @@ def test_payment_proceeds_material_priced_payment_survives_filter(tmp_path):
 
 
 @pytest.mark.unit
-def test_payment_proceeds_ogr_rezero_restores_zero_before_correction(tmp_path):
-    """OGR pre-mutation resilience (RED test for the re-zero mitigation).
+def test_payment_proceeds_ogr_path_corrects_zero_proceeds_payment(tmp_path):
+    """Resolver-keyed OGR identification + payment-proceeds correction produces correct net proceeds.
 
     An OGR Loss row with near-zero magnitude on the SAME (date, asset, wallet) as a
-    proceeds==0 Payment whose TH Net Value > 0. The classifier classifies Spot, so
-    _apply_ogr_event_level mutates the Payment's proceeds. The re-zero snapshot
-    must restore the zero so correction's proceeds==0 gate fires and repairs it.
+    proceeds==0 Payment whose TH Net Value > 0. The TH row resolves to PAYMENT (not
+    SPOT_DISPOSAL), so its key is NOT in ``spot_disposal_keys`` and
+    ``apply_ogr_event_level`` leaves the Payment's proceeds at 0. The
+    payment-proceeds correction then runs on the untouched zero-proceeds row and
+    repairs it to the TH Net Value. This characterizes the post-Phase-E resolver
+    path (no re-zero snapshot/restore; the residual the snapshot existed to close
+    is structurally impossible because Payment rows are excluded from OGR by
+    resolver-keyed identification).
     """
     koinly_dir = tmp_path / "koinly2025"
     koinly_dir.mkdir()
@@ -10665,31 +10637,28 @@ def test_payment_proceeds_ogr_rezero_restores_zero_before_correction(tmp_path):
     assert report is not None
 
     matches = [e for e in report.capital_entries if e.asset == "USDT" and e.disposal_date == "2025-01-13"]
-    assert matches, "Expected the corrected USDT Payment lot to survive after re-zero + correction"
+    assert matches, "Expected the corrected USDT Payment lot to survive OGR + correction"
     entry = matches[0]
     assert entry.proceeds_eur == Decimal("120.00"), (
-        f"After re-zero + correction, proceeds must equal Net Value 120.00, got {entry.proceeds_eur}"
+        f"After OGR + correction, proceeds must equal Net Value 120.00, got {entry.proceeds_eur}"
     )
     assert entry.gain_loss_eur == Decimal("20.00"), f"gain must be 20.00, got {entry.gain_loss_eur}"
 
 
 @pytest.mark.unit
-def test_payment_proceeds_rezero_index_based_not_key_based(tmp_path):
-    """Re-zero does NOT clobber a same-key legitimate OGR-overridden disposal.
+def test_payment_proceeds_same_key_legitimate_disposal_keeps_ogr_override(tmp_path):
+    """Resolver-keyed OGR override does NOT touch a co-keyed Payment row.
 
     On ONE (date, asset, wallet) key: (a) a genuine non-zero-proceeds derivatives
-    disposal that OGR Spot-matches and overrides, AND (b) a separate zero-proceeds
-    Payment. The re-zero snapshot is INDEX-based (it captures the i-th pre-OGR
-    zero-proceeds entry), so (a) - which had non-zero proceeds - is never in the
-    snapshot and KEEPS its OGR-overridden proceeds. A KEY-based snapshot would
-    restore every row on the shared (date, asset, wallet) key to 0, destroying
-    the legitimate disposal.
+    disposal whose TH row resolves to SPOT_DISPOSAL (so OGR overrides it), AND (b)
+    a separate zero-proceeds Payment whose TH row resolves to PAYMENT (so OGR skips
+    it). Post-Phase-E there is no re-zero block; nothing restores or clobbers
+    either row. The legitimate disposal KEEPS its OGR-overridden proceeds; the
+    Payment row flows to the payment-proceeds correction untouched.
 
     The two rows are given DIFFERENT holding periods so they land in SEPARATE
     aggregation buckets ((date, asset, platform, holding_period)); that lets us
-    assert (a)'s proceeds in isolation. If they aggregated into one row, a
-    key-based re-zero clobbering (a) would still pass (the corrected Payment's
-    proceeds mask it) - a false green the original test admitted.
+    assert (a)'s proceeds in isolation.
     """
     koinly_dir = tmp_path / "koinly2025"
     koinly_dir.mkdir()
@@ -10735,11 +10704,11 @@ def test_payment_proceeds_rezero_index_based_not_key_based(tmp_path):
         "(separate bucket from the Payment), "
         f"got {len(legitimate)}: {[(e.holding_period, e.proceeds_eur) for e in legitimate]}"
     )
-    # (a) was non-zero proceeds before OGR, so it is OUTSIDE the re-zero snapshot;
-    # its OGR-overridden proceeds (recomputed as cost + final_gain_loss) survives.
+    # (a) had non-zero proceeds and its TH row resolved to SPOT_DISPOSAL, so OGR
+    # overrode it; the override survives (no re-zero block to undo it).
     assert legitimate[0].proceeds_eur > Decimal("0"), (
-        "The legitimate non-zero-proceeds disposal must KEEP its OGR-overridden proceeds "
-        f"(re-zero is INDEX-based, not key-based); got {legitimate[0].proceeds_eur}"
+        "The legitimate non-zero-proceeds SPOT_DISPOSAL must KEEP its OGR-overridden proceeds; "
+        f"got {legitimate[0].proceeds_eur}"
     )
 
 

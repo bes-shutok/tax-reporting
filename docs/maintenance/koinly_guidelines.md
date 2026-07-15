@@ -275,15 +275,18 @@ hour resolve deterministically via Python's default `fold=0`
 (`parsed.replace(tzinfo=zone)` never sets `fold`), selecting the first occurrence /
 pre-transition offset. The calendar-day reporting key (`disposal_date`) is
 unaffected either way; the only edge is minute-precision cross-report matching
-(`derivatives_dedup` matches TH-UTC-minute against the zone-localized CG
+(`derivatives_filter` matches TH-UTC-minute against the zone-localized CG
 `disposal_timestamp`), which could miss by one hour for a disposal whose true
 instant was the second occurrence of the repeated hour. The `fold=0` convention is
 deliberate and locked by the spring-forward / fall-back characterization tests.
 
 See `docs/maintenance/crypto_implementation_guidelines.md` "Payment Proceeds
-Correction (DP-014)" for the full mechanism (deque + count-equality collision
-gate, day-key timezone rationale, loader degrade-never-raise semantics, and the
-re-zero snapshot that closes the OGR pre-mutation residual).
+Correction (DP-014)" for the full post-Phase-E mechanism (deque + popleft
+consumption discipline, day-key timezone rationale, loader degrade-never-raise
+semantics). The Phase-D count-equality collision gate and the re-zero
+snapshot/restore block were deleted in Phase E (Task 3 and Task 7
+respectively); the OGR override now skips PAYMENT-treatment rows, so the
+residual the snapshot existed to close cannot occur.
 
 ### Discover real Koinly CSVs by glob, never hardcode the filename
 

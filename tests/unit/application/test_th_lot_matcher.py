@@ -1,4 +1,4 @@
-"""Direct unit tests for the shared TH-lot matcher (extracted from derivatives_dedup).
+"""Direct unit tests for the shared TH-lot matcher (extracted from derivatives_filter).
 
 Covers the generic two-phase matcher (exact + contiguous-range), the
 match-only vs remove semantics, surplus/malformed/unmatched signals, the
@@ -233,7 +233,7 @@ class TestUnmatchedEvents:
                 lots,
                 events,
                 domain_label="derivatives",
-                logger=logging.getLogger("tax_reporting.application.crypto.derivatives_dedup"),
+                logger=logging.getLogger("tax_reporting.application.crypto.derivatives_filter"),
             )
 
         # Exactly one summary WARNING (the removal summary), no unmatched-event warning.
@@ -273,7 +273,7 @@ class TestSummaryWarningContract:
                 lots,
                 events,
                 domain_label="derivatives",
-                logger=logging.getLogger("tax_reporting.application.crypto.derivatives_dedup"),
+                logger=logging.getLogger("tax_reporting.application.crypto.derivatives_filter"),
             )
 
         assert len(caplog.records) == 1, "remove_matched_lots must emit exactly one summary WARNING"
@@ -295,7 +295,7 @@ class TestSummaryWarningContract:
                 lots,
                 [],
                 domain_label="derivatives",
-                logger=logging.getLogger("tax_reporting.application.crypto.derivatives_dedup"),
+                logger=logging.getLogger("tax_reporting.application.crypto.derivatives_filter"),
             )
 
         assert not caplog.records
@@ -342,7 +342,7 @@ class TestLoggerName:
     @pytest.mark.parametrize(
         ("domain_label", "caller_logger_name"),
         [
-            ("derivatives", "tax_reporting.application.crypto.derivatives_dedup"),
+            ("derivatives", "tax_reporting.application.crypto.derivatives_filter"),
             ("fee", "tax_reporting.application.crypto.fee_filter"),
         ],
     )
@@ -380,7 +380,7 @@ class TestLoggerName:
                 lots,
                 events,
                 domain_label="derivatives",
-                logger=logging.getLogger("tax_reporting.application.crypto.derivatives_dedup"),
+                logger=logging.getLogger("tax_reporting.application.crypto.derivatives_filter"),
             )
 
         assert caplog.records[0].name != "tax_reporting.application.crypto.th_lot_matcher"

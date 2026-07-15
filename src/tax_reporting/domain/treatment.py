@@ -1,10 +1,8 @@
-"""``Treatment`` enum for the TH-anchored transaction state machine (Phase B).
+"""``Treatment`` enum for the TH-anchored transaction state machine.
 
-Phase B introduces a closed six-value ``Treatment`` enum that classifies what a
-Transaction History (TH) row *is* for tax purposes. The enum is consumed by the
-Phase B ``resolve_treatment`` resolver, which the live crypto pipeline does NOT
-call yet (Phase D flips each per-treatment classifier to delegate to the
-resolver).
+Closed six-value ``Treatment`` enum that classifies what a Transaction History
+(TH) row *is* for tax purposes. Consumed by ``resolve_treatment``, the single
+source of truth for treatment identification in the live crypto pipeline.
 
 Plan: ``docs/history/plans/2026-07-06-th-tx-view-phase-b.md`` (Task 1).
 RFC: ``docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md``

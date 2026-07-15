@@ -26,15 +26,18 @@ Legacy-intent helper
 --------------------
 
 ``_legacy_intent`` is a corpus-side replica of the per-treatment legacy
-classification that today's crypto pipeline would assign to a TH row. Per
-Phase C Invariant 5 it imports the production frozensets where they
-exist (``_DEFAULT_PAYMENT_TAGS``, ``_LOAN_PRINCIPAL_TAGS``, the loaded
-derivatives JSON) so a drift in the production tag set is visible to the
-corpus tests. The reward/airdrop/lp tag literals from ``token_origin.py``
-exist only as inline string literals (lines 243, 248, 253; no
-module-level constants), so the helper REPLICATES those literals inline.
-This is the documented exception to Invariant 5; a Phase D follow-up
-extracts the literals to module-level constants.
+classification that the pre-Phase-B pipeline would have assigned to a TH
+row. Phase E deleted the production constants that formerly lived in
+``payment_proceeds.py`` (``_DEFAULT_PAYMENT_TAGS``) and
+``crypto_fifo/contexts.py`` (``_LOAN_PRINCIPAL_TAGS``); the replicas
+below are inlined from the values those constants held at Phase D landing
+(matching ``TreatmentConfig`` defaults). ``TreatmentConfig.payment_tags``
+is the authoritative surviving source for the payment set. The
+derivatives JSON is loaded via ``_load_derivatives_labels_config`` (kept
+in Phase E; it populates ``TreatmentConfig.derivatives_tags``). The
+reward/airdrop/lp tag literals from ``token_origin.py`` existed only as
+inline string literals and were deleted by Task 5; the replicas stay
+inlined here.
 
 Plan: ``docs/history/plans/2026-07-07-th-tx-view-phase-c.md`` (Task 7).
 RFC: ``docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md``.
@@ -49,8 +52,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from tax_reporting.application.crypto.derivatives_dedup import _load_derivatives_labels_config
-from tax_reporting.application.crypto.payment_proceeds import _DEFAULT_PAYMENT_TAGS
+from tax_reporting.application.crypto.derivatives_filter import _load_derivatives_labels_config
 from tax_reporting.application.crypto.transaction_factory import build_transaction
 from tax_reporting.application.crypto.treatment_resolver import TreatmentConfig, resolve_treatment
 from tax_reporting.application.crypto.tx_correlation_key_resolver import TxCorrelationKeyResolver
@@ -59,10 +61,20 @@ from tax_reporting.application.crypto.wallet_kind import (
     aggregate_platform_evidence,
     classify_platform,
 )
-from tax_reporting.application.crypto_fifo.contexts import _LOAN_PRINCIPAL_TAGS
 from tax_reporting.domain.transaction import Transaction, TxCorrelationKey
 from tax_reporting.domain.treatment import Treatment
 from tax_reporting.infrastructure.koinly_parser import parse_th_row, read_koinly_rows
+from tests.conftest import build_origin_resolver
+
+# Phase E Task 4 deleted ``_LOAN_PRINCIPAL_TAGS`` from ``crypto_fifo.contexts``;
+# ``TreatmentConfig.loan_repayment_tags`` is the surviving authoritative source.
+# The borrowing-side ``"loan"`` tag is NOT in the repayment default (Phase B
+# Invariant 9: principal creation is not a repayment disposal), but the
+# corpus helper includes it because ``discover_loan_affected_assets`` still
+# needs it to keep borrow-only assets in the FIFO rebuild (Invariant 11).
+_TREATMENT_CONFIG = TreatmentConfig()
+_LOAN_REPAYMENT_TAGS: frozenset[str] = _TREATMENT_CONFIG.loan_repayment_tags
+_LOAN_PRINCIPAL_TAGS: frozenset[str] = _LOAN_REPAYMENT_TAGS | frozenset({"loan"})
 
 # ---------------------------------------------------------------------------
 # Corpus scenario inventory
@@ -79,23 +91,22 @@ _SCENARIOS: tuple[str, ...] = (
 
 _EXAMPLE_ROOT = Path("resources/source/example/2025/koinly")
 
-# Reward / airdrop / lp tag literals replicated inline from
-# ``src/tax_reporting/application/token_origin.py`` lines 243, 248, 253.
-# Those literals are NOT module-level constants today; Phase D extracts
-# them so this module can import them (Phase C Invariant 5 exception).
-_REWARD_TAGS: frozenset[str] = frozenset({"reward", "cashback", "realized gain"})
-_AIRDROP_TAGS: frozenset[str] = frozenset({"airdrop"})
-_LP_TAGS: frozenset[str] = frozenset({"liquidity in", "liquidity out"})
+# Reward / airdrop / lp tag sets: read once at import time from
+# ``TreatmentConfig`` defaults. Post-Phase-E the resolver reads the same
+# source, so these reads check resolver self-consistency under default config
+# rather than drift detection (Phase C Invariant 5 in its original pre-Phase-E
+# form is obsolete). Phase E Task 5 deleted the legacy
+# ``_DEFAULT_REWARD_TAGS`` / ``_DEFAULT_AIRDROP_TAGS`` / ``_DEFAULT_LP_TAGS``
+# constants from ``token_origin.py``; ``TreatmentConfig`` is now the single
+# source of truth.
+_REWARD_TAGS: frozenset[str] = _TREATMENT_CONFIG.reward_tags
+_AIRDROP_TAGS: frozenset[str] = _TREATMENT_CONFIG.airdrop_tags
+_LP_TAGS: frozenset[str] = _TREATMENT_CONFIG.lp_tags
 
-# Production tag sources imported (Phase C Invariant 5): the helper reuses
-# the canonical frozensets, normalizing the ``list[str]`` payment tags to
-# lowercase on each call (mirroring ``treatment_resolver.py::_normalize_tag``).
-_PAYMENT_TAGS: frozenset[str] = frozenset(t.strip().lower() for t in _DEFAULT_PAYMENT_TAGS)
-# ``_LOAN_PRINCIPAL_TAGS`` includes the borrowing-side ``"loan"`` tag; Phase B
-# Invariant 9 excludes it from the repayment default (borrowing is principal
-# creation, not a repayment disposal). The legacy-intent helper applies the
-# same exclusion so the corpus test exercises the Invariant 9 policy.
-_LOAN_REPAYMENT_TAGS: frozenset[str] = frozenset(t for t in _LOAN_PRINCIPAL_TAGS if t.strip().lower() != "loan")
+# Phase E Task 3 deleted ``_DEFAULT_PAYMENT_TAGS`` from ``payment_proceeds.py``;
+# ``TreatmentConfig.payment_tags`` is the surviving authoritative source. The
+# helper reads it once at import time so a drift in the default is visible.
+_PAYMENT_TAGS: frozenset[str] = _TREATMENT_CONFIG.payment_tags
 
 
 def _scenario_dir(scenario: str) -> Path:
@@ -189,11 +200,11 @@ def _build_transactions(scenario: str) -> list[Transaction]:
 def _legacy_intent(transaction: Transaction, derivatives_tags: frozenset[str]) -> Treatment:
     """Replicate the per-treatment legacy classifier outcome for one row.
 
-    Reuses the production frozensets (``_DEFAULT_PAYMENT_TAGS``,
-    ``_LOAN_PRINCIPAL_TAGS``, the loaded derivatives JSON) per Phase C
-    Invariant 5. The reward/airdrop/lp tag literals from
-    ``token_origin.py`` are replicated inline (lines 243/248/253 of that
-    module); this is the documented exception to Invariant 5.
+    Tag sets are read from ``TreatmentConfig`` defaults at module load time
+    (same source the resolver reads). Post-Phase-E there is no longer a
+    parallel definition to drift against, so this helper checks resolver
+    self-consistency under default config rather than drift detection
+    (Phase C Invariant 5 in its original pre-Phase-E form is obsolete).
 
     Applies Phase B Invariant 6 precedence
     (``LOAN_REPAYMENT > PAYMENT > DERIVATIVES_CLOSE > REWARD_AIRDROP_LP >
@@ -273,11 +284,12 @@ class TestPhaseCCorpus:
         """Per row: ``resolve_treatment`` agrees with the inline legacy intent.
 
         Phase C Invariant 6: the comparison is row-by-row, not aggregate.
-        The legacy intent is computed by ``_legacy_intent``, which reuses
-        the production frozensets (``_DEFAULT_PAYMENT_TAGS``,
-        ``_LOAN_PRINCIPAL_TAGS``, the loaded derivatives JSON) and
-        replicates the ``token_origin.py`` reward/airdrop/lp literals
-        inline (the documented Invariant 5 exception).
+        The legacy intent is computed by ``_legacy_intent``, which uses
+        the inline replicas of the pre-Phase-E tag constants plus the
+        injected derivatives JSON (Phase E deleted the production constants
+        in ``payment_proceeds.py`` / ``crypto_fifo/contexts.py`` /
+        ``token_origin.py``; the replicas preserve the values for this
+        cross-check).
         """
         transactions = _build_transactions(scenario)
         assert row_index < len(transactions), (
@@ -327,7 +339,8 @@ class TestPhaseCCorpus:
         """The ``Tag="Realized gain"`` row exercises Phase B Invariant 6 overlap.
 
         Under the default empty ``derivatives_tags``, the ``"realized gain"``
-        tag matches ``_DEFAULT_REWARD_TAGS`` and resolves to
+        tag matches the ``reward_tags`` default (``TreatmentConfig().reward_tags``,
+        which includes ``"realized gain"``) and resolves to
         ``REWARD_AIRDROP_LP``. Under the injected JSON-loaded
         ``derivatives_tags``, the derivatives branch fires FIRST (precedence)
         and the row resolves to ``DERIVATIVES_CLOSE``. This pins the
@@ -442,12 +455,11 @@ class TestPhaseCCorpus:
             CapitalGainsParsingContext,
             _parse_capital_gains_file,
         )
-        from tax_reporting.application.token_origin import TokenOriginResolver
 
         cg_path = _scenario_dir("summer_time_drift") / "koinly_2025_capital_gains_report.csv"
         context = CapitalGainsParsingContext(
             skipped_assets={},
-            origin_resolver=TokenOriginResolver(),
+            origin_resolver=build_origin_resolver(None),
             review_entries=[],
             zone=ZoneInfo("Europe/Lisbon"),
         )

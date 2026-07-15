@@ -1,9 +1,10 @@
 """Payment-proceeds correction for crypto capital gains (DP-014).
 
-A Koinly Payment disposal (TH rows tagged ``payment`` or ``card payment``)
-may land in the Capital Gains report with ``proceeds_eur == 0`` because
-Koinly did not price the disposed asset at disposal time. This module
-recovers the realization proceeds from one of four tiers, in fixed order:
+A Koinly Payment disposal (TH rows whose treatment resolves to ``PAYMENT``
+via the Phase B ``resolve_treatment`` classifier) may land in the Capital
+Gains report with ``proceeds_eur == 0`` because Koinly did not price the
+disposed asset at disposal time. This module recovers the realization
+proceeds from one of four tiers, in fixed order:
 
   1. the Koinly Transaction-History ``Net Value (EUR)`` for the matching
      payment disposal (primary - a priced market value);
@@ -16,14 +17,15 @@ recovers the realization proceeds from one of four tiers, in fixed order:
      DP-013 zero-proceeds review flag intact, and a specific review entry
      is appended so a human can supply the EUR realization value.
 
-The matcher correlates a CG disposal to a payment-tagged TH row by
+The matcher correlates a CG disposal to a TH row by
 ``(calendar day, normalized asset ticker, normalized platform,
-amount at 6 decimal places)``. A count-equality gate on the candidate
-population (zero-proceeds, non-loan-affected CG rows) versus the
-payment-tagged TH rows on the same key blocks correction when the two
-sides do not agree, so a collision never silently picks the wrong twin.
+amount at 6 decimal places)``. The caller pre-filters the TH rows to
+``PAYMENT``-treatment rows via ``resolve_treatment`` before invoking this
+module; per-bucket ``popleft`` enforces one-TH-row-per-CG-lot consumption
+discipline, so a CG key with more lots than TH rows sees the surplus lots
+left unchanged.
 
-Config (payment tags, stablecoin set, stablecoin pegs) is loaded from
+Config (stablecoin set, stablecoin pegs) is loaded from
 ``docs/maintenance/tax/popular_crypto_tokens.json`` - the same file
 ``classification._load_popular_crypto_tokens`` reads. The loader here
 DEGRADES (returns defaults, warns) on every failure mode, never raises,
@@ -59,10 +61,8 @@ logger = logging.getLogger(__name__)
 _MAX_TOKEN_FILE_SIZE = 1 * 1024 * 1024
 
 # Defaults returned on every degrade path (missing/symlink/oversize/malformed/
-# missing-keys/drift). Kept in sync with the test fixture
-# ``_DEFAULT_PAYMENT_TAGS`` so a missing file produces predictable, safe
-# behavior: no stablecoin set, no peg map, the canonical payment tag pair.
-_DEFAULT_PAYMENT_TAGS: list[str] = ["payment", "card payment"]
+# missing-keys/drift). Kept in sync with the test fixture so a missing file
+# produces predictable, safe behavior: no stablecoin set, no peg map.
 _DEFAULT_STABLECOINS: frozenset[str] = frozenset()
 _DEFAULT_STABLECOIN_PEGS: dict[str, str] = {}
 
@@ -85,15 +85,12 @@ class PaymentProceedsConfig:
     warns (never raises) on drift.
 
     Attributes:
-        payment_tags: Lower-cased, stripped TH Tag values that identify a
-            payment disposal (e.g. ``["payment", "card payment"]``).
         stablecoins: Set of stablecoin tickers eligible for par / peg-rate
             proceeds inference.
         stablecoin_pegs: Map from stablecoin ticker to its peg fiat currency
             code (e.g. ``{"USDT": "USD", "EURC": "EUR"}``).
     """
 
-    payment_tags: list[str]
     stablecoins: frozenset[str]
     stablecoin_pegs: dict[str, str]
 
@@ -101,7 +98,6 @@ class PaymentProceedsConfig:
 def _default_config() -> PaymentProceedsConfig:
     """Build a fresh defaults config (immutable but new containers)."""
     return PaymentProceedsConfig(
-        payment_tags=list(_DEFAULT_PAYMENT_TAGS),
         stablecoins=_DEFAULT_STABLECOINS,
         stablecoin_pegs=dict(_DEFAULT_STABLECOIN_PEGS),
     )
@@ -118,7 +114,7 @@ def _load_payment_proceeds_config_from_path(path: Path) -> PaymentProceedsConfig
     mode (missing, symlink, oversize, malformed JSON, missing keys, drift) the
     loader logs a WARNING naming the path and the specific failure, then
     returns the defaults. Schema validation (``tokens.stablecoins``,
-    ``stablecoin_pegs``, ``payment_tags``) and the peg/tokens drift guard stay
+    ``stablecoin_pegs``) and the peg/tokens drift guard stay
     caller-side here.
 
     Args:
@@ -126,7 +122,7 @@ def _load_payment_proceeds_config_from_path(path: Path) -> PaymentProceedsConfig
 
     Returns:
         A ``PaymentProceedsConfig``. Either the parsed config or, on any
-        failure, the defaults (empty stablecoin set, default payment tags).
+        failure, the defaults (empty stablecoin set, empty peg map).
     """
 
     def _on_error(failed_path: Path, kind: str, detail: str) -> object:
@@ -183,7 +179,7 @@ def _load_payment_proceeds_config_from_path(path: Path) -> PaymentProceedsConfig
         )
         return _default_config()
 
-    # Required keys: tokens.stablecoins, stablecoin_pegs, payment_tags. Missing
+    # Required keys: tokens.stablecoins, stablecoin_pegs. Missing
     # any -> degrade (do NOT raise). The classification loader reads only
     # data["tokens"], so adding sibling top-level keys is safe for it.
     tokens_obj = data.get("tokens")
@@ -212,17 +208,8 @@ def _load_payment_proceeds_config_from_path(path: Path) -> PaymentProceedsConfig
         )
         return _default_config()
 
-    payment_tags_value = data.get("payment_tags")
-    if not isinstance(payment_tags_value, list) or not all(isinstance(t, str) for t in payment_tags_value):
-        logger.warning(
-            "Payment proceeds config 'payment_tags' must be a list of strings: %s - using defaults.",
-            path,
-        )
-        return _default_config()
-
     stablecoins = frozenset(stablecoins_value)
     stablecoin_pegs = dict(stablecoin_pegs_value)
-    payment_tags = list(payment_tags_value)
 
     # Consistency guard: stablecoin_pegs keys MUST be a subset of the
     # stablecoins membership. Drift (a peg for a ticker absent from
@@ -245,14 +232,12 @@ def _load_payment_proceeds_config_from_path(path: Path) -> PaymentProceedsConfig
         )
 
     logger.debug(
-        "Loaded payment proceeds config from %s (%d stablecoins, %d pegs, %d payment tags)",
+        "Loaded payment proceeds config from %s (%d stablecoins, %d pegs)",
         path,
         len(stablecoins),
         len(stablecoin_pegs),
-        len(payment_tags),
     )
     return PaymentProceedsConfig(
-        payment_tags=payment_tags,
         stablecoins=stablecoins,
         stablecoin_pegs=stablecoin_pegs,
     )
@@ -294,32 +279,28 @@ def _calendar_day(date_str: str) -> str:
 _CALENDAR_DAY_LEN = 10
 
 
-def build_payment_tag_index(
+def _build_th_index(
     th_rows: list[dict[str, str]],
-    payment_tags: list[str],
 ) -> dict[tuple[str, str, str, Decimal], deque[int]]:
-    """Index payment-tagged TH rows by their correlation key.
+    """Index the supplied TH rows by their correlation key.
 
     The correlation key is ``(calendar day, normalized asset ticker,
-    normalized platform, amount at 6 decimal places)``. A TH row is indexed
-    only when its normalized ``Tag`` is in the (case-insensitive)
-    ``payment_tags`` set. Non-payment rows (Reward, empty, etc.) are skipped
-    so they never collide into a payment slot.
+    normalized platform, amount at 6 decimal places)``. Every row in
+    ``th_rows`` is indexed: the caller (the crypto-report orchestrator) is
+    responsible for pre-filtering the rows to ``PAYMENT``-treatment rows via
+    ``resolve_treatment`` before invoking this module, so this helper does
+    NOT consult ``Tag`` membership.
 
     Args:
-        th_rows: Koinly Transaction History rows (dicts keyed by column name).
-        payment_tags: Configured payment tag strings (case-insensitive).
+        th_rows: Koinly Transaction History rows (dicts keyed by column name),
+            pre-filtered by the caller to PAYMENT-treatment rows.
 
     Returns:
         Dict mapping correlation key to a ``deque`` of TH row indices (in
         insertion order). Rows sharing a key collapse onto the same deque.
     """
-    normalized_tags = {t.strip().lower() for t in payment_tags}
     index: dict[tuple[str, str, str, Decimal], deque[int]] = {}
     for idx, row in enumerate(th_rows):
-        tag = (row.get("Tag") or "").strip().lower()
-        if tag not in normalized_tags:
-            continue
         sent_currency = row.get("Sent Currency") or ""
         sending_wallet = row.get("Sending Wallet") or ""
         sent_amount_raw = row.get("Sent Amount") or ""
@@ -328,7 +309,7 @@ def build_payment_tag_index(
             amount = parse_koinly_decimal(sent_amount_raw)
         except (ValueError, InvalidOperation):
             logger.warning(
-                "TH row %d has unparseable Sent Amount %r - skipping from payment tag index.",
+                "TH row %d has unparseable Sent Amount %r - skipping from payment index.",
                 idx,
                 sent_amount_raw,
             )
@@ -357,7 +338,7 @@ def _match_payment_disposal(
     entry: CryptoCapitalGainEntry,
     tag_index: dict[tuple[str, str, str, Decimal], deque[int]],
 ) -> deque[int] | None:
-    """Return the payment-tagged TH bucket for ``entry``, or ``None``.
+    """Return the TH bucket for ``entry``, or ``None``.
 
     Pure lookup; does NOT pop. Returns the live deque so the orchestrator
     can ``popleft`` once a correction commits (mutate the
@@ -365,11 +346,11 @@ def _match_payment_disposal(
 
     Args:
         entry: A CG capital-gain entry.
-        tag_index: The index built by :func:`build_payment_tag_index`.
+        tag_index: The index built by :func:`_build_th_index`.
 
     Returns:
         The bucket deque for the entry's key, or ``None`` when no
-        payment-tagged TH row shares the key.
+        TH row shares the key.
     """
     return tag_index.get(_entry_key(entry))
 
@@ -545,7 +526,6 @@ def correct_payment_proceeds(  # noqa: PLR0912, PLR0913, PLR0915, C901
     peg_to_eur_rates: dict[str, Decimal],
     loan_affected_assets: frozenset[str],
     review_entries: list[CryptoReviewEntry],
-    via_resolver: bool = False,
 ) -> list[CryptoCapitalGainEntry]:
     """Correct zero-proceeds payment disposals using TH Net Value / peg rates.
 
@@ -554,46 +534,25 @@ def correct_payment_proceeds(  # noqa: PLR0912, PLR0913, PLR0915, C901
 
     Algorithm:
 
-      1. Build the payment-tagged TH index.
-      2. Pre-count BOTH static sides BEFORE the entry loop: ``cg_count[key]``
-         over the candidate population (entries with ``proceeds_eur == 0``
-         AND asset NOT in ``loan_affected_assets``); ``th_count[key]`` is the
-         static size of each payment bucket (captured once, before any
-         popleft).
-      3. Iterate entries in order. Skip if ``proceeds_eur != 0`` or the asset
-         is loan-affected. For a candidate, look up its bucket and apply the
-         count-equality gate BEFORE the try (so popleft is only ever on a
-         non-empty deque):
-           - ``th_count[key] == 0``: leave unchanged, NO review entry
-             (DP-013 flag intact).
-           - ``cg_count[key] != th_count[key]``: leave ALL candidates on the
-             key unchanged; append ONE ``CryptoReviewEntry`` for the key
-             (guarded by ``reviewed_keys``) naming the count mismatch.
-           - else (counts equal): per-entry try/except. Parse the bucket
-             FRONT TH row ``Net Value (EUR)``; non-finite Net Value guard;
-             resolve proceeds; on ``proceeds is None`` leave unchanged and
-             append the outcome-specific review entry (per-key guarded); on
-             success ``dataclasses.replace`` the entry, THEN ``popleft``
-             (mutate only AFTER success), and append a per-ROW audit
-             ``CryptoReviewEntry`` (NOT per-key guarded). On exception: warn,
-             emit the entry unchanged, do NOT pop, no review entry.
-
-    Phase D Task 4 PAYMENT flip (``via_resolver=True``): identification comes
-    from the Phase B resolver (the caller passes the pre-filtered set of
-    PAYMENT-treatment TH rows in ``th_rows``). The count-equality gate is
-    UNREACHABLE under flag-on: every ``th_rows`` entry is already a PAYMENT
-    row by construction, so the gate's contract (count CG candidates vs
-    payment-tagged TH rows on the same key) degenerates to "consume one TH
-    row per CG lot until the bucket is empty" - the per-bucket ``popleft``
-    already enforces this consumption discipline. The legacy count-equality
-    branch is bypassed, NOT deleted (Invariant 1 + 8); callers with
-    ``via_resolver=False`` (the default) still consult it.
+      1. Build the TH-row index (keyed by ``(calendar day, normalized asset
+         ticker, normalized platform, amount at 6 decimal places)``). The
+         caller pre-filters ``th_rows`` to ``PAYMENT``-treatment rows via
+         ``resolve_treatment``; this function does NOT consult ``Tag``
+         membership.
+      2. Iterate entries in order. Skip if ``proceeds_eur != 0`` or the asset
+         is loan-affected. For a candidate, look up its bucket; per-entry
+         try/except. Parse the bucket FRONT TH row ``Net Value (EUR)``;
+         non-finite Net Value guard; resolve proceeds; on ``proceeds is None``
+         leave unchanged and append the outcome-specific review entry
+         (per-key guarded); on success ``dataclasses.replace`` the entry,
+         THEN ``popleft`` (mutate only AFTER success), and append a per-ROW
+         audit ``CryptoReviewEntry`` (NOT per-key guarded). On exception:
+         warn, emit the entry unchanged, do NOT pop, no review entry.
 
     Args:
         entries: CG capital-gain entries (order preserved in the output).
-        th_rows: Koinly Transaction History rows. Under ``via_resolver=True``,
-            the caller pre-filters this list to PAYMENT-treatment rows
-            (Phase D Task 4 r8 Medium #1: built ONCE in
+        th_rows: Koinly Transaction History rows, pre-filtered by the caller
+            to PAYMENT-treatment rows (built ONCE in
             ``load_koinly_crypto_report``, not re-built here).
         config: Injected ``PaymentProceedsConfig``.
         peg_to_eur_rates: Peg currency -> finite positive EUR rate map
@@ -602,27 +561,12 @@ def correct_payment_proceeds(  # noqa: PLR0912, PLR0913, PLR0915, C901
             (rebuilt from TH by a separate pipeline).
         review_entries: List to append ``CryptoReviewEntry`` audit rows to
             (mutated in place).
-        via_resolver: When True, the count-equality gate is bypassed (Phase D
-            Task 4 PAYMENT flip). Defaults False (legacy behavior).
 
     Returns:
         New list of entries (untouched/unmatched entries preserved in order;
         corrected entries replaced in place).
     """
-    tag_index = build_payment_tag_index(th_rows, config.payment_tags)
-
-    # Pre-count BOTH static sides BEFORE the entry loop. cg_count is over the
-    # candidate population only (proceeds==0 AND non-loan); a loan-affected
-    # zero-proceeds sibling must NOT inflate the count.
-    cg_count: dict[tuple[str, str, str, Decimal], int] = {}
-    for entry in entries:
-        if entry.proceeds_eur != 0 or entry.asset in loan_affected_assets:
-            continue
-        key = _entry_key(entry)
-        cg_count[key] = cg_count.get(key, 0) + 1
-
-    # Static TH bucket sizes captured once, before any popleft.
-    th_count: dict[tuple[str, str, str, Decimal], int] = {key: len(bucket) for key, bucket in tag_index.items()}
+    tag_index = _build_th_index(th_rows)
 
     reviewed_keys: set[tuple[str, str, str, Decimal]] = set()
 
@@ -636,58 +580,15 @@ def correct_payment_proceeds(  # noqa: PLR0912, PLR0913, PLR0915, C901
         key = _entry_key(entry)
         bucket = _match_payment_disposal(entry, tag_index)
 
-        # No payment-tagged TH row for this key: leave unchanged, no review.
-        # Under ``via_resolver=True``, the per-bucket ``popleft`` may have
-        # drained the deque on a prior candidate (the count-equality gate is
-        # unreachable, so a CG key with more lots than PAYMENT TH rows sees
-        # the surplus lots fall through here unchanged). The static
-        # ``th_count`` was captured once before the loop, so the live
-        # ``len(bucket) == 0`` check is required to detect the drained state.
-        if bucket is None or th_count.get(key, 0) == 0 or len(bucket) == 0:
+        # No TH row for this key, or the per-bucket ``popleft`` drained the
+        # deque on a prior candidate: leave unchanged, no review. A CG key
+        # with more lots than PAYMENT TH rows sees the surplus lots fall
+        # through here unchanged.
+        if bucket is None or len(bucket) == 0:
             result.append(entry)
             continue
 
-        # Count-equality gate runs BEFORE the try. Mismatch in
-        # EITHER direction blocks correction for ALL candidates on the key.
-        # Phase D Task 4 PAYMENT flip: when ``via_resolver=True``, the caller
-        # pre-filtered ``th_rows`` to PAYMENT-treatment rows (resolver-based
-        # identification); the count-equality gate is unreachable because the
-        # per-bucket ``popleft`` already enforces one-TH-per-CG-lot
-        # consumption discipline. The legacy branch is bypassed, NOT deleted
-        # (Invariant 1 + 8); callers with ``via_resolver=False`` still
-        # consult it.
-        if (
-            not via_resolver
-            and cg_count.get(key, 0) != th_count.get(key, 0)
-        ):
-            if key not in reviewed_keys:
-                reviewed_keys.add(key)
-                reason = (
-                    f"Payment match ambiguous: {cg_count.get(key, 0)} CG rows vs "
-                    f"{th_count.get(key, 0)} Payment events on "
-                    f"(day, asset, platform, amount) for asset "
-                    f"{_sanitize_substring(entry.asset)} - verify"
-                )
-                review_entries.append(
-                    CryptoReviewEntry(
-                        source_section=_CAPITAL_GAINS_SECTION,
-                        date=entry.disposal_date,
-                        asset=entry.asset,
-                        platform=entry.platform,
-                        review_reason=reason,
-                    )
-                )
-                logger.warning(
-                    "Payment match ambiguous for asset %s on %s: %s CG rows vs %s Payment events.",
-                    _sanitize_substring(entry.asset),
-                    entry.disposal_date,
-                    cg_count.get(key, 0),
-                    th_count.get(key, 0),
-                )
-            result.append(entry)
-            continue
-
-        # Counts equal: per-entry try/except. Parse the bucket FRONT TH row.
+        # Per-entry try/except. Parse the bucket FRONT TH row.
         try:
             front_idx = bucket[0]
             front_row = th_rows[front_idx]

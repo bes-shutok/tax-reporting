@@ -1,7 +1,7 @@
 """Shared two-phase TH-event to CG-lot matcher.
 
 Promotes the matching primitives previously inlined in
-``derivatives_dedup`` so sibling matchers (the fee filter; repo rule #119)
+``derivatives_filter`` so sibling matchers (the fee filter; repo rule #119)
 perform the same conceptual operation without diverging. The matcher reads
 only ``event.timestamp`` / ``event.asset`` / ``event.wallet`` /
 ``event.amount`` and is generic over the concrete event type via the

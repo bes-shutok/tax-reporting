@@ -76,7 +76,6 @@ resources/result/*
 config.ini
 !tests/config.ini
 *.txt
-!tests/end_to_end/phase_d_expected_diff.txt
 /logs/
 
 /.ralphex/

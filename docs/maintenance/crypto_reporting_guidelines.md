@@ -190,60 +190,59 @@ Origin resolution uses the `TokenOriginResolver` class:
 - **Output format**: The `Token origin` column shows `"FROM_ASSET (method, confidence confidence)"` for resolved rows, or blank for unknown.
 - **Disclaimer**: Origin values are best-effort correlation from Koinly export data and should be reviewed against source documents before filing.
 
-## Per-Treatment Resolver Bypass (Phase D)
+## Per-Treatment Resolver Identification (Phase E)
 
 **CRG-019**
-Each pipeline stage that identifies rows by treatment has a per-flag bypass
-that delegates identification to `resolve_treatment`
-(`application/crypto/treatment_resolver.py`) when the corresponding
-`treatment_*_via_resolver` flag (DP-019) is on. The legacy identification
-path for that treatment is unreachable while the flag is on; setting the flag
-to `false` restores it. The six flags map 1:1 to the six `Treatment` members
-and default to `true`.
+Identification of every disposal row's treatment is resolver-only: each
+pipeline stage delegates to `resolve_treatment`
+(`application/crypto/treatment_resolver.py`) over the pre-built
+`list[Transaction]` produced once by
+`crypto_reporting.py::load_koinly_crypto_report`. There is no legacy
+identification path and no per-treatment rollback flag.
 
-Per-stage bypass notes:
+History (Phase D, 2026-07-08 through 2026-07-10): the six
+`treatment_*_via_resolver` flags (DP-019) mapped 1:1 to the six `Treatment`
+members and defaulted to `true`; flipping one to `false` restored the
+legacy identification path for that treatment only. Phase E (2026-07-11,
+plan `docs/history/plans/completed/2026-07-10-th-tx-view-phase-e.md`) deleted the six
+legacy adapters AND the six flags, the `_REQUIRED_TREATMENT_FLAGS` tuple,
+the `_enforce_required_treatment_flags` loader guard, and the
+`_countries_table_for` helper. The pre-Phase-E flag-mechanic behavior is
+preserved in `docs/maintenance/development_lessons.md` lessons #49-#52
+(append-only history).
+
+Per-stage identification notes (post-Phase-E):
 
 - **OGR 1:1 override** (`apply_ogr_event_level` in
   `application/crypto/ogr_event_level.py`, called from
-  `crypto_reporting.py::load_koinly_crypto_report`): when
-  `treatment_spot_disposal_via_resolver` is on, the override is applied only
-  to rows whose resolver treatment is `SPOT_DISPOSAL`; a non-SPOT_DISPOSAL
-  row sharing the same `(date, asset, wallet)` key is NOT overridden.
+  `crypto_reporting.py::load_koinly_crypto_report`): the override is applied
+  only to rows whose resolver treatment is `SPOT_DISPOSAL`; a
+  non-SPOT_DISPOSAL row sharing the same `(date, asset, wallet)` key is NOT
+  overridden.
 - **Payment-proceeds correction** (`correct_payment_proceeds` in
-  `application/crypto/payment_proceeds.py`): when
-  `treatment_payment_via_resolver` is on, identification comes from the
-  resolver (PAYMENT-treatment TH rows); the count-equality gate is
-  unreachable. The re-zero snapshot/restore block in
-  `crypto_reporting.py::load_koinly_crypto_report` is bypassed ONLY when
-  BOTH `treatment_payment_via_resolver` AND
-  `treatment_spot_disposal_via_resolver` are on (under both-on, OGR skips
-  PAYMENT rows so the residual the re-zero block exists to close cannot
-  occur); under partial rollback `(spot_off, payment_on)` the re-zero block
-  still runs.
+  `application/crypto/payment_proceeds.py`): identification comes from the
+  resolver (PAYMENT-treatment TH rows). The re-zero snapshot/restore block
+  is gone (Phase E Task 7); the OGR override skips PAYMENT rows so the
+  residual the re-zero block existed to close cannot occur.
 - **Loan-affected asset discovery** (`discover_loan_affected_assets` in
-  `application/crypto_fifo/parsing.py`): when
-  `treatment_loan_repayment_via_resolver` is on, discovery consults
+  `application/crypto_fifo/parsing.py`): discovery consults
   `Treatment.LOAN_REPAYMENT` rows AND `Treatment.OTHER` rows whose normalized
-  tag is `"loan"` (the borrowing-side principal creation); the
-  `_LOAN_PRINCIPAL_TAGS` membership check is unreachable. The extra
-  `OTHER + tag=loan` clause preserves the legacy asset set so borrow-only
-  assets remain in the FIFO rebuild.
+  tag is `"loan"` (the borrowing-side principal creation). The extra
+  `OTHER + tag=loan` clause (Invariant 11) preserves borrow-only assets so
+  they remain in the FIFO rebuild; without it they would drop out silently.
 - **Derivatives dedup** (`apply_derivatives_dedup` in
-  `application/crypto/derivatives_dedup.py`): when
-  `treatment_derivatives_close_via_resolver` is on, identification delegates
-  to the resolver; the internal tag classifier is unreachable. The lot-level
-  dedup algorithm itself is unchanged.
-- **Reward/airdrop/LP identification** (`application/token_origin.py`): when
-  `treatment_reward_airdrop_lp_via_resolver` is on, identification delegates
-  to the resolver; the inline tag literals (`_DEFAULT_REWARD_TAGS`,
-  `_DEFAULT_AIRDROP_TAGS`, `_DEFAULT_LP_TAGS`) are unreachable for
-  identification (they remain the single source of truth the resolver reads
-  from).
-- **OTHER**: no legacy adapter exists; `treatment_other_via_resolver` is a
-  true no-op on output and exists for symmetry and forward-compatibility.
+  `application/crypto/derivatives_filter.py`): identification delegates to
+  the resolver via `find_derivatives_th_events_from_transactions`; the
+  legacy internal tag classifier and the standalone CSV scanner are gone.
+  The lot-level dedup algorithm itself is unchanged.
+- **Reward/airdrop/LP identification** (`application/token_origin.py`):
+  identification delegates to the resolver. The reward/airdrop/LP tag sets
+  live once in `TreatmentConfig.reward_tags` / `.airdrop_tags` / `.lp_tags`
+  (`application/crypto/treatment_resolver.py`) as the single source of truth
+  the resolver consults; Phase E Task 5 deleted the former `token_origin.py`
+  duplicates, so there is no longer a parallel definition.
+- **OTHER**: no per-stage adapter exists; `Treatment.OTHER` rows flow
+  through the standard pipeline without a dedicated override.
 
-The legacy adapters are bypassed, not deleted; Phase E owns deletion after a
-clean tax year closes. A required-presence loader guard in
-`infrastructure/config.py` raises `ConfigurationError` if any of the six
-flags is absent from a country section of the decision-points TOML.
-Cross-reference: DP-019, PT-C-038.
+Cross-reference: PT-C-038, Phase E plan
+`docs/history/plans/completed/2026-07-10-th-tx-view-phase-e.md`.

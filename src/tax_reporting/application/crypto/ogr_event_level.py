@@ -79,16 +79,16 @@ def apply_ogr_event_level(
     ``_apply_ogr_direction_override`` so it is a drop-in replacement at the
     call site (``crypto_reporting.py``).
 
-    Phase D Task 3 SPOT_DISPOSAL flip: when
-    ``jurisdiction.treatment_spot_disposal_via_resolver`` is True, the
-    caller passes ``spot_disposal_keys`` - the set of ``(date, asset,
-    wallet)`` keys whose TH rows resolve to ``Treatment.SPOT_DISPOSAL``.
-    Any key in ``spot_index`` that is NOT in ``spot_disposal_keys`` is
-    treated as "no OGR match" so the corresponding lots pass through
-    unchanged. This is the per-key treatment filter for the OGR override
-    (r7 Medium #6: a non-SPOT_DISPOSAL disposal event sharing an OGR key
-    MUST NOT be overridden). When ``spot_disposal_keys`` is ``None``
-    (legacy path, flag off), no filtering is applied.
+    Phase E Task 6: the caller always passes ``spot_disposal_keys`` - the set
+    of ``(date, asset, wallet)`` keys whose TH rows resolve to
+    ``Treatment.SPOT_DISPOSAL``. Any key in ``spot_index`` that is NOT in
+    ``spot_disposal_keys`` is treated as "no OGR match" so the corresponding
+    lots pass through unchanged. This is the per-key treatment filter for the
+    OGR override (r7 Medium #6: a non-SPOT_DISPOSAL disposal event sharing an
+    OGR key MUST NOT be overridden). The Phase D
+    ``treatment_spot_disposal_via_resolver`` flag is gone; identification is
+    resolver-only and ``spot_disposal_keys`` is always populated by the
+    caller when an OGR report is present.
 
     Args:
         capital_entries: Pre-aggregation CG lots (one CG row = one FIFO lot).
@@ -101,7 +101,11 @@ def apply_ogr_event_level(
         spot_disposal_keys: Optional set of ``(date, asset, wallet)`` keys
             whose TH rows the resolver classified as ``SPOT_DISPOSAL``.
             When non-None, ``spot_index`` lookups are restricted to these
-            keys (Phase D Task 3). When None, no treatment filtering.
+            keys (Phase D Task 3). When None, no treatment filtering. The
+            production caller in ``load_koinly_crypto_report`` always passes
+            a populated set; the ``None`` default exists only for direct
+            unit-test invocations of the OGR mechanic that exercise the
+            override without treatment filtering.
 
     Returns:
         Lots in original input order with ``len(out) == len(in)``. Each

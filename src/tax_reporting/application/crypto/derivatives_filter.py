@@ -3,10 +3,13 @@
 This module holds the per-disposal deduplication logic that removes
 capital-gains lots corresponding to derivatives events already accounted for
 in the Other Gains Report. A per-provider-per-year label config loader
-supplies the derivatives Tag set, the TH scanner emits one
-``DerivativesThEvent`` per matching ``crypto_withdrawal`` row, and the
-shared two-phase matcher in :mod:`th_lot_matcher` (extracted from this
-module; repo rule #119) pairs events with CG lots at minute precision.
+supplies the derivatives Tag set (injected upstream into
+``TreatmentConfig.derivatives_tags``),
+:func:`find_derivatives_th_events_from_transactions` emits one
+``DerivativesThEvent`` per ``crypto_withdrawal`` row whose resolver treatment
+is ``DERIVATIVES_CLOSE``, and the shared two-phase matcher in
+:mod:`th_lot_matcher` (extracted from this module; repo rule #119) pairs
+events with CG lots at minute precision.
 
 Design notes
 ------------
@@ -14,14 +17,13 @@ Design notes
   JSON under `docs/maintenance/tax/derivatives_labels/<provider>_<year>.json` so the
   labels can be updated without code changes.
 - A *missing* config file degrades gracefully (warning plus empty set): the
-  caller skips deduplication and the legacy behaviour is preserved. This is
-  the only graceful-degradation path here.
+  caller skips deduplication. This is the only graceful-degradation path here.
 - A *malformed* config file is a correctness hazard: silently skipping would
   leave double-counting in place. Invalid JSON, a missing
   ``derivatives_th_labels`` key, or a wrong value type all raise
   ``FileProcessingError`` so the user sees the problem immediately.
-- The TH scanner does NOT deduplicate events: when two positions accrue the
-  same funding fee at the same minute, both events are returned. The
+- The event builder does NOT deduplicate events: when two positions accrue
+  the same funding fee at the same minute, both events are returned. The
   downstream matcher handles collisions deterministically.
 - The CG lot removal delegates to :func:`th_lot_matcher.remove_matched_lots`
   (two-phase matching: exact + contiguous-range fallback). The matcher owns
@@ -42,12 +44,7 @@ from ...domain.jurisdiction import TaxJurisdictionConfig
 from ...domain.transaction import Transaction
 from ...domain.treatment import Treatment
 from ...infrastructure.json_loader import DEGRADED, load_guarded_json
-from ...infrastructure.koinly_parser import (
-    normalize_asset_ticker,
-    parse_koinly_datetime,
-    parse_koinly_decimal,
-    read_koinly_rows,
-)
+from ...infrastructure.koinly_parser import normalize_asset_ticker
 from .classification import _REPOSITORY_ROOT
 from .entities import CryptoCapitalGainEntry
 from .th_lot_matcher import IndexedLot, remove_matched_lots
@@ -215,59 +212,6 @@ class DerivativesThEvent:
 _DERIVATIVES_TH_TYPE = "crypto_withdrawal"
 
 
-def find_derivatives_th_events(
-    transaction_history_path: Path, labels: frozenset[str]
-) -> list[DerivativesThEvent]:
-    """Scan a Koinly Transaction History CSV for derivatives events.
-
-    Args:
-        transaction_history_path: Path to the Koinly transaction history
-            CSV file. The file has a multi-line preamble (line 1 = title,
-            line 2 = blank, line 3 = header) handled by
-            ``read_koinly_rows`` via ``_detect_header_index``.
-        labels: Frozenset of TH Label strings that mark derivatives events.
-            An empty set (e.g. missing config degraded) causes the scanner
-            to return zero events without raising.
-
-    Returns:
-        List of :class:`DerivativesThEvent` instances, one per
-        ``crypto_withdrawal`` row whose Label (case-sensitive exact match)
-        is in ``labels``. The scanner does NOT deduplicate events: two
-        positions accruing the same funding fee at the same minute produce
-        two events with identical ``(timestamp, asset, wallet, amount)``
-        keys; the downstream matcher handles collisions.
-    """
-    if not labels:
-        return []
-
-    rows = read_koinly_rows(transaction_history_path)
-
-    events: list[DerivativesThEvent] = []
-    for row in rows:
-        if row.get("Type") != _DERIVATIVES_TH_TYPE:
-            continue
-        label = row.get("Tag", "")
-        if label not in labels:
-            continue
-
-        timestamp = parse_koinly_datetime(row["Date"]).strftime("%Y-%m-%d %H:%M")
-        asset = normalize_asset_ticker(row["Sent Currency"])
-        wallet = row.get("Sending Wallet", "").strip()
-        amount = parse_koinly_decimal(row["Sent Amount"])
-
-        events.append(
-            DerivativesThEvent(
-                timestamp=timestamp,
-                asset=asset,
-                wallet=wallet,
-                amount=amount,
-                label=label,
-            )
-        )
-
-    return events
-
-
 def _log_removals_and_surplus(
     matched_metadata: list[tuple[IndexedLot, str, DerivativesThEvent]],
     surplus_lots: list[IndexedLot],
@@ -323,7 +267,7 @@ def remove_derivatives_flagged_lots(
 
     Behavior is byte-identical to the pre-extraction implementation: the
     per-lot INFO records AND the summary WARNING both still emit from the
-    ``tax_reporting.application.crypto.derivatives_dedup`` logger with the
+    ``tax_reporting.application.crypto.derivatives_filter`` logger with the
     exact ``"Removed derivatives-flagged CG lot"`` /
     ``"Derivatives CG dedup summary"`` text.
 
@@ -360,13 +304,10 @@ def find_derivatives_th_events_from_transactions(
 ) -> list[DerivativesThEvent]:
     """Build derivatives events from pre-built ``Transaction`` objects via the resolver.
 
-    Phase D Task 6 (r8 Medium #1 carry-forward): when
-    ``treatment_derivatives_close_via_resolver=True``, identification
-    delegates to ``resolve_treatment`` instead of the legacy internal
-    tag classifier inside :func:`find_derivatives_th_events`. The dedup
-    algorithm itself is unchanged - it consumes the same
-    :class:`DerivativesThEvent` shape regardless of how the list was
-    produced.
+    Phase E: identification always delegates to ``resolve_treatment`` over
+    the pre-built ``transactions`` list. The dedup algorithm itself is
+    unchanged - it consumes the same :class:`DerivativesThEvent` shape
+    regardless of how the list was produced.
 
     Family D / F: this function consumes the ``list[Transaction]`` built
     ONCE by the production caller
@@ -392,10 +333,9 @@ def find_derivatives_th_events_from_transactions(
     Returns:
         List of :class:`DerivativesThEvent` instances, one per
         ``crypto_withdrawal`` TH row whose resolver treatment is
-        ``DERIVATIVES_CLOSE``. The event list is byte-identical in shape
-        to :func:`find_derivatives_th_events`'s output (same fields, same
-        normalization) so the downstream matcher and logger behave
-        identically regardless of identification path.
+        ``DERIVATIVES_CLOSE``. The event list shape (same fields, same
+        normalization) is preserved so the downstream matcher and logger
+        behave identically to the deleted legacy scanner's output.
     """
     events: list[DerivativesThEvent] = []
     for tx in transactions:
@@ -435,10 +375,8 @@ def apply_derivatives_dedup(  # noqa: PLR0913
     capital_entries: list[CryptoCapitalGainEntry],
     jurisdiction: TaxJurisdictionConfig | None,
     transaction_history_file: Path | None,
-    year: int,
     transactions: list[Transaction],
     config: TreatmentConfig,
-    via_resolver: bool,
 ) -> list[CryptoCapitalGainEntry]:
     """Pipeline entry point for the derivatives TH-label CG dedup.
 
@@ -462,21 +400,20 @@ def apply_derivatives_dedup(  # noqa: PLR0913
     was removed). All per-lot removal INFO logs and the single aggregate
     WARNING summary live inside :func:`remove_derivatives_flagged_lots`
     (delegating matching to :mod:`th_lot_matcher`); this function emits
-    only the missing-config WARNING (1x per run, non-aggregatable because
-    it has a single remediation action: add the config file).
+    only the empty-tags WARNING (1x per run, non-aggregatable because
+    it has a single remediation action: populate the config file).
 
-    Phase D Task 6 (r8 Medium #1 carry-forward): the signature gains
-    three keyword-only params - ``transactions``, ``config``,
-    ``via_resolver``. When ``via_resolver=True``, identification
-    delegates to :func:`find_derivatives_th_events_from_transactions`
-    (which calls ``resolve_treatment`` over the pre-built
-    ``list[Transaction]``) and the legacy internal tag classifier inside
-    :func:`find_derivatives_th_events` is NOT consulted. The dedup
-    algorithm itself (lot-level matching via
-    :func:`remove_derivatives_flagged_lots`) is unchanged; only the
-    identification source differs. When ``via_resolver=False``, today's
-    legacy path runs unchanged. Family F layering: this function NEVER
-    constructs ``Transaction`` objects; the caller supplies them.
+    Phase E: identification ALWAYS delegates to
+    :func:`find_derivatives_th_events_from_transactions`, which calls
+    ``resolve_treatment`` over the pre-built ``list[Transaction]``. The
+    Phase-D ``via_resolver`` flag, the standalone ``year`` parameter,
+    and the legacy internal tag classifier (formerly in the deleted
+    :func:`find_derivatives_th_events`) are gone. The labels-presence
+    gate now reads ``config.derivatives_tags`` (already injected by the
+    caller) instead of re-loading via ``_load_derivatives_labels_config``,
+    eliminating the double-load; the empty-tags WARNING is preserved.
+    Family F layering: this function NEVER constructs ``Transaction``
+    objects; the caller supplies them.
 
     Args:
         capital_entries: Capital-gains entries (CG lots) AFTER country
@@ -487,49 +424,38 @@ def apply_derivatives_dedup(  # noqa: PLR0913
             flags. ``None`` is treated as a no-op gate failure (the
             pipeline allows this when no jurisdiction context exists).
         transaction_history_file: Path to the Koinly transaction history
-            CSV, or ``None`` when the caller did not locate one.
-        year: Four-digit fiscal year. Used to resolve the per-provider-
-            per-year label config file.
+            CSV, or ``None`` when the caller did not locate one. Retained
+            as a gate input; no longer scanned directly.
         transactions: Pre-built ``list[Transaction]`` from the production
-            caller (Task 3 wiring step). Consumed ONLY when
-            ``via_resolver=True``; ignored on the legacy path (kept
-            keyword-only-required so callers cannot accidentally fall
-            back to the legacy path by omitting it).
-        config: ``TreatmentConfig`` for ``resolve_treatment``. Consumed
-            ONLY when ``via_resolver=True``.
-        via_resolver: When True, identification comes from
-            ``resolve_treatment``; the legacy internal classifier inside
-            :func:`find_derivatives_th_events` is bypassed. When False,
-            the legacy classifier runs unchanged.
+            caller. Consumed by
+            :func:`find_derivatives_th_events_from_transactions`.
+        config: ``TreatmentConfig`` for ``resolve_treatment``. Its
+            ``derivatives_tags`` frozenset (populated upstream by
+            :func:`_load_derivatives_labels_config`) is the source of the
+            empty-tags WARNING gate.
 
     Returns:
         The filtered list (input unchanged if any gate failed or no
         events matched).
     """
-    if not (
-        jurisdiction is not None
-        and jurisdiction.separate_derivatives_reporting
-        and jurisdiction.use_other_gains_report
-        and transaction_history_file
+    if (
+        jurisdiction is None
+        or not jurisdiction.derivatives_dedup_enabled
+        or not transaction_history_file
     ):
         return capital_entries
 
-    labels = _load_derivatives_labels_config(provider="koinly", year=year)
-    if not labels:
+    if not config.derivatives_tags:
         logger.warning(
-            "Derivatives TH-label config missing for koinly year %d; CG dedup skipped. "
-            "Add docs/maintenance/tax/derivatives_labels/koinly_%d.json to enable.",
-            year,
-            year,
+            "Derivatives tags empty in TreatmentConfig; CG dedup skipped. "
+            "Populate docs/maintenance/tax/derivatives_labels/koinly_<year>.json "
+            "for the active fiscal year."
         )
         return capital_entries
 
-    if via_resolver:
-        derivatives_events = find_derivatives_th_events_from_transactions(
-            transactions, config
-        )
-    else:
-        derivatives_events = find_derivatives_th_events(transaction_history_file, labels)
+    derivatives_events = find_derivatives_th_events_from_transactions(
+        transactions, config
+    )
     if not derivatives_events:
         return capital_entries
 

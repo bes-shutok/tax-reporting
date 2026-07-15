@@ -518,7 +518,7 @@ class CryptoReviewEntry:
     Attributes:
         source_section: The report section that produced the review row. One of
             ``"capital_gains"`` (produced by ``correct_payment_proceeds`` and
-            ``derivatives_dedup`` for CG-side review, and by
+            ``derivatives_filter`` for CG-side review, and by
             ``fee_filter.flag_fee_suspects`` when a suspect correlates to a CG
             lot), ``"income"`` (produced by reward-income side review rows), or
             ``"transaction_history"`` (produced by

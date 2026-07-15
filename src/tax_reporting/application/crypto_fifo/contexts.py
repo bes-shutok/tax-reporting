@@ -17,12 +17,6 @@ ZERO: Final = Decimal("0")
 
 LOAN_TAGS: Final[frozenset[str]] = frozenset({"loan", "loan repayment", "loan fee"})
 
-# Tags used to identify the *principal* loan asset (used only for discovery).
-# "loan fee" is excluded: a fee-tagged row's Sent Currency is the gas/service fee asset
-# (e.g. ETH for a WBTC loan gas payment), not the loan principal, and must not pull
-# non-principal assets into the FIFO rebuild scope.
-_LOAN_PRINCIPAL_TAGS: Final[frozenset[str]] = frozenset({"loan", "loan repayment"})
-
 
 @dataclass(frozen=True)
 class AcquisitionContext:

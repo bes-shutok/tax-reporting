@@ -1369,137 +1369,88 @@ class TestFifoZeroAmountConsumptionSkipped:
 
 
 class TestDiscoverLoanAffectedAssets:
-    def test_returns_currencies_from_loan_tagged_rows(self, tmp_path: Path) -> None:
-        """Sent and received currencies from loan-tagged rows are discovered; non-loan rows excluded."""
-        loan_row = ",".join([
-            "2025-01-05 10:00:00 UTC", "exchange", "loan", "ByBit", "0.1", "WBTC", "1000",
-            "ByBit", "", "", "", "", "", "", "1000", "", "", "", "tx1", "",
+    def test_discover_loan_affected_assets_resolver_path_includes_borrow_only(
+        self, tmp_path: Path
+    ) -> None:
+        """Phase E characterization (Invariant 11/5): the resolver-delegating path
+        in ``discover_loan_affected_assets`` includes BOTH the borrow-only asset
+        (Tag=Loan resolves to OTHER, no Loan Repayment row exists) AND the asset
+        on a LOAN_REPAYMENT row. Pins the ``OTHER + normalized-tag=loan`` clause
+        that keeps borrow-only assets in the FIFO rebuild scope.
+
+        Build TH rows via the production ``build_transaction`` factory path so
+        the test exercises the same ``Transaction`` construction the orchestrator
+        performs (the resolver-delegating branch is the sole survivor after
+        Phase E Task 4 deleted the legacy path).
+        """
+        from tax_reporting.application.crypto.transaction_factory import build_transaction
+        from tax_reporting.application.crypto.wallet_kind import (
+            aggregate_platform_evidence,
+            classify_platform,
+        )
+        from tax_reporting.application.crypto.wallet_kind_registry import (
+            ProductionWalletKindRegistry,
+        )
+        from tax_reporting.infrastructure.koinly_parser import (
+            normalize_platform_name,
+            parse_th_row,
+            read_koinly_rows,
+        )
+
+        # Borrow-only asset: WBTC crypto_deposit tagged "Loan" (no repayment row).
+        borrow_row = ",".join([
+            "2025-04-10 10:00:00 UTC", "crypto_deposit", "Loan", "",
+            "", "", "",
+            "ByBit", '"0,10000000"', "WBTC", '"4000,00"',
+            "", "", "", '"4000,00"', '"0,00"', "", "", "", "Borrow WBTC",
         ])
-        loan_repayment_row = ",".join([
-            "2025-03-10 10:00:00 UTC", "exchange", "loan repayment", "Kraken", "", "", "",
-            "Kraken", "5", "SUI", "100", "", "", "", "100", "", "", "", "tx2", "",
-        ])
-        non_loan_row = ",".join([
-            "2025-04-01 10:00:00 UTC", "sell", "", "Kraken", "10", "ETH", "",
-            "", "", "", "", "", "", "", "500", "", "", "", "tx3", "",
+        # Repayment asset: ETH exchange tagged "Loan Repayment" (disposal side).
+        repayment_row = ",".join([
+            "2025-06-10 10:00:00 UTC", "exchange", "Loan Repayment", "Kraken",
+            '"0,5"', "ETH", '"1000"',
+            "Kraken", '"1000"', "EUR", '"1000"',
+            "", "", "", '"1000"', '"0,00"', "", "", "txrepay", "Repay ETH loan",
         ])
         content = "\n".join([
-            "Transaction report 2025", "", TH_HEADER,
-            loan_row, loan_repayment_row, non_loan_row,
+            "Transaction report 2025", "", TH_HEADER, borrow_row, repayment_row,
         ])
-        th_path = tmp_path / "th.csv"
+        th_path = tmp_path / "th_loan_repay_scenario.csv"
         th_path.write_text(content, encoding="utf-8")
 
+        # Production Transaction construction path (mirrors load_koinly_crypto_report).
+        rows = read_koinly_rows(th_path)
+        parsed = [parse_th_row(row, row_index=idx) for idx, row in enumerate(rows)]
+        evidence = aggregate_platform_evidence(parsed)
+        registry = ProductionWalletKindRegistry()
+        transactions = []
+        for row in parsed:
+            sending = row.sending_wallet.strip()
+            platform_raw = (
+                sending if sending and sending.lower() != "unknown" else row.receiving_wallet.strip()
+            )
+            platform = normalize_platform_name(platform_raw) if platform_raw else ""
+            classification = classify_platform(
+                platform,
+                evidence.get(platform) if platform else None,
+                registry,
+            )
+            transactions.append(build_transaction(row, classification))
+
+        config = TreatmentConfig()
         result = discover_loan_affected_assets(
-            th_path,
-            frozenset(),
-            transactions=[],
-            config=TreatmentConfig(),
-            via_resolver=False,
+            fiat_currency_codes=frozenset({"EUR", "USD"}),
+            transactions=transactions,
+            config=config,
         )
 
-        assert result == frozenset({"WBTC", "SUI"})
-
-    def test_returns_empty_when_no_loan_rows(self, tmp_path: Path) -> None:
-        """TH with only non-loan rows returns empty set."""
-        non_loan_row = ",".join([
-            "2025-04-01 10:00:00 UTC", "sell", "", "Kraken", "10", "ETH", "",
-            "", "", "", "", "", "", "", "500", "", "", "", "tx3", "",
-        ])
-        content = "\n".join(["Transaction report 2025", "", TH_HEADER, non_loan_row])
-        th_path = tmp_path / "th.csv"
-        th_path.write_text(content, encoding="utf-8")
-
-        result = discover_loan_affected_assets(
-            th_path,
-            frozenset(),
-            transactions=[],
-            config=TreatmentConfig(),
-            via_resolver=False,
+        # Invariant 11/5: BOTH the borrow-only WBTC and the repayment ETH are in scope.
+        assert "WBTC" in result, (
+            f"Invariant 11 violation: borrow-only WBTC dropped from FIFO rebuild scope. "
+            f"Got {sorted(result)}"
         )
-
-        assert result == frozenset()
-
-    def test_fee_currency_from_loan_rows_is_excluded(self, tmp_path: Path) -> None:
-        """Fee Currency on a loan-tagged row must NOT be included in the discovered set.
-
-        Including fee currencies (e.g. ETH as gas on a WBTC loan row) would
-        incorrectly pull unrelated assets into the per-wallet FIFO rebuild scope.
-        Only Sent Currency and Received Currency from "loan" and "loan repayment" rows
-        are included; "loan fee" tagged rows are excluded entirely from discovery.
-        """
-        # loan fee row: fee paid in LBTC, no sent/received currencies
-        loan_fee_row = ",".join([
-            "2025-02-10 10:00:00 UTC", "exchange", "loan fee", "ByBit", "", "", "",
-            "ByBit", "", "", "", "0.001", "LBTC", "", "5", "5", "", "", "tx4", "",
-        ])
-        content = "\n".join(["Transaction report 2025", "", TH_HEADER, loan_fee_row])
-        th_path = tmp_path / "th.csv"
-        th_path.write_text(content, encoding="utf-8")
-
-        result = discover_loan_affected_assets(
-            th_path,
-            frozenset(),
-            transactions=[],
-            config=TreatmentConfig(),
-            via_resolver=False,
+        assert "ETH" in result, (
+            f"LOAN_REPAYMENT asset ETH missing from scope. Got {sorted(result)}"
         )
-
-        assert "LBTC" not in result
-        assert len(result) == 0
-
-    def test_loan_fee_sent_currency_excluded_from_discovery(self, tmp_path: Path) -> None:
-        """A 'loan fee' row's Sent Currency (e.g. ETH gas fee) must NOT be discovered.
-
-        'loan fee' rows are excluded entirely from asset discovery so that gas-fee assets
-        (e.g. ETH paid as gas on a WBTC loan transaction) are not pulled into the FIFO
-        rebuild scope. Only 'loan' and 'loan repayment' rows contribute principal assets.
-        """
-        # A WBTC loan row (should discover WBTC) and a loan fee row where the gas was paid
-        # in ETH (Sent Currency=ETH on a "loan fee" row must NOT be discovered).
-        wbtc_loan_row = ",".join([
-            "2025-01-05 10:00:00 UTC", "exchange", "loan", "ByBit", "0.1", "WBTC", "1000",
-            "ByBit", "", "", "", "", "", "", "1000", "", "", "", "tx1", "",
-        ])
-        eth_fee_row = ",".join([
-            "2025-01-05 10:01:00 UTC", "exchange", "loan fee", "ByBit", "0.01", "ETH", "20",
-            "ByBit", "", "", "", "", "", "", "20", "", "", "", "tx1fee", "",
-        ])
-        content = "\n".join(["Transaction report 2025", "", TH_HEADER, wbtc_loan_row, eth_fee_row])
-        th_path = tmp_path / "th.csv"
-        th_path.write_text(content, encoding="utf-8")
-
-        result = discover_loan_affected_assets(
-            th_path,
-            frozenset(),
-            transactions=[],
-            config=TreatmentConfig(),
-            via_resolver=False,
-        )
-
-        assert result == frozenset({"WBTC"})
-        assert "ETH" not in result
-
-    def test_fiat_sent_currency_is_excluded_from_discovery(self, tmp_path: Path) -> None:
-        """Loan-tagged fiat sent currency must not enter FIFO rebuild scope."""
-        fiat_loan_row = ",".join([
-            "2025-05-01 10:00:00 UTC", "exchange", "loan repayment", "Kraken", "1000", "EUR", "1000",
-            "Kraken", "0.02", "BTC", "1000", "", "", "", "1000", "", "", "", "tx5", "",
-        ])
-        content = "\n".join(["Transaction report 2025", "", TH_HEADER, fiat_loan_row])
-        th_path = tmp_path / "th.csv"
-        th_path.write_text(content, encoding="utf-8")
-
-        result = discover_loan_affected_assets(
-            th_path,
-            fiat_currency_codes=frozenset({"EUR"}),
-            transactions=[],
-            config=TreatmentConfig(),
-            via_resolver=False,
-        )
-
-        assert result == frozenset({"BTC"})
-        assert "EUR" not in result
 
 
 

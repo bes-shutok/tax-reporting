@@ -529,20 +529,20 @@ the run exits 0 and the wrong filing is produced. This is a Family-G
 (data-loss observability) failure: exit 0, data missing. Cross-reference:
 PT-C-037, Design Invariant 3 (per-lot `OgrValidationResult` contract).
 
-### Pitfall 6: Per-treatment resolver bypass is bypass-not-delete
+### Pitfall 6: Single Transaction construction site (resolver-only identification)
 
-When a `treatment_*_via_resolver` flag (DP-019) is on, the corresponding
-legacy adapter is UNREACHABLE but NOT deleted. Do not add new code that
-depends on the legacy path running for that treatment while the flag is on.
-Phase E owns deletion after a clean tax year closes; until then the legacy
-path must remain reachable when the flag is flipped to `false` (rollback
-granularity).
+Phase E (2026-07-11) deleted the six legacy identification adapters AND the
+six `treatment_*_via_resolver` flags that gated them. Identification is now
+resolver-only: every per-treatment stage calls `resolve_treatment` over the
+pre-built `list[Transaction]`. Do not reintroduce a per-treatment tag
+classifier or a config flag that restores a legacy identification path.
 
 There is exactly ONE production site that constructs `list[Transaction]`:
-`crypto_reporting.py::load_koinly_crypto_report` (Phase D Invariant 12). The
-Phase-A sanctioned factory `build_transaction(row, classification)`
+`crypto_reporting.py::load_koinly_crypto_report` (Phase D Invariant 12,
+preserved by Phase E). The Phase-A sanctioned factory
+`build_transaction(row, classification)`
 (`application/crypto/transaction_factory.py`) is called only there; every
-per-treatment flip task (SPOT_DISPOSAL, PAYMENT, LOAN_REPAYMENT,
+per-treatment stage (SPOT_DISPOSAL, PAYMENT, LOAN_REPAYMENT,
 DERIVATIVES_CLOSE, REWARD_AIRDROP_LP) consumes that pre-built list. Do NOT
 introduce a second production `build_transaction` caller, and do NOT push
 `Transaction` construction down into `crypto_fifo/` or `infrastructure/`
@@ -552,21 +552,22 @@ on classification-registry wiring, fee handling, and row-typing edge cases
 (Family D single-source-of-truth failure).
 
 ```python
-# WRONG - re-building Transaction objects inside a per-treatment flip
+# WRONG - re-building Transaction objects inside a per-treatment stage
 def apply_derivatives_dedup(entries, transaction_history_path, ...):
     rows = read_koinly_rows(transaction_history_path)
     transactions = [build_transaction(r, classify_platform(...)) for r in rows]
     # ^ second construction site; drifts from the caller's list
 
 # CORRECT - consume the pre-built list from load_koinly_crypto_report
-def apply_derivatives_dedup(entries, *, transactions, config, via_resolver):
-    if via_resolver:
-        target = [tx for tx in transactions
-                  if resolve_treatment(tx, config) == Treatment.DERIVATIVES_CLOSE]
+def apply_derivatives_dedup(entries, *, transactions, config):
+    target = [tx for tx in transactions
+              if resolve_treatment(tx, config) == Treatment.DERIVATIVES_CLOSE]
     ...
 ```
 
-Cross-reference: DP-019, PT-C-038, CRG-019, Phase D plan Invariant 12.
+Cross-reference: PT-C-038, CRG-019, Phase E plan
+`docs/history/plans/completed/2026-07-10-th-tx-view-phase-e.md` (Invariant 12 carried
+forward from Phase D).
 
 ## Pre-Implementation Checklist
 
@@ -1069,7 +1070,7 @@ rebuild or aggregation breaks classification correctness for loan-affected asset
 
 The dedup step that removes derivatives-flagged CG lots from the spot aggregate
 (`remove_derivatives_flagged_lots` in
-`src/tax_reporting/application/crypto/derivatives_dedup.py`) runs TWO matching phases rather
+`src/tax_reporting/application/crypto/derivatives_filter.py`) runs TWO matching phases rather
 than a single key-equality pass:
 
 1. **Phase 1 (exact match)** pairs one derivatives TH event to one CG lot per
@@ -1109,7 +1110,7 @@ under-removal invisible.
 ## Derivatives CG Dedup via TH Labels
 
 This section documents the TH-label-driven capital-gains dedup that ships
-in `src/tax_reporting/application/crypto/derivatives_dedup.py`. It is an
+in `src/tax_reporting/application/crypto/derivatives_filter.py`. It is an
 implementation guideline only; the legal classification of derivatives
 disposals is governed elsewhere. This section is self-contained and does
 not cross-reference other rule or plan documents.
@@ -1172,9 +1173,16 @@ guards (symlink rejection and a file size limit of 1 MiB via
 `_MAX_LABELS_FILE_SIZE`) through the shared
 `infrastructure.json_loader.load_guarded_json`, supplying its own
 `_on_error` policy callback (inherit the guards,
-recalibrate exception handling). A malformed config
+recalibrate exception handling). A malformed labels
 file (invalid JSON, missing `derivatives_th_labels` key, wrong value
-type) raises `FileProcessingError` at startup; only a missing file
+type) raises `FileProcessingError`. The caller in
+`load_koinly_crypto_report` branches on
+`TaxJurisdictionConfig.derivatives_dedup_enabled`:
+when derivatives reporting is OFF (or jurisdiction is None) the error
+degrades to empty `derivatives_tags` plus a WARNING; when derivatives
+reporting is ON, the caller re-raises as `ConfigurationError` so the
+run fails loudly (silent degradation would double-count disposals
+across OGR + capital gains). Only a missing labels file always
 degrades gracefully.
 
 ### Match key and two-phase matching
@@ -1286,26 +1294,34 @@ authoritative data-loss audit signal.
 ### Graceful degradation when config is missing
 
 If the config file `docs/maintenance/tax/derivatives_labels/<provider>_<year>.json`
-does not exist, `_load_derivatives_labels_config_from_path()` logs a
-single `logger.warning` naming the missing file and returns an empty
-frozenset. The caller `apply_derivatives_dedup()` then logs a second
-WARNING ("Derivatives TH-label config missing for koinly year N; CG
-dedup skipped. Add docs/maintenance/tax/derivatives_labels/koinly_N.json to
-enable.") and returns the input unchanged. The pipeline degrades to the
-pre-dedup behavior (the double-counting risk the dedup was designed to
-fix) but the warning surfaces the misconfiguration.
+does not exist, `_load_derivatives_labels_config_from_path()` returns an empty
+frozenset silently (its `_on_error` callback returns `DEGRADED` for
+`kind=="missing"` without logging, so a single-stage warning flow is
+preserved). The empty frozenset flows into `TreatmentConfig.derivatives_tags`.
+The caller `apply_derivatives_dedup()` then emits a single WARNING
+("Derivatives tags empty in TreatmentConfig; CG dedup skipped. Populate
+docs/maintenance/tax/derivatives_labels/koinly_<year>.json for the active
+fiscal year.") and returns the input unchanged. The pipeline degrades to the
+pre-dedup behavior (the double-counting risk the dedup was designed to fix)
+but the warning surfaces the misconfiguration.
 
-This is the only graceful-degradation path. A malformed config file
+This is the only graceful-degradation path. A malformed labels file
 (invalid JSON, missing `derivatives_th_labels` key, wrong value type,
-symlink, oversized file) raises `FileProcessingError` at startup; the
-user sees the problem immediately rather than discovering silent
-double-counting at audit time.
+symlink, oversized file) raises `FileProcessingError` from
+`_load_derivatives_labels_config`. The caller in
+`load_koinly_crypto_report` then branches on
+`TaxJurisdictionConfig.derivatives_dedup_enabled`:
+when derivatives reporting is OFF (or jurisdiction is None) the error
+degrades to empty `derivatives_tags` plus a WARNING; when derivatives
+reporting is ON, the caller re-raises as `ConfigurationError` so the
+run fails loudly rather than discovering silent double-counting at
+audit time.
 
 ### Orchestration thinness rule
 
 `crypto_reporting.py` is already well over the ~500-line orchestration
 threshold. To avoid absorbing more orchestration logic into it, the
-dedup wiring lives entirely in `derivatives_dedup.py`. The pipeline call
+dedup wiring lives entirely in `derivatives_filter.py`. The pipeline call
 site in `load_koinly_crypto_report` is a single-line invocation:
 
 ```python
@@ -1313,7 +1329,8 @@ capital_entries = apply_derivatives_dedup(
     capital_entries=capital_entries,
     jurisdiction=jurisdiction,
     transaction_history_file=transaction_history_file,
-    year=year,
+    transactions=transactions,
+    config=treatment_config,
 )
 ```
 
@@ -1321,11 +1338,14 @@ The `apply_derivatives_dedup()` function encapsulates the full
 gate-check-config-scan-filter sequence: (1) gate on
 `jurisdiction.separate_derivatives_reporting` AND
 `jurisdiction.use_other_gains_report` AND `transaction_history_file`;
-(2) load labels via `_load_derivatives_labels_config(provider="koinly",
-year=year)`; (3) scan TH via `find_derivatives_th_events()`; (4) filter
-CG lots via `remove_derivatives_flagged_lots()`. The dedup runs AFTER
-`_validate_capital_entries_have_valid_countries` and BEFORE
-`_split_ogr_index`, so the OGR classifier sees the filtered
+(2) read labels from the injected `config.derivatives_tags` (Phase E
+eliminated the double-load; labels are loaded once upstream and passed in
+via `treatment_config`); (3) scan the pre-built `transactions` via
+`find_derivatives_th_events_from_transactions()` (Phase E: the resolver
+identifies DERIVATIVES_CLOSE rows; the legacy standalone CSV scanner is
+gone); (4) filter CG lots via `remove_derivatives_flagged_lots()`. The
+dedup runs AFTER `_validate_capital_entries_have_valid_countries` and
+BEFORE `_split_ogr_index`, so the OGR classifier sees the filtered
 `capital_entries` list.
 
 ### Legal characterization (inline)
@@ -1360,7 +1380,7 @@ underlying collateral is a cryptoasset.
 | Contiguous constraint on range match | Matches FIFO semantics; avoids NP-hard subset-sum false positives |
 | Per-lot INFO, single aggregate WARNING | Data-loss signal at WARNING; no noise flood at scale |
 | Graceful degradation only for missing config | Malformed config is a correctness hazard; raises immediately |
-| Orchestration in `derivatives_dedup.py`, not `crypto_reporting.py` | Keeps the orchestrator thin |
+| Orchestration in `derivatives_filter.py`, not `crypto_reporting.py` | Keeps the orchestrator thin |
 
 ## Payment Proceeds Correction (DP-014)
 
@@ -1487,22 +1507,30 @@ With both sides on the true-UTC day, the calendar-day key is timezone-robust;
 a +/-1-day window is no longer needed. See the crypto-timezone-normalization
 plan and .
 
-### Deque + count-equality collision-blocks-correction pattern
+### Deque + popleft consumption pattern (post-Phase-E)
 
-`build_payment_tag_index()` indexes payment-tagged TH rows by
+The caller pre-filters TH rows to `PAYMENT`-treatment via
+`resolve_treatment(transaction, config)` and passes that list to
+`correct_payment_proceeds`, which builds the TH index via
+`_build_th_index()`: rows keyed by
 `(calendar day, normalized asset ticker, normalized platform, amount at 6
 decimal places)` into `dict[key, deque[int]]`. The deque (not a
 dict-of-scalars) is mandatory: when two payment events share a key, a
 dict-of-scalars would silently overwrite one, leaving the wrong twin matched.
 
-`correct_payment_proceeds()` pre-counts BOTH static sides BEFORE the entry
-loop: `cg_count[key]` over the candidate population (entries with
-`proceeds_eur == 0` AND asset NOT in `loan_affected_assets`), and
-`th_count[key]` as the static size of each payment bucket captured once before
-any `popleft`. A count-equality gate then blocks correction for ALL candidates
-on a key whenever `cg_count[key] != th_count[key]`, appending ONE per-key
-review entry naming the count mismatch. This means a collision never silently
-picks the wrong twin.
+`correct_payment_proceeds()` consumes the deque with `popleft` only. For each
+CG candidate with `proceeds_eur == 0` and asset NOT in
+`loan_affected_assets`, it looks up the bucket, parses the front TH row's
+`Net Value (EUR)`, resolves proceeds, and on success calls
+`dataclasses.replace(...)` to mutate the entry THEN `bucket.popleft()` so the
+next CG candidate on the same key consumes the next TH row in order. The
+Phase-D-era `cg_count`/`th_count` pre-counting and count-equality gate are
+GONE (deleted in Phase E Task 3): when N > M (more CG candidates than TH rows
+on a key), the first M CG lots are corrected; the remaining N-M surplus lots
+fall through the `bucket is None or len(bucket) == 0` branch unchanged, with
+their existing DP-013 zero-proceeds flag intact (NO new count-mismatch review
+entry is appended - deliberate post-Phase-E behavior; the surplus-lot residual
+is the DP-013 signal, not a count-mismatch signal).
 
 Per-row discipline: the fallible `parse_koinly_decimal` +
 `_resolve_proceeds` run BEFORE `bucket.popleft()`, and the resolver RAISES an
@@ -1515,7 +1543,7 @@ DP-013 reason covers it - deliberate asymmetry).
 ### Reuse of `_quantize_amount_6dp`
 
 Amounts in both the TH index key and the CG entry key are quantized via
-`_quantize_amount_6dp` reused from `derivatives_dedup.py`
+`_quantize_amount_6dp` reused from `derivatives_filter.py`
 (`Decimal.quantize(Decimal("0.000001"))`, ROUND_HALF_EVEN). This absorbs
 Koinly rounding differences (TH amounts are raw chain amounts; CG amounts are
 FIFO-resolved and may differ in the last decimal) so a CG row and its TH twin
@@ -1523,13 +1551,16 @@ collapse onto the same 6-decimal key.
 
 ### Reuse of `popular_crypto_tokens.json` (no new config file)
 
-Stablecoin membership, peg annotation, and the payment tag set are REUSED from
+Stablecoin membership and peg annotation are REUSED from
 `docs/maintenance/tax/popular_crypto_tokens.json` - the SAME file the
 zero-value-reward detector in `classification._load_popular_crypto_tokens`
 already reads. Adding sibling top-level keys is safe for that loader because
 it reads only `data["tokens"]`. No new config file is introduced; the loader
 resolves the path as `_REPOSITORY_ROOT / "docs" / "maintenance" / "tax" /
-"popular_crypto_tokens.json"`. JSON schema for the keys this feature reads:
+"popular_crypto_tokens.json"`. The payment tag pair (`payment`, `card
+payment`) is NO LONGER read from this JSON; it lives in
+`TreatmentConfig.payment_tags` in `application/crypto/treatment_resolver.py`
+(Phase E Task 3). JSON schema for the keys this feature reads:
 
 ```json
 {
@@ -1540,8 +1571,7 @@ resolves the path as `_REPOSITORY_ROOT / "docs" / "maintenance" / "tax" /
   "stablecoin_pegs": {
     "USDT": "USD", "USDC": "USD", "DAI": "USD",
     "EURC": "EUR", "EUROC": "EUR", "EURT": "EUR"
-  },
-  "payment_tags": ["payment", "card payment"]
+  }
 }
 ```
 
@@ -1549,7 +1579,6 @@ Required-key invariants enforced by `_load_payment_proceeds_config_from_path`:
 
 - `tokens.stablecoins` MUST be a list of strings.
 - `stablecoin_pegs` MUST be a string->string map.
-- `payment_tags` MUST be a list of strings.
 - `stablecoin_pegs` keys MUST be a subset of `tokens.stablecoins`; drift
   (a peg for a ticker absent from `tokens.stablecoins`, or vice versa) logs a
   WARNING naming the offending tickers but the config is still loaded
@@ -1564,8 +1593,7 @@ shared `infrastructure.json_loader.load_guarded_json` and supplies its own
 DEGRADE never raise. A corrupt token file must never abort report generation.
 On ANY failure mode (missing, symlink, oversize, malformed JSON, missing keys,
 drift) the policy callback logs a WARNING naming the path and the specific
-failure, then returns the defaults: empty stablecoin set, empty peg map, the
-canonical payment tag pair `["payment", "card payment"]`. This is a deliberate recalibration: reuse the guards but weigh the cost
+failure, then returns the defaults: empty stablecoin set, empty peg map. This is a deliberate recalibration: reuse the guards but weigh the cost
 of silent failure at the new call site (a missing peg map means EUR-par and
 peg-rate tiers never fire - visible as unchanged zero-proceeds rows with the
 DP-013 flag, not a crashed run).
@@ -1585,24 +1613,19 @@ silently skipped when Koinly reports zero value. The backward-compat test in
 `tests/unit/application/test_crypto_reporting.py` verifies the new flagging
 behavior.
 
-### Pipeline wiring and re-zero snapshot
+### Pipeline wiring
 
 The correction is wired into `load_koinly_crypto_report`
 (`crypto_reporting.py`) at a specific, load-bearing position:
 
-1. AFTER `_apply_ogr_direction_override` (the OGR directional authority runs
-   first on the raw CG lots).
-2. After a re-zero snapshot+restore that closes the OGR pre-mutation residual:
-   before the OGR override, the indices of pre-OGR entries whose `proceeds_eur
-   == 0` AND whose asset is NOT loan-affected are captured; after the override,
-   any such index whose proceeds is now non-zero (OGR mutated THAT row) is
-   restored to `proceeds_eur == 0` so the correction's `proceeds == 0` gate
-   fires on it. INDICES not keys: a key-based snapshot would also restore a
-   genuine non-zero OGR-overridden derivatives disposal that merely shares a
-   `(date, asset, wallet)` key with a zero-proceeds Payment. An OGR override
-   touching an originally-zero-proceeds row is NECESSARILY spurious (a real OGR
-   disposal has non-zero proceeds).
-3. BEFORE `_aggregate_capital_entries` so corrected lots aggregate by
+1. AFTER `_apply_ogr_event_level` (the OGR directional authority runs
+   first on the raw CG lots). The OGR override skips PAYMENT-treatment rows
+   via `spot_disposal_keys` (only `(date, asset, wallet)` keys whose TH rows
+   resolve to `Treatment.SPOT_DISPOSAL` are eligible), so the pre-Phase-E
+   re-zero snapshot/restore block is GONE (deleted in Phase E Task 7). The
+   OGR pre-mutation residual the snapshot existed to close cannot occur
+   because PAYMENT lots are never overridden.
+2. BEFORE `_aggregate_capital_entries` so corrected lots aggregate by
    `(date, asset, platform, holding_period)`.
 
 Corrected entries intentionally SKIP re-validation and derivatives dedup (safe:
@@ -1626,9 +1649,12 @@ flag off). Branch-count invariant: DP-014 does NOT add or remove a branch -
 ### Out of scope (DP-005 follow-up)
 
 LP-token unstaking / "liquidity out" is a distinct non-taxable-deferred case
-(DP-005 / PT-C-005) tracked as a follow-up. It will reuse the CG<->TH tag
-correlation built here (`build_payment_tag_index`), keyed on liquidity tags to
-EXCLUDE rather than proceeds-correct.
+(DP-005 / PT-C-005) tracked as a follow-up. It will reuse the post-Phase-E
+identification pattern: identify rows via `resolve_treatment(transaction,
+config)` over the pre-built `list[Transaction]`, then index the filtered rows
+with `_build_th_index` (which no longer takes a tag-set parameter); the
+discriminator switches to `Treatment.REWARD_AIRDROP_LP` with the liquidity-tag
+tuple, and the action is to EXCLUDE rather than proceeds-correct.
 
 ### Abstract worked example
 
@@ -1724,7 +1750,7 @@ DEGRADES to tagged-only under an empty dict - it is NOT a full no-op.
 ### Matching, removal, and per-lot logging
 
 Fee events are matched to Capital Gains lots by the shared two-phase matcher
-(`th_lot_matcher`, extracted from `derivatives_dedup`; rule #119) keyed by
+(`th_lot_matcher`, extracted from `derivatives_filter`; rule #119) keyed by
 `(disposal_timestamp, asset, wallet, amount_6dp)` where `wallet` is the
 normalized Sending Wallet name (NOT `platform`, which is the institution).
 Matched lots are removed; suspects are matched in a match-only mode (no

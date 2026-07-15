@@ -51,6 +51,67 @@ class TestConfig:
         assert len(config.rates) == 0
         assert config.security.max_file_size_mb == 50
 
+    def test_decision_points_toml_loads_without_via_resolver_flags(self, tmp_path, monkeypatch) -> None:
+        """Phase E Task 6 characterization: the committed 2025.toml (with the six
+        ``treatment_*_via_resolver`` lines removed) loads cleanly via
+        ``load_tax_jurisdiction_config``. The Phase D required-presence guard that
+        raised ``ConfigurationError`` on a missing flag is gone; this test pins the
+        relaxed loader so a future re-introduction of the guard would surface here.
+        """
+        import tax_reporting.infrastructure.config as config_module
+
+        # TOML shaped like the post-Phase-E committed 2025.toml: PT section with the
+        # exclude flag and a sub-table, but NO ``treatment_*_via_resolver`` lines.
+        post_phase_e_toml = (
+            '[meta]\nfiscal_year = 2025\n'
+            'source_decision_file = "docs/maintenance/tax/decision_points/2025.md"\n'
+            'last_verified = "2026-05-26"\n'
+            '[countries.PT]\nexclude_loan_repayment_gains = true\n'
+            '[countries.PT.exclude_transaction_fee_max_eur_per_asset]\nETH = 1.0\n'
+        )
+        dp_dir = tmp_path / "decision_points"
+        _write_toml(dp_dir, post_phase_e_toml)
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
+
+        cp = configparser.ConfigParser()
+        cp.optionxform = lambda optionstr: optionstr
+        cp["TAX JURISDICTION"] = {"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025"}
+        logger = logging.getLogger(__name__)
+        # The required-presence guard for the six treatment flags is removed in
+        # Phase E Task 6; loading must succeed. Pre-edit (RED): the loader raises
+        # ConfigurationError naming a missing ``treatment_*_via_resolver`` flag.
+        result = _load_tax_jurisdiction_config(cp, logger)
+        assert result.country == "PT"
+        assert result.exclude_loan_repayment_gains is True
+
+    def test_stale_via_resolver_flag_in_toml_rejected_as_unknown(self, tmp_path, monkeypatch) -> None:
+        """Phase E Task 6 follow-up: a stale ``treatment_*_via_resolver`` line
+        lingering in a future-year TOML (e.g. when copying ``2025.toml`` forward
+        without the Phase E cleanup) must surface as a hard load error via the
+        unknown-flag rejection path, not be silently dropped. The lower-level
+        ``_load_tax_jurisdiction_config`` raises ``ValueError``; ``main()``
+        converts that to ``ConfigurationError``.
+        """
+        import tax_reporting.infrastructure.config as config_module
+
+        stale_toml = (
+            '[meta]\nfiscal_year = 2025\n'
+            'source_decision_file = "docs/maintenance/tax/decision_points/2025.md"\n'
+            'last_verified = "2026-05-26"\n'
+            '[countries.PT]\nexclude_loan_repayment_gains = true\n'
+            'treatment_payment_via_resolver = true\n'
+        )
+        dp_dir = tmp_path / "decision_points"
+        _write_toml(dp_dir, stale_toml)
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", dp_dir)
+
+        cp = configparser.ConfigParser()
+        cp.optionxform = lambda optionstr: optionstr
+        cp["TAX JURISDICTION"] = {"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025"}
+        logger = logging.getLogger(__name__)
+        with pytest.raises(ValueError, match="Unknown decision points flag"):
+            _load_tax_jurisdiction_config(cp, logger)
+
 
 @pytest.mark.unit
 class TestConversionRate:
@@ -157,17 +218,11 @@ class TestConfigValidation:
         assert ".csv" in cfg.security.allowed_extensions
 
 
-# Phase D Task 2: the six per-treatment resolver flags. Required in every country section
-# by the loader's required-presence guard (Invariant 10). Appended to test TOMLs so they
-# satisfy the guard; tests that exercise the guard's missing-flag path override this.
-_SIX_TREATMENT_FLAGS_TOML = (
-    "treatment_spot_disposal_via_resolver = true\n"
-    "treatment_payment_via_resolver = true\n"
-    "treatment_loan_repayment_via_resolver = true\n"
-    "treatment_derivatives_close_via_resolver = true\n"
-    "treatment_reward_airdrop_lp_via_resolver = true\n"
-    "treatment_other_via_resolver = true\n"
-)
+# Phase E Task 6: the six per-treatment resolver flags were removed from
+# ``TaxJurisdictionConfig`` and the decision-points TOML. Kept as an empty-string
+# alias for tests that still concatenate it into TOML fixtures; Task 8 owns the
+# full sweep that deletes the remaining call sites.
+_SIX_TREATMENT_FLAGS_TOML = ""
 
 
 @pytest.mark.unit
@@ -541,9 +596,10 @@ _MINIMAL_VALID_TOML = (
     'last_verified = "2026-05-26"\n'
 )
 
-# A minimal PT country section that satisfies BOTH the exclude_loan_repayment_gains required-
-# presence check (config.py:321) AND the Phase D six-treatment-flag required-presence guard
-# (Invariant 10). Reused by several TestLoadDecisionPointsFlags / WithToml fixtures.
+# A minimal PT country section that satisfies the exclude_loan_repayment_gains
+# required-presence check (config.py:321). Phase E Task 6 removed the Phase D
+# six-treatment-flag required-presence guard; the alias is kept for tests that
+# still append ``_SIX_TREATMENT_FLAGS_TOML``.
 _PT_VALID_SECTION_TOML = (
     "[countries.PT]\nexclude_loan_repayment_gains = true\n" + _SIX_TREATMENT_FLAGS_TOML
 )
@@ -566,18 +622,10 @@ class TestLoadDecisionPointsFlags:
         flags = _load_decision_points_flags("PT", 2025, logger)
 
         assert flags["exclude_loan_repayment_gains"] is True
-        # The six Phase D per-treatment resolver flags are present in the test TOML and
-        # returned verbatim (this isolates _load_decision_points_flags from the required-
-        # presence guard, which lives in _load_tax_jurisdiction_config).
-        for treatment_flag in (
-            "treatment_spot_disposal_via_resolver",
-            "treatment_payment_via_resolver",
-            "treatment_loan_repayment_via_resolver",
-            "treatment_derivatives_close_via_resolver",
-            "treatment_reward_airdrop_lp_via_resolver",
-            "treatment_other_via_resolver",
-        ):
-            assert flags[treatment_flag] is True
+        # Phase E Task 6: the six ``treatment_*_via_resolver`` flags are removed
+        # from ``TaxJurisdictionConfig`` and the decision-points TOML; the loader
+        # now rejects them as unknown flags. Only the ``exclude_loan_repayment_gains``
+        # flag is asserted here.
 
     def test_missing_toml_raises_file_not_found(self, tmp_path, monkeypatch) -> None:
         """FileNotFoundError is raised when no TOML exists for the requested fiscal year."""

@@ -19,11 +19,11 @@ This module owns ONLY:
 
 The two-phase matching + removal + the single aggregate summary WARNING are
 reused from :mod:`th_lot_matcher` (repo rule #119: this module and
-``derivatives_dedup`` are sibling TH-event->CG-lot matchers performing the
+``derivatives_filter`` are sibling TH-event->CG-lot matchers performing the
 same conceptual operation). Do NOT reimplement two-phase matching here.
 
 Pipeline placement (Design Invariant 4, Option D split fee pass):
-``dedup -> remove_transaction_fees (early) -> OGR -> re-zero ->
+``dedup -> remove_transaction_fees (early) -> OGR ->
 correct_payment_proceeds -> flag_fee_suspects (late) -> aggregation ->
 materiality``. Fee removal runs early so removed lots are not summed in
 aggregation; suspect flagging runs late so any proceeds corrections are

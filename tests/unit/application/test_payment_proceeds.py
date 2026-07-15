@@ -35,7 +35,6 @@ from tax_reporting.application.crypto.payment_proceeds import (  # noqa: E402
     PaymentProceedsConfig,
     _derive_peg_to_eur_rates,
     _load_payment_proceeds_config_from_path,
-    build_payment_tag_index,
     correct_payment_proceeds,
 )
 from tax_reporting.infrastructure.config import ConversionRate
@@ -45,7 +44,6 @@ from tax_reporting.infrastructure.config import ConversionRate
 # ---------------------------------------------------------------------------
 
 _CONFIG = PaymentProceedsConfig(
-    payment_tags=["payment", "card payment"],
     stablecoins=frozenset({"EURST", "USDX"}),
     stablecoin_pegs={"EURST": "EUR", "USDX": "USD"},
 )
@@ -144,6 +142,71 @@ def _make_th_payment_row(  # noqa: PLR0913
         "Net Value (EUR)": net_value_eur,
         "TxHash": "",
     }
+
+
+class TestPaymentProceeds:
+    """Phase E Task 3 characterization: the surviving resolver-only path.
+
+    After Task 3 lands, ``correct_payment_proceeds`` identifies payment
+    disposals purely from the ``PAYMENT``-treatment TH rows supplied by the
+    caller (the caller pre-filters via ``resolve_treatment == Treatment.PAYMENT``).
+    The module-level ``_DEFAULT_PAYMENT_TAGS`` constant, the
+    ``build_payment_tag_index`` helper, and the count-equality gate are gone;
+    the ``via_resolver`` parameter is gone too. This class pins the surviving
+    path so a regression that re-introduces tag-set filtering or the count
+    gate fails visibly.
+    """
+
+    @pytest.mark.parametrize("tag", ["Payment", "Custom Payment Tag"])
+    def test_correct_payment_proceeds_identifies_via_resolver_only(self, tag: str):
+        """Given a PAYMENT-treatment TH row + a zero-proceeds CG entry on the
+        same key, the entry's proceeds is corrected to the TH Net Value
+        WITHOUT consulting ``_DEFAULT_PAYMENT_TAGS`` or the count-equality
+        gate.
+
+        Parametrized over two tag values: ``"Payment"`` (a member of the
+        legacy default tag set) and ``"Custom Payment Tag"`` (not in the
+        legacy set). The resolver path consumes every TH row the caller
+        supplies regardless of tag literal, so both cases must correct. The
+        ``"Custom Payment Tag"`` case is the discriminator: under a
+        regression that re-introduced tag-set filtering inside
+        ``correct_payment_proceeds``, the custom tag would not match the
+        legacy set and the correction would fail to fire; ``"Payment"``
+        alone would not catch that regression.
+        """
+        entry = _make_cg_entry(
+            asset="ABC",
+            amount=Decimal("50"),
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("0"),
+            gain_loss_eur=Decimal("-100.00"),
+        )
+        th_rows = [
+            _make_th_payment_row(
+                sent_currency="ABC",
+                sent_amount="50",
+                net_value_eur="120,00",
+                tag=tag,
+            )
+        ]
+        review_entries: list[CryptoReviewEntry] = []
+
+        result = correct_payment_proceeds(
+            [entry],
+            th_rows,
+            config=_CONFIG,
+            peg_to_eur_rates=_PEG_TO_EUR_RATES,
+            loan_affected_assets=frozenset(),
+            review_entries=review_entries,
+        )
+
+        assert len(result) == 1
+        corrected = result[0]
+        assert corrected.proceeds_eur == Decimal("120.00")
+        assert corrected.gain_loss_eur == Decimal("20.00")
+        assert corrected.review_required is True
+        assert len(review_entries) == 1
+        assert review_entries[0].asset == "ABC"
 
 
 class TestCorrectPaymentProceedsTiers:
@@ -352,105 +415,10 @@ class TestCorrectPaymentProceedsGuardsAndFallbacks:
     fallback branches of ``correct_payment_proceeds``.
 
     These tests bind (a) the proceeds==0 evidence gate and DP-013 reason
-    retention, (b) tag-set normalization (Card Payment), (c) the tier-2
-    non-EUR-stablecoin year-end-rate conversion and its precedence / no-rate /
-    malformed-rate fall-throughs, and (d) the tier-3 non-stablecoin generic
-    review reason.
+    retention, (b) the tier-2 non-EUR-stablecoin year-end-rate conversion and
+    its precedence / no-rate / malformed-rate fall-throughs, and (c) the
+    tier-3 non-stablecoin generic review reason.
     """
-
-    def test_non_payment_tag_not_corrected_retains_dp013_reason(self):
-        """A TH row tagged ``Reward`` (and an empty-tag variant) must NOT be
-        treated as a payment disposal: the CG entry keeps proceeds=0, gain=-cost,
-        its existing DP-013 ``review_required``/``review_reason`` survive
-        verbatim (not clobbered), and no correction ``CryptoReviewEntry`` is
-        appended. Binds that the TH tag index is built from payment-tagged rows
-        ONLY (Invariant 1) - a non-payment tag never collides into a payment slot.
-        """
-        entry = _make_cg_entry(
-            asset="ABC",
-            amount=Decimal("50"),
-            cost_eur=Decimal("100"),
-            proceeds_eur=Decimal("0"),
-            gain_loss_eur=Decimal("-100.00"),
-            review_required=True,
-            review_reason=_DP013_REASON,
-        )
-        th_rows = [
-            _make_th_payment_row(
-                sent_currency="ABC",
-                sent_amount="50",
-                net_value_eur="120,00",
-                tag="Reward",
-            ),
-            _make_th_payment_row(
-                sent_currency="ABC",
-                sent_amount="50",
-                net_value_eur="120,00",
-                tag="",
-            ),
-        ]
-        review_entries: list[CryptoReviewEntry] = []
-
-        result = correct_payment_proceeds(
-            [entry],
-            th_rows,
-            config=_CONFIG,
-            peg_to_eur_rates=_PEG_TO_EUR_RATES,
-            loan_affected_assets=frozenset(),
-            review_entries=review_entries,
-        )
-
-        assert len(result) == 1
-        unchanged = result[0]
-        # Entry unchanged: proceeds still 0, gain still the phantom -cost.
-        assert unchanged.proceeds_eur == Decimal("0")
-        assert unchanged.gain_loss_eur == Decimal("-100.00")
-        # DP-013 flag + reason survive verbatim (not clobbered to a payment
-        # correction reason, not dropped).
-        assert unchanged.review_required is True
-        assert unchanged.review_reason == _DP013_REASON
-        assert "Zero disposal proceeds" in (unchanged.review_reason or "")
-        # No correction review entry: the row was never a payment disposal.
-        assert review_entries == []
-
-    def test_card_payment_tag_also_matched(self):
-        """A TH row tagged ``Card Payment`` (mixed case ``Card payment``) IS a
-        payment disposal (the configured tag set includes both). Binds tag-set
-        normalization (case-insensitive) and that ``Card Payment`` is not
-        silently dropped - future-proofing, no such rows exist in current data.
-        """
-        entry = _make_cg_entry(
-            asset="ABC",
-            amount=Decimal("50"),
-            cost_eur=Decimal("100"),
-            proceeds_eur=Decimal("0"),
-            gain_loss_eur=Decimal("-100.00"),
-        )
-        th_rows = [
-            _make_th_payment_row(
-                sent_currency="ABC",
-                sent_amount="50",
-                net_value_eur="50,00",
-                tag="Card payment",
-            )
-        ]
-        review_entries: list[CryptoReviewEntry] = []
-
-        result = correct_payment_proceeds(
-            [entry],
-            th_rows,
-            config=_CONFIG,
-            peg_to_eur_rates=_PEG_TO_EUR_RATES,
-            loan_affected_assets=frozenset(),
-            review_entries=review_entries,
-        )
-
-        assert len(result) == 1
-        corrected = result[0]
-        assert corrected.proceeds_eur == Decimal("50.00")
-        assert corrected.gain_loss_eur == Decimal("-50.00")
-        assert corrected.review_required is True
-        assert len(review_entries) == 1
 
     def test_non_eur_stablecoin_unpriced_converted_via_year_end_rate(self):
         """An unpriced (``Net Value (EUR)`` = "0,0") Payment of a USD-pegged
@@ -562,7 +530,6 @@ class TestCorrectPaymentProceedsGuardsAndFallbacks:
         # Per-test config: GBPX is a known stablecoin pegged to GBP. The shared
         # _PEG_TO_EUR_RATES has no "GBP" entry (USD only).
         config_no_gbp_rate = PaymentProceedsConfig(
-            payment_tags=["payment", "card payment"],
             stablecoins=frozenset({"GBPX"}),
             stablecoin_pegs={"GBPX": "GBP"},
         )
@@ -628,7 +595,6 @@ class TestCorrectPaymentProceedsGuardsAndFallbacks:
         """
         # Drift config: GBPX is a stablecoin but has NO peg entry.
         config_drift = PaymentProceedsConfig(
-            payment_tags=["payment", "card payment"],
             stablecoins=frozenset({"GBPX"}),
             stablecoin_pegs={},
         )
@@ -705,7 +671,6 @@ class TestCorrectPaymentProceedsGuardsAndFallbacks:
             ``is_finite()`` would admit inf and ship ``amount * inf``.
         """
         config_usdx = PaymentProceedsConfig(
-            payment_tags=["payment", "card payment"],
             stablecoins=frozenset({"USDX"}),
             stablecoin_pegs={"USDX": "USD"},
         )
@@ -766,7 +731,6 @@ class TestCorrectPaymentProceedsGuardsAndFallbacks:
         """
         # VOLX is NOT in stablecoins.
         config_no_volx = PaymentProceedsConfig(
-            payment_tags=["payment", "card payment"],
             stablecoins=frozenset(),
             stablecoin_pegs={},
         )
@@ -891,158 +855,42 @@ class TestCorrectPaymentProceedsGuardsAndFallbacks:
 
 
 # ---------------------------------------------------------------------------
-# Task 3: collision-safety, count-equality, malformed Net Value, injection
-# sanitization, tz-robust matching, reused-config loader robustness, EURC/EUROC
-# alias, and direct coverage of the extracted index/derive helpers.
+# Task 3: collision-safety, malformed Net Value, injection sanitization,
+# tz-robust matching, reused-config loader robustness, EURC/EUROC alias, and
+# direct coverage of the extracted index/derive helpers.
 # ---------------------------------------------------------------------------
-
-# Default PaymentProceedsConfig used by the loader tests: the SAME defaults the
-# loader returns on any degrade path. Kept inline so a future change to the
-# module-level default does not silently relax the "missing file -> defaults"
-# assertions.
-_DEFAULT_PAYMENT_TAGS = ["payment", "card payment"]
 
 
 def _config(tickers: frozenset[str] = frozenset(), pegs: dict[str, str] | None = None) -> PaymentProceedsConfig:
     """Build a synthetic PaymentProceedsConfig for the Task-3 cases.
 
-    Keeps the same payment-tag set as ``_CONFIG`` but lets each test vary the
-    stablecoin membership / peg map without touching the shared module-level
-    fixture.
+    Lets each test vary the stablecoin membership / peg map without touching
+    the shared module-level fixture.
     """
     return PaymentProceedsConfig(
-        payment_tags=list(_DEFAULT_PAYMENT_TAGS),
         stablecoins=tickers,
         stablecoin_pegs=pegs or {},
     )
 
 
 class TestCorrectPaymentProceedsCollisionSafety:
-    """The count-equality rule, the one-review-per-key guard, the loan-affected
-    candidate-population invariant, malformed/non-finite Net Value, and
-    formula-injection sanitization for ``correct_payment_proceeds``.
+    """The one-review-per-key guard, the loan-affected candidate-population
+    invariant, malformed/non-finite Net Value, and formula-injection
+    sanitization for ``correct_payment_proceeds``.
     """
 
-    def test_collision_blocks_correction_and_appends_review(self, caplog: pytest.LogCaptureFixture):
-        """TWO payment-tagged TH rows sharing the same (day, asset, platform,
-        amount) key but only ONE matching zero-proceeds CG row (counts 1 != 2):
-        the CG row is left UNCHANGED (DP-013 proceeds==0 flag intact) and
-        exactly ONE CryptoReviewEntry is appended for the KEY naming the count
-        mismatch, with a WARNING. Binds the count-equality rule (mismatch in
-        EITHER direction blocks) and the one-review-per-key guard (r6 L3).
-        """
-        entry = _make_cg_entry(
-            asset="ABC",
-            amount=Decimal("50"),
-            cost_eur=Decimal("100"),
-            proceeds_eur=Decimal("0"),
-            gain_loss_eur=Decimal("-100.00"),
-            review_required=True,
-            review_reason=_DP013_REASON,
-        )
-        th_rows = [
-            _make_th_payment_row(sent_currency="ABC", sent_amount="50", net_value_eur="120,00"),
-            _make_th_payment_row(sent_currency="ABC", sent_amount="50", net_value_eur="80,00"),
-        ]
-        review_entries: list[CryptoReviewEntry] = []
-
-        with caplog.at_level(logging.WARNING):
-            result = correct_payment_proceeds(
-                [entry],
-                th_rows,
-                config=_config(),
-                peg_to_eur_rates=_PEG_TO_EUR_RATES,
-                loan_affected_assets=frozenset(),
-                review_entries=review_entries,
-            )
-
-        # No correction: the single CG row keeps its DP-013 flag.
-        assert len(result) == 1
-        unchanged = result[0]
-        assert unchanged.proceeds_eur == Decimal("0")
-        assert unchanged.gain_loss_eur == Decimal("-100.00")
-        assert unchanged.review_required is True
-        assert unchanged.review_reason == _DP013_REASON
-        # Exactly ONE review entry for the KEY (not two - one per TH row).
-        assert len(review_entries) == 1
-        review_reason = review_entries[0].review_reason
-        # Specific count fragment (not bare digits) so a reorder/drop of the
-        # count words fails; a bare "1"/"2" would match any figure in the reason.
-        assert "1 CG rows vs 2 Payment events" in review_reason
-        reason_lower = review_reason.lower()
-        assert "ambiguous" in reason_lower
-        assert "ABC" in review_reason
-        # A WARNING was logged.
-        assert any(rec.levelno >= logging.WARNING for rec in caplog.records)
-
-    def test_surplus_cg_not_corrected(self, caplog: pytest.LogCaptureFixture):
-        """The SYMMETRIC mismatch: TWO zero-proceeds CG rows + ONE payment-tagged
-        TH row on the same key (counts 2 != 1). BOTH CG rows are left unchanged
-        AND exactly ONE CryptoReviewEntry is appended for the KEY (NOT one per
-        CG row). Symmetric to the 1 CG + 2 TH case so a one-directional guard
-        fails.
-        """
-        entries = [
-            _make_cg_entry(
-                asset="ABC",
-                amount=Decimal("50"),
-                cost_eur=Decimal("100"),
-                proceeds_eur=Decimal("0"),
-                gain_loss_eur=Decimal("-100.00"),
-                review_required=True,
-                review_reason=_DP013_REASON,
-            ),
-            _make_cg_entry(
-                asset="ABC",
-                amount=Decimal("50"),
-                cost_eur=Decimal("100"),
-                proceeds_eur=Decimal("0"),
-                gain_loss_eur=Decimal("-100.00"),
-                review_required=True,
-                review_reason=_DP013_REASON,
-            ),
-        ]
-        th_rows = [
-            _make_th_payment_row(sent_currency="ABC", sent_amount="50", net_value_eur="120,00"),
-        ]
-        review_entries: list[CryptoReviewEntry] = []
-
-        with caplog.at_level(logging.WARNING):
-            result = correct_payment_proceeds(
-                entries,
-                th_rows,
-                config=_config(),
-                peg_to_eur_rates=_PEG_TO_EUR_RATES,
-                loan_affected_assets=frozenset(),
-                review_entries=review_entries,
-            )
-
-        # BOTH CG rows unchanged.
-        assert len(result) == 2
-        for unchanged in result:
-            assert unchanged.proceeds_eur == Decimal("0")
-            assert unchanged.gain_loss_eur == Decimal("-100.00")
-            assert unchanged.review_required is True
-            assert unchanged.review_reason == _DP013_REASON
-        # Exactly ONE review entry for the KEY (not one per CG row).
-        assert len(review_entries) == 1
-        review_reason = review_entries[0].review_reason
-        assert "2 CG rows vs 1 Payment events" in review_reason
-        assert "ABC" in review_reason
-        assert any(rec.levelno >= logging.WARNING for rec in caplog.records)
-
     def test_second_cg_row_consumes_leftover_in_order(self):
-        """TWO zero-proceeds CG rows + TWO payment-tagged TH rows on the same key
-        (counts 2 == 2), BOTH TH rows priced (Net Value "120,00" and "80,00").
-        BOTH CG rows are corrected (deque order, one pop each) AND exactly TWO
+        """TWO zero-proceeds CG rows + TWO TH rows on the same key, BOTH TH
+        rows priced (Net Value "120,00" and "80,00"). BOTH CG rows are
+        corrected (deque order, one pop each) AND exactly TWO
         CryptoReviewEntry audit rows are appended (one per-lot success audit).
 
-        This case is IMPOSSIBLE under a ">1 remaining" guard, so it binds the
-        count-equality rule specifically. It also binds (r12 Monitor) that the
-        success-path per-lot audit is per-ROW and deliberately NOT guarded by
-        ``reviewed_keys`` (a future 'normalize all three append sites under one
-        per-key guard' refactor would drop one audit here and fail
-        ``len == 2``).
+        Binds (r12 Monitor) that the success-path per-lot audit is per-ROW
+        and deliberately NOT guarded by ``reviewed_keys`` (a future 'normalize
+        all three append sites under one per-key guard' refactor would drop
+        one audit here and fail ``len == 2``). Under the resolver-only path,
+        the per-bucket ``popleft`` enforces one-TH-per-CG-lot consumption
+        discipline.
         """
         entries = [
             _make_cg_entry(
@@ -1092,13 +940,69 @@ class TestCorrectPaymentProceedsCollisionSafety:
         # row), NOT one per key.
         assert len(review_entries) == 2
 
+    def test_n_greater_than_m_surplus_lot_falls_through_unchanged(self):
+        """N>M: TWO zero-proceeds CG rows + ONE TH row on the same key. The
+        first CG candidate consumes the single TH row (proceeds corrected to
+        120.00); the second CG candidate sees an empty deque and falls through
+        UNCHANGED (proceeds stays 0, NO review entry appended).
+
+        Pins the post-Phase-E N>M cardinality contract: the per-bucket
+        ``popleft`` enforces one-TH-per-CG-lot consumption, and a CG key with
+        more lots than TH rows sees the surplus lots fall through silently
+        (DP-013's per-lot audit fires only on the corrected lot; the surplus
+        is observable as ``proceeds_eur == 0`` with no DP-013 reason). A future
+        maintainer who re-adds a per-key WARNING or appends a review entry for
+        the surplus path would fail the ``len(review_entries) == 1`` assertion.
+        """
+        entries = [
+            _make_cg_entry(
+                asset="ABC",
+                amount=Decimal("50"),
+                cost_eur=Decimal("100"),
+                proceeds_eur=Decimal("0"),
+                gain_loss_eur=Decimal("-100.00"),
+            ),
+            _make_cg_entry(
+                asset="ABC",
+                amount=Decimal("50"),
+                cost_eur=Decimal("100"),
+                proceeds_eur=Decimal("0"),
+                gain_loss_eur=Decimal("-100.00"),
+            ),
+        ]
+        th_rows = [
+            _make_th_payment_row(sent_currency="ABC", sent_amount="50", net_value_eur="120,00"),
+        ]
+        review_entries: list[CryptoReviewEntry] = []
+
+        result = correct_payment_proceeds(
+            entries,
+            th_rows,
+            config=_config(),
+            peg_to_eur_rates=_PEG_TO_EUR_RATES,
+            loan_affected_assets=frozenset(),
+            review_entries=review_entries,
+        )
+
+        assert len(result) == 2
+        # First candidate consumed the single TH row.
+        assert result[0].proceeds_eur == Decimal("120.00")
+        assert result[0].gain_loss_eur == Decimal("20.00")
+        assert result[0].review_required is True
+        # Surplus lot: deque drained on the second pop; fell through unchanged.
+        assert result[1].proceeds_eur == Decimal("0")
+        assert result[1].gain_loss_eur == Decimal("-100.00")
+        assert result[1].review_required is False
+        # Only the corrected lot's per-lot audit; no DP-013 review for surplus.
+        assert len(review_entries) == 1
+
     def test_no_rate_review_emits_one_per_key_for_equal_counts(self):
-        """TWO zero-proceeds CG rows + TWO payment-tagged TH rows on the same key
-        where the asset is a NON-stablecoin ("VOLX") and BOTH matched TH rows
-        have Net Value "0,0" (counts 2 == 2, both candidates resolve to
-        ``proceeds is None`` via the ``not_stablecoin`` outcome). Expects
-        exactly ONE CryptoReviewEntry appended for the KEY (NOT two) AND both
-        CG rows left unchanged with their DP-013 reasons intact.
+        """TWO zero-proceeds CG rows + TWO TH rows on the same key where the
+        asset is a NON-stablecoin ("VOLX") and BOTH matched TH rows have Net
+        Value "0,0" (both candidates resolve to ``proceeds is None`` via the
+        ``not_stablecoin`` outcome). Expects exactly ONE CryptoReviewEntry
+        appended for the KEY (NOT two) AND both CG rows left unchanged with
+        their DP-013 reasons intact.
 
         Binds the SYMMETRIC ``reviewed_keys`` guard on the ``proceeds is None``
         branch (r11 quality Medium): the ``not_stablecoin`` reason names only
@@ -1154,12 +1058,12 @@ class TestCorrectPaymentProceedsCollisionSafety:
 
     def test_loan_affected_sibling_does_not_inflate_count(self):
         """ONE non-loan zero-proceeds Payment CG + ONE loan-affected
-        zero-proceeds CG (asset in ``loan_affected_assets``) + ONE payment-tagged
-        TH row, all sharing the key. The NON-LOAN entry IS corrected (candidate
-        count is 1 == 1 TH) and the loan-affected entry is SKIPPED with NO
-        review entry. Binds that ``cg_count`` is computed over the candidate
-        population (proceeds==0 AND non-loan), so a loan-affected zero-proceeds
-        sibling does not falsely trip the count-mismatch branch (Medium 4 / r6).
+        zero-proceeds CG (asset in ``loan_affected_assets``) + ONE TH row, all
+        sharing the key. The NON-LOAN entry IS corrected and the loan-affected
+        entry is SKIPPED with NO review entry. Binds that the candidate
+        population is computed over (proceeds==0 AND non-loan), so a
+        loan-affected zero-proceeds sibling does not consume a TH row intended
+        for the non-loan candidate (Medium 4 / r6).
         """
         loan_asset = "LOANX"
         entries = [
@@ -1423,36 +1327,15 @@ class TestCorrectPaymentProceedsCollisionSafety:
             assert rr[:1] not in {"=", "+", "-", "@"}
 
 
-class TestBuildPaymentTagIndex:
-    """Direct coverage of ``build_payment_tag_index`` (extracted helper):
-    tag-set normalization (case-insensitive) and the
+class TestBuildThIndex:
+    """Direct coverage of ``_build_th_index`` (extracted helper): the
     same-calendar-day correlation key (tz-robust to sub-day offsets).
+
+    Under the Phase E resolver-only path, the caller pre-filters TH rows to
+    PAYMENT-treatment rows; ``_build_th_index`` indexes EVERY supplied row
+    (no tag filtering). Tag-set normalization is no longer this module's
+    responsibility; it lives in the Phase B ``resolve_treatment`` classifier.
     """
-
-    def test_payment_tag_case_insensitive(self):
-        """TH Tag values ``Payment``, ``PAYMENT``, and ``Card Payment`` are ALL
-        indexed as payment (case-insensitive match against the configured
-        ``payment_tags`` set ``["payment", "card payment"]``). A ``Reward`` row
-        is NOT indexed (non-payment tag).
-        """
-        rows = [
-            _make_th_payment_row(sent_currency="ABC", sent_amount="1", net_value_eur="1,00", tag="Payment"),
-            _make_th_payment_row(sent_currency="ABC", sent_amount="1", net_value_eur="1,00", tag="PAYMENT"),
-            _make_th_payment_row(sent_currency="ABC", sent_amount="1", net_value_eur="1,00", tag="Card Payment"),
-            _make_th_payment_row(sent_currency="XYZ", sent_amount="2", net_value_eur="2,00", tag="Reward"),
-        ]
-        index = build_payment_tag_index(rows, _DEFAULT_PAYMENT_TAGS)
-
-        # The three payment-tagged rows are indexed; the Reward row is NOT.
-        # The index maps a key tuple to a deque of TH row indices. Aggregate all
-        # indexed TH indices.
-        indexed_indices: set[int] = set()
-        for bucket in index.values():
-            indexed_indices.update(bucket)
-        # The Reward row (index 3) must not appear.
-        assert 3 not in indexed_indices
-        # The three payment rows (indices 0, 1, 2) are all indexed.
-        assert {0, 1, 2}.issubset(indexed_indices)
 
     def test_correlation_matches_across_sub_day_tz_offset(self):
         """A CG disposal date and a TH disposal on the SAME calendar day but at
@@ -1464,6 +1347,8 @@ class TestBuildPaymentTagIndex:
         # entry's disposal_date day). Here we verify the TH index is keyed by
         # the calendar day alone: two TH rows at different hours on the same
         # day collapse onto the SAME key.
+        from tax_reporting.application.crypto.payment_proceeds import _build_th_index
+
         same_day_a = _make_th_payment_row(
             sent_currency="ABC",
             sent_amount="50",
@@ -1478,7 +1363,7 @@ class TestBuildPaymentTagIndex:
             date="2025-06-15 22:00:00 UTC",
             tag="Payment",
         )
-        index = build_payment_tag_index([same_day_a, same_day_b], _DEFAULT_PAYMENT_TAGS)
+        index = _build_th_index([same_day_a, same_day_b])
 
         # Exactly ONE key (day, asset, platform, amount) holds BOTH TH rows.
         assert len(index) == 1
@@ -1524,16 +1409,16 @@ class TestLoadPaymentProceedsConfigFromPath:
     def test_reads_reused_popular_crypto_tokens_json(self, tmp_path: Path):
         """A ``popular_crypto_tokens.json`` mirroring the real shape (``meta``,
         ``tokens.stablecoins`` including BOTH ``EUROC`` and ``EURC``, sibling
-        ``stablecoin_pegs`` and ``payment_tags``) yields a PaymentProceedsConfig
-        whose ``stablecoins`` contains EUROC + EURC, ``stablecoin_pegs["EUROC"]
-        == "EUR"``, and ``payment_tags == ["payment", "card payment"]``.
+        ``stablecoin_pegs``) yields a PaymentProceedsConfig whose
+        ``stablecoins`` contains EUROC + EURC and ``stablecoin_pegs["EUROC"]
+        == "EUR"``.
 
         Binds the EURC/EUROC token-rename alias (the same Circle stablecoin
         imported under its 2022 legacy ticker EUROC and its renamed EURC).
         """
         payload = {
             "meta": {
-                "description": "Popular crypto tokens + stablecoin pegs + payment tags.",
+                "description": "Popular crypto tokens + stablecoin pegs.",
                 "last_updated": "2026-06-19",
             },
             "tokens": {
@@ -1543,7 +1428,6 @@ class TestLoadPaymentProceedsConfigFromPath:
                 "USDT": "USD", "USDC": "USD", "DAI": "USD",
                 "EURC": "EUR", "EUROC": "EUR", "EURT": "EUR",
             },
-            "payment_tags": ["payment", "card payment"],
         }
         path = self._write_tokens(tmp_path, payload)
 
@@ -1553,21 +1437,19 @@ class TestLoadPaymentProceedsConfigFromPath:
         assert "EUROC" in config.stablecoins
         assert config.stablecoin_pegs["EUROC"] == "EUR"
         assert config.stablecoin_pegs["EURC"] == "EUR"
-        assert config.payment_tags == ["payment", "card payment"]
 
     def test_missing_file_returns_defaults(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ):
         """The JSON absent at the passed path -> the loader returns the defaults
-        ``PaymentProceedsConfig(["payment", "card payment"], frozenset(), {})``
-        and logs a WARNING. No proceeds inference occurs (empty stablecoin set).
+        ``PaymentProceedsConfig(frozenset(), {})`` and logs a WARNING. No
+        proceeds inference occurs (empty stablecoin set).
         """
         missing = tmp_path / "does_not_exist.json"
 
         with caplog.at_level(logging.WARNING):
             config = _load_payment_proceeds_config_from_path(missing)
 
-        assert config.payment_tags == ["payment", "card payment"]
         assert config.stablecoins == frozenset()
         assert config.stablecoin_pegs == {}
         assert any(rec.levelno >= logging.WARNING for rec in caplog.records)
@@ -1616,7 +1498,6 @@ class TestLoadPaymentProceedsConfigFromPath:
             config = _load_payment_proceeds_config_from_path(path)
 
         # (a) returns the defaults; (b) no exception raised.
-        assert config.payment_tags == ["payment", "card payment"]
         assert config.stablecoins == frozenset()
         assert config.stablecoin_pegs == {}
         # (c) a WARNING names the specific failure.
@@ -1642,15 +1523,13 @@ class TestLoadPaymentProceedsConfigFromPath:
             "tokens": {"stablecoins": ["USDT", "USDC", "DAI"]},
             # EURC has a peg but is NOT in tokens.stablecoins (drift).
             "stablecoin_pegs": {"USDT": "USD", "USDC": "USD", "DAI": "USD", "EURC": "EUR"},
-            "payment_tags": ["payment", "card payment"],
         }
         path = self._write_tokens(tmp_path, payload)
 
         with caplog.at_level(logging.WARNING):
-            config = _load_payment_proceeds_config_from_path(path)
+            _load_payment_proceeds_config_from_path(path)
 
         # Loader still returns (never raises).
-        assert config.payment_tags == ["payment", "card payment"]
         # A WARNING names the drift.
         messages = [rec.message for rec in caplog.records]
         assert any("drift" in m.lower() or "stablecoin_pegs" in m for m in messages), messages

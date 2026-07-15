@@ -25,6 +25,15 @@ from tax_reporting.application.persisting import generate_tax_report
 from tax_reporting.application.persisting.tax_constants import get_income_code_description
 from tax_reporting.application.transformation import calculate_fifo_gains
 from tax_reporting.domain.collections import TradeCyclePerCompany
+from tests.conftest import build_koinly_jurisdiction
+
+# Phase E Task 5: ``TokenOriginResolver`` requires ``transactions`` and ``config``.
+# ``load_koinly_crypto_report`` populates both only when ``jurisdiction`` is
+# provided (any_resolver_on gate). Pass a default PT jurisdiction so the
+# production resolver path is exercised; ``exclude_loan_repayment_gains=False``
+# avoids the loan-asset FIFO rebuild which would change capital-entry counts
+# pinned by these smoke tests.
+_EXAMPLE_JURISDICTION = build_koinly_jurisdiction(exclude_loan_repayment_gains=False)
 
 EXAMPLE_DIR = Path("resources", "source", "example")
 EXAMPLE_IB_EXPORT = EXAMPLE_DIR / "ib_export.csv"
@@ -117,7 +126,7 @@ def test_example_shares_capital_gains():
 
 @pytest.mark.e2e
 def test_example_crypto_report_loads():
-    crypto = load_koinly_crypto_report(EXAMPLE_KOINLY_DIR)
+    crypto = load_koinly_crypto_report(EXAMPLE_KOINLY_DIR, jurisdiction=_EXAMPLE_JURISDICTION)
     assert crypto is not None
     assert len(crypto.capital_entries) >= 2
     assert len(crypto.reward_entries) >= 2
@@ -125,7 +134,7 @@ def test_example_crypto_report_loads():
 
 @pytest.mark.e2e
 def test_example_crypto_token_origin_is_resolved():
-    crypto = load_koinly_crypto_report(EXAMPLE_KOINLY_DIR)
+    crypto = load_koinly_crypto_report(EXAMPLE_KOINLY_DIR, jurisdiction=_EXAMPLE_JURISDICTION)
     assert crypto is not None
     non_blank = [e for e in crypto.capital_entries if e.token_swap_history]
     assert len(non_blank) >= 1, (
@@ -147,7 +156,7 @@ def test_example_full_pipeline_generates_excel(tmp_path: Path):
     leftover_trades: TradeCyclePerCompany = {}
     capital_gains = {}
     calculate_fifo_gains(ib_data.trade_cycles, leftover_trades, capital_gains)
-    crypto = load_koinly_crypto_report(EXAMPLE_KOINLY_DIR)
+    crypto = load_koinly_crypto_report(EXAMPLE_KOINLY_DIR, jurisdiction=_EXAMPLE_JURISDICTION)
     output_path = tmp_path / "extract.xlsx"
     crypto_sheet_created = generate_tax_report(
         output_path,
@@ -184,7 +193,7 @@ def test_example_crypto_sheet_has_resolved_token_origin(tmp_path: Path):
     leftover_trades: TradeCyclePerCompany = {}
     capital_gains = {}
     calculate_fifo_gains(ib_data.trade_cycles, leftover_trades, capital_gains)
-    crypto = load_koinly_crypto_report(EXAMPLE_KOINLY_DIR)
+    crypto = load_koinly_crypto_report(EXAMPLE_KOINLY_DIR, jurisdiction=_EXAMPLE_JURISDICTION)
     output_path = tmp_path / "extract.xlsx"
     generate_tax_report(output_path, capital_gains, ib_data.dividend_income, crypto_tax_report=crypto)
     wb = openpyxl.load_workbook(output_path)
@@ -318,7 +327,7 @@ def test_example_crypto_source_has_high_volume_rows():
 
 @pytest.mark.e2e
 def test_example_crypto_capital_gains_aggregate_to_few_lines():
-    crypto = load_koinly_crypto_report(EXAMPLE_KOINLY_DIR)
+    crypto = load_koinly_crypto_report(EXAMPLE_KOINLY_DIR, jurisdiction=_EXAMPLE_JURISDICTION)
     assert crypto is not None
     assert len(crypto.capital_entries) <= 5, (
         f"Aggregated capital entries should be at most 5, got {len(crypto.capital_entries)}"
@@ -338,7 +347,7 @@ def test_example_crypto_capital_gains_aggregate_to_few_lines():
 
 @pytest.mark.e2e
 def test_example_crypto_rewards_are_many_but_classified():
-    crypto = load_koinly_crypto_report(EXAMPLE_KOINLY_DIR)
+    crypto = load_koinly_crypto_report(EXAMPLE_KOINLY_DIR, jurisdiction=_EXAMPLE_JURISDICTION)
     assert crypto is not None
     assert len(crypto.reward_entries) == 160, (
         f"Raw reward entries should be exactly 160, got {len(crypto.reward_entries)}"
@@ -369,7 +378,7 @@ def test_example_taxable_now_rewards_are_reported_on_reporting_sheet(tmp_path: P
     leftover_trades: TradeCyclePerCompany = {}
     capital_gains = {}
     calculate_fifo_gains(ib_data.trade_cycles, leftover_trades, capital_gains)
-    crypto = load_koinly_crypto_report(EXAMPLE_KOINLY_DIR)
+    crypto = load_koinly_crypto_report(EXAMPLE_KOINLY_DIR, jurisdiction=_EXAMPLE_JURISDICTION)
     output_path = tmp_path / "extract.xlsx"
     generate_tax_report(output_path, capital_gains, ib_data.dividend_income, crypto_tax_report=crypto)
 
@@ -423,7 +432,7 @@ def test_example_high_volume_crypto_sheet_is_compact(tmp_path: Path):
     leftover_trades: TradeCyclePerCompany = {}
     capital_gains = {}
     calculate_fifo_gains(ib_data.trade_cycles, leftover_trades, capital_gains)
-    crypto = load_koinly_crypto_report(EXAMPLE_KOINLY_DIR)
+    crypto = load_koinly_crypto_report(EXAMPLE_KOINLY_DIR, jurisdiction=_EXAMPLE_JURISDICTION)
     output_path = tmp_path / "extract.xlsx"
     generate_tax_report(output_path, capital_gains, ib_data.dividend_income, crypto_tax_report=crypto)
     wb = openpyxl.load_workbook(output_path)

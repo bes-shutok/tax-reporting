@@ -222,3 +222,35 @@ def build_koinly_jurisdiction(**overrides: object):
     }
     defaults.update(overrides)
     return TaxJurisdictionConfig(**defaults)  # type: ignore[arg-type]
+
+
+def build_origin_resolver(path: Path | None):
+    """Build a ``TokenOriginResolver`` mirroring the production wiring.
+
+    Phase E Task 6 made ``transactions`` and ``config`` required on
+    ``TokenOriginResolver``. Tests that construct the resolver directly from a
+    TH path (or ``None``) must now supply a ``transactions`` list built via
+    the same construction path as ``load_koinly_crypto_report``. That path is
+    centralized in ``crypto_reporting.build_transactions_from_th`` (Family D
+    single source of truth); this helper delegates to it. Malformed rows are
+    skipped silently (test path passes ``skip_logger=None``). For ``None`` or
+    non-existent paths, an empty ``transactions`` list and default
+    ``TreatmentConfig()`` are returned so the resolver's graceful-degradation
+    path is exercised.
+    """
+    from tax_reporting.application.crypto.treatment_resolver import TreatmentConfig
+    from tax_reporting.application.crypto_reporting import build_transactions_from_th
+    from tax_reporting.application.token_origin import TokenOriginResolver
+    from tax_reporting.domain.exceptions import FileProcessingError
+
+    if path is None or not path.exists():
+        return TokenOriginResolver(path, transactions=[], config=TreatmentConfig())
+    try:
+        transactions = build_transactions_from_th(path, skip_logger=None)
+    except (FileProcessingError, OSError, ValueError):
+        # All three failure modes are reachable and must degrade gracefully:
+        # FileProcessingError/OSError cover missing-path and IO cases;
+        # ValueError covers ``_detect_header_index`` raising on a malformed
+        # CSV header (pinned by ``test_malformed_transaction_history_returns_empty_lookup``).
+        return TokenOriginResolver(path, transactions=[], config=TreatmentConfig())
+    return TokenOriginResolver(path, transactions=transactions, config=TreatmentConfig())

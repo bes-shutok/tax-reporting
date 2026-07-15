@@ -7,9 +7,7 @@ events that should be removed from the capital-gains report.
 
 from __future__ import annotations
 
-import csv
 import dataclasses
-import io
 import json
 import logging
 import time
@@ -20,7 +18,9 @@ import pytest
 
 from tax_reporting.application.crypto.entities import CryptoCapitalGainEntry
 from tax_reporting.application.crypto.operator_origin import OperatorOrigin
+from tax_reporting.application.crypto_reporting import build_transactions_from_th
 from tax_reporting.domain.exceptions import FileProcessingError
+from tests.conftest import build_origin_resolver
 
 
 class TestDerivativesLabelsConfig:
@@ -30,7 +30,7 @@ class TestDerivativesLabelsConfig:
         """Given docs/maintenance/tax/derivatives_labels/koinly_2025.json with the canonical
         label list, expects the loader to return the frozenset of those labels.
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             _load_derivatives_labels_config,
         )
 
@@ -44,12 +44,12 @@ class TestDerivativesLabelsConfig:
         observes the empty result (verified in e2e
         ``test_dedup_skipped_when_config_missing``).
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             _load_derivatives_labels_config_from_path,
         )
 
         missing = tmp_path / "absent_2099.json"
-        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto.derivatives_dedup"):
+        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto.derivatives_filter"):
             result = _load_derivatives_labels_config_from_path(missing)
 
         assert result == frozenset()
@@ -61,7 +61,7 @@ class TestDerivativesLabelsConfig:
         """Given a config file with invalid JSON, expects FileProcessingError
         with the file path and parse error message.
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             _load_derivatives_labels_config_from_path,
         )
 
@@ -78,7 +78,7 @@ class TestDerivativesLabelsConfig:
         """Given a config file with valid JSON but no derivatives_th_labels key,
         expects FileProcessingError naming the file.
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             _load_derivatives_labels_config_from_path,
         )
 
@@ -94,7 +94,7 @@ class TestDerivativesLabelsConfig:
         """Given a config file where derivatives_th_labels is not a list of
         strings, expects FileProcessingError.
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             _load_derivatives_labels_config_from_path,
         )
 
@@ -110,7 +110,7 @@ class TestDerivativesLabelsConfig:
         """Given a derivatives_th_labels value that is a nested object rather
         than a flat list, expects FileProcessingError.
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             _load_derivatives_labels_config_from_path,
         )
 
@@ -127,7 +127,7 @@ class TestDerivativesLabelsConfig:
         """Given a derivatives_th_labels value that is a list but contains
         non-string elements (numbers), expects FileProcessingError.
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             _load_derivatives_labels_config_from_path,
         )
 
@@ -144,7 +144,7 @@ class TestDerivativesLabelsConfig:
         """Given a config file that is a symlink, expects FileProcessingError
         for security reasons (mirrors classification.py:_load_popular_crypto_tokens).
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             _load_derivatives_labels_config_from_path,
         )
 
@@ -166,8 +166,8 @@ class TestDerivativesLabelsConfig:
         FileProcessingError embedding the file path (closes a copy-paste hole
         where an implementer could degrade the stat_error arm).
         """
-        from tax_reporting.application.crypto.derivatives_dedup import Path as DedupPath
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import Path as DedupPath
+        from tax_reporting.application.crypto.derivatives_filter import (
             _load_derivatives_labels_config_from_path,
         )
 
@@ -297,11 +297,10 @@ class TestDisposalTimestamp:
             encoding="utf-8",
         )
 
-        from tax_reporting.application.crypto_reporting import TokenOriginResolver
 
         context = CapitalGainsParsingContext(
             skipped_assets={},
-            origin_resolver=TokenOriginResolver(),
+            origin_resolver=build_origin_resolver(None),
             review_entries=[],
         )
         entries, _ = _parse_capital_gains_file(capital_csv, context)
@@ -637,304 +636,6 @@ class TestDisposalTimestamp:
         assert realization.disposal_timestamp is None
 
 
-def _write_th_csv(path: Path, rows: list[dict[str, str]]) -> None:
-    """Write a Koinly transaction-history-shaped CSV file to ``path``.
-
-    Mirrors the real TH export preamble (line 1 = title, line 2 = blank,
-    line 3 = header) so that ``read_koinly_rows`` detects the header via
-    ``_detect_header_index``. Each row is a dict keyed by TH column name.
-    """
-    fieldnames = [
-        "Date",
-        "Type",
-        "Tag",
-        "Sending Wallet",
-        "Sent Amount",
-        "Sent Currency",
-        "Sent Cost Basis",
-        "Receiving Wallet",
-        "Received Amount",
-        "Received Currency",
-        "Received Cost Basis",
-        "Fee Amount",
-        "Fee Currency",
-        "Gain (EUR)",
-        "Net Value (EUR)",
-        "Fee Value (EUR)",
-        "TxSrc",
-        "TxDest",
-        "TxHash",
-        "Description",
-    ]
-
-    buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
-    writer.writeheader()
-    for row in rows:
-        full_row = {key: row.get(key, "") for key in fieldnames}
-        writer.writerow(full_row)
-
-    data_rows = buffer.getvalue().splitlines()
-    lines = ["Transaction report 2025", "", *data_rows]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-class TestDerivativesThScanner:
-    """Tests for find_derivatives_th_events (Task 4).
-
-    The scanner reads a TH CSV via ``read_koinly_rows`` and returns one
-    ``DerivativesThEvent`` per ``crypto_withdrawal`` row whose Label is in
-    the provided ``labels`` set. Each event carries a minute-precision
-    timestamp so the matcher can pair it with CG lots at the same minute.
-    """
-
-    def test_finds_funding_fee_event_with_timestamp(self, tmp_path: Path):
-        from tax_reporting.application.crypto.derivatives_dedup import (
-            DerivativesThEvent,
-            find_derivatives_th_events,
-        )
-
-        th = tmp_path / "th.csv"
-        _write_th_csv(
-            th,
-            [
-                {
-                    "Date": "2025-01-24 20:00:00 UTC",
-                    "Type": "crypto_withdrawal",
-                    "Tag": "Funding fee",
-                    "Sending Wallet": "ByBit",
-                    "Sent Amount": "0,08838575",
-                    "Sent Currency": "USDT",
-                }
-            ],
-        )
-
-        events = find_derivatives_th_events(
-            th, frozenset({"Funding fee", "Futures fee", "Realized gain"})
-        )
-
-        assert len(events) == 1
-        event = events[0]
-        assert isinstance(event, DerivativesThEvent)
-        assert event.timestamp == "2025-01-24 20:00"
-        assert event.asset == "USDT"
-        assert event.wallet == "ByBit"
-        assert event.amount == Decimal("0.08838575")
-        assert event.label == "Funding fee"
-
-    def test_truncates_seconds_from_timestamp(self, tmp_path: Path):
-        from tax_reporting.application.crypto.derivatives_dedup import (
-            find_derivatives_th_events,
-        )
-
-        th = tmp_path / "th.csv"
-        _write_th_csv(
-            th,
-            [
-                {
-                    "Date": "2025-01-24 23:40:53 UTC",
-                    "Type": "crypto_withdrawal",
-                    "Tag": "Realized gain",
-                    "Sending Wallet": "ByBit",
-                    "Sent Amount": "40,75540000",
-                    "Sent Currency": "USDT",
-                }
-            ],
-        )
-
-        events = find_derivatives_th_events(
-            th, frozenset({"Realized gain"})
-        )
-
-        assert len(events) == 1
-        assert events[0].timestamp == "2025-01-24 23:40"
-
-    def test_ignores_non_withdrawal_type(self, tmp_path: Path):
-        from tax_reporting.application.crypto.derivatives_dedup import (
-            find_derivatives_th_events,
-        )
-
-        th = tmp_path / "th.csv"
-        _write_th_csv(
-            th,
-            [
-                {
-                    "Date": "2025-01-24 00:15:03 UTC",
-                    "Type": "crypto_deposit",
-                    "Tag": "Funding fee",
-                    "Receiving Wallet": "ByBit",
-                    "Received Amount": "0,25289809",
-                    "Received Currency": "USDT",
-                }
-            ],
-        )
-
-        events = find_derivatives_th_events(
-            th, frozenset({"Funding fee"})
-        )
-
-        assert events == []
-
-    def test_ignores_non_derivatives_labels(self, tmp_path: Path):
-        from tax_reporting.application.crypto.derivatives_dedup import (
-            find_derivatives_th_events,
-        )
-
-        th = tmp_path / "th.csv"
-        _write_th_csv(
-            th,
-            [
-                {
-                    "Date": "2025-01-13 03:45:30 UTC",
-                    "Type": "exchange",
-                    "Tag": "",
-                    "Sending Wallet": "ByBit",
-                    "Sent Amount": "108,33500000",
-                    "Sent Currency": "USDT",
-                    "Receiving Wallet": "ByBit",
-                    "Received Amount": "23,50000000",
-                    "Received Currency": "SUI",
-                }
-            ],
-        )
-
-        events = find_derivatives_th_events(
-            th, frozenset({"Funding fee", "Futures fee", "Realized gain"})
-        )
-
-        assert events == []
-
-    def test_ignores_reward_label(self, tmp_path: Path):
-        from tax_reporting.application.crypto.derivatives_dedup import (
-            find_derivatives_th_events,
-        )
-
-        th = tmp_path / "th.csv"
-        _write_th_csv(
-            th,
-            [
-                {
-                    "Date": "2025-01-24 00:15:03 UTC",
-                    "Type": "crypto_withdrawal",
-                    "Tag": "Reward",
-                    "Sending Wallet": "ByBit",
-                    "Sent Amount": "0,19103622",
-                    "Sent Currency": "USDT",
-                }
-            ],
-        )
-
-        events = find_derivatives_th_events(
-            th, frozenset({"Funding fee", "Futures fee", "Realized gain"})
-        )
-
-        assert events == []
-
-    def test_multiple_events_at_same_timestamp(self, tmp_path: Path):
-        from tax_reporting.application.crypto.derivatives_dedup import (
-            find_derivatives_th_events,
-        )
-
-        th = tmp_path / "th.csv"
-        _write_th_csv(
-            th,
-            [
-                {
-                    "Date": "2025-01-24 23:40:53 UTC",
-                    "Type": "crypto_withdrawal",
-                    "Tag": "Futures fee",
-                    "Sending Wallet": "ByBit",
-                    "Sent Amount": "0,41424953",
-                    "Sent Currency": "USDT",
-                },
-                {
-                    "Date": "2025-01-24 23:40:53 UTC",
-                    "Type": "crypto_withdrawal",
-                    "Tag": "Realized gain",
-                    "Sending Wallet": "ByBit",
-                    "Sent Amount": "40,75540000",
-                    "Sent Currency": "USDT",
-                },
-            ],
-        )
-
-        events = find_derivatives_th_events(
-            th, frozenset({"Futures fee", "Realized gain"})
-        )
-
-        assert len(events) == 2
-        amounts = {e.amount for e in events}
-        assert amounts == {Decimal("0.41424953"), Decimal("40.75540000")}
-        for event in events:
-            assert event.timestamp == "2025-01-24 23:40"
-
-    def test_multiple_events_at_same_timestamp_same_amount(self, tmp_path: Path):
-        from tax_reporting.application.crypto.derivatives_dedup import (
-            find_derivatives_th_events,
-        )
-
-        th = tmp_path / "th.csv"
-        _write_th_csv(
-            th,
-            [
-                {
-                    "Date": "2025-01-24 08:00:00 UTC",
-                    "Type": "crypto_withdrawal",
-                    "Tag": "Funding fee",
-                    "Sending Wallet": "ByBit",
-                    "Sent Amount": "0,50000000",
-                    "Sent Currency": "USDT",
-                    "TxHash": "hash-a",
-                },
-                {
-                    "Date": "2025-01-24 08:00:00 UTC",
-                    "Type": "crypto_withdrawal",
-                    "Tag": "Funding fee",
-                    "Sending Wallet": "ByBit",
-                    "Sent Amount": "0,50000000",
-                    "Sent Currency": "USDT",
-                    "TxHash": "hash-b",
-                },
-            ],
-        )
-
-        events = find_derivatives_th_events(
-            th, frozenset({"Funding fee"})
-        )
-
-        assert len(events) == 2
-        for event in events:
-            assert event.timestamp == "2025-01-24 08:00"
-            assert event.asset == "USDT"
-            assert event.wallet == "ByBit"
-            assert event.amount == Decimal("0.50000000")
-            assert event.label == "Funding fee"
-
-    def test_empty_label_set_returns_empty(self, tmp_path: Path):
-        from tax_reporting.application.crypto.derivatives_dedup import (
-            find_derivatives_th_events,
-        )
-
-        th = tmp_path / "th.csv"
-        _write_th_csv(
-            th,
-            [
-                {
-                    "Date": "2025-01-24 20:00:00 UTC",
-                    "Type": "crypto_withdrawal",
-                    "Tag": "Funding fee",
-                    "Sending Wallet": "ByBit",
-                    "Sent Amount": "0,08838575",
-                    "Sent Currency": "USDT",
-                }
-            ],
-        )
-
-        events = find_derivatives_th_events(th, frozenset())
-
-        assert events == []
-
-
 _TEST_OPERATOR_ORIGIN = OperatorOrigin(
     platform="ByBit",
     service_scope="crypto",
@@ -999,14 +700,14 @@ class TestRemoveDerivativesFlaggedLots:
     covering removals, surplus lots, and malformed-input lots.
     """
 
-    _LOGGER_NAME = "tax_reporting.application.crypto.derivatives_dedup"
+    _LOGGER_NAME = "tax_reporting.application.crypto.derivatives_filter"
 
     def test_exact_match_removes_single_cg_lot(self):
         """Given one lot whose (timestamp, asset, wallet, amount_6dp) key
         matches a derivatives_event, expects the lot to be removed via
         exact match.
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             DerivativesThEvent,
             remove_derivatives_flagged_lots,
         )
@@ -1036,7 +737,7 @@ class TestRemoveDerivativesFlaggedLots:
         """Given a CG lot whose key has no matching derivatives_event, expects
         the lot to be retained.
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             DerivativesThEvent,
             remove_derivatives_flagged_lots,
         )
@@ -1067,7 +768,7 @@ class TestRemoveDerivativesFlaggedLots:
         the 8th decimal), expects the lot to be removed (both round to
         0.088386 at 6 decimals, exact match succeeds).
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             DerivativesThEvent,
             remove_derivatives_flagged_lots,
         )
@@ -1098,7 +799,7 @@ class TestRemoveDerivativesFlaggedLots:
         [70.0, 50.0] (no single lot matches), expects the contiguous-range
         fallback to find range {70.0, 50.0} (sum=120.0) and remove both.
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             DerivativesThEvent,
             remove_derivatives_flagged_lots,
         )
@@ -1135,7 +836,7 @@ class TestRemoveDerivativesFlaggedLots:
         the exact-match phase to remove the single 70.0 lot before the
         contiguous-range fallback runs (so the other lots are retained).
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             DerivativesThEvent,
             remove_derivatives_flagged_lots,
         )
@@ -1179,7 +880,7 @@ class TestRemoveDerivativesFlaggedLots:
         [33.333333, 33.333333, 33.333334] (sum=99.999999, delta=0.000001
         within tolerance for range_size=3), expects all 3 lots removed.
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             DerivativesThEvent,
             remove_derivatives_flagged_lots,
         )
@@ -1220,7 +921,7 @@ class TestRemoveDerivativesFlaggedLots:
         """Given an event at amount=100.0 and lots [70.0, 50.0] (sum=120.0,
         not within tolerance of 100.0), expects no lots removed.
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             DerivativesThEvent,
             remove_derivatives_flagged_lots,
         )
@@ -1259,7 +960,7 @@ class TestRemoveDerivativesFlaggedLots:
         prevents false-positive matches on coincidental non-contiguous subsets
         (addresses the 142.113 USDT Realized-gain case in Case 2).
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             DerivativesThEvent,
             remove_derivatives_flagged_lots,
         )
@@ -1305,7 +1006,7 @@ class TestRemoveDerivativesFlaggedLots:
         and the summary WARNING's "surplus lots" section is empty (no
         collision).
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             DerivativesThEvent,
             remove_derivatives_flagged_lots,
         )
@@ -1360,7 +1061,7 @@ class TestRemoveDerivativesFlaggedLots:
         to the contiguous-range fallback; if the fallback also finds no match,
         the event is marked unmatched.
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             DerivativesThEvent,
             remove_derivatives_flagged_lots,
         )
@@ -1417,7 +1118,7 @@ class TestRemoveDerivativesFlaggedLots:
         USDT, and a sample of up to 3 (timestamp, asset, wallet, amount)
         tuples. No per-lot WARNING is emitted.
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             DerivativesThEvent,
             remove_derivatives_flagged_lots,
         )
@@ -1472,7 +1173,7 @@ class TestRemoveDerivativesFlaggedLots:
         level (not WARNING) with timestamp, asset, wallet, amount, match type,
         and matching TH Label.
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             DerivativesThEvent,
             remove_derivatives_flagged_lots,
         )
@@ -1518,7 +1219,7 @@ class TestRemoveDerivativesFlaggedLots:
         count, aggregate proceeds, aggregate gain removed); surplus lots;
         and malformed-input lots. The summary is the ONLY WARNING emitted.
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             DerivativesThEvent,
             remove_derivatives_flagged_lots,
         )
@@ -1563,7 +1264,7 @@ class TestRemoveDerivativesFlaggedLots:
         "malformed-input lots" section (count=2, sample includes both
         (timestamp, asset, amount) tuples), and no per-lot WARNING emitted.
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             DerivativesThEvent,
             remove_derivatives_flagged_lots,
         )
@@ -1609,7 +1310,7 @@ class TestRemoveDerivativesFlaggedLots:
         the summary WARNING's "surplus lots" section to be empty (the warning
         is reserved for same-key exact-match collisions only).
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             DerivativesThEvent,
             remove_derivatives_flagged_lots,
         )
@@ -1653,7 +1354,7 @@ class TestRemoveDerivativesFlaggedLots:
         the function to return the input list unchanged with count 0 and no
         summary WARNING.
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             remove_derivatives_flagged_lots,
         )
 
@@ -1680,7 +1381,7 @@ class TestRemoveDerivativesFlaggedLots:
         timestamps with 10 lots each) and 1,000 derivatives_events, expects
         the function to complete in under 2 seconds.
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             DerivativesThEvent,
             remove_derivatives_flagged_lots,
         )
@@ -1737,7 +1438,7 @@ class TestRemoveDerivativesFlaggedLots:
         fallback must scan all 500), expects the function to complete in
         under 500 milliseconds (O(N) sliding window, not exponential).
         """
-        from tax_reporting.application.crypto.derivatives_dedup import (
+        from tax_reporting.application.crypto.derivatives_filter import (
             DerivativesThEvent,
             remove_derivatives_flagged_lots,
         )
@@ -1768,4 +1469,180 @@ class TestRemoveDerivativesFlaggedLots:
 
         assert count == 0
         assert elapsed < 0.5, f"Expected <0.5s, took {elapsed:.3f}s"
+
+
+_DERIVATIVES_CLOSE_DIR = Path(
+    "resources/source/example/2025/koinly/derivatives_close"
+)
+
+
+def _scenario_th_csv() -> Path:
+    """Path to the ``derivatives_close`` TH fixture (committed)."""
+    return _DERIVATIVES_CLOSE_DIR / "koinly_2025_transaction_history.csv"
+
+
+def _treatment_config_for_year(year: int):
+    """Build a TreatmentConfig with the production derivatives labels injected."""
+    from tax_reporting.application.crypto.derivatives_filter import (
+        _load_derivatives_labels_config,
+    )
+    from tax_reporting.application.crypto.treatment_resolver import TreatmentConfig
+
+    return TreatmentConfig(
+        derivatives_tags=_load_derivatives_labels_config("koinly", year),
+    )
+
+
+def _make_derivatives_jurisdiction():
+    """Build a TaxJurisdictionConfig that opens the derivatives dedup gate."""
+    from tax_reporting.infrastructure.config import TaxJurisdictionConfig
+
+    return TaxJurisdictionConfig(
+        country="TEST",
+        fiscal_year=2025,
+        exclude_loan_repayment_gains=False,
+        zero_basis_review_threshold=Decimal("500"),
+        use_other_gains_report=True,
+        separate_derivatives_reporting=True,
+        infer_payment_proceeds=False,
+    )
+
+
+@pytest.mark.unit
+class TestDerivativesFilter:
+    """Phase E Task 2 characterization tests for the renamed module.
+
+    Pins three properties that must survive the rename + legacy-scanner
+    deletion + B3 labels-presence-gate refactor:
+      1. The resolver-driven event builder still produces one
+         :class:`DerivativesThEvent` per matched transaction.
+      2. The module logger name is now
+         ``tax_reporting.application.crypto.derivatives_filter``.
+      3. The empty-tags WARNING still fires when
+         :class:`TreatmentConfig.derivatives_tags` is empty (it no longer
+         re-loads via ``_load_derivatives_labels_config`` inside
+         :func:`apply_derivatives_dedup`).
+    """
+
+    _LOGGER_NAME = "tax_reporting.application.crypto.derivatives_filter"
+
+    def test_resolver_path_produces_derivatives_events(self) -> None:
+        """Given a ``list[Transaction]`` whose treatment is ``DERIVATIVES_CLOSE``,
+        :func:`find_derivatives_th_events_from_transactions` returns one
+        :class:`DerivativesThEvent` per matched transaction.
+
+        The committed ``derivatives_close`` fixture has 2 TH rows; only the
+        ``crypto_withdrawal`` row passes the Type guard and emits an event
+        (the ``crypto_exchange`` row is correctly skipped - non-withdrawal
+        rows carry no asset movement the matcher could pair with a CG lot).
+        """
+        from tax_reporting.application.crypto.derivatives_filter import (
+            DerivativesThEvent,
+            find_derivatives_th_events_from_transactions,
+        )
+
+        transactions = build_transactions_from_th(_scenario_th_csv())
+        assert len(transactions) == 2, (
+            "derivatives_close scenario drifted: expected 2 TH rows"
+        )
+        config = _treatment_config_for_year(2025)
+
+        events = find_derivatives_th_events_from_transactions(transactions, config)
+
+        # Exactly one event (the crypto_withdrawal row); the crypto_exchange
+        # row is filtered by the ``_DERIVATIVES_TH_TYPE`` Type guard.
+        assert len(events) == 1, (
+            f"expected 1 event from 1 crypto_withdrawal tx; got {len(events)}"
+        )
+        event = events[0]
+        assert isinstance(event, DerivativesThEvent)
+        assert event.label == "Realized gain"
+        assert event.wallet == "ByBit"
+
+    def test_logger_name_after_rename(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Given a derivatives-flagged CG lot matched and removed, the INFO/WARNING
+        records emit from logger ``tax_reporting.application.crypto.derivatives_filter``
+        (NOT ``...derivatives_dedup``).
+        """
+        from tax_reporting.application.crypto.derivatives_filter import (
+            DerivativesThEvent,
+            remove_derivatives_flagged_lots,
+        )
+
+        lots = [
+            _make_cg_lot(
+                disposal_timestamp="2025-01-24 20:00",
+                amount=Decimal("0.08838575"),
+            )
+        ]
+        events = [
+            DerivativesThEvent(
+                timestamp="2025-01-24 20:00",
+                asset="USDT",
+                wallet="ByBit",
+                amount=Decimal("0.08838575"),
+                label="Funding fee",
+            )
+        ]
+
+        with caplog.at_level(logging.INFO, logger=self._LOGGER_NAME):
+            filtered, removed = remove_derivatives_flagged_lots(lots, events)
+
+        assert removed == 1
+        assert filtered == []
+        record_names = {r.name for r in caplog.records}
+        assert self._LOGGER_NAME in record_names, (
+            f"expected logger name {self._LOGGER_NAME!r}; got {record_names}"
+        )
+        assert "tax_reporting.application.crypto.derivatives_dedup" not in record_names, (
+            "old logger name 'derivatives_dedup' must not emit after rename"
+        )
+
+    def test_empty_derivatives_tags_warns_via_injected_config(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Given ``TreatmentConfig(derivatives_tags=frozenset())`` injected into
+        :func:`apply_derivatives_dedup`, the empty-tags WARNING fires and the
+        input is returned unchanged.
+
+        Pins the B3 refactor: the labels-presence gate now reads
+        ``config.derivatives_tags`` (already injected), not a re-load via
+        ``_load_derivatives_labels_config``.
+        """
+        from tax_reporting.application.crypto.derivatives_filter import (
+            apply_derivatives_dedup,
+        )
+        from tax_reporting.application.crypto.treatment_resolver import (
+            TreatmentConfig,
+        )
+
+        lots = [
+            _make_cg_lot(
+                disposal_timestamp="2025-01-24 20:00",
+                amount=Decimal("0.08838575"),
+            )
+        ]
+        th_file = tmp_path / "th.csv"
+        th_file.write_text("Transaction report 2025\n\nDate,Type,Tag\n")
+
+        with caplog.at_level(logging.WARNING, logger=self._LOGGER_NAME):
+            result = apply_derivatives_dedup(
+                capital_entries=lots,
+                jurisdiction=_make_derivatives_jurisdiction(),
+                transaction_history_file=th_file,
+                transactions=[],
+                config=TreatmentConfig(derivatives_tags=frozenset()),
+            )
+
+        assert result is lots, (
+            "empty-tags path must return the input list unchanged"
+        )
+        warning_records = [
+            r for r in caplog.records if r.levelno >= logging.WARNING
+        ]
+        assert any(
+            "Derivatives tags empty" in r.getMessage() for r in warning_records
+        ), (
+            f"expected empty-tags WARNING; got messages={[r.getMessage() for r in warning_records]}"
+        )
 

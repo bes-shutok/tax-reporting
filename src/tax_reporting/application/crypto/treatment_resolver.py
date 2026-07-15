@@ -1,28 +1,34 @@
-"""``TreatmentConfig`` and ``resolve_treatment`` for the TH-anchored state machine (Phase B).
+"""``TreatmentConfig`` and ``resolve_treatment`` for the TH-anchored state machine.
 
-Phase B consolidates the scattered tag/label sets that classify a
-Transaction History (TH) row into a single ``TreatmentConfig`` dataclass
-(Task 2) and a single ``resolve_treatment`` resolver (Task 3). The live
-crypto pipeline does NOT call the resolver yet (Phase D flips each
-per-treatment classifier to delegate to it); Phase B ships the pure-logic
-table so review can lock the tag matrix and precedence order in isolation.
+The live crypto pipeline calls ``resolve_treatment`` at every per-treatment
+stage (OGR override keying, payment-proceeds filter, loan-affected asset
+discovery, derivatives dedup, reward/airdrop/LP identification, and TH-row
+Transaction construction); the resolver is the single source of truth for
+treatment identification. Phase E deleted the last legacy adapters that
+branched on tag literals, so the frozenset defaults below are no longer
+mirrored from a parallel classifier (Family D: single source of truth).
 
-Plan: ``docs/history/plans/2026-07-06-th-tx-view-phase-b.md`` (Tasks 2 + 3).
+Plan origin: ``docs/history/plans/2026-07-06-th-tx-view-phase-b.md`` (Tasks 2 + 3).
 RFC: ``docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md``
 (un-shelved 2026-07-05; Phase B of the five-phase rollout recorded there).
 
-Default tag sets (Invariant 8): the five non-derivatives defaults mirror
-existing precedent constants verbatim so Phase D can flip each legacy
-classifier to delegate to the resolver without changing behavior:
+Default tag sets (Invariant 8): the five non-derivatives defaults are the
+canonical tag matrix consulted by ``resolve_treatment``. Phase B originally
+derived each set verbatim from a Phase-D legacy classifier's tag tuple so
+the per-treatment delegation flip would not change behavior; Phase E
+(``docs/history/plans/completed/2026-07-10-th-tx-view-phase-e.md``) deleted those
+legacy classifiers, so these frozensets are now the single source of truth:
 
-- ``_DEFAULT_PAYMENT_TAGS`` mirrors ``_DEFAULT_PAYMENT_TAGS`` in
-  ``payment_proceeds.py`` (the canonical ``payment`` / ``card payment`` pair).
-- ``_DEFAULT_LOAN_REPAYMENT_TAGS`` mirrors ``_LOAN_PRINCIPAL_TAGS`` in
-  ``crypto_fifo/contexts.py`` MINUS ``"loan"``: the borrowing-side principal
-  tag is collateral creation, not a repayment disposal, so Invariant 9
-  excludes it from the repayment default.
-- ``_DEFAULT_REWARD_TAGS`` / ``_DEFAULT_AIRDROP_TAGS`` / ``_DEFAULT_LP_TAGS``
-  mirror the reward / airdrop / lp tag tuples in ``token_origin.py``.
+- ``_DEFAULT_PAYMENT_TAGS``: the canonical ``payment`` / ``card payment`` pair
+  routed to ``Treatment.PAYMENT`` (DP-014).
+- ``_DEFAULT_LOAN_REPAYMENT_TAGS``: ``{"loan repayment"}`` only. The
+  borrowing-side ``"loan"`` tag is principal creation (collateral deposit),
+  not a repayment disposal, so Invariant 9 excludes it from the repayment
+  default. ``discover_loan_affected_assets`` still needs ``"loan"`` to keep
+  borrow-only assets in the FIFO rebuild (Invariant 11); that clause lives
+  in ``crypto_fifo/parsing.py``, not in this default.
+- ``_DEFAULT_REWARD_TAGS`` / ``_DEFAULT_AIRDROP_TAGS`` / ``_DEFAULT_LP_TAGS``:
+  the reward / airdrop / lp tag tuples routed to ``Treatment.REWARD_AIRDROP_LP``.
 
 ``derivatives_tags`` (Invariant 5) defaults to an empty frozenset. The
 authoritative derivatives labels live in
@@ -49,30 +55,25 @@ from dataclasses import dataclass, field
 from tax_reporting.domain.transaction import Transaction
 from tax_reporting.domain.treatment import Treatment
 
-# Mirrors ``_DEFAULT_PAYMENT_TAGS`` in
-# ``src/tax_reporting/application/crypto/payment_proceeds.py`` (Invariant 8).
-# The canonical payment / card-payment pair used by the existing
-# payment-proceeds classifier; flipping that classifier to delegate to the
-# resolver must not change behavior for these tags.
+# Canonical payment / card-payment pair routed to ``Treatment.PAYMENT``
+# (Invariant 8; DP-014).
 _DEFAULT_PAYMENT_TAGS: frozenset[str] = frozenset({"payment", "card payment"})
 
-# Mirrors ``_LOAN_PRINCIPAL_TAGS`` in
-# ``src/tax_reporting/application/crypto_fifo/contexts.py`` MINUS ``"loan"``
-# (Invariant 9). The borrowing-side ``"loan"`` tag is principal creation
-# (collateral deposit), NOT a repayment disposal; only ``"loan repayment"``
-# matches the DP-001 non-taxable scope (CIRS art. 10(20)).
+# ``"loan repayment"`` only (Invariant 9). The borrowing-side ``"loan"`` tag is
+# principal creation (collateral deposit), NOT a repayment disposal; only
+# ``"loan repayment"`` matches the DP-001 non-taxable scope (CIRS art. 10(20)).
 _DEFAULT_LOAN_REPAYMENT_TAGS: frozenset[str] = frozenset({"loan repayment"})
 
-# Mirrors the reward-tag tuple in ``token_origin.py`` (Invariant 8). The
-# ``"realized gain"`` entry overlaps the production koinly_2025 derivatives
-# labels JSON; the resolver precedence (Task 3, Invariant 6) pins the
-# overlap to ``DERIVATIVES_CLOSE`` once the JSON set is injected.
+# Reward-tag tuple (Invariant 8). The ``"realized gain"`` entry overlaps the
+# production koinly_2025 derivatives labels JSON; the resolver precedence
+# (Task 3, Invariant 6) pins the overlap to ``DERIVATIVES_CLOSE`` once the
+# JSON set is injected.
 _DEFAULT_REWARD_TAGS: frozenset[str] = frozenset({"reward", "cashback", "realized gain"})
 
-# Mirrors the airdrop branch in ``token_origin.py`` (Invariant 8).
+# Airdrop tag set (Invariant 8).
 _DEFAULT_AIRDROP_TAGS: frozenset[str] = frozenset({"airdrop"})
 
-# Mirrors the LP branches in ``token_origin.py`` (Invariant 8).
+# LP provision / withdrawal tag pair (Invariant 8).
 _DEFAULT_LP_TAGS: frozenset[str] = frozenset({"liquidity in", "liquidity out"})
 
 

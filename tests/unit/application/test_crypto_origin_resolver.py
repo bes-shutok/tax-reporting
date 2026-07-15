@@ -7,11 +7,14 @@ downgrade on ambiguous or flagged rows.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from tax_reporting.application.token_origin import TokenOriginResolver
 from tax_reporting.domain.token_origin import (
     AcquisitionMethod,
     TokenOrigin,
 )
+from tests.conftest import build_origin_resolver
 
 _TH_HEADER = (
     "Transaction report 2025\n"
@@ -29,6 +32,16 @@ def _write_th(tmp_path, data_rows: str):
     return path
 
 
+def _build_resolver(path: Path) -> TokenOriginResolver:
+    """Build a TokenOriginResolver mirroring the production wiring.
+
+    Delegates to ``tests.conftest.build_origin_resolver`` so the
+    ``parse_th_row -> classify_platform -> build_transaction`` construction
+    path lives in one place across the crypto test suite.
+    """
+    return build_origin_resolver(path)
+
+
 class TestOriginResolverMultipleMatches:
     """When multiple transaction history rows share the same (date, asset, wallet) key."""
 
@@ -40,7 +53,7 @@ class TestOriginResolverMultipleMatches:
             "2025-03-10 14:00:00 UTC,crypto_deposit,Reward,,,,,"
             "Kraken,3,SOL,30,,,,,,,,,\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-03-10", "SOL", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.REWARD
         assert origin.confidence == "medium"
@@ -53,7 +66,7 @@ class TestOriginResolverMultipleMatches:
             "2025-03-10 14:00:00 UTC,crypto_deposit,Lending interest,,,,,"
             "Kraken,3,SOL,30,,,,,,,,,\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-03-10", "SOL", "Kraken")
         assert origin.confidence == "low"
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
@@ -67,7 +80,7 @@ class TestOriginResolverMultipleMatches:
             "2025-06-15 16:00:00 UTC,exchange,,Kraken,3000,USDT,3000,"
             "Kraken,2,ETH,3000,,,,,,,,,\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-06-15", "ETH", "Kraken")
         assert origin.confidence == "low"
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
@@ -81,7 +94,7 @@ class TestOriginResolverMultipleMatches:
             "2025-06-15 16:00:00 UTC,exchange,,Binance,100,BTC,5000,"
             "Kraken,2,ETH,5000,,,,,,,,,\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-06-15", "ETH", "Kraken")
         assert origin.confidence == "low"
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
@@ -94,7 +107,7 @@ class TestOriginResolverMultipleMatches:
             "2025-01-15 10:30:00 UTC,exchange,,Kraken,100,BTC,5000,"
             "Kraken,10,ETH,5000,,,,,,abc,def,hash123,trade\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-01-15", "ETH", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.SWAP_CONVERSION
         assert origin.confidence == "high"
@@ -109,7 +122,7 @@ class TestOriginResolverEpochDate:
             "1970-01-01 00:00:00 UTC,exchange,,Kraken,100,BTC,5000,"
             "Kraken,2,ETH,5000,,,,,,abc,def,hash123,trade\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("1970-01-01", "ETH", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
         assert origin.confidence == "low"
@@ -117,7 +130,7 @@ class TestOriginResolverEpochDate:
 
     def test_any_1970_date_returns_unknown(self, tmp_path) -> None:
         path = _write_th(tmp_path, "")
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("1970-06-15", "BTC", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
         assert origin.confidence == "low"
@@ -132,7 +145,7 @@ class TestOriginResolverCryptoToCryptoExchange:
             "2025-02-10 12:00:00 UTC,exchange,,Ethereum,1,BTC,40000,"
             'Ethereum,1,WBTC,40000,,,,,,eth,eth,0xabc123,wrap\n',
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-02-10", "WBTC", "Ethereum")
         assert origin.acquisition_method == AcquisitionMethod.SWAP_CONVERSION
         assert origin.acquired_from_asset == "BTC"
@@ -145,7 +158,7 @@ class TestOriginResolverCryptoToCryptoExchange:
             "2025-05-20 09:30:00 UTC,exchange,,Kraken,3000,USDT,3000,"
             "Kraken,1,ETH,3000,,,,,,,,,\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-05-20", "ETH", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.SWAP_CONVERSION
         assert origin.acquired_from_asset == "USDT"
@@ -161,7 +174,7 @@ class TestOriginResolverBridgeTransfer:
             "2025-04-01 10:00:00 UTC,transfer,,Ethereum,0.5,ETH,1000,"
             "Polygon,0.5,ETH,1000,,,,,,eth,polygon,0xbridge456,bridge\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-04-01", "ETH", "Polygon")
         assert origin.acquisition_method == AcquisitionMethod.BRIDGE_TRANSFER
         assert origin.acquired_from_asset == "ETH"
@@ -174,7 +187,7 @@ class TestOriginResolverBridgeTransfer:
             "2025-04-15 11:00:00 UTC,transfer,,Kraken,100,MATIC,50,"
             "Binance,100,MATIC,50,,,,,,,,,\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-04-15", "MATIC", "Binance")
         assert origin.acquisition_method == AcquisitionMethod.BRIDGE_TRANSFER
         assert origin.acquired_from_asset == "MATIC"
@@ -187,7 +200,7 @@ class TestOriginResolverBridgeTransfer:
             "2025-07-20 15:00:00 UTC,transfer,,,,,,"
             "Arbitrum,10,ARB,20,,,,,,,,,\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-07-20", "ARB", "Arbitrum")
         assert origin.acquisition_method == AcquisitionMethod.BRIDGE_TRANSFER
         assert origin.acquired_from_asset == "ARB"
@@ -198,7 +211,7 @@ class TestOriginResolverBridgeTransfer:
             "2025-08-01 09:00:00 UTC,transfer,,,,,,"
             "Optimism,5,OP,10,,,,,,,,,\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-08-01", "OP", "Optimism")
         assert origin.acquired_from_platform == "Optimism"
 
@@ -217,7 +230,7 @@ class TestOriginResolverTransferPoolTags:
             "2025-02-23 18:47:49 UTC,transfer,To pool,Ledger APTOS,1.58,CAKE-LP,225.71,"
             "Ledger APTOS,1.58,CAKE-LP,225.71,,,,,,,hash2,,,pool transfer\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-02-23", "CAKE-LP", "Ledger APTOS")
         # "To pool" transfer should be skipped, LP origin resolves correctly
         assert origin.acquisition_method == AcquisitionMethod.LIQUIDITY_PROVISION
@@ -238,7 +251,7 @@ class TestOriginResolverTransferPoolTags:
             "2025-01-23 14:26:36 UTC,transfer,Redeem,Gate.io,0.5,BTC,1000,"
             "Gate.io,0.5,BTC,1000,,,,,,gate,,101623091496,redeem\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-01-23", "BTC", "Gate.io")
         # "redeem" transfer should NOT be skipped - it's a legitimate liquidity return
         assert origin.acquisition_method == AcquisitionMethod.BRIDGE_TRANSFER
@@ -258,7 +271,7 @@ class TestOriginResolverTransferPoolTags:
             "2025-03-15 10:00:00 UTC,transfer,,Kraken,100,USDT,500,"
             "Kraken,100,USDT,500,,,,,,kraken,,0x888,address reuse\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-03-15", "USDT", "Kraken")
         # Same-wallet/same-asset transfer WITHOUT "pool" tag should be indexed
         assert origin.acquisition_method == AcquisitionMethod.BRIDGE_TRANSFER
@@ -276,7 +289,7 @@ class TestOriginResolverMissingCostBasis:
             "2025-01-15 10:30:00 UTC,exchange,,Kraken,100,BTC,5000,"
             "Kraken,2.5,ETH,5000,,,,,,,,abc,def,hash123,trade\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-01-15", "ETH", "Kraken", notes="Missing cost basis")
         assert origin.acquisition_method == AcquisitionMethod.SWAP_CONVERSION
         assert origin.confidence == "low"
@@ -287,7 +300,7 @@ class TestOriginResolverMissingCostBasis:
             "2025-01-15 10:30:00 UTC,exchange,,Kraken,100,BTC,5000,"
             "Kraken,2.5,ETH,5000,,,,,,,,abc,def,hash123,trade\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-01-15", "ETH", "Kraken", notes="missing cost basis")
         assert origin.confidence == "low"
 
@@ -297,7 +310,7 @@ class TestOriginResolverMissingCostBasis:
             "2025-01-15 10:30:00 UTC,exchange,,Kraken,100,BTC,5000,"
             "Kraken,2.5,ETH,5000,,,,,,,,abc,def,hash123,trade\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve(
             "2025-01-15", "ETH", "Kraken",
             notes="Auto-imported: Missing cost basis applied",
@@ -314,7 +327,7 @@ class TestOriginResolverBuyType:
             "2025-07-24 09:48:39 UTC,buy,,Wirex,55.00,EUR,,"
             'Wirex,"54.59057000",EUROC,"55.00",,,,,,,,,\n',
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-07-24", "EUROC", "Wirex")
         assert origin.acquisition_method == AcquisitionMethod.DIRECT_PURCHASE
         assert origin.acquired_from_asset == "EUR"
@@ -327,7 +340,7 @@ class TestOriginResolverBuyType:
             "2025-07-24 09:48:39 UTC,buy,,,55.00,EUR,,"
             'Wirex,"54.59057000",EUROC,"55.00",,,,,,,,,\n',
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-07-24", "EUROC", "Wirex")
         assert origin.acquisition_method == AcquisitionMethod.DIRECT_PURCHASE
         assert origin.acquired_from_platform == "Wirex"
@@ -338,7 +351,7 @@ class TestOriginResolverBuyType:
             "2025-07-24 09:48:39 UTC,buy,,,,,,"
             'Wirex,"54.59057000",EUROC,"55.00",,,,,,,,,\n',
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-07-24", "EUROC", "Wirex")
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
         assert origin.confidence == "low"
@@ -349,7 +362,7 @@ class TestOriginResolverGracefulDegradation:
 
     def test_empty_transaction_history_returns_unknown(self, tmp_path) -> None:
         path = _write_th(tmp_path, "")
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-01-15", "BTC", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
         assert origin.confidence == "low"
@@ -360,7 +373,7 @@ class TestOriginResolverGracefulDegradation:
             "2025-01-15 10:00:00 UTC,sell,,Kraken,1,BTC,50000,"
             "Kraken,50000,EUR,50000,,,,,,,,,\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-01-15", "EUR", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
 
@@ -370,7 +383,7 @@ class TestOriginResolverGracefulDegradation:
             "2025-01-15 10:00:00 UTC,exchange,,Kraken,100,BTC,5000,"
             "Kraken,2.5,ETH,5000,,,,,,,,abc,def,hash123,trade\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2020-06-01", "ETH", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
         assert origin.confidence == "low"
@@ -381,7 +394,7 @@ class TestOriginResolverGracefulDegradation:
             "not-a-date,exchange,,Kraken,100,BTC,5000,"
             "Kraken,2.5,ETH,5000,,,,,,,,,\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-01-15", "ETH", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
 
@@ -391,12 +404,12 @@ class TestOriginResolverGracefulDegradation:
             "2025-01-15 10:00:00 UTC,exchange,,Kraken,100,BTC,5000,"
             ",,,,,,,,,,\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-01-15", "ETH", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
 
     def test_nonexistent_file_path_returns_unknown(self, tmp_path) -> None:
-        resolver = TokenOriginResolver(tmp_path / "nonexistent.csv")
+        resolver = _build_resolver(tmp_path / "nonexistent.csv")
         origin = resolver.resolve("2025-01-15", "BTC", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
         assert origin.confidence == "low"
@@ -407,7 +420,7 @@ class TestOriginResolverGracefulDegradation:
             "2025-01-15 10:00:00 UTC,exchange,,,,"  # no sent amount/currency
             "Kraken,2.5,ETH,5000,,,,,,,,,\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-01-15", "ETH", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
 
@@ -417,14 +430,14 @@ class TestOriginResolverGracefulDegradation:
             ",exchange,,Kraken,100,BTC,5000,"
             "Kraken,2.5,ETH,5000,,,,,,,,,\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-01-15", "ETH", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
 
     def test_malformed_transaction_history_returns_empty_lookup(self, tmp_path) -> None:
         bad_path = tmp_path / "bad.csv"
         bad_path.write_text("NOT A VALID CSV\n\"\"\n\"\"\n", encoding="utf-8")
-        resolver = TokenOriginResolver(bad_path)
+        resolver = _build_resolver(bad_path)
         origin = resolver.resolve("2025-01-15", "ETH", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
 
@@ -442,7 +455,7 @@ class TestOriginResolverGracefulDegradation:
             "2025-01-01 00:15:00 UTC,crypto_deposit,Reward,,,,,"
             '"ByBit","0,25",USDT,"0,24",,,,,,,,,\n',
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-01-01", "USDT", "ByBit (2)")
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
 
@@ -452,7 +465,7 @@ class TestOriginResolverGracefulDegradation:
             "2025-01-15 10:00:00 UTC,exchange,,Kraken,100,BTC,5000,"
             "Kraken,2,ETH,5000,,,,,,,,,\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("", "ETH", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.UNKNOWN
         assert origin.confidence == "low"
@@ -473,7 +486,7 @@ class TestOriginResolverLiquidityOut:
             "2025-03-09 11:48:47 UTC,crypto_deposit,Liquidity out,,,,,"
             "Cetus,100,SSUI,200,,,,,,0xfeedface,,,remove liquidity\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-03-09", "SSUI", "Cetus")
         assert origin.acquisition_method == AcquisitionMethod.LIQUIDITY_WITHDRAWAL
         assert origin.acquired_from_asset == "CETUS-LP"
@@ -489,7 +502,7 @@ class TestOriginResolverLiquidityOut:
             "2025-03-09 11:48:47 UTC,crypto_deposit,Liquidity out,,,,,"
             "Cetus,100,SSUI,200,,,,,,0xfeedface,,,remove liquidity\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-03-09", "SSUI", "Cetus")
         assert origin.acquisition_method == AcquisitionMethod.LIQUIDITY_WITHDRAWAL
         assert origin.acquired_from_asset == "LP position"
@@ -507,7 +520,7 @@ class TestOriginResolverLiquidityOut:
             "2025-03-09 11:48:47 UTC,exchange,Liquidity out,Cetus,5,CETUS-LP,25,"
             "Cetus,50,SSUI,100,,,,,,0xfeedface,,,remove liquidity\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-03-09", "SSUI", "Cetus")
         assert origin.acquisition_method == AcquisitionMethod.LIQUIDITY_WITHDRAWAL
         assert origin.acquired_from_asset == "CETUS-LP"
@@ -534,7 +547,7 @@ class TestOriginResolverLiquidityIn:
             "2025-03-09 10:30:00 UTC,crypto_deposit,Liquidity in,,,,,"
             "Cetus,5,CETUS-LP,25,,,,,,0xabc123,,,add liquidity\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-03-09", "CETUS-LP", "Cetus")
         assert origin.acquisition_method == AcquisitionMethod.LIQUIDITY_PROVISION
         # Token names should be joined with "+"
@@ -550,7 +563,7 @@ class TestOriginResolverLiquidityIn:
             "2025-03-09 10:30:00 UTC,exchange,Liquidity in,Cetus,100,SSUI,200,"
             "Cetus,5,CETUS-LP,25,,,,,,0xabc123,,,add liquidity\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-03-09", "CETUS-LP", "Cetus")
         assert origin.acquisition_method == AcquisitionMethod.LIQUIDITY_PROVISION
         assert origin.acquired_from_asset == "SSUI"
@@ -569,7 +582,7 @@ class TestOriginResolverAirdropTag:
             "2025-03-10 12:00:00 UTC,crypto_deposit,Airdrop,,,,,"
             "Metamask,100,ARB,150,,,eth,eth,0xairdrop,airdrop claim\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-03-10", "ARB", "Metamask")
         assert origin.acquisition_method == AcquisitionMethod.AIRDROP
         assert origin.acquired_from_asset == "Unknown"
@@ -587,7 +600,7 @@ class TestOriginResolverRealizedGainTag:
             "2025-03-11 15:30:00 UTC,crypto_deposit,Realized gain,,,,,"
             "Kraken,0.5,ETH,1000,,,exchange,exchange,0xgain,realized\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-03-11", "ETH", "Kraken")
         assert origin.acquisition_method == AcquisitionMethod.REWARD
         assert origin.acquired_from_asset == "Unknown"
@@ -619,7 +632,7 @@ class TestOriginResolverRealDataVerification:
             "2025-03-09 11:48:47 UTC,crypto_deposit,Liquidity out,,,,,SUI,0.15,CETUS,0.02,"
             ",,,,,0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface,,,remove liquidity\n",  # noqa: E501
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-03-09", "SSUI", "SUI")
         assert origin.acquisition_method == AcquisitionMethod.LIQUIDITY_WITHDRAWAL
         assert origin.acquired_from_asset == "CETUS-LP"
@@ -650,7 +663,7 @@ class TestOriginResolverExchangeLPHighConfidence:
             "2025-02-23 18:47:14 UTC,exchange,Liquidity in,Ledger APTOS,0.00128427,ABTC,113.00,"
             "Ledger APTOS,0.78987847,CAKE-LP,113.00,,,,,,hash123,,,add liquidity\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-02-23", "CAKE-LP", "Ledger APTOS")
         assert origin.acquisition_method == AcquisitionMethod.LIQUIDITY_PROVISION
         assert origin.acquired_from_asset == "ABTC"
@@ -663,7 +676,7 @@ class TestOriginResolverExchangeLPHighConfidence:
             "2025-02-23 18:47:14 UTC,exchange,Liquidity out,Cetus,5,CETUS-LP,25,"
             "Cetus,50,SSUI,100,,,,,,hash123,,,remove liquidity\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-02-23", "SSUI", "Cetus")
         assert origin.acquisition_method == AcquisitionMethod.LIQUIDITY_WITHDRAWAL
         assert origin.acquired_from_asset == "CETUS-LP"
@@ -687,7 +700,7 @@ class TestOriginResolverExchangeLPHighConfidence:
             "2025-02-23 18:47:49 UTC,transfer,To pool,Ledger APTOS,1.57975693,CAKE-LP,225.71,"
             "Ledger APTOS,1.57975693,CAKE-LP,225.71,,,,,,,hash2,,,pool transfer\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-02-23", "CAKE-LP", "Ledger APTOS")
         # Multiple exchange LP provisions with same TxHash should merge into combined origin
         assert origin.acquisition_method == AcquisitionMethod.LIQUIDITY_PROVISION
@@ -711,7 +724,7 @@ class TestOriginResolverExchangeLPHighConfidence:
             "2025-02-23 18:47:49 UTC,transfer,To pool,Ledger APTOS,1.57975693,CAKE-LP,225.71,"
             "Ledger APTOS,1.57975693,CAKE-LP,225.71,,,,,,,hash2,,,pool transfer\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-02-23", "CAKE-LP", "Ledger APTOS")
         # Same-asset, same-wallet transfers are skipped, so LP origin resolves correctly
         assert origin.acquisition_method == AcquisitionMethod.LIQUIDITY_PROVISION
@@ -736,7 +749,7 @@ class TestOriginResolverExchangeLPHighConfidence:
             "2025-02-23 18:47:15 UTC,exchange,Liquidity in,Ledger APTOS,19.95031885,APT,112.72,"
             "Ledger APTOS,0.78987846,CAKE-LP,112.72,,,,,,hash2,,,add liquidity\n",
         )
-        resolver = TokenOriginResolver(path)
+        resolver = _build_resolver(path)
         origin = resolver.resolve("2025-02-23", "CAKE-LP", "Ledger APTOS")
         # Different TxHash values should NOT merge - they disagree on from_asset
         assert origin == TokenOrigin.unknown()

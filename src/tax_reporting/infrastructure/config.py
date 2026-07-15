@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, get_args, get_type_hints
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from ..domain.exceptions import ConfigurationError, MissingDecisionPointsError
+from ..domain.exceptions import MissingDecisionPointsError
 from ..domain.jurisdiction import DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS, TaxJurisdictionConfig
 from .logging_config import create_module_logger
 from .validation import DEFAULT_SECURITY_CONFIG, SecurityConfig
@@ -68,18 +68,9 @@ _KNOWN_DECIMAL_POINTS: frozenset[str] = frozenset(
     for f, hint in _CONFIG_FIELDS_AND_HINTS
     if hint is Decimal and f.name not in ("zero_basis_review_threshold", "zero_basis_review_min_proceeds")
 )
-# Phase D per-treatment resolver flags (1:1 with the six Treatment enum members). The loader
-# enforces their presence in every country section of every decision-points TOML so the
-# bool-default setdefault(flag_name, False) (config.py:334-336) cannot silently revert a
-# treatment to legacy when a future-year TOML omits a flag. r7 Medium #8 / Invariant 10.
-_REQUIRED_TREATMENT_FLAGS: tuple[str, ...] = (
-    "treatment_spot_disposal_via_resolver",
-    "treatment_payment_via_resolver",
-    "treatment_loan_repayment_via_resolver",
-    "treatment_derivatives_close_via_resolver",
-    "treatment_reward_airdrop_lp_via_resolver",
-    "treatment_other_via_resolver",
-)
+# Phase E (2026-07-11): the six per-treatment ``treatment_*_via_resolver`` flags,
+# their required-presence loader guard, and associated helpers were removed.
+# Identification is resolver-only; see ``docs/history/plans/2026-07-10-th-tx-view-phase-e.md``.
 
 
 @dataclass
@@ -172,60 +163,6 @@ def _load_decision_points_flags(
         validated[flag_name] = _validate_and_convert_flag(flag_name, flag_value, path, known_flags)
     logger.info("Loaded decision points flags for country %s from %s: %s", country, path, validated)
     return validated
-
-
-def _countries_table_for(
-    country: str, fiscal_year: int, logger: logging.Logger
-) -> dict[str, object] | None:
-    """Return the ``[countries.<country>]`` table for the fiscal year, or None if absent.
-
-    Used by the required-presence guard for the six Phase D per-treatment resolver flags
-    so the guard can distinguish "country section absent from TOML" (skip; backward compat
-    with non-PT jurisdictions that have no per-country section yet) from "country section
-    present but omits a required flag" (raise ConfigurationError). Re-parses the TOML once;
-    the guard runs exactly once per config load, so the cost is bounded.
-    """
-    raw_path = _DECISION_POINTS_DIR / f"{fiscal_year}.toml"
-    if not raw_path.exists():
-        return None
-    path = raw_path.resolve()
-    try:
-        with path.open("rb") as f:
-            data = tomllib.load(f)
-    except tomllib.TOMLDecodeError as e:
-        logger.warning("Could not re-parse %s for required-flag presence check: %s", path, e)
-        return None
-    countries = data.get("countries", {})
-    if not isinstance(countries, dict):
-        return None
-    section = countries.get(country)
-    if isinstance(section, dict):
-        return section
-    return None
-
-
-def _enforce_required_treatment_flags(
-    flags: dict[str, bool | Decimal | dict[str, Decimal]],
-    country: str,
-    fiscal_year: int,
-) -> None:
-    """Raise ConfigurationError if any of the six treatment_*_via_resolver flags is absent.
-
-    The loader's bool-default ``setdefault(flag_name, False)`` would silently revert a
-    treatment to its legacy adapter if its flag were absent from a future-year TOML; this
-    guard fails loudly instead, naming the missing flag. Runs AFTER the setdefault so the
-    False default does not mask the absence. Only called when the country section exists in
-    the decision-points TOML (a country absent entirely keeps the all-False defaults for
-    backward compatibility with non-PT jurisdictions that have no per-country section yet).
-    """
-    for treatment_flag in _REQUIRED_TREATMENT_FLAGS:
-        if treatment_flag not in flags:
-            raise ConfigurationError(
-                f"Decision points file for {country}/fiscal_year={fiscal_year} must contain "
-                f"the {treatment_flag} flag in [countries.{country}] section "
-                f"(required per Phase D Invariant 10; absence would silently revert the "
-                f"treatment to its legacy adapter via the loader's bool-default setdefault)."
-            )
 
 
 def _validate_and_convert_flag(
@@ -400,18 +337,6 @@ def _load_tax_jurisdiction_config(
     for flag_name in _KNOWN_BOOL_FLAGS:
         if flag_name in config_field_names:
             flag_kwargs.setdefault(flag_name, False)
-
-    # Required-presence guard for the six Phase D per-treatment resolver flags (r7 Medium #8
-    # / Invariant 10). Runs AFTER the _KNOWN_BOOL_FLAGS setdefault above so the False default
-    # does not mask the absence - if a country section is present in the decision-points TOML
-    # but omits any of these six flags, fail loudly with ConfigurationError naming the missing
-    # flag. Otherwise the bool-default would silently revert the treatment to its legacy
-    # adapter on an annual TOML copy. Only enforced when the country section exists (a country
-    # absent from the TOML entirely continues to use the all-False defaults for backward
-    # compatibility with non-PT jurisdictions that have no per-country section yet).
-    countries_table = _countries_table_for(country, fiscal_year, logger)
-    if countries_table is not None:
-        _enforce_required_treatment_flags(flags, country, fiscal_year)
 
     # Resolve the IANA timezone string to a ZoneInfo value object exactly once, at config-load
     # (after the decision-points TOML loads, so an invalid zone surfaces as a plain ValueError

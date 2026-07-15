@@ -35,7 +35,9 @@ class TestTreatmentConfigDefaults:
     """Defaults mirror existing precedent constants (Invariant 8 + 9)."""
 
     def test_payment_tags_match_payment_proceeds_precedent(self) -> None:
-        # Invariant 8; matches ``_DEFAULT_PAYMENT_TAGS`` in payment_proceeds.py.
+        # Invariant 8; matches the default ``TreatmentConfig.payment_tags`` set
+        # (formerly ``_DEFAULT_PAYMENT_TAGS`` in payment_proceeds.py, deleted by
+        # Phase E Task 3).
         config = TreatmentConfig()
         assert config.payment_tags == frozenset({"payment", "card payment"})
 

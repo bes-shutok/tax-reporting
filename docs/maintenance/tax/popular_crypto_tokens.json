@@ -1,6 +1,6 @@
 {
   "meta": {
-    "description": "Popular/known crypto tokens that should not have zero value in rewards, plus stablecoin peg mappings and Koinly payment tag set. If a reward for one of these tokens has zero value, it's likely a Koinly data error (missing price data, export issue) and should be flagged for review instead of skipped. The stablecoin_pegs map and payment_tags list drive payment-proceeds correction (DP-014).",
+    "description": "Popular/known crypto tokens that should not have zero value in rewards, plus stablecoin peg mappings. If a reward for one of these tokens has zero value, it's likely a Koinly data error (missing price data, export issue) and should be flagged for review instead of skipped. The stablecoin_pegs map drives payment-proceeds correction (DP-014); payment tag routing lives in TreatmentConfig.payment_tags (treatment_resolver.py).",
     "last_updated": "2026-06-19",
     "maintenance_note": "Update this list when new major tokens gain adoption. The list is used for zero-value reward detection in crypto reporting. BEHAVIOR SIDE-EFFECT: tickers listed under tokens.stablecoins are also flattened by classification._load_popular_crypto_tokens, so adding an EUR-pegged stablecoin (EURC/EUROC/EURT) here enlarges the set used for zero-value reward flagging - a zero-value reward for one of those stablecoins is now FLAGGED for review (previously it was not). The stablecoin_pegs keys MUST stay a subset of tokens.stablecoins (enforced by a consistency guard in _load_payment_proceeds_config_from_path that warns on drift)."
   },
@@ -31,6 +31,5 @@
     "EURC": "EUR",
     "EUROC": "EUR",
     "EURT": "EUR"
-  },
-  "payment_tags": ["payment", "card payment"]
+  }
 }

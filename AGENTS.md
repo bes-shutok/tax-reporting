@@ -21,7 +21,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Treat exactly one dot-grouped triplet (e.g. `1.234`) as ambiguous and raise a clear error. Only multi-group dot patterns (e.g. `1.234.567`) may be stripped as European thousands.
 - Use f-strings in exception constructors; never pass multiple positional args.
 - Catch row-level parse errors per row (warn and skip); do not let one bad row discard the whole dataset.
-- When extracting a second derived value inside a `try...except` block, reuse the parsed object in the same block. If the outer loop's `try...except` must not block a trusted-path branch, wrap the secondary parse in a nested `try...except`.
+- When extracting a second derived value inside a `try...except` block, reuse the parsed object in the same block; wrap the secondary parse in a nested `try...except` if the outer loop must not block a trusted-path branch.
 - When an optional field from external input is absent, use a type-safe sentinel (e.g. `"0"` for numeric, `"MISSING"` when `"0"` is itself valid), not `""`. See `coding_guidelines.md` #4.
 - Data-loss conditions (unmatched items, dropped records) must be logged at warning+, never debug. See `coding_guidelines.md` #5.
 - All-or-nothing validation for required file sets: none present -> skip; partial set -> raise `FileProcessingError` listing missing files; all present -> proceed.
@@ -29,9 +29,9 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Validation that depends on complete state runs post-aggregation, not per-row (mid-accumulation state can be temporarily invalid).
 - When reusing a validation/security pattern, inherit the guards but recalibrate exception handling to the cost of silent failure at the new call site.
 - Unmatched items from matching algorithms must never be silently discarded; apply an explicit fallback and log a warning.
-- When an aggregator takes `entries[0]` for a field assumed constant across a group, add a heterogeneity guard (re-scope if the field later moves per-row). Sibling aggregators merging the same type must use byte-identical patterns or a shared helper; diverging patterns silently drop data.
+- When an aggregator takes `entries[0]` for a field assumed constant across a group, add a heterogeneity guard. Sibling aggregators merging the same type must use byte-identical patterns or a shared helper; diverging patterns silently drop data.
 - Partial or uncertain results must carry an explicit indicator so the user cannot mistake them for complete. Review flags must include specific actionable explanations, not bare booleans.
-- User-facing output labels use self-explanatory terminology, not terse names inherited from source formats. See `coding_guidelines.md` #6. F-strings interpolating `str | None` into user-facing text must degrade explicitly for `None` on warn-only config-drift paths.
+- User-facing output labels use self-explanatory terminology, not terse names from source formats. See `coding_guidelines.md` #6. F-strings interpolating `str | None` into user-facing text must degrade explicitly for `None` on warn-only config-drift paths.
 
 ### 2. Repository Style and Conventions
 
@@ -47,24 +47,25 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - `TradeDate` is a `NamedTuple(year, month, day)`. Do not call `.date()` on it; use it directly or call `.to_datetime()`.
 - External-report date parsers must localize naive dates to the jurisdiction zone (a `strptime` literal like ` UTC` does not populate `tzinfo`).
 - When classifying a dividend row as withholding tax, match only the literal `"Withholding Tax"`; never bare `"Tax"` (dividend descriptions contain "Tax" as a word fragment, e.g. "Tax-Exempt Interest").
-- `docs/maintenance/tax/.../official/` keeps only source-origin files; derived notes and numbered guidance belong outside `official/`; `sources.md` records issuing/effective/superseded dates. See `docs/maintenance/project-guidelines.md` #1.
+- `docs/maintenance/tax/.../official/` keeps only source-origin files; derived notes and numbered guidance belong outside `official/`; `sources.md` records issuing/effective/superseded dates. See `project-guidelines.md` #1.
 - For external source archive provenance and freshness checks, see `docs/maintenance/project-guidelines.md` #1.
 - For fiscal-year versioned tax decision points, see `docs/maintenance/project-guidelines.md` #2.
 - When AT guidance cites a CIRS paragraph number, verify against the consolidated CIRS/CPPT/CIS PDFs; AT documents may predate renumbering amendments. See `docs/maintenance/project-guidelines.md` #3.
 - For tax/origin web sources, prefer authoritative PDFs or extracted Markdown/PDF over raw HTML; reuse local mirrors. A locally-archived official source wins outright over a conflicting secondary source; do not flag a competing "repo conflict."
-- Authoritative law portals render the CURRENT version by default; for a prior fiscal year, use the redação in force for that period (the portal's "Redações anteriores" listing), cross-checked against a year-dated secondary source. See `development_lessons.md` #31.
-- Before assuming an official source is unavailable, probe the issuing authority's canonical URL with a HEAD request; a web/search MCP tool quota/rate-limit is a tool outage, not a missing source. See `development_lessons.md` #37.
+- Authoritative law portals render the CURRENT version by default; for a prior fiscal year, use the version in force then ("Redações anteriores"), cross-checked against a year-dated secondary source. See `development_lessons.md` #31.
+- Before assuming an official source is unavailable, probe the authority's canonical URL with a HEAD request; a web/search MCP tool quota/rate-limit is a tool outage, not a missing source. See `development_lessons.md` #37.
 - Under `docs/maintenance/tax/`, use `laws/<jurisdiction>/crypto-tax/` for tax-law archives and `crypto-origin/` for chain/operator domicile archives.
 - Adding a decision point flag requires the corresponding `TaxJurisdictionConfig` field and type-dispatch support; jurisdiction-specific output must be flag-gated, not country-literal-gated. See `development_lessons.md` #36.
-- Decision-point flags whose value must be explicit require a required-presence loader guard; run the omit-the-flag test to confirm it raises `ConfigurationError`, not `NameError` from an undefined helper. See `development_lessons.md` #49.
+- Decision-point flags whose value must be explicit require a required-presence loader guard; run the omit-the-flag test to confirm it raises `ConfigurationError`, not `NameError`. See `development_lessons.md` #49.
 - In decision-points TOML, place country-level flags before any `[countries.XX.<child>]` nested subtable header or they are silently re-scoped. See `development_lessons.md` #50.
 - Verify DP enumerated rules match implemented code branches; update prose on change.
 - Share crypto `País da Fonte` resolution across rewards and capital gains. Never use taxpayer residence.
 - Keep `docs/maintenance/tax/crypto-origin/` source manifest, registry, and decision log synchronized when changing chain/operator mappings.
 - Chain derivation uses deterministic normalization and validates against trusted sources in `docs/maintenance/tax/crypto-origin/`.
 - Wallet labels are discovery hints only; final chain/country mappings come from archived operator origin documents, not asset symbols. Use `Unknown` when labels don't allow reasonable chain derivation.
-- Test-side per-row platform attribution must mirror `wallet_kind._row_platform` (skip empty OR case-insensitive `"unknown"`); bare `tr.sending_wallet or tr.receiving_wallet` misattributes borrowing-side deposits since `"Unknown"` is truthy. See `development_lessons.md` #44.
+- Test-side per-row platform attribution must mirror `wallet_kind._row_platform` (skip empty OR case-insensitive `"unknown"`); bare `tr.sending_wallet or tr.receiving_wallet` misattributes since `"Unknown"` is truthy. See `development_lessons.md` #44.
 - Throwaway shadow/verification scripts re-parsing an external-report CSV must call the production reader (`read_koinly_rows`, etc.), not `csv.DictReader` (preamble/header handling diverges). See `development_lessons.md` #45.
+- Deletion-verification grep backstops must scan `docs/maintenance/`, `docs/architecture/`, `README.md` (not just `src/`/`tests/`); patterns cover prose phrases, not just identifiers. See `development_lessons.md` #55.
 - Operator mapping temporal validity: `service_start_date` (matching) vs `valid_from` (audit-only); set `service_start_date <= valid_from`, leave `valid_from` null when unknown.
 - Module size: when a module exceeds 1,000 lines or 50 functions/classes, extract cohesive responsibilities into separate modules.
 - Orchestration layers stay thin (~500 lines max); extract sub-orchestrators or move domain logic to dedicated services when coordination grows.
@@ -72,29 +73,29 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 ### 3. Repository Constraints
 
 - Optional crypto ingestion is non-blocking: missing/mismatched-year/unparseable Koinly input emits a warning and continues IB report generation without crypto data.
-- Partially-unmatched sells (FIFO exhausts all buys before all sells are consumed) must never be silently dropped. Apply the placeholder-buy mechanism to the remaining sell quantity, log at `logger.warning`, and include the resulting capital gain line.
+- Partially-unmatched sells (FIFO exhausts all buys before all sells are consumed) must never be silently dropped. Apply the placeholder-buy mechanism to the remaining sell quantity, log at `logger.warning`, and include the capital gain line.
 - Partially-matched buys written to the rollover CSV use proportional fee: `proportional_fee = action.fee * (rolled_quantity / original_quantity)`.
 - Dividend per-symbol validation runs after all rows for all symbols are accumulated, not per row. Symbols that fail post-accumulation validation are skipped with `logger.warning`; they must not abort other symbols.
 - Aggregate crypto capital gains by `(disposal_date, asset, platform, holding_period)` before reporting. Do not bypass `_aggregate_capital_entries()`.
 - After aggregation, exclude entries where `|gain/loss| < 1 EUR`. Do not remove `_filter_immaterial_entries()` or parameterize `_MATERIALITY_THRESHOLD` without a `crypto_rules.md` update.
 - Crypto reward income must be aggregated by `(income_code, source_country)` before inclusion in the IRS-ready filing table. Do not bypass `aggregate_taxable_rewards()`.
-- Reward classification (taxable_now vs deferred_by_law) uses `_classify_reward_tax_status()` (cite CRG-001/002). Taxable-now crypto-origin fiat rewards are the `Reporting`/`OTHER CAPITAL INVESTMENT INCOME` filing target; `Crypto Supplementary` is support detail only. See SRG-008.
+- Reward classification (taxable_now vs deferred_by_law) uses `_classify_reward_tax_status()` (cite CRG-001/002). Taxable-now crypto-origin fiat rewards are the `Reporting`/`OTHER CAPITAL INVESTMENT INCOME` target; `Crypto Supplementary` is support only. See SRG-008.
 - The aggregation step fails with `FileProcessingError` if any taxable-now row cannot be assigned all mandatory IRS fields (valid Tabela X country code).
 - When `review_required=True`, `review_reason` must contain a specific, actionable explanation; Excel shows "YES: \<reason\>", not a bare boolean. See PT-C-030.
 - `OperatorOrigin` has two review flags: `review_required` (row-level) and `platform_review_required` (platform-level). Never conflate them. See CRG-016.
 - The Platform Assumptions tab is a complete manifest. Do not filter; use `platform_review_required=True` to highlight.
 - Tests verifying "YES:"/"NO" rendering must set `review_required`/`review_reason` on the fixture entry; do not delegate to `origin.review_required`.
-- When a downstream consumer synthesises a `review_reason` from a flag multiple upstream cases can set, branch on the discriminator (sentinel/enum) the upstream sets; don't collapse causes. RED tests must exercise each cause.
-- When migrating a test off a real fixture to synthetic data whose unmapped identifiers flip an orthogonal signal (e.g. `review_required=True`), re-scope the assertion to the behavior under test, not the incidental flag value.
+- When a downstream consumer synthesises a `review_reason` from a flag multiple upstream cases set, branch on the discriminator (sentinel/enum) the upstream sets; don't collapse causes. RED tests must exercise each cause.
+- When migrating a test off a real fixture to synthetic data whose unmapped identifiers flip an orthogonal signal (e.g. `review_required=True`), re-scope the assertion to the behavior under test, not the incidental flag.
 - Crypto capital gains statistics must be computed via `CryptoCapitalGainStats.from_entries()` and rendered as "1b. CAPITAL GAINS STATISTICS"; grand totals come from the full entries list, not per-period subtotals.
 - Token origin resolution uses `TokenOriginResolver` with implicit `(date, asset, wallet)` correlation; unmatched rows return `unknown` (blank). Do not reintroduce same-day disposal-context matching.
 - Token origin resolution supports LP operations and airdrops: `AIRDROP`, `LIQUIDITY_WITHDRAWAL`, `LIQUIDITY_PROVISION`, `DIRECT_PURCHASE`.
 - `token_swap_history` aggregation via `_aggregate_origin_field()`: if all lots share the same origin, use it; otherwise join unique non-empty origins with '; '; when some lots have unknown origin, append "N lot(s) unresolved" to flag partial resolution.
 - Koinly transaction history files use `*transaction_history*.csv`, not `*transactions_report*.csv`.
 - Koinly TH `TxHash` is the on-chain transaction identifier; `TxSrc`/`TxDest` are wallet addresses, not tx-id candidates. `TxCorrelationKey.tx_id` derives from `tx_hash` alone; never collapse the three fields into one precedence chain, and never fall back to `tx_src`/`tx_dest` as tx-id candidates. See `development_lessons.md` #43.
-- When `TaxJurisdictionConfig.exclude_loan_repayment_gains` is True, loan-affected assets (discovered via `discover_loan_affected_assets()` from loan-tagged TH rows) are excluded from CG parsing and rebuilt from Transaction History; non-loan assets continue using Koinly CG (FIFO engine in `crypto_fifo/`, per CIRS art. 43 n.9).
+- When `TaxJurisdictionConfig.exclude_loan_repayment_gains` is True, loan-affected assets (from `discover_loan_affected_assets()`) are excluded from CG parsing and rebuilt from TH; non-loan assets use Koinly CG (FIFO in `crypto_fifo/`, CIRS art. 43 n.9).
 - `discover_loan_affected_assets()` uses only `"loan"` and `"loan repayment"` tags (not `"loan fee"`); loan fee rows' Sent Currency is the gas/service fee asset, not the loan principal.
-- When `treatment_loan_repayment_via_resolver=True`, `discover_loan_affected_assets()` delegates to `resolve_treatment` and needs the Invariant 11 `OTHER + tag="loan"` clause to preserve borrow-only assets. See `development_lessons.md` #52.
+- `discover_loan_affected_assets()` delegates to `resolve_treatment` and needs the Invariant 11 `OTHER + tag="loan"` clause (borrowing-side principal classifies as `Treatment.OTHER`, not `LOAN_REPAYMENT`). See `development_lessons.md` #52.
 - When IB data has no current-year trades (`tax_year_hint` is None), the Koinly directory year hint falls back to `TaxJurisdictionConfig.fiscal_year`, which drives Koinly directory selection for crypto-only runs.
 - Run `_validate_capital_entries_have_valid_countries()`, `_aggregate_capital_entries()`, and `_filter_immaterial_entries()` only after FIFO-derived entries are merged with raw CG rows.
 - Keep pipeline stages decoupled: run value corrections and data recovery passes before manual review flags or suspect-identification passes, to prevent clobbering and reason-joining hacks.
@@ -113,7 +114,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Bug fixes follow TDD: failing test first (RED), then fix (GREEN). See `development_lessons.md` #27 (revert a RED break on an untracked file via Edit, not `git checkout`).
 - When a plan is revised between RED and GREEN, re-read each RED test against current design invariants before flipping GREEN. Update changed assertions and cite the invariant.
 - A committed RED test that is itself the deliverable (a later task flips it GREEN) must fail via `pytest.fail(<message>)` naming the resolving task, never an unhandled exception.
-- A regression test must exercise the production call site it claims to guard (not an adjacent derived value); before merging, revert the guarded change and confirm the test fails. When a fix has two halves, scope each assertion to the half it exercises and do not claim the join is verified. See `development_lessons.md` #46.
+- A regression test must exercise the production call site it claims to guard (not an adjacent derived value); before merging, revert the guarded change and confirm the test fails. When a fix has two halves, scope each assertion to its half. See `development_lessons.md` #46.
 - When building an index from source data, handle duplicate keys by summing, never silent overwrite.
 - Test string sanitization/validation/parsing for edge cases: empty, whitespace-only, multi-byte, control chars, multi-char prefixes, padded.
 - Test error paths including double-failure (e.g. aggregation fails AND workbook.close fails).
@@ -148,10 +149,11 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Re-run feasibility checks against the mutated post-phase-1 input set.
 - When a task changes data flow semantics (filter/dedup/transformation split), grep ALL test files (`tests/`) for assertions referencing the affected data identity tuple, not just current task's file scope.
 - When a plan task changes a function signature OR rendered output text (description/label cell), grep ALL test tiers for callers and row-locators matching the stale label; a dedicated test file is not exhaustive. Also grep method/function identifiers, not just prose.
-- When renaming fixture paths or filenames, grep ALL test files AND docs for every shape the rename touches (directory, filename, filename-stem-as-glob-prefix, docstring prose); update conftest constants AND scattered references together; evolve (not delete) any hygiene check that enforced the renamed token as a synthetic-data marker. See `development_lessons.md` #47.
+- When renaming fixture paths or filenames, grep ALL test files AND docs for every shape the rename touches (directory, filename, filename-stem-as-glob-prefix, docstring prose); update conftest constants AND scattered references together; evolve (not delete) any hygiene check that enforced the renamed token as a marker. See `development_lessons.md` #47.
+- When a plan task removes dataclass fields, grep test construction sites; shared conftest helpers forwarding `**overrides` must filter removed keys or the suite becomes uncollectable. See `development_lessons.md` #54.
 - For verification-only tasks inspecting `git diff <base>..HEAD` with missing expected files, check if a prior same-session commit already applied the change.
 - For comparing tool output against the committed baseline (linter/formatter), pipe the committed blob or use `git worktree add`; never use `git stash`.
-- Before `execute-plan` Step 1.1 on a pre-migration plan, grep and translate moved path prefixes (`docs/tax/`, etc.) to their migrated locations in the plan body and `execute-plan` Step 0.4b.
+- Before `execute-plan` Step 1.1 on a pre-migration plan, grep and translate moved path prefixes (`docs/<module>/`) to their migrated locations in the plan body and `execute-plan` Step 0.4b.
 - When validating branch compliance (e.g. for em dashes), do not rely on working-tree filters like "touched" or "unstaged" if changes have already been committed; diff explicitly against the target branch.
 - **Never proceed to plan execution or make code changes without explicit user approval when in Planning Mode.** Bypassing the approval gate violates user intent and creates unwanted code churn.
 - Request a plan amendment before omitting prescribed behaviors.
@@ -164,7 +166,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Before processing Koinly exports or changing Koinly-related code, read `docs/maintenance/koinly_guidelines.md` (loan repayment disposal treatment, wrapped-asset repair, Other Gains Report relevance, required settings).
 - Before discussing crypto tax treatment, proposing architecture, or advising on Koinly settings, check `docs/maintenance/tax/decision_points/` first.
 - Before changing cross-cutting report-generation behavior, read `docs/maintenance/tax_reporting_guidelines.md` (also documents Excel report sections) and cite SRG IDs.
-- Before changing cross-cutting logic that prior incidents cover, consult the root-cause principle catalog (`coding_guidelines.md` #17-#25; resolve families by grepping the in-band `**Principle:** Family X` tags in `docs/maintenance/development_lessons.md`, with cross-project lessons in the user-level `development_lessons.md`; see the `generalize` skill) to recall lessons by problem shape.
+- Before changing cross-cutting logic that prior incidents cover, consult the root-cause principle catalog (`coding_guidelines.md` #17-#25; grep the in-band `**Principle:** Family X` tags in `docs/maintenance/development_lessons.md`, plus the user-level corpus; see the `generalize` skill).
 - Before writing implementation plans, repository walkthroughs, or presentation artifacts, read `docs/maintenance/plan_quality_guidelines.md`.
 - When adding terms to `docs/maintenance/glossary.md`, keep English as the defining language (preserve original non-English naming in italics) and separate generic from jurisdiction-specific (PT) terms; see `development_lessons.md` #32.
 - When a crypto presentation makes legal/filing claims, verify the current source set in `docs/maintenance/tax/laws/pt/crypto-tax/sources.md` and cite mirrored official documents.
