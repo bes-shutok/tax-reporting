@@ -4,14 +4,24 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
-from ...domain.constants import LOAN_STATUS_OVERPAID
+from ...domain.constants import (
+    LOAN_STATUS_IN_ASSET_INTEREST,
+    LOAN_STATUS_NO_EUR_PRICE,
+    LOAN_STATUS_OPEN_LOAN,
+    LOAN_STATUS_OVERPAID_VERIFY,
+    LOAN_STATUS_SETTLED,
+)
 from ...infrastructure.koinly_parser import normalize_asset_ticker, parse_koinly_decimal, read_koinly_rows
 from .classification import _get_all_fiat_currency_codes
 from .constants import ZERO
 from .entities import LoanActivityEntry
+
+# Invariant 5: module-level overshoot threshold (amount-space). Branch (c) of the
+# classifier treats overshoot_pct <= LOAN_OVERSHOOT_INTEREST_PCT as in-asset interest.
+LOAN_OVERSHOOT_INTEREST_PCT = Decimal("1")
 
 
 def _extract_loan_activity(transaction_history_path: Path | None) -> list[LoanActivityEntry]:  # noqa: PLR0912, PLR0915
@@ -107,11 +117,13 @@ def _extract_loan_activity(transaction_history_path: Path | None) -> list[LoanAc
         a = accs[asset]
         balance = a.received_amount - a.repaid_amount
         if balance == ZERO:
-            status = "Settled"
+            status, detail = LOAN_STATUS_SETTLED, None
         elif balance < ZERO:
-            status = LOAN_STATUS_OVERPAID
+            status, detail = _classify_overpaid_balance(
+                a.received_amount, a.repaid_amount, a.received_value_eur
+            )
         else:
-            status = "Open loan"
+            status, detail = LOAN_STATUS_OPEN_LOAN, None
         entries.append(
             LoanActivityEntry(
                 asset=asset,
@@ -123,6 +135,39 @@ def _extract_loan_activity(transaction_history_path: Path | None) -> list[LoanAc
                 repaid_value_eur=a.repaid_value_eur,
                 balance_amount=balance,
                 balance_status=status,
+                balance_detail=detail,
             )
         )
     return entries
+
+
+def _classify_overpaid_balance(
+    received_amount: Decimal, repaid_amount: Decimal, received_value_eur: Decimal
+) -> tuple[str, str | None]:
+    """Classify an over-repaid asset (``balance < ZERO``) into a status sentinel.
+
+    Invariant 4: amount-space overshoot classifier. Four branches evaluated in
+    this exact precedence order: (b) FIRST repayment-only, then (a) no EUR price,
+    then (c) small overshoot, then (d) large overshoot. The branch structure
+    guards division-by-zero: branch (b) short-circuits before any division, and
+    branches (c)/(d) are only reached when ``received_amount > 0``.
+
+    The branch decision compares the **rounded** ``pct`` against the threshold
+    (not the unrounded ``raw_pct``) so the rendered ``balance_detail`` and the
+    fill color always agree: a reviewer reading "overshoot 1.0000%" sees the
+    same value the classifier used.
+    """
+    if received_amount == ZERO and repaid_amount > ZERO:
+        # Branch (b): repayment-only asset (overshoot unbounded). received_amount == 0,
+        # so raw_pct is undefined; set detail directly and do NOT quantize.
+        return LOAN_STATUS_OVERPAID_VERIFY, "received_amount=0; repayment-only asset"
+    if received_value_eur == ZERO:
+        # Branch (a): no EUR price data -> cannot classify the overshoot.
+        return LOAN_STATUS_NO_EUR_PRICE, None
+    raw_pct = abs(repaid_amount - received_amount) / received_amount * 100
+    pct = raw_pct.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    if pct <= LOAN_OVERSHOOT_INTEREST_PCT:
+        # Branch (c): small overshoot -> likely in-asset interest.
+        return LOAN_STATUS_IN_ASSET_INTEREST, f"overshoot {pct}%"
+    # Branch (d): large overshoot -> verify (cross-year loan?).
+    return LOAN_STATUS_OVERPAID_VERIFY, f"overshoot {pct}%"

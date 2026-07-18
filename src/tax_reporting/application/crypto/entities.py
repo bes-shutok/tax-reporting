@@ -406,6 +406,7 @@ class LoanActivityEntry:
     repaid_value_eur: Decimal
     balance_amount: Decimal
     balance_status: str
+    balance_detail: str | None = None
 
 
 @dataclass(frozen=True)

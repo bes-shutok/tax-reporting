@@ -418,6 +418,8 @@ When entries are aggregated by `_aggregate_capital_entries()`, multiple distinct
 review_reason="; ".join(dict.fromkeys(e.review_reason for e in group if e.review_reason)) or None,
 ```
 
+This joined reason is the **pre-filter input**, not the final word on the aggregated row's review fields. `_re_evaluate_aggregated_review` (inlined in `aggregation.py`) re-derives `review_required` / `review_reason` from the aggregated values, dropping zero-basis reasons when material and preserving non-zero-basis reasons; per-lot signals are NOT silenced (lot flags stay set, noise stays in `context.review_entries` + the WARNING log). See CRG-020 for the principle.
+
 ### Lessons Learned
 
 1. Bare "TRUE" review flags required users to trace through source data to understand why. Specific reasons eliminate this round-trip.
@@ -588,7 +590,7 @@ If any are missing, clarify the plan first.
 ### Missing Path Coverage
 
 All branches of conditional logic must have dedicated test coverage. Common gaps:
-- Loan activity "Open loan" (received > repaid) and "Overpaid" (repaid > received) status branches
+- Loan activity classification covers FIVE loan-status sentinels (`LOAN_STATUS_SETTLED`, `LOAN_STATUS_OPEN_LOAN`, `LOAN_STATUS_IN_ASSET_INTEREST`, `LOAN_STATUS_NO_EUR_PRICE`, `LOAN_STATUS_OVERPAID_VERIFY`), four of which arise from overshoot (repaid > received). The classifier has four precedence branches evaluated in order: (b) repayment-only (`received_amount == 0 AND repaid_amount > 0`) -> `LOAN_STATUS_OVERPAID_VERIFY`; (a) no-EUR-price (`received_value_eur == 0`) -> `LOAN_STATUS_NO_EUR_PRICE`; (c) small overshoot (`overshoot_pct <= LOAN_OVERSHOOT_INTEREST_PCT`) -> `LOAN_STATUS_IN_ASSET_INTEREST`; (d) otherwise -> `LOAN_STATUS_OVERPAID_VERIFY`. Branches (b) and (d) BOTH route to `LOAN_STATUS_OVERPAID_VERIFY` (no sixth sentinel). Tests must cover all four branches plus the unchanged Settled / Open loan branches, and the inclusive `<=` boundary at exactly `LOAN_OVERSHOOT_INTEREST_PCT`.
 - Non-existent file path handling (`path.exists()` vs `path is None`)
 - Asset/platform mismatch validation in FIFO matching
 

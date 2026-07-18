@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -13,11 +13,18 @@ from tax_reporting.application.crypto.aggregation import (
     _aggregate_capital_entries,
     _filter_immaterial_entries,
     _is_valid_tabela_x_country,
+    _re_evaluate_aggregated_review,
     _resolve_income_code,
     aggregate_derivatives_entries,
     aggregate_taxable_rewards,
 )
 from tax_reporting.application.crypto.entities import DerivativesEventType, DerivativesPnLEntry, ParsedOgrRow
+from tax_reporting.application.crypto.fifo_helpers import (
+    _ZERO_COST_NEGATIVE_PROCEEDS_REASON,
+    _ZERO_COST_REASON,
+    _ZERO_PROCEEDS_REASON,
+)
+from tax_reporting.application.crypto.loan_activity import LOAN_OVERSHOOT_INTEREST_PCT
 from tax_reporting.application.crypto_reporting import (
     CapitalGainsParsingContext,
     CryptoCapitalGainEntry,
@@ -37,6 +44,13 @@ from tax_reporting.application.crypto_reporting import (
     apply_ogr_event_level,
     load_koinly_crypto_report,
     resolve_operator_origin,
+)
+from tax_reporting.domain.constants import (
+    LOAN_STATUS_IN_ASSET_INTEREST,
+    LOAN_STATUS_NO_EUR_PRICE,
+    LOAN_STATUS_OPEN_LOAN,
+    LOAN_STATUS_OVERPAID_VERIFY,
+    LOAN_STATUS_SETTLED,
 )
 from tax_reporting.domain.token_origin import (
     AcquisitionMethod,
@@ -925,6 +939,229 @@ def test_capital_gains_file_skips_ambiguous_row_and_continues_parsing(tmp_path, 
     assert "ETH" in caplog.text
 
 
+# --- _re_evaluate_aggregated_review tests ---
+
+
+@pytest.mark.unit
+class TestReEvaluateAggregatedReview:
+    """Tests for the inlined aggregation-boundary review-flag re-evaluator.
+
+    Pins Invariant 2 (filter owns both fields atomically and MUST start with a
+    None guard) and Invariant 3 (reuses `_MATERIALITY_THRESHOLD = Decimal("1")`).
+    """
+
+    def test_strips_zero_basis_when_aggregated_values_material(self):
+        """Aggregated row with material cost/proceeds/gain drops zero-basis noise."""
+        entry = _make_entry(
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("200"),
+            gain_loss_eur=Decimal("100"),
+            review_required=True,
+            review_reason="; ".join(
+                [
+                    "Zero EUR value for known crypto asset - test fixture",
+                    _ZERO_COST_REASON,
+                    _ZERO_PROCEEDS_REASON,
+                ]
+            ),
+        )
+
+        required, reason = _re_evaluate_aggregated_review(entry)
+
+        assert required is False
+        assert reason is None
+
+    def test_preserves_zero_basis_when_all_lots_zero(self):
+        """Signal is preserved when the whole disposal really is suspect (cost=proceeds=0)."""
+        entry = _make_entry(
+            cost_eur=Decimal("0"),
+            proceeds_eur=Decimal("0"),
+            gain_loss_eur=Decimal("0"),
+            review_required=True,
+            review_reason="Zero EUR value for known crypto asset - test fixture",
+        )
+
+        required, reason = _re_evaluate_aggregated_review(entry)
+
+        assert required is True
+        assert reason == "Zero EUR value for known crypto asset - test fixture"
+
+    def test_none_review_reason_with_material_values_returns_unchanged(self):
+        """None review_reason on the default clean-disposal path MUST NOT crash.
+
+        Pins the None-guard as the first line of the helper body. Without it,
+        ``None.split("; ")`` crashes the pipeline on the first material clean
+        disposal (every lot ``review_required=False`` produces ``review_reason=None``
+        via ``"; ".join(...) or None`` at aggregation.py:331).
+        """
+        entry = _make_entry(
+            cost_eur=Decimal("10"),
+            proceeds_eur=Decimal("20"),
+            gain_loss_eur=Decimal("10"),
+            review_required=False,
+            review_reason=None,
+        )
+
+        required, reason = _re_evaluate_aggregated_review(entry)
+
+        assert required is False
+        assert reason is None
+
+    def test_preserves_zero_basis_when_only_cost_is_zero(self):
+        """Pins the ``cost_eur > 0`` clause of the materiality gate independently."""
+        entry = _make_entry(
+            cost_eur=Decimal("0"),
+            proceeds_eur=Decimal("200"),
+            gain_loss_eur=Decimal("100"),
+            review_required=True,
+            review_reason=_ZERO_COST_REASON,
+        )
+
+        required, reason = _re_evaluate_aggregated_review(entry)
+
+        assert required is True
+        assert reason == _ZERO_COST_REASON
+
+    def test_preserves_zero_basis_when_only_proceeds_are_zero(self):
+        """Pins the ``proceeds_eur > 0`` clause of the materiality gate independently."""
+        entry = _make_entry(
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("0"),
+            gain_loss_eur=Decimal("100"),
+            review_required=True,
+            review_reason=_ZERO_PROCEEDS_REASON,
+        )
+
+        required, reason = _re_evaluate_aggregated_review(entry)
+
+        assert required is True
+        assert reason == _ZERO_PROCEEDS_REASON
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            "Phantom lot: prior transfer not matched in FIFO",
+            "Operator origin review: unresolved platform",
+            "Homoglyph: asset symbol looks similar to a known ticker",
+            "Missing cost basis with impact: verify Koinly cost data",
+            "Foreign tax parse failure: unexpected withholding format",
+            "OGR override: manual review threshold exceeded",
+            # F5: the negative-proceeds variant shares the "Zero acquisition cost"
+            # stem but flags a distinct fee-heavy-liquidation anomaly. The prefix
+            # tuple narrows on ": " so this reason must SURVIVE aggregation.
+            _ZERO_COST_NEGATIVE_PROCEEDS_REASON,
+        ],
+    )
+    def test_preserves_unrelated_reasons(self, reason: str):
+        """Non-zero-basis reasons survive aggregation unchanged when values are material."""
+        entry = _make_entry(
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("200"),
+            gain_loss_eur=Decimal("100"),
+            review_required=True,
+            review_reason=reason,
+        )
+
+        required, returned_reason = _re_evaluate_aggregated_review(entry)
+
+        assert required is True
+        assert returned_reason == reason
+
+    def test_strips_at_exact_materiality_boundary(self):
+        """Materiality gate is inclusive at exactly ``Decimal("1")`` (boundary ``>=``)."""
+        entry = _make_entry(
+            cost_eur=Decimal("10"),
+            proceeds_eur=Decimal("11"),
+            gain_loss_eur=Decimal("1"),
+            review_required=True,
+            review_reason=_ZERO_COST_REASON,
+        )
+
+        required, reason = _re_evaluate_aggregated_review(entry)
+
+        assert required is False
+        assert reason is None
+
+    def test_preserves_when_gain_just_below_materiality(self):
+        """Gain one cent below the threshold preserves the zero-basis reason (gate fails)."""
+        entry = _make_entry(
+            cost_eur=Decimal("10"),
+            proceeds_eur=Decimal("10.99"),
+            gain_loss_eur=Decimal("0.99"),
+            review_required=True,
+            review_reason=_ZERO_COST_REASON,
+        )
+
+        required, reason = _re_evaluate_aggregated_review(entry)
+
+        assert required is True
+        assert reason == _ZERO_COST_REASON
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            _ZERO_COST_REASON,
+            _ZERO_PROCEEDS_REASON,
+            "Zero EUR value for known crypto asset - test fixture",
+        ],
+    )
+    def test_strips_each_zero_basis_prefix_individually(self, reason: str):
+        """Each of the three zero-basis prefixes is recognized after splitting on ``"; "``.
+
+        Covers the two ``fifo_helpers`` constants PLUS the synthetic literal
+        originating from ``crypto_reporting.py`` (not exercised by the imported
+        constants alone).
+        """
+        entry = _make_entry(
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("200"),
+            gain_loss_eur=Decimal("100"),
+            review_required=True,
+            review_reason=reason,
+        )
+
+        required, returned_reason = _re_evaluate_aggregated_review(entry)
+
+        assert required is False
+        assert returned_reason is None
+
+    @pytest.mark.parametrize(
+        ("joined_reason", "expected"),
+        [
+            # (i) Single survivor: zero-basis reason joined with a phantom-lot reason.
+            (
+                "Zero acquisition cost: verify basis; Phantom lot: prior transfer not matched",
+                "Phantom lot: prior transfer not matched",
+            ),
+            # (ii) Multi-survivor: 3 parts, 2 non-zero-basis survivors + 1 zero-basis.
+            (
+                "Phantom lot: prior transfer not matched; "
+                "Operator origin review: unresolved platform; Zero acquisition cost: verify basis",
+                "Phantom lot: prior transfer not matched; "
+                "Operator origin review: unresolved platform",
+            ),
+        ],
+    )
+    def test_joined_reason_partial_strip(self, joined_reason: str, expected: str):
+        """Partial-strip path preserves surviving clauses in insertion order.
+
+        Case (ii) catches a regression that returns ``[surviving[0]]`` instead of
+        ``surviving`` (passes (i), fails (ii)).
+        """
+        entry = _make_entry(
+            cost_eur=Decimal("100"),
+            proceeds_eur=Decimal("200"),
+            gain_loss_eur=Decimal("100"),
+            review_required=True,
+            review_reason=joined_reason,
+        )
+
+        required, reason = _re_evaluate_aggregated_review(entry)
+
+        assert required is True
+        assert reason == expected
+
+
 # --- _aggregate_capital_entries tests ---
 
 
@@ -1513,6 +1750,141 @@ def test_aggregate_single_lot_no_multi_date_flag():
     aggregated = result[0]
     assert aggregated.multi_acquisition_dates is False
     assert aggregated.notes == ""
+
+
+def test_mixed_lot_aggregated_drops_zero_basis_reason():
+    """Mixed-lot group: one noisy all-zero lot does not poison the aggregated row.
+
+    Pins Invariant 1 (per-lot signal preservation) and Invariant 2 (filter owns
+    both aggregated fields atomically): given a 5-entry group where one lot is
+    all-zero with a zero-basis reason and the other four lots are clean and
+    material, the aggregated entry drops the zero-basis reason entirely.
+    """
+    entries = [
+        _make_entry(
+            disposal_date="2025-02-01",
+            acquisition_date="2024-06-01",
+            asset="USDT",
+            amount=Decimal("10"),
+            cost_eur=Decimal("200"),
+            proceeds_eur=Decimal("220"),
+            gain_loss_eur=Decimal("20"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+            review_required=False,
+        )
+        for _ in range(4)
+    ]
+    entries.append(
+        _make_entry(
+            disposal_date="2025-02-01",
+            acquisition_date="2024-06-01",
+            asset="USDT",
+            amount=Decimal("0.0001"),
+            cost_eur=Decimal("0"),
+            proceeds_eur=Decimal("0"),
+            gain_loss_eur=Decimal("0"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+            review_required=True,
+            review_reason="Zero EUR value for known crypto asset - test fixture",
+        )
+    )
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 1
+    aggregated = result[0]
+    assert aggregated.cost_eur == Decimal("800")
+    assert aggregated.proceeds_eur == Decimal("880")
+    assert aggregated.gain_loss_eur == Decimal("80")
+    assert aggregated.review_required is False
+    assert aggregated.review_reason is None
+
+
+def test_all_zero_lot_group_preserves_zero_basis_reason():
+    """All-zero-lot group: the aggregated row preserves the zero-basis reason.
+
+    The materiality gate (``cost > 0 AND proceeds > 0 AND |gain| >= 1``) fails
+    for a fully all-zero disposal, so the per-lot signal is preserved end-to-end.
+    """
+    entries = [
+        _make_entry(
+            disposal_date="2025-02-01",
+            acquisition_date="2024-06-01",
+            asset="USDT",
+            amount=Decimal("0.0001"),
+            cost_eur=Decimal("0"),
+            proceeds_eur=Decimal("0"),
+            gain_loss_eur=Decimal("0"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+            review_required=True,
+            review_reason="Zero EUR value for known crypto asset - test fixture",
+        )
+        for _ in range(3)
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 1
+    aggregated = result[0]
+    assert aggregated.review_required is True
+    assert aggregated.review_reason is not None
+    assert "Zero EUR value for known crypto asset" in aggregated.review_reason
+
+
+def test_phantom_lot_reason_survives_mixed_aggregation():
+    """Non-zero-basis reason survives aggregation in a mixed-lot group.
+
+    The phantom-lot reason is preserved while the zero-basis reason is stripped:
+    the filter splits on ``"; "`` and drops only zero-basis prefixes.
+    """
+    entries = [
+        _make_entry(
+            disposal_date="2025-02-01",
+            acquisition_date="2024-06-01",
+            asset="USDT",
+            amount=Decimal("10"),
+            cost_eur=Decimal("200"),
+            proceeds_eur=Decimal("220"),
+            gain_loss_eur=Decimal("20"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+            review_required=True,
+            review_reason="Phantom lot: prior transfer not matched in FIFO",
+        ),
+        _make_entry(
+            disposal_date="2025-02-01",
+            acquisition_date="2024-06-01",
+            asset="USDT",
+            amount=Decimal("0.0001"),
+            cost_eur=Decimal("0"),
+            proceeds_eur=Decimal("0"),
+            gain_loss_eur=Decimal("0"),
+            holding_period="Short term",
+            wallet="ByBit",
+            platform="ByBit",
+            chain="ETH",
+            review_required=True,
+            review_reason="Zero EUR value for known crypto asset - test fixture",
+        ),
+    ]
+
+    result = _aggregate_capital_entries(entries)
+
+    assert len(result) == 1
+    aggregated = result[0]
+    assert aggregated.review_required is True
+    assert aggregated.review_reason == "Phantom lot: prior transfer not matched in FIFO"
 
 
 # --- _filter_immaterial_entries tests ---
@@ -6297,7 +6669,7 @@ def test_extract_loan_activity_with_settled_loan(tmp_path):
     assert entry.received_value_eur == Decimal("500.00")
     assert entry.repaid_count == 1
     assert entry.repaid_amount == Decimal("100.00")
-    assert entry.balance_status == "Settled"
+    assert entry.balance_status == LOAN_STATUS_SETTLED
     assert entry.balance_amount == Decimal("0")
 
 
@@ -6363,12 +6735,12 @@ def test_extract_loan_activity_open_loan_status(tmp_path):
     )
     entries = _extract_loan_activity(path)
     assert len(entries) == 1
-    assert entries[0].balance_status == "Open loan"
+    assert entries[0].balance_status == LOAN_STATUS_OPEN_LOAN
     assert entries[0].balance_amount == Decimal("100.00")
 
 
-def test_extract_loan_activity_overpaid_status(tmp_path):
-    """More repaid than received produces 'Overpaid' balance status."""
+def test_extract_loan_activity_overpaid_verify_status(tmp_path):
+    """More repaid than received (100% overshoot) routes to LOAN_STATUS_OVERPAID_VERIFY (branch (d))."""
     from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
 
     path = _write_transaction_history(
@@ -6380,26 +6752,283 @@ def test_extract_loan_activity_overpaid_status(tmp_path):
     )
     entries = _extract_loan_activity(path)
     assert len(entries) == 1
-    assert entries[0].balance_status == "Overpaid (cross-year loan?)"
+    assert entries[0].balance_status == LOAN_STATUS_OVERPAID_VERIFY
     assert entries[0].balance_amount == Decimal("-50.00")
 
 
+@pytest.mark.unit
+class TestExtractLoanActivityClassification:
+    """Invariant-4 five-sentinel classifier: four branches (b)/(a)/(c)/(d) plus unchanged Settled/Open-loan.
 
-    """An exchange row tagged 'Loan' must not be counted as a loan receipt."""
-    from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
+    These tests call ``_extract_loan_activity`` via TH CSV fixtures (matching the
+    ``test_extract_loan_activity_*`` pattern above) so they exercise the real
+    production classifier. Branch coverage lives here, not in the sheet tests.
+    """
 
-    path = _write_transaction_history(
-        tmp_path,
-        [
+    def test_small_overshoot_with_eur_classified_as_in_asset_interest(self, tmp_path):
+        """Branch (c): overshoot_pct <= LOAN_OVERSHOOT_INTEREST_PCT -> IN_ASSET_INTEREST.
+
+        Two fixtures pin both the production shape and the ROUND_HALF_UP rounding mode:
+        (i) production-shape amounts (0.585270...% -> 0.5853% at 4dp);
+        (ii) a discriminating fixture whose 5th decimal digit is exactly 5 with an even
+        predecessor (0.58525%), where ROUND_HALF_UP yields 0.5853 but ROUND_HALF_EVEN
+        would yield 0.5852. Case (ii) is the one that actually pins the rounding mode.
+        """
+        from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
+
+        cases = [
+            # (i) Production-shape: 0.06187 vs 0.06151 -> 0.585270...% -> "overshoot 0.5853%"
             (
-                '2025-01-10 10:00:00 UTC,exchange,Loan,'
-                'ByBit,50.00,BTC,25.00,Kraken,100.00,SUI,50.00,,,300.00,,"","","",""'
+                "0.06151",
+                "0.06187",
+                "4697.96",
+                "4712.19",
             ),
+            # (ii) Discriminating: 10058.525 vs 10000 -> 0.58525% -> ROUND_HALF_UP -> 0.5853
+            (
+                "10000",
+                "10058.525",
+                "1000.00",
+                "1005.85",
+            ),
+        ]
+        for received_amount, repaid_amount, received_value_eur, repaid_value_eur in cases:
+            path = _write_transaction_history(
+                tmp_path,
+                [
+                    (
+                        f'2025-01-10 10:00:00 UTC,crypto_deposit,Loan,,,,,ByBit,'
+                        f'{received_amount},SUI,1.00,,,,{received_value_eur},,"","","",""'
+                    ),
+                    # Repayment row: Net Value (EUR) at column 15 (8 commas after Sent Cost
+                    # Basis), matching the settled-loan fixture shape so the bound
+                    # ``repaid_value_eur`` actually reaches ``entry.repaid_value_eur``.
+                    (
+                        f'2025-06-15 10:00:00 UTC,crypto_withdrawal,Loan repayment,ByBit,'
+                        f'{repaid_amount},SUI,1.00,,,,,,,,{repaid_value_eur},,"","","",""'
+                    ),
+                ],
+            )
+            entries = _extract_loan_activity(path)
+            assert len(entries) == 1, f"fixture amounts={received_amount}/{repaid_amount}"
+            assert entries[0].balance_status == LOAN_STATUS_IN_ASSET_INTEREST, (
+                f"fixture amounts={received_amount}/{repaid_amount}"
+            )
+            assert entries[0].balance_detail == "overshoot 0.5853%", (
+                f"fixture amounts={received_amount}/{repaid_amount}"
+            )
+
+    def test_no_eur_price_classified_as_cannot_classify(self, tmp_path):
+        """Branch (a): received_value_eur == 0 (and received_amount > 0) -> NO_EUR_PRICE.
+
+        ``received_amount > 0`` is load-bearing: branch (b) (received_amount == 0 AND
+        repaid_amount > 0) is evaluated FIRST and would route to OVERPAID_VERIFY, so a
+        fixture with received_amount == 0 would go RED for the wrong reason.
+        """
+        from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
+
+        path = _write_transaction_history(
+            tmp_path,
+            [
+                # Receipt: Net Value (EUR) = 0 (LBTC-shaped); received_amount > 0.
+                '2025-01-10 10:00:00 UTC,crypto_deposit,Loan,,,,,ByBit,1.00,LBTC,0,,,,0,,"","","",""',
+                # Repayment: Net Value (EUR) = 0 at column 15 (lesson #59); repaid_amount
+                # slightly MORE than received so balance < ZERO and the classifier enters
+                # the overshoot branches, where branch (a) (received_value_eur == 0) fires.
+                '2025-06-15 10:00:00 UTC,crypto_withdrawal,Loan repayment,ByBit,1.01,LBTC,0,,,,,,,,0,,,,,"","","",""',
+            ],
+        )
+        entries = _extract_loan_activity(path)
+        assert len(entries) == 1
+        assert entries[0].balance_status == LOAN_STATUS_NO_EUR_PRICE
+        # F14: branch (a) intentionally leaves detail at its None default (no
+        # overshoot string is meaningful without a EUR price). Pin that default
+        # so a future edit setting detail inside this branch is caught.
+        assert entries[0].balance_detail is None
+
+    def test_large_overshoot_routes_to_overpaid_verify(self, tmp_path):
+        """Branch (d): overshoot_pct > LOAN_OVERSHOOT_INTEREST_PCT -> OVERPAID_VERIFY (5.0% overshoot)."""
+        from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
+
+        path = _write_transaction_history(
+            tmp_path,
+            [
+                # Receipt 100 SUI with Net Value (EUR) > 0 so received_value_eur > 0.
+                '2025-01-10 10:00:00 UTC,crypto_deposit,Loan,,,,,ByBit,100.00,SUI,50.00,,,,500.00,,"","","",""',
+                # Repayment 105 SUI: 5.0% overshoot -> OVERPAID_VERIFY. Net Value (EUR)
+                # at column 15 (8 commas after Sent Cost Basis) so repaid_value_eur > 0.
+                (
+                    '2025-06-15 10:00:00 UTC,crypto_withdrawal,Loan repayment,ByBit,'
+                    '105.00,SUI,52.50,,,,,,,,525.00,,"","","",""'
+                ),
+            ],
+        )
+        entries = _extract_loan_activity(path)
+        assert len(entries) == 1
+        assert entries[0].balance_status == LOAN_STATUS_OVERPAID_VERIFY
+        # F2: pin the user-visible 4dp overshoot string the classifier produces on
+        # branch (d) (the path reviewers act on). Computes the expected literal from
+        # the fixture amounts so a quantize/format regression fails here, not only
+        # at the sheet echo. 5.0% overshoot -> "overshoot 5.0000%".
+        expected_pct = (
+            (abs(Decimal("105.00") - Decimal("100.00")) / Decimal("100.00") * 100)
+            .quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+        )
+        assert entries[0].balance_detail == f"overshoot {expected_pct}%"
+
+    @pytest.mark.parametrize(
+        ("received_amount", "repaid_amount", "expected_status"),
+        [
+            # 0.99% overshoot -> IN_ASSET_INTEREST (strictly below boundary)
+            ("100", "100.99", LOAN_STATUS_IN_ASSET_INTEREST),
+            # 1.00% overshoot -> IN_ASSET_INTEREST (boundary inclusive: <=)
+            ("100", "101", LOAN_STATUS_IN_ASSET_INTEREST),
+            # 1.01% overshoot -> OVERPAID_VERIFY (strictly above boundary)
+            ("100", "101.01", LOAN_STATUS_OVERPAID_VERIFY),
         ],
     )
+    def test_overshoot_boundary_1pct_inclusive(
+        self, tmp_path, received_amount, repaid_amount, expected_status
+    ):
+        """Boundary predicate ``overshoot_pct <= LOAN_OVERSHOOT_INTEREST_PCT`` is inclusive at 1.00%.
 
-    entries = _extract_loan_activity(path)
-    assert entries == []
+        All three cases carry received_value_eur > 0 (Net Value (EUR) populated on the
+        receipt row); branch (a) (received_value_eur == 0 -> NO_EUR_PRICE) fires BEFORE
+        branch (c), so a zero-EUR fixture would route all three cases to NO_EUR_PRICE and
+        the test would go RED for the wrong reason.
+        """
+        from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
+
+        # Invariant 5: the threshold is Decimal("1"); pin it so an accidental edit to the
+        # constant flips the boundary cases below for the right reason rather than silently
+        # shifting where the IN_ASSET_INTEREST / OVERPAID_VERIFY split lands.
+        assert Decimal("1") == LOAN_OVERSHOOT_INTEREST_PCT
+
+        path = _write_transaction_history(
+            tmp_path,
+            [
+                (
+                    f'2025-01-10 10:00:00 UTC,crypto_deposit,Loan,,,,,ByBit,'
+                    f'{received_amount},SUI,50.00,,,,500.00,,"","","",""'
+                ),
+                # Repayment row: Net Value (EUR) at column 15 (8 commas after Sent Cost
+                # Basis), matching the settled-loan fixture shape so repaid_value_eur > 0.
+                (
+                    f'2025-06-15 10:00:00 UTC,crypto_withdrawal,Loan repayment,ByBit,'
+                    f'{repaid_amount},SUI,50.00,,,,,,,,500.00,,"","","",""'
+                ),
+            ],
+        )
+        entries = _extract_loan_activity(path)
+        assert len(entries) == 1
+        assert entries[0].balance_status == expected_status
+
+    @pytest.mark.parametrize(
+        ("received_amount", "repaid_amount", "expected_status", "expected_detail"),
+        [
+            # F1: raw_pct straddles 1.00% but pct rounds to 1.0000. The branch
+            # decision must use the rounded pct (what the reviewer sees), so the
+            # rendered detail and the status agree. raw_pct=0.99996 -> pct=1.0000 ->
+            # IN_ASSET_INTEREST (pct <= 1); display "overshoot 1.0000%".
+            ("100", "100.99996", LOAN_STATUS_IN_ASSET_INTEREST, "overshoot 1.0000%"),
+            # raw_pct=1.00004 -> pct=1.0000 -> IN_ASSET_INTEREST (pct <= 1). Before
+            # the fix this routed to OVERPAID_VERIFY (raw_pct > 1) while rendering
+            # the identical "overshoot 1.0000%", so display and fill disagreed.
+            ("100", "101.00004", LOAN_STATUS_IN_ASSET_INTEREST, "overshoot 1.0000%"),
+            # raw_pct=1.00006 -> pct=1.0001 -> OVERPAID_VERIFY (pct > 1); display
+            # "overshoot 1.0001%". Sanity that values genuinely above 1.00% still
+            # route to verify once pct crosses the threshold.
+            ("100", "101.00006", LOAN_STATUS_OVERPAID_VERIFY, "overshoot 1.0001%"),
+        ],
+    )
+    def test_overshoot_precision_display_agrees_with_decision(
+        self, tmp_path, received_amount, repaid_amount, expected_status, expected_detail
+    ):
+        """F1: the branch decision uses the rounded ``pct`` so display and fill agree.
+
+        The reviewer reads the 4dp ``balance_detail`` to verify the fill color. If
+        the decision used unrounded ``raw_pct`` while the display used rounded
+        ``pct``, two rows with identical visible detail could land on opposite sides
+        of the in-asset-interest vs verify split. This pins that the rendered value
+        and the routing decision use the same number.
+        """
+        from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
+
+        path = _write_transaction_history(
+            tmp_path,
+            [
+                (
+                    f'2025-01-10 10:00:00 UTC,crypto_deposit,Loan,,,,,ByBit,'
+                    f'{received_amount},SUI,50.00,,,,500.00,,"","","",""'
+                ),
+                (
+                    f'2025-06-15 10:00:00 UTC,crypto_withdrawal,Loan repayment,ByBit,'
+                    f'{repaid_amount},SUI,50.00,,,,,,,,500.00,,"","","",""'
+                ),
+            ],
+        )
+        entries = _extract_loan_activity(path)
+        assert len(entries) == 1
+        assert entries[0].balance_status == expected_status, (
+            f"amounts={received_amount}/{repaid_amount}: status should match the rounded pct"
+        )
+        assert entries[0].balance_detail == expected_detail
+
+    def test_repayment_only_asset_routes_to_overpaid_verify(self, tmp_path):
+        """Branch (b): received_amount == 0 AND repaid_amount > 0 -> OVERPAID_VERIFY (short-circuits branch (a)).
+
+        Per Invariant 4, branch (b) is evaluated FIRST and short-circuits before branch
+        (a) checks received_value_eur == 0; therefore received_value_eur == 0 has NO
+        effect on a repayment-only row.
+        """
+        from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
+
+        path = _write_transaction_history(
+            tmp_path,
+            [
+                # Repayment-only: no receipt row, so received_amount == 0; repaid_amount > 0.
+                # Net Value (EUR) = 0 at column 15 (lesson #59).
+                '2025-06-15 10:00:00 UTC,crypto_withdrawal,Loan repayment,ByBit,0.031,WBTC,0,,,,,,,,0,,,,,"","","",""',
+            ],
+        )
+        entries = _extract_loan_activity(path)
+        assert len(entries) == 1
+        assert entries[0].balance_status == LOAN_STATUS_OVERPAID_VERIFY
+        assert entries[0].balance_detail == "received_amount=0; repayment-only asset"
+
+    def test_settled_and_open_loan_unchanged(self, tmp_path):
+        """Regression guard: balance == ZERO -> SETTLED, balance > ZERO -> OPEN_LOAN; balance_detail is None."""
+        from tax_reporting.application.crypto.loan_activity import _extract_loan_activity
+
+        # Settled: equal received/repaid.
+        settled_path = _write_transaction_history(
+            tmp_path,
+            [
+                '2025-01-10 10:00:00 UTC,crypto_deposit,Loan,,,,,ByBit,100.00,SUI,50.00,,,,500.00,,"","","",""',
+                # Repayment row: Net Value (EUR) at column 15 (8 commas after Sent Cost
+                # Basis) so repaid_value_eur mirrors received_value_eur (lesson #59).
+                (
+                    '2025-06-15 10:00:00 UTC,crypto_withdrawal,Loan repayment,ByBit,'
+                    '100.00,SUI,50.00,,,,,,,,500.00,,"","","",""'
+                ),
+            ],
+        )
+        settled_entries = _extract_loan_activity(settled_path)
+        assert len(settled_entries) == 1
+        assert settled_entries[0].balance_status == LOAN_STATUS_SETTLED
+        assert settled_entries[0].balance_detail is None
+
+        # Open loan: more received than repaid.
+        open_path = _write_transaction_history(
+            tmp_path,
+            [
+                '2025-01-10 10:00:00 UTC,crypto_deposit,Loan,,,,,ByBit,100.00,SUI,50.00,,,,500.00,,"","","",""',
+            ],
+        )
+        open_entries = _extract_loan_activity(open_path)
+        assert len(open_entries) == 1
+        assert open_entries[0].balance_status == LOAN_STATUS_OPEN_LOAN
+        assert open_entries[0].balance_detail is None
 
 
 # ---------------------------------------------------------------------------

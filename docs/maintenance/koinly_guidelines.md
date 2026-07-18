@@ -24,6 +24,17 @@ For the Portuguese legal analysis, jurisdiction comparison, and manual workaroun
 
 Country-specific decision point: PT excludes loan repayment gains per CIRS art. 10(20); see `docs/maintenance/tax/decision_points/2025.md` DP-001 for the multi-jurisdiction comparison and verified source set.
 
+### Loan-repayment overshoot classification (amount-space, five sentinels)
+
+The Loan Activity sheet classifies each loan-affected asset's balance via `_extract_loan_activity` in `application/crypto/loan_activity.py`. Classification uses **amount-space overshoot** (`abs(repaid_amount - received_amount) / received_amount * 100`), NOT EUR-space, because Koinly leaves `Net Value (EUR) == 0` for some loan-affected assets (e.g. LBTC), so any EUR-based percentage is undefined. The classifier emits one of FIVE loan-status sentinels (constants in `domain/constants.py`) under four precedence branches:
+
+- (b) **Repayment-only** (`received_amount == 0 AND repaid_amount > 0`) -> `LOAN_STATUS_OVERPAID_VERIFY` (cell value `"Overpaid (cross-year loan? verify)"`; the sheet's R1 note-cell uses the short label `"Overpaid (verify)"` as a legend). Overshoot is unbounded because there is no principal to divide by; this branch wins over (a) when both conditions hold.
+- (a) **No EUR price** (`received_value_eur == 0`) -> `LOAN_STATUS_NO_EUR_PRICE` (`"Cannot classify: no EUR price data"`).
+- (c) **In-asset interest** (`overshoot_pct <= LOAN_OVERSHOOT_INTEREST_PCT`) -> `LOAN_STATUS_IN_ASSET_INTEREST` (`"Likely in-asset interest"`). A DeFi variable-rate loan accrues interest in the borrowed asset, so `repaid_amount` exceeds `received_amount` by a small percentage with no cross-year anomaly.
+- (d) **Large overshoot** (otherwise) -> `LOAN_STATUS_OVERPAID_VERIFY` (same cell value and note-cell legend as branch (b)). Branches (b) and (d) BOTH route to `LOAN_STATUS_OVERPAID_VERIFY`; there is no sixth sentinel.
+
+The two non-overshoot sentinels are `LOAN_STATUS_SETTLED` (`"Settled"`, balance == 0) and `LOAN_STATUS_OPEN_LOAN` (`"Open loan"`, received > repaid). The threshold `LOAN_OVERSHOOT_INTEREST_PCT = Decimal("1")` (1.0%) is a module-level constant in `loan_activity.py` co-located with its sole production caller; the boundary `<=` is inclusive at exactly 1.00%. The overshoot percentage is rendered to a sibling `balance_detail` field (4dp, `ROUND_HALF_UP`), NOT interpolated into the sentinel. Excel fills: Settled / Open loan / In-asset interest -> neutral; No-EUR-price -> yellow; Overpaid-verify -> light-red. See plan `docs/history/plans/completed/2026-07-15-review-flag-aggregation-boundary.md` Task 2 for the design invariants.
+
 ---
 
 ## Section 4 -- FIFO Rebuild for Loan-Affected Assets

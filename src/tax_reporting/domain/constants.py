@@ -50,5 +50,11 @@ ZERO_QUANTITY = 0
 DECIMAL_ZERO = Decimal("0")
 
 
-# Loan activity status sentinel
-LOAN_STATUS_OVERPAID: Final = "Overpaid (cross-year loan?)"
+# Loan activity status sentinels (Invariant 6: balance_status is a closed set of sentinels;
+# varying text such as the overshoot percentage goes in LoanActivityEntry.balance_detail).
+# Fill mapping in loan_activity_sheet.py matches against these constants by exact equality.
+LOAN_STATUS_SETTLED: Final = "Settled"
+LOAN_STATUS_OPEN_LOAN: Final = "Open loan"
+LOAN_STATUS_IN_ASSET_INTEREST: Final = "Likely in-asset interest"
+LOAN_STATUS_NO_EUR_PRICE: Final = "Cannot classify: no EUR price data"
+LOAN_STATUS_OVERPAID_VERIFY: Final = "Overpaid (cross-year loan? verify)"

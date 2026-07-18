@@ -51,8 +51,9 @@ The generated workbook contains the following sections. Detail lives here so `AG
 - Loan repayment disposals excluded from capital gains when `TaxJurisdictionConfig.exclude_loan_repayment_gains` is `True` (PT default)
 
 ### Loan Activity Section
-- Per-asset loan balance summary: received count/amount/value, repaid count/amount/value, and balance status
-- Overpaid balances (cross-year loan repayment) highlighted with light-red fill
+- Per-asset loan balance summary: received count/amount/value, repaid count/amount/value, balance status, and a sibling balance-detail column carrying the rendered overshoot percentage
+- Each asset's balance status is one of FIVE loan-status sentinels (`LOAN_STATUS_SETTLED` / `LOAN_STATUS_OPEN_LOAN` / `LOAN_STATUS_IN_ASSET_INTEREST` / `LOAN_STATUS_NO_EUR_PRICE` / `LOAN_STATUS_OVERPAID_VERIFY`), rendered in column 9 verbatim as `Settled` / `Open loan` / `Likely in-asset interest` / `Cannot classify: no EUR price data` / `Overpaid (cross-year loan? verify)` respectively. The sheet's R1 note-cell legend abbreviates the last as `Overpaid (verify)`; the data cell carries the full sentinel
+- Three fill colors across the five sentinels: `Settled`, `Open loan`, and `Likely in-asset interest` -> neutral (no fill); `Cannot classify: no EUR price data` -> yellow fill; `Overpaid (cross-year loan? verify)` -> light-red fill. The `Overpaid (cross-year loan? verify)` sentinel arises from two classifier branches (large overshoot and repayment-only) but maps to a single light-red fill
 - Populated from Koinly loan transaction data
 - "FIFO Rebuild Scope" section below the loan data lists which assets were rebuilt from Transaction History (loan-affected assets per CIRS art. 10(20)); shows "None" when FIFO rebuild was not active. `CryptoTaxReport.fifo_rebuild_assets` carries this frozenset.
 

@@ -40,6 +40,23 @@ _MATERIALITY_THRESHOLD: Final = Decimal("1")
 # OGR validation threshold constants
 _OGR_MAGNITUDE_DIFF_THRESHOLD: Final = 5
 
+# Zero-basis review reason prefixes stripped from aggregated rows whose values
+# are non-zero and material. Matched via ``startswith`` against the split parts
+# so minor upstream-prose edits (e.g. rewording the trailing "likely Koinly
+# tracking entry or data error" tail) do not silently break the strip set.
+# Per-lot signals stay in ``context.review_entries`` and the WARNING log; this
+# filter only re-derives the user-visible aggregated row's flag.
+#
+# The cost/proceeds prefixes include the trailing ": " so the more-severe
+# "_ZERO_COST_NEGATIVE_PROCEEDS_REASON" ("Zero acquisition cost with negative
+# disposal proceeds: ...") is NOT stripped: it flags a distinct fee-heavy
+# liquidation / data anomaly whose guidance must survive aggregation.
+_ZERO_BASIS_REASON_PREFIXES: Final[tuple[str, ...]] = (
+    "Zero EUR value for known crypto asset",
+    "Zero acquisition cost: ",
+    "Zero disposal proceeds: ",
+)
+
 
 
 
@@ -261,6 +278,46 @@ def _aggregate_ogr_validation(group: list[CryptoCapitalGainEntry]) -> OgrValidat
     )
 
 
+def _re_evaluate_aggregated_review(
+    entry: CryptoCapitalGainEntry,
+) -> tuple[bool, str | None]:
+    """Re-evaluate the aggregated disposal row's review flag from aggregated values.
+
+    Per-lot zero-basis signals stay in ``context.review_entries`` and the WARNING
+    log; this filter only re-derives the user-visible aggregated row's flag so a
+    single noisy lot inside a material disposal does not poison the aggregated
+    row.
+
+    Gate (all three must hold): ``cost_eur > 0 AND proceeds_eur > 0 AND
+    abs(gain_loss_eur) >= _MATERIALITY_THRESHOLD``. When the gate holds, split
+    the joined reason on ``"; "``, drop parts whose prefix matches a zero-basis
+    reason, and return ``(False, None)`` if no parts survive, else
+    ``(True, "; ".join(surviving))``. Otherwise return the entry's flag
+    unchanged.
+
+    The None guard on the first line is load-bearing: the default clean-disposal
+    production path produces ``review_reason=None`` via ``"; ".join(...) or None``
+    in :func:`_aggregate_capital_entries`, and without the guard the materiality
+    gate would dereference ``None.split("; ")`` and crash.
+    """
+    if entry.review_reason is None:
+        return entry.review_required, entry.review_reason
+    if (
+        entry.cost_eur > 0
+        and entry.proceeds_eur > 0
+        and abs(entry.gain_loss_eur) >= _MATERIALITY_THRESHOLD
+    ):
+        surviving = [
+            part
+            for part in entry.review_reason.split("; ")
+            if not part.startswith(_ZERO_BASIS_REASON_PREFIXES)
+        ]
+        if not surviving:
+            return False, None
+        return True, "; ".join(surviving)
+    return entry.review_required, entry.review_reason
+
+
 def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[CryptoCapitalGainEntry]:
     """Aggregate FIFO lot rows into one line per sale event (same date + asset + platform + holding_period).
 
@@ -319,21 +376,28 @@ def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[Cr
         # Aggregate OGR validation results across lots
         ogr_validation = _aggregate_ogr_validation(group)
 
+        aggregated_entry = replace(
+            first,
+            amount=sum((e.amount for e in group), start=ZERO),
+            cost_eur=sum((e.cost_eur for e in group), start=ZERO),
+            proceeds_eur=sum((e.proceeds_eur for e in group), start=ZERO),
+            gain_loss_eur=sum((e.gain_loss_eur for e in group), start=ZERO),
+            acquisition_date=acquisition_date,
+            review_required=any(e.review_required for e in group),
+            review_reason="; ".join(dict.fromkeys(e.review_reason for e in group if e.review_reason)) or None,
+            notes=merged_notes,
+            token_swap_history=_aggregate_origin_field(group),
+            multi_acquisition_dates=multi_acquisition_dates,
+            ogr_validation=ogr_validation,
+        )
+        # Re-evaluate the aggregated row's review flag from the aggregated
+        # values (Invariant 2): a single noisy lot inside a material disposal
+        # must not poison the user-visible row. Apply BOTH fields in a single
+        # ``replace`` call -- ``CryptoCapitalGainEntry.__post_init__`` rejects
+        # ``review_required=True AND review_reason=None``.
+        review_required, review_reason = _re_evaluate_aggregated_review(aggregated_entry)
         result.append(
-            replace(
-                first,
-                amount=sum((e.amount for e in group), start=ZERO),
-                cost_eur=sum((e.cost_eur for e in group), start=ZERO),
-                proceeds_eur=sum((e.proceeds_eur for e in group), start=ZERO),
-                gain_loss_eur=sum((e.gain_loss_eur for e in group), start=ZERO),
-                acquisition_date=acquisition_date,
-                review_required=any(e.review_required for e in group),
-                review_reason="; ".join(dict.fromkeys(e.review_reason for e in group if e.review_reason)) or None,
-                notes=merged_notes,
-                token_swap_history=_aggregate_origin_field(group),
-                multi_acquisition_dates=multi_acquisition_dates,
-                ogr_validation=ogr_validation,
-            )
+            replace(aggregated_entry, review_required=review_required, review_reason=review_reason)
         )
     result.sort(key=lambda e: (e.disposal_date, e.asset, e.platform, e.holding_period))
     return result

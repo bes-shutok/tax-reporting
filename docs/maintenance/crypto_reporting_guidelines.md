@@ -109,6 +109,17 @@ Distinguish between platform-level review concerns and row-level review flags:
 
 **Test fixture rule:** Tests that verify row-level "YES:"/"NO" rendering must use explicit hardcoded `review_required` / `review_reason` values on the entry, not delegate to `origin.review_required`. The latter changes when the platform mapping changes and will silently break the rendering test.
 
+**CRG-020**
+Re-evaluate the aggregated row's review flag against the aggregated state, not against the per-lot state. When `_aggregate_capital_entries` joins per-lot `review_reason` values into the aggregated disposal row, the joined reason is a pre-filter input, not the final word: `_re_evaluate_aggregated_review` (inlined in `aggregation.py`) then re-derives the aggregated entry's `review_required` / `review_reason` from the aggregated `cost_eur`, `proceeds_eur`, and `gain_loss_eur`.
+
+- **Zero-basis reasons are dropped** from the aggregated row when the aggregated values are material: `cost_eur > 0 AND proceeds_eur > 0 AND abs(gain_loss_eur) >= _MATERIALITY_THRESHOLD` (= `Decimal("1")`, reused from `_filter_immaterial_entries`). Zero-basis reasons are matched by stable prefix (`"Zero EUR value for known crypto asset"`, `"Zero acquisition cost"`, `"Zero disposal proceeds"`), not by full-string equality, so minor wording edits to the upstream literals do not silently break the strip set. A single noisy lot (e.g. one Koinly `FEE` tracking entry, or one reward lot with no price data) inside a 109-lot disposal no longer flags the aggregated row.
+- **Non-zero-basis reasons survive aggregation unchanged.** Reasons unrelated to zero basis (phantom lot, operator-origin review, homoglyph, OGR override, missing-cost-basis-with-impact, foreign-tax parse failure) are preserved on the aggregated row when material.
+- **Per-lot signals are not silenced.** The lot-level `review_required` / `review_reason` on `CryptoCapitalGainEntry` and `CryptoFifoRealization` remain set as before; the dropped per-lot noise still appears in `context.review_entries` and the WARNING log. The Excel aggregated row is the only thing cleaned up. No data is silently lost.
+- **Materiality gate is a single constant.** Reuse `_MATERIALITY_THRESHOLD`; do not introduce a second materiality constant for the review-flag gate.
+- **Both fields are owned atomically by the helper.** `_re_evaluate_aggregated_review` returns `(review_required, review_reason)` and the caller applies both in a single `replace(...)` call; `CryptoCapitalGainEntry.__post_init__` raises on the inconsistent pair `review_required=True AND review_reason=None`, so partial application crashes the pipeline. The helper also short-circuits on `review_reason is None` (the default clean-disposal path) before touching the materiality gate.
+
+Cross-reference: plan `docs/history/plans/completed/2026-07-15-review-flag-aggregation-boundary.md`, `crypto_implementation_guidelines.md` "Aggregation of review_reason" (the joined-reason reduction is the pre-filter input CRG-020 re-derives from).
+
 ## Other Gains Report (OGR) Validation
 
 **CRG-017**
