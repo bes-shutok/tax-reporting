@@ -1,0 +1,4 @@
+Transaction report 2025
+
+Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),TxSrc,TxDest,TxHash,Description
+2025-05-01 10:00:00 UTC,exchange,,Wirex,"5,00",EUR,"5,00",Wirex,"1,00000000",USD,"5,00",,,"0,00","5,00","0,00",,,,USD spot purchase (priced row so a zero-value USD income reward stays is_known)

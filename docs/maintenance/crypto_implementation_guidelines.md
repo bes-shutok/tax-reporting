@@ -410,6 +410,8 @@ Every crypto entry that sets `review_required=True` must also populate `review_r
 | `_parse_capital_gains_file()` | Missing cost basis with proceeds > 0 | "Missing cost basis with tax impact - verify cost calculation" |
 | `_parse_income_file()` | Foreign tax field unparseable | "Foreign tax field could not be parsed - verify tax credit manually" |
 
+**Koinly tracking-token skip.** `_parse_capital_gains_file` skips rows whose asset is in `_KOINLY_TRACKING_TOKENS` (currently `{"FEE"}`) AND whose `Cost=Proceeds=Gain=0.0`. These are Koinly's internal fee-accrual tracking entries, not user-held assets. The `is_all_zero` clause is load-bearing, a hypothetical non-zero FEE row flows through normal CG processing. Adding a token requires updating the set-contents test (`TestKoinlyTrackingTokensSet#test_set_contents_pinned`).
+
 ### Aggregation of review_reason
 
 When entries are aggregated by `_aggregate_capital_entries()`, multiple distinct reasons are joined with "; " using `dict.fromkeys()` to deduplicate while preserving order:
@@ -419,6 +421,8 @@ review_reason="; ".join(dict.fromkeys(e.review_reason for e in group if e.review
 ```
 
 This joined reason is the **pre-filter input**, not the final word on the aggregated row's review fields. `_re_evaluate_aggregated_review` (inlined in `aggregation.py`) re-derives `review_required` / `review_reason` from the aggregated values, dropping zero-basis reasons when material and preserving non-zero-basis reasons; per-lot signals are NOT silenced (lot flags stay set, noise stays in `context.review_entries` + the WARNING log). See CRG-020 for the principle.
+
+**Reward dust partition (CRG-021).** The Crypto Supplementary sheet (Section 2) collapses zero-value taxable-now reward rows into a per-`(asset, wallet)` dust summary when the asset has at least one priced row in the export. The discriminator is `value_eur > 0` anywhere in `reward_entries`, NOT popular-token-set membership (the popular set has a different purpose; see CRG-021). The partition is presentation-layer only; it does not mutate `reward_entries` or change totals. Section 4 reconciliation splits into `("Taxable-now detail rows", N)` and `("Taxable-now dust rows (suppressed from detail)", M)`. The discriminator-regression guard is the direct unit test `TestPartitionTaxableNow` (no count-equality invariant, see plan's "dropped count-check guard" note).
 
 ### Lessons Learned
 

@@ -124,6 +124,51 @@ def _write_review_rows(
     return row_no
 
 
+def _partition_taxable_now(
+    taxable_now_entries: list[CryptoRewardIncomeEntry],
+    reward_entries: list[CryptoRewardIncomeEntry],
+) -> tuple[list[CryptoRewardIncomeEntry], list[CryptoRewardIncomeEntry]]:
+    """Split taxable-now entries into (real_rows, dust_rows).
+
+    Dust = zero-value rows on assets that have at least one priced row elsewhere
+    in the export (Koinly 2-decimal rounding artifact). Genuinely-unpriced assets
+    (every row zero) keep per-row YES; they stay in real_rows.
+    See CRG-021.
+
+    ``taxable_now_entries`` is passed explicitly (not rebuilt from reward_entries)
+    so the caller's local stays the single source of truth for line 236's
+    taxable_now_total_eur (r2 Blocker #2). The discriminator guard is the direct
+    unit test `TestPartitionTaxableNow` (Task 3), not a count-check on this list.
+    """
+    priced_assets_in_export = {e.asset for e in reward_entries if e.value_eur > 0}
+    dust_rows = [e for e in taxable_now_entries if e.value_eur == 0 and e.asset in priced_assets_in_export]
+    real_rows = [e for e in taxable_now_entries if not (e.value_eur == 0 and e.asset in priced_assets_in_export)]
+    return real_rows, dust_rows
+
+
+def _write_dust_summary_block(
+    worksheet: openpyxl.worksheet.worksheet.Worksheet,
+    row_no: int,
+    dust_rows: list[CryptoRewardIncomeEntry],
+) -> int:
+    """Write the per-(asset, wallet) dust summary block; return the next free row."""
+    worksheet.cell(row_no, 1, "Dust summary:").font = Font(bold=True)
+    row_no += 1
+    grouped: dict[tuple[str, str], list[CryptoRewardIncomeEntry]] = {}
+    for entry in dust_rows:
+        grouped.setdefault((entry.asset, entry.wallet), []).append(entry)
+    for (asset, wallet), group in sorted(grouped.items()):
+        summed = sum((entry.value_eur for entry in group), start=ZERO)
+        line = (
+            f"{safe_cell_value(asset)} dust ({safe_cell_value(wallet)}): "
+            f"{len(group)} rows, summed Value EUR = {float(summed):.2f} "
+            f"(Koinly 2-decimal export). Re-export with higher precision to verify."
+        )
+        worksheet.cell(row_no, 1, line)
+        row_no += 1
+    return row_no
+
+
 def write_crypto_supplementary_sheet(  # noqa: PLR0915
     workbook: openpyxl.Workbook,
     crypto_tax_report: CryptoTaxReport,
@@ -158,6 +203,13 @@ def write_crypto_supplementary_sheet(  # noqa: PLR0915
     deferred_entries = [
         e for e in crypto_tax_report.reward_entries if e.tax_classification == RewardTaxClassification.DEFERRED_BY_LAW
     ]
+
+    # Partition taxable-now rows into (real_rows, dust_rows). The local
+    # ``taxable_now_entries`` stays the single source of truth for line 236's
+    # taxable_now_total_eur (CRG-021 / r2 Blocker #2): the helper returns new
+    # lists rather than rebuilding the local, so the total is byte-for-byte
+    # identical to the pre-partition render (Invariant 1).
+    real_rows, dust_rows = _partition_taxable_now(taxable_now_entries, crypto_tax_report.reward_entries)
 
     row_no = 1
     # Sections are numbered dynamically so the list still reads 1, 2, 3, ...
@@ -208,7 +260,21 @@ def write_crypto_supplementary_sheet(  # noqa: PLR0915
     taxable_note.font = Font(italic=True, size=9)
     row_no += 1
 
-    row_no = _write_reward_detail_rows(worksheet, row_no, taxable_now_entries, "No taxable-now rewards")
+    # Three-state empty label for Section 2. ``_write_reward_detail_rows`` only
+    # renders ``empty_label`` when entries is empty (guard at :66-68), so passing
+    # "" in the mixed/all-real case is safe (real_rows is non-empty there).
+    if not real_rows and dust_rows:
+        taxable_empty_label = "All taxable-now rows classified as dust - see summary below"
+    elif not real_rows and not dust_rows:
+        taxable_empty_label = "No taxable-now rewards"
+    else:
+        taxable_empty_label = ""  # mixed or all-real: headers render, no empty label
+    row_no = _write_reward_detail_rows(worksheet, row_no, real_rows, taxable_empty_label)
+
+    # Per-(asset, wallet) dust summary block renders below the detail table when
+    # any taxable-now row was routed to dust (CRG-021).
+    if dust_rows:
+        row_no = _write_dust_summary_block(worksheet, row_no, dust_rows)
 
     # 3. DEFERRED BY LAW SUPPORT DETAIL
     row_no += 1
@@ -238,7 +304,8 @@ def write_crypto_supplementary_sheet(  # noqa: PLR0915
 
     reconciliation_rewards_rows = [
         ("Total reward rows (raw)", len(crypto_tax_report.reward_entries)),
-        ("Taxable-now rows (immediately taxable)", len(taxable_now_entries)),
+        ("Taxable-now detail rows", len(real_rows)),
+        ("Taxable-now dust rows (suppressed from detail)", len(dust_rows)),
         ("Deferred-by-law rows (taxation deferred)", len(deferred_entries)),
         ("Taxable-now total value (EUR)", float(taxable_now_total_eur)),
         ("Deferred total value (EUR)", float(deferred_total_eur)),

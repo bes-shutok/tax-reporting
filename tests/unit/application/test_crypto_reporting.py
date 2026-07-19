@@ -565,7 +565,7 @@ def test_load_koinly_crypto_report_skips_zero_value_rows_and_tracks_assets(tmp_p
                     [
                         "01/01/2025 10:00",
                         "01/01/2024 10:00",
-                        "FEE",
+                        "XXX",
                         '"10,00000000"',
                         "0.0",
                         "0.0",
@@ -635,7 +635,7 @@ def test_load_koinly_crypto_report_skips_zero_value_rows_and_tracks_assets(tmp_p
     assert report.reconciliation.opening_holdings.total_value_eur == Decimal("11.00")
 
     skipped_assets = {(item.source_section, item.asset, item.count) for item in report.skipped_zero_value_tokens}
-    assert ("capital_gains", "FEE", 1) in skipped_assets
+    assert ("capital_gains", "XXX", 1) in skipped_assets
     assert ("income", "AAA", 1) in skipped_assets
     assert ("holdings_opening", "ZERO", 1) in skipped_assets
 
@@ -13165,4 +13165,312 @@ class TestApplyOgrEventLevel:
         assert result[0].gain_loss_eur == Decimal("22.71")
         assert result[0].proceeds_eur == Decimal("188.15")
         assert result[0].ogr_validation is None
+
+
+# =============================================================================
+# Plan 2026-07-18-crypto-dust-partition-fee-skip, Task 1 (RED):
+# FEE-token tracking-entry skip at parse (all-zero branch in
+# _parse_capital_gains_file). Task 2 flips these GREEN by adding the
+# _KOINLY_TRACKING_TOKENS module constant and the short-circuit + lookup-move.
+# Tests that reference _KOINLY_TRACKING_TOKENS use a guarded import that
+# pytest.fail()s naming the resolving task, per AGENTS.md rule 4 (a committed
+# RED test that is itself the deliverable must never ImportError).
+# =============================================================================
+
+
+def _fee_all_zero_cg_row(asset: str, date_sold: str = "13/01/2025 13:01") -> str:
+    """A CG CSV row with all-zero Cost/Proceeds/Gain (the FEE tracking-entry shape)."""
+    return ",".join(
+        [
+            date_sold,
+            "01/01/2024 00:00",
+            asset,
+            '"0,10000000"',
+            "0.0",
+            "0.0",
+            "0.0",
+            "",
+            "Kraken",
+            "Short term",
+        ]
+    )
+
+
+def _write_cg_with_rows(koinly_dir: Path, rows: list[str]) -> Path:
+    """Write a koinly_2025_capital_gains_report.csv with the standard CG header + rows."""
+    path = koinly_dir / "koinly_2025_capital_gains_report.csv"
+    path.write_text(
+        "\n".join(["Capital gains report 2025", "", _CG_HEADER, *rows]),
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.mark.unit
+class TestParseCapitalGainsFileFeeToken:
+    """RED tests for the Koinly tracking-token (FEE) skip in _parse_capital_gains_file.
+
+    Pinned by Plan 2026-07-18 Design Invariant 4: the discriminator is
+    ``asset in _KOINLY_TRACKING_TOKENS`` at the top of the ``is_all_zero`` block,
+    with the popular-token / non-Latin lookups moved INSIDE the block below the
+    short-circuit (so the lookup-avoidance is real, not just asserted). These
+    tests go RED against unchanged production (FEE today takes the else-branch
+    at crypto_reporting.py:764-767 and lands in skipped_zero_value_tokens).
+    """
+
+    def test_fee_token_absent_from_skipped_zero_value_tokens(self, tmp_path):
+        """Three FEE all-zero rows MUST NOT appear in skipped_zero_value_tokens.
+
+        Today FEE lands as (capital_gains, FEE, count=3) via the else-branch
+        _register_skipped_zero_asset call; after the Task 2 fix the short-circuit
+        ``continue``s before that call. This test asserts the NEW (post-fix)
+        behavior, so it goes RED against unchanged production.
+        """
+        koinly_dir = tmp_path / "koinly2025"
+        koinly_dir.mkdir()
+        _write_cg_with_rows(
+            koinly_dir,
+            [
+                _fee_all_zero_cg_row("FEE", "13/01/2025 13:01"),
+                _fee_all_zero_cg_row("FEE", "14/01/2025 13:01"),
+                _fee_all_zero_cg_row("FEE", "15/01/2025 13:01"),
+            ],
+        )
+        _write_minimal_income_report(koinly_dir)
+        _write_minimal_transaction_history(koinly_dir)
+
+        report = load_koinly_crypto_report(koinly_dir)
+        assert report is not None
+
+        fee_skipped = [
+            t for t in report.skipped_zero_value_tokens if t.asset == "FEE"
+        ]
+        assert fee_skipped == [], (
+            f"FEE tracking entries must NOT appear in skipped_zero_value_tokens; "
+            f"found {fee_skipped}"
+        )
+
+    def test_fee_token_summary_info_log(self, tmp_path, caplog):
+        """Three FEE rows in one CG file emit exactly one INFO summary line.
+
+        The summary line's ``getMessage()`` must contain both
+        ``"Skipped 3 Koinly tracking entries"`` and ``"FEE=3"`` (regex-strength
+        assertion, r1 Medium #6: pin count AND asset, not just shape). Zero
+        WARNING records may mention FEE (the per-row WARNING at the
+        else-branch is replaced by the single summary INFO).
+        """
+        koinly_dir = tmp_path / "koinly2025"
+        koinly_dir.mkdir()
+        _write_cg_with_rows(
+            koinly_dir,
+            [
+                _fee_all_zero_cg_row("FEE", "13/01/2025 13:01"),
+                _fee_all_zero_cg_row("FEE", "14/01/2025 13:01"),
+                _fee_all_zero_cg_row("FEE", "15/01/2025 13:01"),
+            ],
+        )
+        _write_minimal_income_report(koinly_dir)
+        _write_minimal_transaction_history(koinly_dir)
+
+        with caplog.at_level(
+            logging.DEBUG, logger="tax_reporting.application.crypto_reporting"
+        ):
+            report = load_koinly_crypto_report(koinly_dir)
+        assert report is not None
+
+        info_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.INFO
+            and rec.name == "tax_reporting.application.crypto_reporting"
+        ]
+        fee_info = [m for m in info_messages if "Koinly tracking entries" in m]
+        assert len(fee_info) == 1, (
+            f"Expected exactly one FEE summary INFO record, got {fee_info}"
+        )
+        assert "Skipped 3 Koinly tracking entries" in fee_info[0]
+        assert "FEE=3" in fee_info[0]
+
+        fee_warnings = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and "FEE" in rec.getMessage()
+        ]
+        assert fee_warnings == [], (
+            f"Expected zero WARNING records mentioning FEE, got {fee_warnings}"
+        )
+
+    def test_real_fee_disposal_passes_through(self, tmp_path):
+        """A non-zero FEE CG row flows through normal CG processing.
+
+        Regression guard for Invariant 4: ``is_all_zero`` is False for a real
+        disposal, so the short-circuit never fires and the row reaches
+        ``capital_entries``. The FEE tracking-token skip targets the all-zero
+        branch only.
+        """
+        koinly_dir = tmp_path / "koinly2025"
+        koinly_dir.mkdir()
+        _write_cg_with_rows(
+            koinly_dir,
+            [
+                ",".join(
+                    [
+                        "13/01/2025 13:01",
+                        "01/01/2024 00:00",
+                        "FEE",
+                        '"0,10000000"',
+                        '"10,00"',
+                        '"12,00"',
+                        '"2,00"',
+                        "",
+                        "Kraken",
+                        "Short term",
+                    ]
+                ),
+            ],
+        )
+        _write_minimal_income_report(koinly_dir)
+        _write_minimal_transaction_history(koinly_dir)
+
+        report = load_koinly_crypto_report(koinly_dir)
+        assert report is not None
+
+        fee_entries = [e for e in report.capital_entries if e.asset == "FEE"]
+        assert len(fee_entries) == 1, (
+            f"Real FEE disposal must reach capital_entries, got {fee_entries}"
+        )
+        assert fee_entries[0].cost_eur == Decimal("10.00")
+        assert fee_entries[0].proceeds_eur == Decimal("12.00")
+        assert fee_entries[0].gain_loss_eur == Decimal("2.00")
+
+    def test_popular_token_all_zero_still_flagged(self, tmp_path):
+        """BTC all-zero row is still appended to context.review_entries.
+
+        Guards the popular-token code path (BTC is in the popular-token set,
+        FEE is not). The moved-inside-the-block lookups still run for BTC, so
+        it takes the review-entries branch (not the else-branch short-circuit
+        reserved for Koinly tracking tokens). Substring assertion on
+        review_reason per r1 Medium #8.
+        """
+        from tax_reporting.application.crypto_reporting import (
+            CapitalGainsParsingContext,
+            _parse_capital_gains_file,
+        )
+
+        koinly_dir = tmp_path / "koinly2025"
+        koinly_dir.mkdir()
+        cg_path = _write_cg_with_rows(
+            koinly_dir,
+            [_fee_all_zero_cg_row("BTC", "13/01/2025 13:01")],
+        )
+
+        review_entries: list = []
+        context = CapitalGainsParsingContext(
+            skipped_assets={},
+            origin_resolver=build_origin_resolver(None),
+            review_entries=review_entries,
+            known_assets=frozenset(),
+            loan_affected_assets=frozenset(),
+        )
+        _entries, _fallback = _parse_capital_gains_file(cg_path, context)
+
+        btc_reviews = [e for e in review_entries if e.asset == "BTC"]
+        assert len(btc_reviews) == 1, (
+            f"Expected one BTC review entry, got {btc_reviews}"
+        )
+        assert (
+            "Zero EUR value for known crypto asset" in btc_reviews[0].review_reason
+        ), btc_reviews[0].review_reason
+
+    def test_fee_token_skips_popular_token_and_non_latin_lookups(
+        self, tmp_path, monkeypatch
+    ):
+        """FEE all-zero row triggers NONE of the three lookups.
+
+        ``is_known_token`` is ``asset in _get_popular_crypto_tokens() or
+        _contains_popular_token(asset)`` (short-circuit ``or`` over TWO
+        lookups, r4 F3), and ``is_suspicious`` is
+        ``contains_non_latin_characters(asset)``. All three are now (post-fix)
+        computed INSIDE the ``is_all_zero`` block below the FEE short-circuit,
+        so for a FEE row none of them is called. Without this test a future
+        refactor that moves the lookups back to crypto_reporting.py:729-730
+        would silently defeat the lookup-avoidance while passing the other
+        FEE tests.
+        """
+        from tax_reporting.application import crypto_reporting as cr
+        from tax_reporting.application.crypto_reporting import (
+            CapitalGainsParsingContext,
+            _parse_capital_gains_file,
+        )
+
+        koinly_dir = tmp_path / "koinly2025"
+        koinly_dir.mkdir()
+        cg_path = _write_cg_with_rows(
+            koinly_dir,
+            [_fee_all_zero_cg_row("FEE", "13/01/2025 13:01")],
+        )
+
+        call_counts = {
+            "popular_tokens": 0,
+            "contains_popular": 0,
+            "non_latin": 0,
+        }
+
+        def _spy_popular():
+            call_counts["popular_tokens"] += 1
+            return frozenset()
+
+        def _spy_contains_popular(_asset: str) -> bool:
+            call_counts["contains_popular"] += 1
+            return False
+
+        def _spy_non_latin(_asset: str) -> bool:
+            call_counts["non_latin"] += 1
+            return False
+
+        monkeypatch.setattr(cr, "_get_popular_crypto_tokens", _spy_popular)
+        monkeypatch.setattr(cr, "_contains_popular_token", _spy_contains_popular)
+        monkeypatch.setattr(cr, "contains_non_latin_characters", _spy_non_latin)
+
+        review_entries: list = []
+        context = CapitalGainsParsingContext(
+            skipped_assets={},
+            origin_resolver=build_origin_resolver(None),
+            review_entries=review_entries,
+            known_assets=frozenset(),
+            loan_affected_assets=frozenset(),
+        )
+        _parse_capital_gains_file(cg_path, context)
+
+        assert call_counts == {
+            "popular_tokens": 0,
+            "contains_popular": 0,
+            "non_latin": 0,
+        }, (
+            "FEE short-circuit must fire before the popular-token / non-Latin "
+            f"lookups; got {call_counts}"
+        )
+
+
+@pytest.mark.unit
+class TestKoinlyTrackingTokensSet:
+    """RED regression guard on Plan Invariant 6 / Design Invariant 5.
+
+    ``_KOINLY_TRACKING_TOKENS`` is a ``frozenset[str]`` module constant whose
+    exact membership is pinned: adding a token is a conscious, visible diff.
+    """
+
+    def test_set_contents_pinned(self):
+        """_KOINLY_TRACKING_TOKENS equals frozenset({'FEE'}) exactly."""
+        try:
+            from tax_reporting.application.crypto_reporting import (
+                _KOINLY_TRACKING_TOKENS,
+            )
+        except ImportError:
+            pytest.fail(
+                "Task 2 must add _KOINLY_TRACKING_TOKENS module constant to "
+                "tax_reporting.application.crypto_reporting"
+            )
+        assert frozenset({"FEE"}) == _KOINLY_TRACKING_TOKENS
 

@@ -4,6 +4,8 @@ Companion to `docs/history/plans/2026-07-15-review-flag-aggregation-boundary.md`
 
 ## 1. FEE-token tracking entries pollute the per-lot review list
 
+**Status: Resolved by plan 2026-07-18-crypto-dust-partition-fee-skip (Tasks 1-2). Premise corrected during plan review (r1 Blocker #1): the original claim that FEE all-zero rows pollute context.review_entries and emit WARNINGs was factually wrong, FEE is not in the popular-token set, so the rows take the else-branch at crypto_reporting.py:764-767 and land in skipped_zero_value_tokens. The actual fix removes FEE from the reconciliation skipped-tokens table and skips the redundant popular-token/non-latin lookups before the else-branch.**
+
 **Finding.** The 2025 Koinly CG export contains 99 rows for the `FEE` asset (Koinly's internal accounting unit for trading fees), all with the Koinly placeholder acquisition date `25/04/2015 09:22`, wallet `Kraken`, and `Cost=Proceeds=Gain=0.0`. These are not real disposals; they are tracking entries Koinly emits to record fee accrual. They reach `_parse_capital_gains_file` and are appended to `context.review_entries` because they match the `is_all_zero + is_known_token` branch at `crypto_reporting.py:737-763`.
 
 After the active plan's Task 1 lands, these entries no longer poison aggregated rows. They still:
@@ -70,6 +72,8 @@ Both are larger than the active plan and the LBTC loan in the 2025 export is imm
 
 ## 5. `Crypto Reconciliation` sheet may have related review-flag rendering
 
+**Status: Investigated and dismissed 2026-07-18.** The reconciliation sheet (`crypto_reconciliation_sheet.py`) renders only counts and a "Skipped Zero Value Tokens" table; it never reads `review_reason` text. The trigger condition does not hold.
+
 **Finding.** The 2025 export contains a `Crypto Reconciliation` sheet (337 rows × 4 cols). The investigation did not inspect it for review-flag text that depends on the same strings changed by Task 1 (`Zero EUR value…`, `Zero acquisition cost…`). If the reconciliation sheet surfaces review_reason text, it may need a parallel update.
 
 **Why deferred.** The active plan's `grep -rn "Zero EUR value for known crypto asset" src/ tests/` validation command will surface any source-code reference to the changed strings; if `Crypto Reconciliation` rendering depends on those strings via a constant, the grep will catch it. The deferred nature is only about *whether* the reconciliation sheet exists as a separate review surface that needs the same aggregated-boundary treatment applied.
@@ -91,6 +95,8 @@ Two of three criteria are clearly met; the "hard to reverse" criterion is weak. 
 ---
 
 ## 7. Reward dust summary on popular-asset zero-value rewards (entire Task 2 removed from active plan 2026-07-16)
+
+**Status: Resolved by plan 2026-07-18-crypto-dust-partition-fee-skip (Tasks 3-7), original r8 design reused, r9 discriminator correction applied.**
 
 **Status.** Originally Task 2 of the active plan. Removed wholesale at r9 review on 2026-07-16 after the panel surfaced a design-level defect (popular-token-set membership is the wrong discriminator for the dust-vs-detail split) and the author clarified the popular-token set's actual purpose. This entry preserves the full original design, the discovery, and the proposed alternative so a future focused plan can pick it up without re-deriving the context.
 

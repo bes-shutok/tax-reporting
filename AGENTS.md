@@ -83,7 +83,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - The Platform Assumptions tab is a complete manifest. Do not filter; use `platform_review_required=True` to highlight.
 - Tests verifying "YES:"/"NO" rendering must set `review_required`/`review_reason` on the fixture entry; do not delegate to `origin.review_required`.
 - When a downstream consumer synthesises a `review_reason` from a flag multiple upstream cases set, branch on the discriminator (sentinel/enum) the upstream sets; RED tests must exercise each cause. See UL #91.
-- When migrating a test off a real fixture to synthetic data that flips an orthogonal signal (e.g. `review_required=True`), re-scope the assertion to the behavior under test. See UL #114.
+- When migrating real fixtures to synthetic data, keep assertions scoped to the target behavior and use e2e-realizable analogs when literal inputs cannot reach the full pipeline. See UL #114, #193.
 - Crypto capital gains statistics must be computed via `CryptoCapitalGainStats.from_entries()` and rendered as "1b. CAPITAL GAINS STATISTICS"; grand totals come from the full entries list, not per-period subtotals.
 - Token origin resolution uses `TokenOriginResolver` with implicit `(date, asset, wallet)` correlation; unmatched rows return `unknown` (blank). Supports LP operations and airdrops (`AIRDROP`, `LIQUIDITY_WITHDRAWAL`, `LIQUIDITY_PROVISION`, `DIRECT_PURCHASE`). Do not reintroduce same-day disposal-context matching.
 - `token_swap_history` aggregation via `_aggregate_origin_field()`: all lots same origin -> use it; else join unique non-empty origins with '; '; append "N lot(s) unresolved" when some are unknown.
@@ -200,7 +200,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - **Do not import pytest fixtures**; they are injected by name (`tmp_path`, `capsys`, `caplog`, `monkeypatch`, `request`).
 - Tests must not read gitignored data; inline expected values, commit the fixture, or generate it deterministically. See `coding_guidelines.md` #26.
 - Test class names must match `python_classes = ["Test*"]` in `pyproject.toml`; non-`Test*`-prefix names are silently deselected.
-- Pair `pytest.raises(ExceptionType, match=<regex>)` with a `match=` substring from the intended raise site (Ruff PT011). See `python_guidelines.md` #14.
+- Pytest assertion guards: `pytest.raises(...)` needs `match=` (PT011); asserting NONE of N lookups fire under a short-circuit `or`/`and` predicate needs all N monkeypatched. See `python_guidelines.md` #14, #15.
 - Remove unused imports (Ruff F401). Only import `Path` when instantiating or type-annotating.
 - Test meaningful business logic and real edge cases; avoid duplicating coverage (high-value: complex CSV formats, tax calculations, error handling; low-value: zero amounts, trivial parsing).
 - Excel output tests: structural identification over hardcoded value exclusions; default-empty cell assertions accept `None`/`""`; reuse the production validator for domain-validity predicates.
@@ -210,13 +210,11 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - **Ruff** is primary linter/formatter (`pyproject.toml`: Python 3.14, line length 120, full ruleset). Do not run `ruff check --fix` on modules that re-export for backward compat (e.g. `crypto_reporting.py`); `F401` strips re-exported names tests depend on.
 - Type hints: modern syntax (`X | Y`) with `from __future__ import annotations`; `datetime.UTC`, `pathlib.Path`, lazy logging, f-string exceptions, named-constant magic numbers (except tests). Never default essential identifiers/indices to 0. Refactor high-complexity functions; `# noqa: PLR0912` with comment if too risky.
 - Docstrings: always for public modules/classes/`__init__`/complex functions; skip trivial getters/setters/`__repr__`/clear private methods/test functions. Google convention.
-- **Code review checklist:** required params truly required; error messages have row context; exception chaining preserves originals; logging parameterized; fail-fast vs missing-data distinction correct; no pytest fixture imports; no unused imports.
+- **Code review checklist:** required params truly required; error messages have row context; exception chaining preserves originals; logging parameterized; fail-fast vs missing-data distinction correct.
 
 ## Data Handling
 
-Missing-vs-invalid: see `docs/maintenance/project-guidelines.md` #5 for the full rules. Incremental: internal resolution sentinels (e.g. `UNKNOWN_OPERATOR_REVIEW_REQUIRED`) must NOT leak to user-facing fields - use the raw input value.
-
-
+Missing-vs-invalid: see `docs/maintenance/project-guidelines.md` #5 for the full rules. Incremental: internal resolution sentinels must NOT leak to user-facing fields - use the raw input value.
 
 ## Lessons Learned
 

@@ -101,6 +101,14 @@ from .crypto_fifo import (
 )
 from .token_origin import TokenOriginResolver
 
+# Koinly internal accounting units for fee accrual. These are never assets the
+# user holds, buys, or sells; rows for them are tracking entries Koinly emits
+# to record fee accrual, with Cost=Proceeds=Gain=0.0. Skipped at parse time.
+# Add new tokens here ONLY after verifying they are Koinly-internal (not real
+# tradeable assets); the set-contents test (TestKoinlyTrackingTokensSet) will
+# fail until updated.
+_KOINLY_TRACKING_TOKENS: frozenset[str] = frozenset({"FEE"})
+
 
 def build_transactions_from_th(
     transaction_history_path: Path,
@@ -703,6 +711,7 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
     logger = logging.getLogger(__name__)
     skipped_loan_affected: Counter[str] = Counter()
     skipped_parse_errors: int = 0
+    skipped_koinly_tracking: Counter[str] = Counter()
 
     for row_number, row in enumerate(rows, start=1):
         asset = normalize_asset_ticker(row.get("Asset", ""))
@@ -726,8 +735,6 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
         # Check for all-zero values (no taxable event)
         # For popular tokens, flag for review instead of skipping - likely Koinly data issue
         is_all_zero = cost_eur == ZERO and proceeds_eur == ZERO and gain_loss_eur == ZERO
-        is_suspicious = contains_non_latin_characters(asset)
-        is_known_token = asset in _get_popular_crypto_tokens() or _contains_popular_token(asset)
 
         review_required: bool = False
         review_reason: str = ""
@@ -735,6 +742,22 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
         platform = normalize_platform_name(wallet)
 
         if is_all_zero:
+            # Koinly internal fee-accrual tracking entries (FEE, ...): never a
+            # user-held asset. Short-circuit before the popular-token / non-Latin
+            # lookups AND before _register_skipped_zero_asset so FEE does not
+            # pollute the skipped-tokens table (Design Invariant 4, r3 Critical #2).
+            if asset in _KOINLY_TRACKING_TOKENS:
+                skipped_koinly_tracking[asset] += 1
+                continue
+            # Lookups moved INSIDE the block: only consumed here at the
+            # is_known_token/known_assets check below and at the homoglyph-suffix
+            # branch / CryptoReviewEntry / _register_skipped_zero_asset below.
+            # The unconditional homoglyph check further down (after the block)
+            # does its own contains_non_latin_characters call and does not read
+            # is_suspicious, so this move is behaviour-preserving for non-all-zero
+            # rows (r3 Critical #2).
+            is_suspicious = contains_non_latin_characters(asset)
+            is_known_token = asset in _get_popular_crypto_tokens() or _contains_popular_token(asset)
             if is_known_token or (context.known_assets and asset in context.known_assets):
                 review_reason = "Zero EUR value for known crypto asset - likely Koinly tracking entry or data error"
                 if is_suspicious:
@@ -844,6 +867,14 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
             "Skipped %d capital gains row(s) due to ambiguous decimal values; "
             "these disposals are excluded from the report. Check the warnings above for details.",
             skipped_parse_errors,
+        )
+
+    if skipped_koinly_tracking:
+        summary = ", ".join(f"{asset}={count}" for asset, count in sorted(skipped_koinly_tracking.items()))
+        logger.info(
+            "Skipped %d Koinly tracking entries (assets: %s)",
+            sum(skipped_koinly_tracking.values()),
+            summary,
         )
 
     return capital_entries, raw_loan_fallback

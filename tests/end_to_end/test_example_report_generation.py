@@ -50,6 +50,7 @@ SYNTHETIC_KOINLY_2025_DIRS = [
     EXAMPLE_DIR / "2025" / "koinly",
     EXAMPLE_DIR / "2025" / "koinly" / "zero_basis",
     EXAMPLE_DIR / "2025" / "koinly" / "payment",
+    EXAMPLE_DIR / "2025" / "koinly" / "dust-partition",
 ]
 # The path structure (example/<year>/koinly/[<scenario>/]) is the synthetic marker;
 # no filename suffix is required. Suffix retained empty for backward-compat with any
