@@ -42,6 +42,8 @@ The original user framing ("rewards have 0 cost by default, so the flag is a fal
 
 ## 3. Homoglyph-scam token silently aggregated into real disposals
 
+**Status: Re-checked 2026-07-21 against the 2025 export; trigger not fired.** Per-lot homoglyph detection remains as documented (`src/tax_reporting/application/crypto_reporting.py:832-835` plus the all-zero branch at `:781-789`). No Latin ticker was aggregated with a homoglyph lot of the "same" symbol in the 2025 dataset, so Koinly's ticker normalization has not been observed pooling visually-identical tickers into one FIFO bucket. Revisit only when a newer export surfaces that case.
+
 **Finding.** The CG export contains several assets whose tickers use Cyrillic or lookalike Unicode characters that visually masquerade as legitimate tickers:
 
 ```
@@ -50,7 +52,7 @@ WBТC     (Cyrillic Т)    2 rows, all-zero
 UЅDТ     (Cyrillic S, Т) 1 row, all-zero
 ```
 
-These currently trigger `contains_non_latin_characters` → "Asset ticker contains non-Latin characters - potential homoglyph scam token" (the all-zero branch at `crypto_reporting.py:740-744`). After Task 1 lands, if such a lot is aggregated into a disposal with other legitimate lots, the homoglyph reason would survive (it is not a zero-basis-family reason; Task 1's filter preserves it per the third RED test). But if the homoglyph lot is the only lot in its group, the aggregated row would correctly show the scam-token flag.
+These currently trigger `contains_non_latin_characters` → "Asset ticker contains non-Latin characters - potential homoglyph scam token" (the all-zero branch at `crypto_reporting.py:781-789`). After Task 1 lands, if such a lot is aggregated into a disposal with other legitimate lots, the homoglyph reason would survive (it is not a zero-basis-family reason; Task 1's filter preserves it per the third RED test). But if the homoglyph lot is the only lot in its group, the aggregated row would correctly show the scam-token flag.
 
 **Why deferred.** No evidence of a problem; the existing logic works. Documented here so a future reviewer investigating "why does this aggregated disposal have a homoglyph warning" can find the trail.
 
@@ -59,6 +61,8 @@ These currently trigger `contains_non_latin_characters` → "Asset ticker contai
 ---
 
 ## 4. Loan "no-EUR-price" classification is a downstream symptom, not a fix
+
+**Status: Re-checked 2026-07-21 against the 2025 export; trigger not fired.** The branch (a) `LOAN_STATUS_NO_EUR_PRICE` classification remains as documented (`src/tax_reporting/application/crypto/loan_activity.py:164-166`, constant `LOAN_STATUS_NO_EUR_PRICE` in `domain/constants.py:59`). The only unpriced loan asset in the 2025 dataset is LBTC, classified as €0 and immaterial (well below the €1 `_MATERIALITY_THRESHOLD`). The user has not acquired additional loan activity in unpriced Liquid-network tokens since. Revisit only if cumulative EUR exposure on unpriced loan assets exceeds a reasonable per-asset materiality.
 
 **Finding.** The active plan's Task 3 introduces a "Cannot classify: no EUR price data" bucket for loan assets where Koinly returned `Net Value (EUR) == 0` for every row (LBTC in the 2025 export). This is a *label*, not a *fix*. The underlying issue is that Koinly has no price feed for LBTC (a Liquid-network Bitcoin representation), so EUR-denominated gain/loss on LBTC loans cannot be computed from the export.
 
@@ -85,6 +89,8 @@ Both are larger than the active plan and the LBTC loan in the 2025 export is imm
 ---
 
 ## 6. Cross-cutting: an "aggregated review flag" invariant worth an ADR?
+
+**Status: Resolved 2026-07-21 by writing PD-008** (`docs/maintenance/project-decisions.md:33`, commit `43dc59b`). The deferral's re-open condition ("revisit after the plan lands and the rule has been exercised on one real tax-year export") was satisfied by the 2025 export: every aggregated disposal row resolved to `Review flag = NO`, including reward-derived rows whose non-zero aggregated cost confirmed the per-lot zero-basis noise was suppressed without losing the underlying signal. That evidence strengthened the third criterion ("real trade-off proven by use"), so PD-008 was written despite the completed plan's Task 5 having initially marked the ADR "SKIPPED" (the skip was reconsidered after the 2025-export run). PD-008 records the `_re_evaluate_aggregated_review()` mechanism, the three-part materiality gate, the non-stripped "Zero acquisition cost with negative disposal proceeds" reason, and the deliberate trade-off (a maintainer seeing `review_reason` dropped at aggregation might assume a bug). Specific portfolio figures omitted as personal data; plan of record: `docs/history/plans/completed/2026-07-15-review-flag-aggregation-boundary.md`.
 
 The active plan's Task 5 evaluates whether to append an ADR for the aggregation-boundary re-evaluation rule. The three ADR criteria:
 
