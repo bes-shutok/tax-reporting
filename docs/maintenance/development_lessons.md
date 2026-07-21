@@ -399,17 +399,21 @@ When reviewing for operator precedence bugs involving logical `or` and `and`, ve
 ---
 
 
-## 34. Never Write Temporary Artifacts to Tracked Folders
+## 34. Never Write Temporary Artifacts to Tracked Folders (and Split Documents vs Scripts)
 
 **Principle:** Repository hygiene.
 
 **Trigger:** When creating a one-off scratch script or a temporary data file.
 
-**Rule:** 
+**Rule:**
 - Temporary artifacts (scratch files, throwaway scripts like `fix_data.py`) must never be placed in git-tracked folders like the project root.
-- Use the dedicated git-ignored scratch folder (`{tmp_dir}`) or the system-provided scratch space.
+- Split ephemeral scratch by kind, not lumped in one dir:
+  - **Documents** (execute-plan logs, review scratch, diff snapshots - `.md`/`.patch`) go in `{tmp_dir}` (`docs/tmp/`). These have reference value for the next round's `learn` step and are synced to the orphan `docs` branch as a safety net.
+  - **Scripts and scratch data** (`.py` shadow/verification scripts, `.csv`/`.txt` baseline counts, `__pycache__/`) go in repo-root `tmp/`, never `docs/tmp/`. Root `tmp/` is gitignored and NOT synced to the `docs` branch - throwaway scripts have zero durable value and pollute the safety net when they land there.
 
 **What happened (2026-06-26):** A temporary `fix_anexoj.py` script was created in the project root to perform bulk markdown edits, leaving untracked pollution in the git tree that required manual cleanup.
+
+**What happened (2026-07-21 docs/tmp prune):** The orphan `docs` branch had accumulated ~150 files under `docs/tmp/`, of which ~20 were throwaway `.py` shadow scripts and `.csv`/`.txt` baseline-count files from the phase-A through phase-E th-tx-view plans (e.g. `docs/tmp/phase-a-tx-id-semantics.py`, `docs/tmp/phase-c-shadow/shadow_run.py`, `docs/tmp/phase-c-shadow/__pycache__/`, `docs/tmp/phase-c-shadow/discrepancies.csv`, `docs/tmp/phase-*-baseline-count.txt`). These had been synced to the `docs` branch by `docs-branch` (which is add-only by design and never auto-prunes) even though they had no reference value past the plan that created them. The `execute-plan` Phase 5 cleanup step (which should have removed each plan's session dir on completion) had not been running, so the backlog grew unchecked. Full prune (150 -> 0 files) was done manually on 2026-07-21; backup at `refs/heads/docs-backup-pre-tmp-prune`. Root cause for the script pollution: the convention collapsed documents and scripts into one `{tmp_dir}`, so ad-hoc shadow scripts landed alongside the logs. The split above (documents in `docs/tmp/`, scripts in root `tmp/`) prevents the collapse from recurring. Cite AGENTS.md rule 4.160.
 
 ---
 
@@ -1165,3 +1169,32 @@ For `received_amount=100, repaid_amount=101.00004`: `raw_pct = 1.00004` (above t
 4. Treat the `documentation` agent as the prose/compliance-gate owner when it is launched; when it is skipped, the orchestrator runs the compliance scripts directly.
 
 **See also:** `docs/history/reviews/2026-07-21-branch-review-2026-07-19-deferred-reward-dust-skip-r4.md` (r4 staging doc, F2 em-dash finding with the 128-line / 11-file evidence and the upgrade from Low to Medium), AGENTS.md rule 4.157 (diff against target branch for em-dash compliance), `~/.ai-playbook/scripts/check-no-em-dash.sh` (canonical enforcement script; policy source `agent_workflow_guidelines.md §39`), lesson #48 point 3 (plan-time silent-no-op gate; same Family H shape at plan-writing time), `review-loop` SKILL.md (mechanical gate step before reporting round verdict), `doing-code-review` SKILL.md Step 4 (orchestrator mechanical-gate responsibilities).
+
+
+## 64. Execute-Plan Phase 5 Cleanup Must Run on EVERY Exit Path (Interrupt, Max-Rounds, Handoff, Crash); Otherwise the Session Dir Survives and docs-branch Syncs It Permanently
+
+**Principle:** Family E (Temporal / ordering invariants) - a cleanup step that only fires on the success path is an incomplete lifecycle guard. When the workflow exits via any non-success path (user interrupt, max-rounds stop, cross-session handoff, agent crash, operator abort), the session tmp dir (`{tmp_dir}/execute-plan/<plan-slug>/`) survives. The next `docs-branch` sync then copies it to the orphan `docs` branch, which is **add-only by design** and never auto-prunes. The session logs (which have reference value for the next round's `learn`) are fine to sync; the problem is that throwaway siblings (`.py` shadow scripts, `.csv` baseline counts, `__pycache__/`) land there too and accumulate forever. Compounded by Family A (Mechanical invariants over prompt advice) - the Phase 5 spec already says "remove session tmp on success", but "on success" is the wrong gate; the cleanup must run on every terminal exit, with success-vs-failure only controlling whether logs are preserved for resume/debugging.
+
+**Trigger:** You are running `execute-plan` and the workflow is about to exit via a non-success path (user says stop after Phase 2, max-rounds hit at 10, session handoff to another agent, agent crash recovery, or any state where Phase 4 archive did not complete). Before exiting, ask: "Did Phase 5 run? If not, is the session dir going to be synced by the next `docs-branch` run with throwaway scripts still in it? Should I either run Phase 5 cleanup now or move the throwaway scripts to root `tmp/` per lesson #34 before the sync?"
+
+**Rule:**
+1. The Phase 5 success-only cleanup gate is correct for **logs with resume/debugging value** (preserve on failure/interrupt), but it is the wrong gate for **throwaway scripts and scratch data**. Throwaway `.py`/`.csv`/`__pycache__` files under `{tmp_dir}/execute-plan/<plan-slug>/` must be removed (or moved to repo-root `tmp/` per lesson #34) on EVERY terminal exit, not just success - otherwise `docs-branch` syncs them permanently and they accumulate across plans.
+2. Before any `docs-branch` sync following a non-success execute-plan exit, audit `{tmp_dir}/execute-plan/<plan-slug>/` for throwaway scripts and either delete them or relocate to root `tmp/`. Keep the `.md` logs (they have `learn` value); drop the `.py`/`.csv`/`__pycache__`.
+3. When a plan completes successfully, Phase 5 already removes the whole session dir - that path is fine. The gap is the non-success exits; operators (and the `done` skill before it syncs) must compensate.
+4. Periodic pruning of the orphan `docs` branch's `docs/tmp/` is the backstop when (1)-(3) miss (the 2026-07-21 prune caught ~150 accumulated files). Treat a large `docs/tmp/` backlog on the docs branch as a signal that Phase 5 cleanup has been skipped across multiple sessions.
+
+**What happened (2026-07-21 docs-branch prune):** The orphan `docs` branch had accumulated ~150 files under `docs/tmp/` across ~12 completed plans (fee-filtering, th-tx-view phases A-E, review-flag-aggregation, deferred-reward-dust-skip, suppressed-rewards-block-restructure, etc.). Of those, ~130 were `.md` session logs (legitimate but stale - the plans were all in `docs/history/plans/completed/`) and ~20 were throwaway `.py` shadow scripts, `.csv` baseline counts, and `__pycache__/` bytecode. Every one of those plans had completed (Phase 4 archived), so Phase 5 *should* have removed the session dir on success - but the cleanup did not run, and `docs-branch` (add-only) synced the survivors permanently. Root cause is twofold: (a) Phase 5 cleanup did not fire on the actual exit paths those sessions took (likely cross-session handoffs or operator aborts after Phase 3), and (b) the add-only `docs-branch` has no pruning step, so once synced the files persist forever. The 2026-07-21 manual prune (150 -> 0 files, backup briefly held at `refs/heads/docs-backup-pre-tmp-prune`) cleared the backlog; lesson #34's documents-vs-scripts split prevents future throwaway scripts from re-polluting; this lesson targets the Phase 5 exit-path gap.
+
+**Why this happens:** `execute-plan` Phase 5's success checklist (all tasks `[x]`, Phase 2 + Phase 3 + Phase 4 done) is the correct gate for declaring victory, but it is silently also the ONLY path that triggers cleanup. Every other exit (user interrupt, max-rounds stop, handoff, crash) leaves the session dir in place - which is intentional for resume/debugging of the `.md` logs, but unintentional for the throwaway scripts that ride along. The operator who aborts a run assumes "the tmp dir is ephemeral, it'll get cleaned up"; it will not, because `docs-branch` syncs it next and then never removes it. The mismatch between "tmp is ephemeral" mental model and "docs-branch is permanent add-only" reality is the trap.
+
+**Distinguishing from lesson #34 (documents vs scripts split):** #34 names WHERE each kind belongs (`.md` in `docs/tmp/`, `.py` in root `tmp/`). This lesson names WHEN the cleanup must run (every terminal exit, not just success) and WHY the backlog grows when it doesn't (docs-branch add-only sync). Both compose: #34 prevents future throwaway scripts from landing in `docs/tmp/` in the first place; this lesson ensures the `.md` logs themselves do not accumulate forever when sessions exit without Phase 5.
+
+**Distinguishing from lesson #63 (review-phase mechanical gates):** #63 is about review rounds declaring CLEAR without running mechanical gates. This lesson is about execute-plan sessions exiting without running Phase 5 cleanup. Both are Family E (cleanup/gate skipped on the non-happy-path); the lifecycle stage differs (review loop vs plan execution).
+
+**Required behavior:**
+1. On any non-success terminal exit from `execute-plan`, before the next `docs-branch` sync, audit `{tmp_dir}/execute-plan/<plan-slug>/` for throwaway scripts (`.py`/`.csv`/`__pycache__`) and delete or relocate them per lesson #34. Preserve the `.md` logs if resume/debugging is plausible.
+2. When `done` runs and a non-success execute-plan session dir exists under `{tmp_dir}/execute-plan/`, treat it as a pruning trigger: the `.md` logs may stay (sync is fine), but throwaway scripts must not sync to the docs branch.
+3. Treat a large `docs/tmp/` backlog on the orphan docs branch as a signal that Phase 5 cleanup has been skipped across multiple sessions; prune periodically (the docs branch is add-only, so it will not self-clean).
+4. The execute-plan skill should document that Phase 5 cleanup is success-only for LOGS but throwaway scripts must be cleaned on every exit; see the skill-scope dual placement below.
+
+**See also:** `docs/history/reviews/2026-07-21-branch-review-2026-07-19-deferred-reward-dust-skip-r4.md` (unrelated r4 review, but the prune that surfaced this backlog happened in the same session), lesson #34 (documents vs scripts split - WHERE), lesson #63 (review-phase mechanical gates - Family E cleanup-skip cousin), `agents/skills/execute-plan/SKILL.md` Phase 5 (success-only cleanup spec at lines 608-636; the exit-path gap this lesson targets), `agents/skills/docs-branch/SKILL.md` (add-only sync invariant; never auto-prunes), `agents/skills/learn/SKILL.md:185` ("unless project-guidelines documents another gitignored scratch root" - the hook for the root `tmp/` relocation).

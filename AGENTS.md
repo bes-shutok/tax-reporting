@@ -157,7 +157,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - When validating branch compliance (e.g. for em dashes), do not rely on working-tree filters like "touched" or "unstaged" if changes have already been committed; diff explicitly against the target branch.
 - **Never proceed to plan execution or make code changes without explicit user approval when in Planning Mode.** Bypassing the approval gate violates user intent and creates unwanted code churn.
 - Request a plan amendment before omitting prescribed behaviors.
-- Temporary artifacts and scratch scripts must not be placed in git-tracked folders like the project root; use a dedicated git-ignored scratch folder or the system scratch directory. See `development_lessons.md` #34.
+- Temporary artifacts must not be placed in git-tracked folders. Split by kind: **documents** (`.md`/`.patch`) go in `{tmp_dir}` (`docs/tmp/`); throwaway **scripts and scratch data** (`.py`/`.csv`/`__pycache__`) go in repo-root `tmp/`, never `docs/tmp/`. See `development_lessons.md` #34.
 
 ### 5. Domain Knowledge References
 
