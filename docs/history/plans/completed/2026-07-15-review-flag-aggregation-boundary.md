@@ -16,7 +16,7 @@ Plan review: `docs/history/reviews/2026-07-17-plan-review-review-flag-aggregatio
 
 Two review flags in the crypto Excel export fire on rows where the underlying signal is stale relative to the user-visible aggregated state:
 
-1. **Crypto Gains - "Zero EUR value…" / "Zero acquisition cost…" on aggregated disposals.** `_aggregate_capital_entries` (`aggregation.py:330-331`) computes the aggregated row's `review_required` as `any(lot.review_required for lot in group)` and joins every lot's `review_reason`. A single noisy lot (e.g. one Koinly `FEE` tracking entry, or one reward lot with no price data) inside a 109-lot disposal poisons the aggregated row's flag even when the aggregated `cost_eur`, `proceeds_eur`, and `gain_loss_eur` are all non-zero and material. Four such rows appear in the 2025 export.
+1. **Crypto Gains - "Zero EUR value…" / "Zero acquisition cost…" on aggregated disposals.** `_aggregate_capital_entries` (`aggregation.py:330-331`) computes the aggregated row's `review_required` as `any(lot.review_required for lot in group)` and joins every lot's `review_reason`. A single noisy lot (e.g. one Koinly `FEE` tracking entry, or one reward lot with no price data) inside a multi-lot disposal poisons the aggregated row's flag even when the aggregated `cost_eur`, `proceeds_eur`, and `gain_loss_eur` are all non-zero and material. Several such rows appear in the 2025 export.
 2. **Loan Activity - "Overpaid (cross-year loan?)" on 2 rows.** `_extract_loan_activity` (`loan_activity.py:108-112`) labels any asset with `received_amount − repaid_amount < 0` as cross-year. In the 2025 export both flagged rows (LBTC overshoot 0.36%, WBTC overshoot 0.59%) are in-asset interest, not cross-year principal. LBTC additionally has `received_value_eur == 0` for every row, so no EUR-based classification is possible at all.
 
 (The original item 2, "Crypto Supplementary reward dust summary on popular-asset zero-value rewards", was removed at r9 and preserved as a deferred feature for a future focused plan; see `docs/history/feature-notes/2026-07-15-review-flag-deferred-findings.md` §7. The r9 panel surfaced a design-level defect: popular-token-set membership is the wrong discriminator for the dust-vs-detail split because the set is an explicit allowlist for flagging, not a Koinly-can-price list.)
@@ -27,19 +27,21 @@ Re-evaluate each review signal against the user-visible aggregated state, not th
 
 ### Examples (before → after)
 
-**Crypto Gains, 109-lot USDT disposal on ByBit (2025-02-01):**
+**Crypto Gains, a multi-lot disposal with reward-derived lots:**
 
 Before:
 ```
-Cost EUR=774.27  Proceeds EUR=870.09  Gain=+95.74
+Cost EUR=<non-zero>  Proceeds EUR=<non-zero>  Gain=<non-zero>
 Review flag = YES: Zero EUR value…; Zero acquisition cost…
 ```
 
 After:
 ```
-Cost EUR=774.27  Proceeds EUR=870.09  Gain=+95.74
+Cost EUR=<non-zero>  Proceeds EUR=<non-zero>  Gain=<non-zero>
 Review flag = NO   (aggregated values are non-zero and material; per-lot noise dropped)
 ```
+
+(Specific asset, wallet, lot count, and EUR figures omitted from this record as personal portfolio data.)
 
 The per-lot all-zero entry is still in `context.review_entries` and logged at WARNING; only the aggregated row is cleaned up.
 
@@ -154,7 +156,7 @@ Files:
 - [x] Wire the helper into `_aggregate_capital_entries` (`aggregation.py:322-337`): after the existing `replace(...)` builds the aggregated entry, call `_re_evaluate_aggregated_review(aggregated_entry)` and apply BOTH fields from the return in a single `replace(...)` call (per Invariant 2: helper is the single source of truth for both fields; partial application triggers `ValueError` from `CryptoCapitalGainEntry.__post_init__`)
 - [x] Run → expect GREEN: `uv run pytest tests/unit/application/test_crypto_reporting.py -v -k "aggregate or ReEvaluateAggregatedReview"`
 - [x] Commit: `feat(crypto): re-evaluate zero-basis review flag at aggregation boundary` (commit f5e606f)
-- [ ] Manual: re-run on user's 2025 export; confirm the four flagged Crypto Gains rows (USDT ByBit 2025-02-01, USDT Wirex 2025-03-09, SEI Kraken 2025-06-14, TIA Kraken 2025-06-14) now show `NO` when their aggregated values are material (DEFERRED to user; requires gitignored personal 2025 export)
+- [ ] Manual: re-run on user's 2025 export; confirm the four flagged Crypto Gains rows now show `NO` when their aggregated values are material (DEFERRED to user; requires gitignored personal 2025 export; specific asset/wallet/date identifiers omitted here as personal portfolio data)
 
 ### Task 2 - Loan Activity: five-sentinel classification (four classifier branches) replacing the single "Overpaid" label
 

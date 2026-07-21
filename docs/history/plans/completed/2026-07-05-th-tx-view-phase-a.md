@@ -1,6 +1,6 @@
 # Plan: TH-anchored Transaction view - Phase A (foundation)
 
-RFC: [docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md](../feature-notes/2026-06-20-th-anchored-transaction-state-machine.md#rollout-plan-2026-07-05) (un-shelved 2026-07-05; this is Phase A of the five-phase rollout recorded there).
+RFC: [docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md](../context/2026-06-20-th-anchored-transaction-state-machine.md#rollout-plan-2026-07-05) (un-shelved 2026-07-05; this is Phase A of the five-phase rollout recorded there).
 
 Plan review: [r1](../reviews/2026-07-05-plan-review-th-tx-view-phase-a-r1.md) (4 Blockers + 7 Medium addressed in revision 2) -> [r2](../reviews/2026-07-05-plan-review-th-tx-view-phase-a-r2.md) (0 Blocker, 1 Medium + 4 Low + 3 Monitor addressed in revision 3) -> [r3](../reviews/2026-07-05-plan-review-th-tx-view-phase-a-r3.md) (latest, ready: Blocker=0, Medium=0). Trivial r3 Lows (CSV-shape provenance + DEX typo) folded in post-r3; no substantive change.
 

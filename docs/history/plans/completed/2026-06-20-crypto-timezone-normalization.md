@@ -1,6 +1,6 @@
 # Plan: Crypto timezone normalization (naive dates as jurisdiction-local)
 
-Related RFC: `docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md` (weakness #3). Decision point: DP-014 (payment-proceeds correction). Review context: `docs/history/reviews/2026-06-20-branch-review-doc-hierarchy-migration.md`.
+Related RFC: `docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md` (weakness #3). Decision point: DP-014 (payment-proceeds correction). Review context: `docs/history/reviews/2026-06-20-branch-review-doc-hierarchy-migration.md`.
 
 Plan review: `docs/history/reviews/2026-06-20-plan-review-crypto-timezone-normalization-r2.md` (latest, ready=yes: 0 Blocker, 0 Medium, 3 Low folded in) · `...-r1.md` (1 Blocker + 7 Medium, all addressed in r2) · `...-inline.md` (pre-review spot-check).
 
@@ -195,7 +195,7 @@ Files:
 - `README.md`
 - `docs/maintenance/crypto_implementation_guidelines.md`
 - `docs/maintenance/koinly_guidelines.md`
-- `docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md`
+- `docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md`
 - `docs/maintenance/project-guidelines.md`
 
 - [x] `README.md` - add `IANA_TIMEZONE` (optional; defaults to `Europe/Lisbon` for PT) to the Configuration section's `[TAX JURISDICTION]` list, noting it drives Koinly naive-date localization.
@@ -203,7 +203,7 @@ Files:
 - [x] `docs/architecture/api-contracts.md` line ~21 - extend the same `[TAX JURISDICTION]` key enumeration to include `IANA_TIMEZONE`, keeping the Layer 2 contract doc in sync with AGENTS.md.
 - [x] `docs/maintenance/crypto_implementation_guidelines.md` - in the "Payment Proceeds Correction (DP-014)" section, replace the old "day-key timezone rationale" note with the corrected behavior: naive CG/OGR/Income dates are localized to `iana_timezone` and converted to UTC so CG and TH calendar-day keys agree; TH explicit-UTC dates are unchanged.
 - [x] `docs/maintenance/koinly_guidelines.md` Section 5 - update any wording that implies naive dates are UTC; state CG/OGR/Income dates are local (WET/WEST for PT) and localized at ingestion.
-- [x] `docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md` weakness #3 - mark the timezone issue as addressed by this plan (reference the plan path); leave the multi-lot OGR item as still-open.
+- [x] `docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md` weakness #3 - mark the timezone issue as addressed by this plan (reference the plan path); leave the multi-lot OGR item as still-open.
 - [x] `docs/maintenance/project-guidelines.md` - add a numbered rule: Koinly naive dates are jurisdiction-local; localize via `zoneinfo` and convert to UTC at ingestion; never assume naive equals UTC. Cite `development_lessons.md` if a lesson is added.
 - [x] Commit: `docs(crypto): document naive-date localization and IANA_TIMEZONE`
 

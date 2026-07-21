@@ -3,7 +3,7 @@
 Committed, fully synthetic Koinly export fixture that exercises the
 derivatives-close treatment routing (DP-010/DP-012 Quadro 13 routing) from the
 TH-anchored Transaction state machine rollout
-(`docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md`).
+(`docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md`).
 The scenario ships TWO Transaction History rows that together cover the full
 set of derivatives TH labels registered for Koinly 2025 - one row tagged
 `Realized gain` and one row tagged `Futures fee` (both at ByBit) - plus a

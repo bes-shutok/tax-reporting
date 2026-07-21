@@ -2,7 +2,7 @@
 
 Committed, fully synthetic Koinly export fixture that reproduces RFC weakness
 #5 (Payment / OGR collision) from the TH-anchored Transaction state machine
-rollout (`docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md`).
+rollout (`docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md`).
 ONE Payment disposal on `(2025-06-15, EUROC, Wirex)` has BOTH a CG lot
 (`proceeds=0, cost=20 EUR` - the unpriced-EUROC phantom-loss shape) AND a
 matching OGR Loss row (`Value (EUR)=15, Type=Loss`) under the same legacy

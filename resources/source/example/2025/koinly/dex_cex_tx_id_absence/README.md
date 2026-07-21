@@ -3,7 +3,7 @@
 Committed, fully synthetic Koinly export fixture that exercises Phase A's
 "Tx-id fallback policy (2026-07-05)" (RFC, TH-anchored Transaction state
 machine rollout,
-`docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md`):
+`docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md`):
 when `TxHash` is empty, a DEX disposal sets `requires_review=True` while a
 CEX disposal silently falls back to the composite correlation key. The
 scenario ships TWO `crypto_withdrawal` rows whose `TxHash` is the empty

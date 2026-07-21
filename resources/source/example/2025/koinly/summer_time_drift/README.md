@@ -3,7 +3,7 @@
 Committed, fully synthetic Koinly export fixture that reproduces RFC weakness
 #3 (timezone drift in the summer 00:00-01:00 local window) from the
 TH-anchored Transaction state machine rollout
-(`docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md`).
+(`docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md`).
 A single disposal recorded at `15/07/2025 00:30` WEST (mainland-Portugal
 summer time, UTC+1) corresponds to the UTC instant `2025-07-14T23:30:00Z`.
 Under the legacy `(local_date, asset, wallet)` join, the CG row's local

@@ -6,7 +6,7 @@ membership, stable snake-case values, value lookup semantics, and the absence
 of optional/sentinel members.
 
 Plan: ``docs/history/plans/2026-07-06-th-tx-view-phase-b.md`` (Task 1).
-RFC: ``docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md``.
+RFC: ``docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md``.
 """
 
 from __future__ import annotations

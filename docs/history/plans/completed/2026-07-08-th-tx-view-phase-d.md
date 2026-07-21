@@ -1,6 +1,6 @@
 # Plan: TH-anchored Transaction view - Phase D (production flip per treatment)
 
-RFC: [docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md](../feature-notes/2026-06-20-th-anchored-transaction-state-machine.md#rollout-plan-2026-07-05) (Phase D of the five-phase rollout; the four prior phases A/B/C and the OGR event-level fix (Phase 1) all landed on `master`).
+RFC: [docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md](../context/2026-06-20-th-anchored-transaction-state-machine.md#rollout-plan-2026-07-05) (Phase D of the five-phase rollout; the four prior phases A/B/C and the OGR event-level fix (Phase 1) all landed on `master`).
 
 Phase A plan: [completed/2026-07-05-th-tx-view-phase-a.md](completed/2026-07-05-th-tx-view-phase-a.md) (landed at `bb46bdd`).
 Phase B plan: [completed/2026-07-06-th-tx-view-phase-b.md](completed/2026-07-06-th-tx-view-phase-b.md) (landed at `cdb10bf`).
@@ -656,7 +656,7 @@ legacy bypassed per flag). Documentation must reflect this.
   flags, their defaults (`true`), and the rollback procedure (set one
   to `false`).
 - `docs/maintenance/tax/decision_points/2025.toml` - six new entries.
-- `docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md`
+- `docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md`
   - status update: Phase D LANDED at <commit>; per-treatment flags
   default on; legacy bypassed not deleted; Phase E owns deletion.
 - `README.md` - no change (config schema is documented at the TOML
@@ -961,7 +961,7 @@ Files:
 Files:
 - `docs/tmp/phase-c-shadow/shadow_run.py` *(delete)*
 - `docs/tmp/phase-c-shadow/legacy_intent.py` *(delete)*
-- `docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md`
+- `docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md`
 - `docs/maintenance/crypto_rules.md`
 - `docs/maintenance/crypto_reporting_guidelines.md`
 - `docs/maintenance/crypto_implementation_guidelines.md`

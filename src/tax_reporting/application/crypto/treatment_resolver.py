@@ -9,7 +9,7 @@ branched on tag literals, so the frozenset defaults below are no longer
 mirrored from a parallel classifier (Family D: single source of truth).
 
 Plan origin: ``docs/history/plans/2026-07-06-th-tx-view-phase-b.md`` (Tasks 2 + 3).
-RFC: ``docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md``
+RFC: ``docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md``
 (un-shelved 2026-07-05; Phase B of the five-phase rollout recorded there).
 
 Default tag sets (Invariant 8): the five non-derivatives defaults are the

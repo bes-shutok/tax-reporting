@@ -2,7 +2,7 @@
 
 Committed, fully synthetic Koinly export fixture that reproduces RFC weakness
 #2 (multi-lot OGR over-count) from the TH-anchored Transaction state machine
-rollout (`docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md`).
+rollout (`docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md`).
 One CG key `(2025-03-10, ETH, Kraken)` carries TWO FIFO lots AND a matching
 OGR Profit row on the same legacy key. The scenario is the structural backstop
 for the per-Transaction grouping the Phase D OGR override flip depends on.

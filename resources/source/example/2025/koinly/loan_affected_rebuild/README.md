@@ -3,7 +3,7 @@
 Committed, fully synthetic Koinly export fixture that exercises the loan-affected
 rebuild pathway (DP-001 loan-repayment non-taxable treatment) from the
 TH-anchored Transaction state machine rollout
-(`docs/history/feature-notes/2026-06-20-th-anchored-transaction-state-machine.md`).
+(`docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md`).
 The scenario ships THREE Transaction History rows that together cover the
 full loan lifecycle on a single asset (WBTC) plus a contrast spot disposal
 on a non-loan asset (ETH):
