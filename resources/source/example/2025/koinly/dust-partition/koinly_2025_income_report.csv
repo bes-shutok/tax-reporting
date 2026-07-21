@@ -4,3 +4,6 @@ Date,Asset,Amount,Value (EUR),Type,Description,Wallet Name
 01/05/2025 10:00,EUR,"3,00000000","3,00",Interest,Lending interest,Wirex
 02/05/2025 10:00,EUR,"0,01000000","0,00",Interest,Lending interest,Wirex
 03/05/2025 10:00,USD,"0,50000000","0,00",Interest,Lending interest,Wirex
+04/05/2025 10:00,SOL,"5,00000000","5,00",Staking Reward,Staking reward,Wirex
+05/05/2025 10:00,SOL,"0,01000000","0,00",Staking Reward,Staking reward,Wirex
+06/05/2025 10:00,OSBGT,"1,00000000","0,00",Staking Reward,Staking reward,Wirex

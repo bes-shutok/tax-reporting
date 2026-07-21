@@ -554,6 +554,14 @@ class CryptoTaxReport:
     reconciliation: CryptoReconciliationSummary
     capital_gain_stats: CryptoCapitalGainStats
     skipped_zero_value_tokens: list[CryptoSkippedZeroValueToken] = field(default_factory=list)
+    # Authoritative audit trail of zero-value DEFERRED_BY_LAW reward rows removed from
+    # ``reward_entries`` at parse time (CRG-022). Full ``CryptoRewardIncomeEntry`` objects
+    # (NOT count-only) per Invariant 1 (list preservation): the Section 3 suppressed-rewards
+    # block renders per-``(asset, wallet)`` from this list. Distinct from
+    # ``skipped_zero_value_tokens`` above, which is count-only and fed by the ``is_known``
+    # gate's else-branch (unknown-asset zero-value rows); this list is fed by the
+    # deferred + zero-value branch and retains every skipped row with full fidelity.
+    skipped_zero_value_deferred_rewards: list[CryptoRewardIncomeEntry] = field(default_factory=list)
     loan_activity: list[LoanActivityEntry] = field(default_factory=list)
     fifo_rebuild_assets: frozenset[str] = field(default_factory=frozenset)
     zero_basis_review_threshold: Decimal = field(default_factory=lambda: DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD)

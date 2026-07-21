@@ -9,18 +9,47 @@ from tax_reporting.application.crypto_reporting import (
     CapitalGainPeriodStats,
     CryptoCapitalGainStats,
     CryptoReconciliationSummary,
+    CryptoRewardIncomeEntry,
     CryptoSkippedZeroValueToken,
     CryptoTaxReport,
     HoldingsSnapshot,
+    RewardTaxClassification,
 )
 from tax_reporting.application.persisting.crypto_reconciliation_sheet import (
     write_crypto_reconciliation_sheet,
 )
+from tests.conftest import make_operator_origin
+
+
+def _make_reward_entry(
+    classification: RewardTaxClassification = RewardTaxClassification.DEFERRED_BY_LAW,
+    **overrides: object,
+) -> CryptoRewardIncomeEntry:
+    defaults = {
+        "date": "2025-03-15",
+        "asset": "WBERA",
+        "amount": Decimal("1.0"),
+        "value_eur": Decimal("0"),
+        "income_label": "Staking Reward",
+        "source_type": "staking",
+        "wallet": "Wirex",
+        "platform": "Wirex",
+        "chain": "Berachain",
+        "operator_origin": make_operator_origin(),
+        "annex_hint": "J",
+        "review_required": False,
+        "description": "Staking reward payout",
+        "tax_classification": classification,
+        "foreign_tax_eur": Decimal("0"),
+    }
+    defaults.update(overrides)
+    return CryptoRewardIncomeEntry(**defaults)  # type: ignore[arg-type]
 
 
 def _make_crypto_tax_report(
     reconciliation: CryptoReconciliationSummary | None = None,
     skipped_tokens: list[CryptoSkippedZeroValueToken] | None = None,
+    skipped_deferred_rewards: list[CryptoRewardIncomeEntry] | None = None,
 ) -> CryptoTaxReport:
     empty_stats = CapitalGainPeriodStats(
         count=0, cost_total_eur=Decimal("0"), proceeds_total_eur=Decimal("0"), gain_loss_total_eur=Decimal("0")
@@ -49,6 +78,9 @@ def _make_crypto_tax_report(
         reconciliation=recon,
         capital_gain_stats=capital_gain_stats,
         skipped_zero_value_tokens=skipped_tokens or [],
+        skipped_zero_value_deferred_rewards=(
+            skipped_deferred_rewards if skipped_deferred_rewards is not None else []
+        ),
         pdf_summary=None,
     )
 
@@ -95,21 +127,23 @@ class TestCryptoReconciliationSection3:
         report = _make_crypto_tax_report()
         write_crypto_reconciliation_sheet(wb, report)
         ws = wb["Crypto Reconciliation"]
-        section_start = None
+        # Dynamic scan over the full sheet (NOT a fixed ``range(data_start,
+        # data_start + N)`` window) so newly-added reconciliation rows - e.g. the
+        # CRG-022 ``Skipped zero-value deferred rewards (audit)`` sibling line -
+        # do not silently fall off the end and push later rows into a KeyError.
+        # Mirrors the dict-build pattern at :142-150.
+        keys: dict[str, object] = {}
         for r in range(1, ws.max_row + 1):
-            if ws.cell(r, 1).value == "3. RECONCILIATION":
-                section_start = r
-                break
-        assert section_start is not None
-        data_start = section_start + 1
-        keys = {}
-        for r in range(data_start, data_start + 10):
             key = ws.cell(r, 1).value
             value = ws.cell(r, 2).value
             if key:
                 keys[key] = value
         assert keys["Capital sale events (aggregated)"] == 5
         assert keys["Reward rows"] == 3
+        # CRG-022 audit line renders 0 when skipped_zero_value_deferred_rewards
+        # is empty (default helper path). The dynamic scan finds it regardless of
+        # its position relative to the other rows.
+        assert keys["Skipped zero-value deferred rewards (audit)"] == 0
         assert keys["Short term rows"] == 2
         assert keys["Long term rows"] == 1
         assert keys["Mixed holding period rows"] == 1
@@ -221,6 +255,64 @@ class TestCryptoReconciliationSection3:
                 keys[key] = value
         assert keys["Opening holdings rows"] == 3
         assert keys["Closing holdings rows"] == 2
+
+
+@pytest.mark.unit
+class TestCryptoReconciliationSheetDeferredSkipAudit:
+    """Dedicated tests for the CRG-022 cross-sheet audit line (r4 finding #1).
+
+    The ``Skipped zero-value deferred rewards (audit)`` line is load-bearing on
+    the Reconciliation sheet: the parse-time skip moves zero-value
+    DEFERRED_BY_LAW rows out of ``reward_entries`` (dropping ``Reward rows``
+    on a real portfolio), so without this sibling line the
+    Reconciliation sheet's bare ``Reward rows`` count would silently disagree
+    with the Supplementary sheet's deferred subtotal. These tests exercise the
+    production render path (``write_crypto_reconciliation_sheet``) and read via
+    the dynamic ``ws.max_row`` scan pattern at :142-150 (NOT a fixed range
+    window) so newly-added rows cannot silently fall off the end.
+    """
+
+    def test_skipped_deferred_rewards_audit_line(self):
+        """A report with 2 skipped deferred rewards renders the audit line as 2."""
+        skipped = [
+            _make_reward_entry(asset="WBERA", wallet="Wirex"),
+            _make_reward_entry(asset="OSBGT", wallet="Kraken"),
+        ]
+        report = _make_crypto_tax_report(skipped_deferred_rewards=skipped)
+        wb = openpyxl.Workbook()
+        write_crypto_reconciliation_sheet(wb, report)
+        ws = wb["Crypto Reconciliation"]
+        # Dynamic scan: iterate ``ws.max_row`` so new rows don't silently fall
+        # off the end (a fixed range window would push the audit line out and
+        # raise KeyError instead of a clean assertion failure).
+        keys: dict[str, object] = {}
+        for r in range(1, ws.max_row + 1):
+            key = ws.cell(r, 1).value
+            value = ws.cell(r, 2).value
+            if key:
+                keys[key] = value
+        assert "Skipped zero-value deferred rewards (audit)" in keys, (
+            f"audit line missing from Reconciliation sheet; keys={keys}"
+        )
+        assert keys["Skipped zero-value deferred rewards (audit)"] == 2, (
+            f"expected audit line == 2 (2 skipped deferred rows), got keys={keys}"
+        )
+
+    def test_skipped_deferred_rewards_audit_line_zero_when_empty(self):
+        """An empty skipped list renders the audit line as 0 (covers the zero case)."""
+        report = _make_crypto_tax_report(skipped_deferred_rewards=[])
+        wb = openpyxl.Workbook()
+        write_crypto_reconciliation_sheet(wb, report)
+        ws = wb["Crypto Reconciliation"]
+        keys: dict[str, object] = {}
+        for r in range(1, ws.max_row + 1):
+            key = ws.cell(r, 1).value
+            value = ws.cell(r, 2).value
+            if key:
+                keys[key] = value
+        assert keys.get("Skipped zero-value deferred rewards (audit)") == 0, (
+            f"expected audit line == 0 on empty skipped list, got keys={keys}"
+        )
 
 
 @pytest.mark.unit

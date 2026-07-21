@@ -385,13 +385,34 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
             )
             capital_entries.extend(raw_loan_fallback)
 
-    reward_entries = (
-        _parse_income_file(
-            income_file, skipped_assets, known_assets, zone=zone
+    # CRG-022: ``skipped_zero_value_deferred_rewards`` is the audit list of zero-value
+    # DEFERRED_BY_LAW reward rows removed from ``reward_entries`` at parse time. Declared
+    # before the call so the same mutable local is forwarded to both ``_parse_income_file``
+    # (out-param, populated inside the function) and ``CryptoTaxReport`` (construction site
+    # below). Stays ``[]`` when ``income_file`` is falsy (no parse pass -> no skip).
+    skipped_zero_value_deferred_rewards: list[CryptoRewardIncomeEntry] = []
+    if income_file:
+        reward_entries = _parse_income_file(
+            income_file,
+            skipped_assets,
+            known_assets,
+            zone=zone,
+            skipped_zero_value_deferred_rewards=skipped_zero_value_deferred_rewards,
         )
-        if income_file
-        else []
-    )
+    else:
+        reward_entries = []
+
+    # One summary INFO log per parse pass when the skip list is non-empty (CRG-022
+    # observability). Emits only asset tickers (public symbols) + count; no wallet
+    # addresses or amounts.
+    if skipped_zero_value_deferred_rewards:
+        skip_counter = Counter(e.asset for e in skipped_zero_value_deferred_rewards)
+        top_assets = ", ".join(f"{asset}={count}" for asset, count in skip_counter.most_common(5))
+        logging.getLogger(__name__).info(
+            "Skipped %d zero-value deferred rewards (top assets: %s)",
+            len(skipped_zero_value_deferred_rewards),
+            top_assets,
+        )
 
     capital_entries = _validate_capital_entries_have_valid_countries(capital_entries, jurisdiction)
 
@@ -640,6 +661,7 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
         reconciliation=reconciliation,
         capital_gain_stats=capital_gain_stats,
         skipped_zero_value_tokens=skipped_zero_value_tokens,
+        skipped_zero_value_deferred_rewards=skipped_zero_value_deferred_rewards,
         loan_activity=loan_activity,
         fifo_rebuild_assets=loan_affected_assets,
         review_entries=review_entries,
@@ -954,13 +976,19 @@ def _collect_known_asset_tickers(
     return frozenset(known_assets)
 
 
-def _parse_income_file(
+def _parse_income_file(  # noqa: PLR0912, PLR0915
     path: Path,
     skipped_assets: Counter[tuple[str, str]],
     known_assets: frozenset[str] | None = None,
     zone: ZoneInfo | None = None,
+    skipped_zero_value_deferred_rewards: list[CryptoRewardIncomeEntry] | None = None,
 ) -> list[CryptoRewardIncomeEntry]:
     rows = read_koinly_rows(path)
+    # None-init shim (r3 review finding #4): callers exercising the kwarg default
+    # (e.g. legacy test call sites) would crash with AttributeError on the first
+    # ``.append`` below without this. The local is rebound to a fresh list.
+    if skipped_zero_value_deferred_rewards is None:
+        skipped_zero_value_deferred_rewards = []
     reward_entries: list[CryptoRewardIncomeEntry] = []
     logger = logging.getLogger(__name__)
 
@@ -1051,26 +1079,39 @@ def _parse_income_file(
                 )
                 review_reason = f"{review_reason}; {zero_value_reason}" if review_reason else zero_value_reason
 
-        reward_entries.append(
-            CryptoRewardIncomeEntry(
-                date=date_str,
-                asset=asset,
-                amount=amount,
-                value_eur=value_eur,
-                income_label="Reward",
-                source_type=row.get("Type", "").strip(),
-                wallet=wallet,
-                platform=platform,
-                chain=_derive_chain(wallet),
-                operator_origin=operator_origin,
-                annex_hint="J",
-                review_required=review_required,
-                review_reason=review_reason,
-                description=description,
-                tax_classification=tax_classification,
-                foreign_tax_eur=foreign_tax_eur,
-            )
+        reward_entry = CryptoRewardIncomeEntry(
+            date=date_str,
+            asset=asset,
+            amount=amount,
+            value_eur=value_eur,
+            income_label="Reward",
+            source_type=row.get("Type", "").strip(),
+            wallet=wallet,
+            platform=platform,
+            chain=_derive_chain(wallet),
+            operator_origin=operator_origin,
+            annex_hint="J",
+            review_required=review_required,
+            review_reason=review_reason,
+            description=description,
+            tax_classification=tax_classification,
+            foreign_tax_eur=foreign_tax_eur,
         )
+
+        # CRG-022 parse-time skip: zero-value DEFERRED_BY_LAW reward rows route to
+        # ``skipped_zero_value_deferred_rewards`` (full-fidelity audit list, Invariant 1)
+        # instead of ``reward_entries``. Deferred rewards feed no tax computation
+        # (aggregate_taxable_rewards filters to taxable_now; reward_total_eur sums
+        # value_eur so zeros contribute nothing; FIFO/cost-basis reads neither list),
+        # so the skip is tax-math-neutral (Invariant 2). Non-zero deferred rows and ALL
+        # taxable-now rows stay in ``reward_entries`` unchanged. NO platform-evidence
+        # guard (dropped per r1 review Critical #1, keyed on the wrong tuple vs. the
+        # protected consumer and was a no-op on real data).
+        if tax_classification == RewardTaxClassification.DEFERRED_BY_LAW and value_eur == ZERO:
+            skipped_zero_value_deferred_rewards.append(reward_entry)
+            continue
+
+        reward_entries.append(reward_entry)
 
     return reward_entries
 

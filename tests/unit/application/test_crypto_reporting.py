@@ -8105,7 +8105,14 @@ def test_collect_known_asset_tickers_collects_non_zero_assets(tmp_path):
 
 @pytest.mark.unit
 def test_parse_income_file_flags_zero_value_known_assets_for_review(tmp_path, caplog):
-    """Zero-value rewards for known assets are flagged with review_required=True."""
+    """Zero-value deferred rewards for known assets are routed to ``skipped_zero_value_deferred_rewards``
+    with ``review_required=True`` propagated (CRG-022 parse-time skip, Invariant 1 , list preservation).
+
+    Rewritten under CRG-022: the three zero-value BTC/ETH/USDT rows are DEFERRED_BY_LAW
+    (crypto-denominated) + value_eur == 0, so they route to ``skipped_zero_value_deferred_rewards``
+    instead of ``reward_entries``. Each retained entry carries the same ``review_required=True``
+    + zero-value review_reason the parse path set, so the audit trail preserves full fidelity.
+    """
     koinly_dir = tmp_path / "koinly2025"
     koinly_dir.mkdir()
 
@@ -8122,17 +8129,30 @@ def test_parse_income_file_flags_zero_value_known_assets_for_review(tmp_path, ca
     income_file.write_text(income_content, encoding="utf-8")
 
     skipped_assets: dict[tuple[str, str], dict] = {}
+    skipped_zero_value_deferred_rewards: list = []
 
     with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"):
-        entries = _parse_income_file(income_file, skipped_assets, known_assets=frozenset(["BTC", "ETH", "USDT"]))
+        entries = _parse_income_file(
+            income_file,
+            skipped_assets,
+            known_assets=frozenset(["BTC", "ETH", "USDT"]),
+            skipped_zero_value_deferred_rewards=skipped_zero_value_deferred_rewards,
+        )
 
-    # All three zero-value rewards should be created with review_required=True
-    assert len(entries) == 3
-    for entry in entries:
+    # CRG-022: all three zero-value deferred rewards route to the skip list, so
+    # ``reward_entries`` is now empty (the old contract put them in ``entries``).
+    assert len(entries) == 0
+
+    # All three retained entries carry the propagated review flag + zero-value reason
+    # (full-fidelity list preservation , Invariant 1, user's hard requirement).
+    assert len(skipped_zero_value_deferred_rewards) == 3
+    for entry in skipped_zero_value_deferred_rewards:
         assert entry.review_required is True
-        assert "Zero EUR value for known crypto asset" in entry.review_reason
+        assert "Zero EUR value for known crypto asset" in (entry.review_reason or "")
+        assert entry.value_eur == Decimal("0")
+        assert entry.tax_classification == RewardTaxClassification.DEFERRED_BY_LAW
 
-    # None should be in skipped_assets (they were flagged for review instead)
+    # None should be in skipped_assets (they were known assets; routed to the skip list, not dropped)
     assert len(skipped_assets) == 0
 
 
@@ -8169,7 +8189,14 @@ def test_parse_income_file_skips_zero_value_unknown_assets(tmp_path):
 
 @pytest.mark.unit
 def test_parse_income_file_zero_value_with_popular_token_matching(tmp_path):
-    """Zero-value rewards for popular tokens (via substring matching) are flagged for review."""
+    """Zero-value deferred rewards for popular tokens (via substring matching) are routed to
+    ``skipped_zero_value_deferred_rewards`` with ``review_required=True`` (CRG-022).
+
+    Rewritten under CRG-022: TSTON and TSUSDE are crypto-denominated (DEFERRED_BY_LAW) +
+    value_eur == 0, so they route to ``skipped_zero_value_deferred_rewards`` instead of
+    ``reward_entries``. UNKNOWNX is unknown (fails the ``is_known`` gate) and continues to
+    be dropped via the ``skipped_assets`` else-branch (unchanged).
+    """
     from unittest.mock import patch
 
     koinly_dir = tmp_path / "koinly2025"
@@ -8188,28 +8215,37 @@ def test_parse_income_file_zero_value_with_popular_token_matching(tmp_path):
     income_file.write_text(income_content, encoding="utf-8")
 
     skipped_assets: dict[tuple[str, str], dict] = {}
+    skipped_zero_value_deferred_rewards: list = []
 
     # Mock _get_popular_crypto_tokens to include TON and USDE for substring matching
     with patch(
         "tax_reporting.application.crypto_reporting._get_popular_crypto_tokens",
         return_value=frozenset(["BTC", "ETH", "TON", "USDE"]),
     ):
-        entries = _parse_income_file(income_file, skipped_assets, known_assets=frozenset(["TON", "USDE"]))
+        entries = _parse_income_file(
+            income_file,
+            skipped_assets,
+            known_assets=frozenset(["TON", "USDE"]),
+            skipped_zero_value_deferred_rewards=skipped_zero_value_deferred_rewards,
+        )
 
-    # TSTON (contains TON) and TSUSDE (contains USDE) should be flagged for review
-    # UNKNOWNX should be skipped
-    assert len(entries) == 2
+    # CRG-022: TSTON and TSUSDE (crypto -> DEFERRED_BY_LAW + zero-value) route to the
+    # skip list; ``reward_entries`` is now empty. UNKNOWNX is unknown and drops via
+    # the ``skipped_assets`` else-branch (unchanged).
+    assert len(entries) == 0
+    assert len(skipped_zero_value_deferred_rewards) == 2
 
-    entry_assets = {e.asset for e in entries}
-    assert "TSTON" in entry_assets
-    assert "TSUSDE" in entry_assets
-    assert "UNKNOWNX" not in entry_assets
+    skipped_assets_seen = {e.asset for e in skipped_zero_value_deferred_rewards}
+    assert "TSTON" in skipped_assets_seen
+    assert "TSUSDE" in skipped_assets_seen
+    assert "UNKNOWNX" not in skipped_assets_seen
 
-    for entry in entries:
+    for entry in skipped_zero_value_deferred_rewards:
         assert entry.review_required is True
-        assert "Zero EUR value for known crypto asset" in entry.review_reason
+        assert "Zero EUR value for known crypto asset" in (entry.review_reason or "")
+        assert entry.tax_classification == RewardTaxClassification.DEFERRED_BY_LAW
 
-    # Only UNKNOWNX should be in skipped_assets
+    # Only UNKNOWNX should be in skipped_assets (unchanged else-branch behavior)
     assert skipped_assets[("income", "UNKNOWNX")]["count"] == 1
     assert ("income", "TSTON") not in skipped_assets
     assert ("income", "TSUSDE") not in skipped_assets
@@ -11375,10 +11411,14 @@ def test_payment_proceeds_same_day_aggregation_sums_proceeds(tmp_path):
 
 @pytest.mark.unit
 def test_payment_proceeds_eurc_reward_now_flagged_by_tokens_extension(tmp_path):
-    """Backward-compat for the tokens.stablecoins extension (EUROC/EURC/EURT).
+    """Backward-compat for the tokens.stablecoins extension (EUROC/EURC/EURT) under CRG-022.
 
-    Adding EUR-pegged tickers enlarges the set _load_popular_crypto_tokens flattens,
-    so a zero-value reward for an EUR-pegged stablecoin is now FLAGGED (not skipped).
+    EURC is crypto-denominated (DEFERRED_BY_LAW), so under the CRG-022 parse-time skip a
+    zero-value EURC reward is routed to ``skipped_zero_value_deferred_rewards`` (NOT dropped ,
+    full-fidelity audit list, Invariant 1) carrying ``review_required=True`` propagated from
+    the parse path. The ``is_known`` gate still passes (EURC is in tokens.stablecoins, so the
+    row is NOT routed to the unknown-asset ``skipped_assets`` else-branch); it just lands in
+    the deferred-skip list instead of ``reward_entries``.
     """
     # Clear the cache so this test loads the REAL extended JSON (with EURC) regardless
     # of what an earlier test cached with mocked data.
@@ -11399,12 +11439,19 @@ def test_payment_proceeds_eurc_reward_now_flagged_by_tokens_extension(tmp_path):
     report = load_koinly_crypto_report(koinly_dir, jurisdiction=_pp_jurisdiction(infer=False))
     assert report is not None
 
-    eurc_rewards = [e for e in report.reward_entries if e.asset == "EURC"]
-    assert eurc_rewards, (
-        "A zero-value EURC reward must be FLAGGED (EURC is now in tokens.stablecoins), "
-        "not skipped."
+    # CRG-022: zero-value EURC (DEFERRED_BY_LAW) is retained in the deferred-skip audit list
+    # with the propagated review flag, NOT in reward_entries.
+    eurc_skipped = [e for e in report.skipped_zero_value_deferred_rewards if e.asset == "EURC"]
+    assert eurc_skipped, (
+        "A zero-value EURC reward must be retained in skipped_zero_value_deferred_rewards "
+        "(CRG-022 deferred-skip audit list) with review_required propagated."
     )
-    assert eurc_rewards[0].review_required is True
+    assert eurc_skipped[0].review_required is True
+    assert eurc_skipped[0].value_eur == Decimal("0")
+    assert eurc_skipped[0].tax_classification == RewardTaxClassification.DEFERRED_BY_LAW
+    # And EURC must NOT appear in reward_entries (it was relocated, not duplicated).
+    assert [e for e in report.reward_entries if e.asset == "EURC"] == []
+
     wxt_rewards = [e for e in report.reward_entries if e.asset == "WXT"]
     assert wxt_rewards, "Control: the non-zero WXT reward must still be parsed"
 
@@ -13473,4 +13520,290 @@ class TestKoinlyTrackingTokensSet:
                 "tax_reporting.application.crypto_reporting"
             )
         assert frozenset({"FEE"}) == _KOINLY_TRACKING_TOKENS
+
+
+def _write_income_csv(income_file: Path, rows: list[str]) -> None:
+    """Write a Koinly-format income CSV with the given data rows.
+
+    Mirrors the inline CSV-construction pattern from
+    ``test_parse_income_file_flags_zero_value_known_assets_for_review`` (around line 8107).
+    Each row must already contain the seven comma-separated Koinly columns:
+    Date,Asset,Amount,Value (EUR),Type,Description,Wallet Name.
+    """
+    income_file.write_text(
+        "\n".join([
+            "Income report 2025",
+            "",
+            "Date,Asset,Amount,Value (EUR),Type,Description,Wallet Name",
+            *rows,
+        ]),
+        encoding="utf-8",
+    )
+
+
+def _parse_income_file_with_skip(
+    income_file: Path,
+    *,
+    skipped_assets: dict[tuple[str, str], dict],
+    known_assets: frozenset[str],
+) -> tuple[list, list]:
+    """Call ``_parse_income_file`` forwarding the ``skipped_zero_value_deferred_rewards``
+    out-param (Plan 2026-07-19-deferred-reward-dust-skip, Task 2 contract - shipped).
+
+    The out-param is now part of ``_parse_income_file``'s signature, so the call
+    no longer raises ``TypeError``. The ``try/except TypeError`` is kept as a
+    contract regression guard: if a future refactor drops the out-param, the
+    ``pytest.fail`` surfaces it with a specific message instead of an unhandled
+    exception (AGENTS.md rule 4: a committed test that is itself the deliverable
+    must fail via ``pytest.fail`` naming the cause, never an unhandled exception).
+
+    Returns ``(reward_entries, skipped_zero_value_deferred_rewards)``.
+    """
+    skipped_zero_value_deferred_rewards: list = []
+    try:
+        reward_entries = _parse_income_file(
+            income_file,
+            skipped_assets,
+            known_assets=known_assets,
+            skipped_zero_value_deferred_rewards=skipped_zero_value_deferred_rewards,
+        )
+    except TypeError as exc:
+        pytest.fail(
+            "_parse_income_file must keep the skipped_zero_value_deferred_rewards "
+            f"out-param (got TypeError: {exc})"
+        )
+    return reward_entries, skipped_zero_value_deferred_rewards
+
+
+@pytest.mark.unit
+class TestParseIncomeFileDeferredSkip:
+    """RED tests for the parse-time skip of zero-value DEFERRED_BY_LAW rewards (Plan
+    2026-07-19-deferred-reward-dust-skip, Task 1).
+
+    These tests exercise ``_parse_income_file`` DIRECTLY (the function-level path, NOT
+    the full pipeline) and pass the NEW ``skipped_zero_value_deferred_rewards``
+    out-param as a kwarg via ``_parse_income_file_with_skip``. Today the kwarg does not
+    exist, so the call raises ``TypeError`` which is converted to a ``pytest.fail``
+    naming Task 2. All four go RED against unchanged production.
+
+    Pinned contract: zero-value DEFERRED_BY_LAW reward rows route to
+    ``skipped_zero_value_deferred_rewards`` (a full ``list[CryptoRewardIncomeEntry]``,
+    per Invariant 1 , list preservation, user's hard requirement) instead of
+    ``reward_entries``. Non-zero deferred rows and ALL taxable-now rows stay in
+    ``reward_entries`` unchanged.
+    """
+
+    def test_zero_value_deferred_reward_routed_to_skipped_list(self, tmp_path):
+        """Zero-value BTC deferred reward is routed to ``skipped_zero_value_deferred_rewards``;
+        the non-zero BTC deferred row stays in ``reward_entries``.
+
+        Goes RED: today the ``skipped_zero_value_deferred_rewards`` out-param does not
+        exist on ``_parse_income_file``, so the call raises ``TypeError`` which is
+        converted to ``pytest.fail`` naming Task 2.
+        """
+        koinly_dir = tmp_path / "koinly2025"
+        koinly_dir.mkdir()
+        income_file = koinly_dir / "koinly_2025_income_report_test.csv"
+        _write_income_csv(
+            income_file,
+            [
+                # Zero-value BTC reward -> DEFERRED_BY_LAW + value_eur == 0 -> skip path
+                '01/01/2025 00:01,BTC,"1,00000000",0.0,Reward,,Kraken',
+                # Non-zero BTC reward -> stays in reward_entries
+                '02/01/2025 00:01,BTC,"2,00000000","100,00",Reward,,Kraken',
+            ],
+        )
+
+        skipped_assets: dict[tuple[str, str], dict] = {}
+        reward_entries, skipped_zero_value_deferred_rewards = _parse_income_file_with_skip(
+            income_file,
+            skipped_assets=skipped_assets,
+            known_assets=frozenset({"BTC"}),
+        )
+
+        # (a) reward_entries contains ONLY the non-zero BTC row.
+        btc_reward_entries = [e for e in reward_entries if e.asset == "BTC"]
+        assert len(btc_reward_entries) == 1, (
+            "Expected exactly one BTC entry in reward_entries (the non-zero row); "
+            "the zero-value BTC row must route to skipped_zero_value_deferred_rewards."
+        )
+        assert btc_reward_entries[0].value_eur == Decimal("100.00")
+        assert btc_reward_entries[0].tax_classification == RewardTaxClassification.DEFERRED_BY_LAW
+
+        # (b) skipped_zero_value_deferred_rewards contains the zero-value BTC row as a
+        # full CryptoRewardIncomeEntry preserving all fields.
+        btc_skipped = [e for e in skipped_zero_value_deferred_rewards if e.asset == "BTC"]
+        assert len(btc_skipped) == 1, (
+            "Expected exactly one BTC entry in skipped_zero_value_deferred_rewards; "
+            f"got {len(btc_skipped)} (full skipped list: "
+            f"{len(skipped_zero_value_deferred_rewards)} rows)."
+        )
+        entry = btc_skipped[0]
+        assert entry.asset == "BTC"
+        assert entry.value_eur == Decimal("0")
+        assert entry.tax_classification == RewardTaxClassification.DEFERRED_BY_LAW
+        # wallet / platform / amount preserved on the relocated entry.
+        assert entry.wallet == "Kraken"
+        assert entry.platform == "Kraken"
+        assert entry.amount == Decimal("1")
+
+    def test_nonzero_deferred_reward_stays_in_reward_entries(self, tmp_path):
+        """Non-zero ETH deferred reward stays in ``reward_entries`` and the skip list is empty."""
+        koinly_dir = tmp_path / "koinly2025"
+        koinly_dir.mkdir()
+        income_file = koinly_dir / "koinly_2025_income_report_test.csv"
+        _write_income_csv(
+            income_file,
+            [
+                # Non-zero ETH reward -> DEFERRED_BY_LAW, value_eur > 0 -> stays in reward_entries
+                '01/01/2025 00:01,ETH,"2,00000000","50,00",Reward,,Kraken',
+            ],
+        )
+
+        skipped_assets: dict[tuple[str, str], dict] = {}
+        reward_entries, skipped_zero_value_deferred_rewards = _parse_income_file_with_skip(
+            income_file,
+            skipped_assets=skipped_assets,
+            known_assets=frozenset({"ETH"}),
+        )
+
+        eth_reward_entries = [e for e in reward_entries if e.asset == "ETH"]
+        assert len(eth_reward_entries) == 1
+        assert eth_reward_entries[0].value_eur == Decimal("50.00")
+        assert eth_reward_entries[0].tax_classification == RewardTaxClassification.DEFERRED_BY_LAW
+
+        # The skip list must be empty when every deferred reward is non-zero.
+        assert skipped_zero_value_deferred_rewards == []
+
+    def test_taxable_now_zero_value_not_skipped(self, tmp_path):
+        """Zero-value EUR taxable-now row stays in ``reward_entries``: the skip is
+        DEFERRED_BY_LAW-only (scope boundary regression guard).
+
+        EUR is fiat -> ``TAXABLE_NOW`` (per ``_classify_reward_tax_status``), so the
+        zero-value skip must NOT fire; Part 7 taxable-now partition handles its own
+        presentation.
+        """
+        koinly_dir = tmp_path / "koinly2025"
+        koinly_dir.mkdir()
+        income_file = koinly_dir / "koinly_2025_income_report_test.csv"
+        _write_income_csv(
+            income_file,
+            [
+                # EUR is fiat -> TAXABLE_NOW; zero-value must NOT be skipped
+                # (deferred-only scope; Part 7 handles taxable-now presentation).
+                '01/01/2025 00:01,EUR,"10,00000000",0.0,Reward,,Wirex',
+            ],
+        )
+
+        skipped_assets: dict[tuple[str, str], dict] = {}
+        reward_entries, skipped_zero_value_deferred_rewards = _parse_income_file_with_skip(
+            income_file,
+            skipped_assets=skipped_assets,
+            known_assets=frozenset({"EUR"}),
+        )
+
+        eur_reward_entries = [e for e in reward_entries if e.asset == "EUR"]
+        assert len(eur_reward_entries) == 1, (
+            "Zero-value EUR (TAXABLE_NOW) row must stay in reward_entries; the skip "
+            "is DEFERRED_BY_LAW-only."
+        )
+        assert eur_reward_entries[0].value_eur == Decimal("0")
+        assert eur_reward_entries[0].tax_classification == RewardTaxClassification.TAXABLE_NOW
+
+        # No EUR row appears in the deferred-skip list.
+        assert [e for e in skipped_zero_value_deferred_rewards if e.asset == "EUR"] == []
+
+    def test_skipped_row_preserves_full_fidelity(self, tmp_path):
+        """The skipped WBERA deferred row retains ALL fields a non-skipped entry would have
+        (Invariant 1 , list preservation, user's hard requirement).
+
+        This test must FAIL if a future refactor switches
+        ``skipped_zero_value_deferred_rewards`` to a count-only
+        ``CryptoSkippedZeroValueToken`` shape: it asserts on field equality
+        (asset, wallet, platform, amount, source_type), not just count.
+        """
+        koinly_dir = tmp_path / "koinly2025"
+        koinly_dir.mkdir()
+        income_file = koinly_dir / "koinly_2025_income_report_test.csv"
+        _write_income_csv(
+            income_file,
+            [
+                # Zero-value WBERA (passed via known_assets so it survives the is_known gate
+                # deterministically; crypto -> DEFERRED_BY_LAW) with explicit
+                # wallet/platform/amount/source_type.
+                '01/01/2025 00:01,WBERA,"1,50000000",0.0,Reward,,Wirex',
+            ],
+        )
+
+        skipped_assets: dict[tuple[str, str], dict] = {}
+        _, skipped_zero_value_deferred_rewards = _parse_income_file_with_skip(
+            income_file,
+            skipped_assets=skipped_assets,
+            known_assets=frozenset({"WBERA"}),
+        )
+
+        wbera_skipped = [e for e in skipped_zero_value_deferred_rewards if e.asset == "WBERA"]
+        assert len(wbera_skipped) == 1, (
+            "Expected exactly one WBERA entry in skipped_zero_value_deferred_rewards; "
+            f"got {len(wbera_skipped)}."
+        )
+        entry = wbera_skipped[0]
+
+        # Full-fidelity assertions: every field that a non-skipped entry would carry.
+        # Asserting on field equality (not just count) is the load-bearing guard against
+        # a count-only regression on the list-preservation invariant.
+        assert entry.asset == "WBERA"
+        assert entry.wallet == "Wirex"
+        assert entry.platform == "Wirex"
+        assert entry.amount == Decimal("1.5")
+        assert entry.source_type == "Reward"
+        assert entry.value_eur == Decimal("0")
+        assert entry.tax_classification == RewardTaxClassification.DEFERRED_BY_LAW
+
+    def test_default_kwarg_silently_drops_zero_value_deferred(self, tmp_path):
+        """Backward-compat guard for the None-init shim at crypto_reporting.py:990-991.
+
+        Calling ``_parse_income_file`` WITHOUT the ``skipped_zero_value_deferred_rewards``
+        kwarg (the default-kwarg path exercised by legacy test call sites) must NOT
+        crash: the shim rebinds the local to a fresh ``list`` and silently discards
+        every zero-value DEFERRED row (the local list is dropped on return). The
+        non-zero DEFERRED row still lands in ``reward_entries``.
+
+        This test pins the documented silent-drop contract so a future refactor that
+        removes the shim (e.g. makes the kwarg required) fails loudly here and forces
+        the author to update the legacy callers at test_crypto_reporting.py:8178/8225/
+        8274/10783 explicitly, rather than silently changing their behavior. (r1 review
+        finding #5.)
+        """
+        koinly_dir = tmp_path / "koinly2025"
+        koinly_dir.mkdir()
+        income_file = koinly_dir / "koinly_2025_income_report_default_kwarg.csv"
+        _write_income_csv(
+            income_file,
+            [
+                # Zero-value BTC reward -> DEFERRED_BY_LAW + value_eur == 0 -> skip path.
+                '01/01/2025 00:01,BTC,"1,00000000",0.0,Reward,,Kraken',
+                # Non-zero BTC reward -> stays in reward_entries.
+                '02/01/2025 00:01,BTC,"2,00000000","100,00",Reward,,Kraken',
+            ],
+        )
+
+        skipped_assets: dict[tuple[str, str], dict] = {}
+        # NOTE: deliberately does NOT pass ``skipped_zero_value_deferred_rewards``;
+        # this exercises the None-init shim and proves the default-kwarg callers
+        # parse without crashing.
+        entries = _parse_income_file(income_file, skipped_assets, known_assets=frozenset({"BTC"}))
+
+        # The shim silently drops the zero-value row because the local list is
+        # discarded on return; reward_entries keeps only the non-zero BTC row.
+        # If a future refactor removes the shim, this assertion fails and points the
+        # author at the legacy call sites to update (or to make the kwarg required).
+        assert len(entries) == 1, (
+            f"Default-kwarg path changed: expected 1 entry (shim silently drops the "
+            f"zero-value DEFERRED row); got {len(entries)}. If you removed the shim, "
+            f"update the legacy callers at test_crypto_reporting.py:8178/8225/8274/10783 "
+            f"or make the kwarg required."
+        )
+        assert entries[0].value_eur == Decimal("100.00")
+        assert entries[0].tax_classification == RewardTaxClassification.DEFERRED_BY_LAW
 

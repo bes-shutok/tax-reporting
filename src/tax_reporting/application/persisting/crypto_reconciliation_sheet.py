@@ -35,6 +35,15 @@ def write_crypto_reconciliation_sheet(workbook: openpyxl.Workbook, crypto_tax_re
     reconciliation_rows = [
         ("Capital sale events (aggregated)", crypto_tax_report.reconciliation.capital_rows),
         ("Reward rows", crypto_tax_report.reconciliation.reward_rows),
+        # Cross-sheet audit count (CRG-022 / r3 review finding #2). The
+        # ``reward_rows`` count above drops under the parse-time skip
+        # (zero-value DEFERRED_BY_LAW rows leave ``reward_entries``). Without this sibling line, the Reconciliation
+        # sheet's ``Reward rows`` count would silently disagree with the
+        # Supplementary sheet's deferred subtotal. This is the audit line r1
+        # review dropped as tautological on the Supplementary sheet (dust +
+        # unpriced == total by construction there) - here it is load-bearing
+        # because it makes the cross-sheet count auditable.
+        ("Skipped zero-value deferred rewards (audit)", len(crypto_tax_report.skipped_zero_value_deferred_rewards)),
         ("Short term rows", crypto_tax_report.reconciliation.short_term_rows),
         ("Long term rows", crypto_tax_report.reconciliation.long_term_rows),
         ("Mixed holding period rows", crypto_tax_report.reconciliation.mixed_rows),

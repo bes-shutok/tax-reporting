@@ -105,12 +105,12 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Crypto derivatives/futures liquidations reporting losses are disposals of collateral even at a loss; this is correct tax treatment, not an error. See `development_lessons.md` #26.
 - Crypto tests MUST read committed synthetic data under `resources/source/example/<year>/koinly/[<scenario>/]`; never reference gitignored personal data. See `crypto_implementation_guidelines.md`.
 
-
 ### 4. Agent Workflow Rules
 
 - Bug fixes follow TDD: failing test first (RED), then fix (GREEN). See `development_lessons.md` #27.
 - When a plan is revised between RED and GREEN, re-read each RED test against current design invariants before flipping GREEN. Update changed assertions and cite the invariant.
 - A committed RED test that is itself the deliverable (a later task flips it GREEN) must fail via `pytest.fail(<message>)` naming the resolving task, never an unhandled exception.
+- A pre-existing RED draft matching the Task spec's names is an abstraction over the verbatim spec; re-derive its mechanism before trusting it. See `development_lessons.md` #62.
 - A regression test must exercise the production call site it claims to guard (not an adjacent derived value); before merging, revert the guarded change and confirm the test fails; when a fix has two halves, scope each assertion. See `development_lessons.md` #46.
 - A test fixture binding a named local from a positional CSV field must put the value at the column index the production reader extracts; a wrong comma count leaves the parsed field at its default while green hides it. See `development_lessons.md` #59.
 - When building an index from source data, handle duplicate keys by summing, never silent overwrite.
@@ -158,7 +158,6 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - **Never proceed to plan execution or make code changes without explicit user approval when in Planning Mode.** Bypassing the approval gate violates user intent and creates unwanted code churn.
 - Request a plan amendment before omitting prescribed behaviors.
 - Temporary artifacts and scratch scripts must not be placed in git-tracked folders like the project root; use a dedicated git-ignored scratch folder or the system scratch directory. See `development_lessons.md` #34.
-
 
 ### 5. Domain Knowledge References
 
@@ -219,4 +218,3 @@ Missing-vs-invalid: see `docs/maintenance/project-guidelines.md` #5 for the full
 ## Lessons Learned
 
 Full details, pre-commit checklist, and QA commands: `docs/maintenance/development_lessons.md`.
-

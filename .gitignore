@@ -96,3 +96,4 @@ docs/maintenance/personal/
 .cursor/rules
 tmp/
 .claude/settings.local.json
+/.zcode/

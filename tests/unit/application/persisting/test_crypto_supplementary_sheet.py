@@ -65,6 +65,7 @@ def _make_aggregated_reward(**overrides: object) -> AggregatedRewardIncomeEntry:
 def _make_crypto_tax_report(
     reward_entries: list[CryptoRewardIncomeEntry] | None = None,
     review_entries: list[CryptoReviewEntry] | None = None,
+    skipped_deferred_rewards: list[CryptoRewardIncomeEntry] | None = None,
 ) -> CryptoTaxReport:
     entries = reward_entries if reward_entries is not None else [_make_reward_entry()]
     reconciliation = CryptoReconciliationSummary(
@@ -95,6 +96,9 @@ def _make_crypto_tax_report(
         capital_gain_stats=capital_gain_stats,
         pdf_summary=None,
         review_entries=review_entries if review_entries is not None else [],
+        skipped_zero_value_deferred_rewards=(
+            skipped_deferred_rewards if skipped_deferred_rewards is not None else []
+        ),
     )
 
 
@@ -597,6 +601,152 @@ class TestCryptoSupplementarySheetClassificationReconciliation:
             f"old 'Taxable-now rows (immediately taxable)' line still present after split; keys={keys}"
         )
 
+    def test_section4_splits_deferred_detail_dust_unpriced(self):
+        """Section 4 reconciliation splits the deferred count into detail + dust + unpriced.
+
+        Given a CryptoTaxReport with 2 non-zero deferred rows, 3 dust deferred rows
+        (in ``skipped_zero_value_deferred_rewards``, priced assets) and 4 unpriced
+        deferred rows (in ``skipped_zero_value_deferred_rewards``, unpriced assets),
+        Section 4 must render the new three-line split
+        ``("Deferred detail rows", 2)``,
+        ``("Deferred dust rows (suppressed from detail)", 3)`` and
+        ``("Deferred unpriced rows (suppressed from detail)", 4)`` and must NOT
+        render the old ``("Deferred-by-law rows (taxation deferred)", 9)`` line NOR
+        a ``("Skipped zero-value deferred rewards (audit)", ...)`` line (r1 review
+        finding #2: the 4th audit line is tautological and dropped on the
+        Supplementary sheet - it lives on the Reconciliation sheet instead, where
+        it makes the cross-sheet count auditable).
+
+        RED for Task 5: the Section 4 reconciliation still emits the old single
+        deferred line; Task 5 flips it GREEN by replacing the single
+        reconciliation row with the three split rows, reusing the partition
+        computed once in Task 4 (Invariant 5: compute-once-reuse).
+        """
+        # Two priced WBERA + WBTC deferred rows -> deferred detail (deferred_entries).
+        wbera_real = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBERA",
+            value_eur=Decimal("1.00"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1"),
+        )
+        wbtc_real = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBTC",
+            value_eur=Decimal("2.00"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Bitcoin",
+            amount=Decimal("1"),
+        )
+        # Three zero-value WBERA/WBTC deferred rows -> dust (priced assets, in
+        # skipped_zero_value_deferred_rewards; WBERA/WBTC have priced rows above).
+        wbera_dust_1 = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBERA",
+            value_eur=Decimal("0"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1"),
+        )
+        wbera_dust_2 = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBERA",
+            value_eur=Decimal("0"),
+            wallet="Kraken",
+            platform="Kraken",
+            chain="Berachain",
+            amount=Decimal("1"),
+        )
+        wbtc_dust_1 = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBTC",
+            value_eur=Decimal("0"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Bitcoin",
+            amount=Decimal("1"),
+        )
+        # Four zero-value OSBGT/BNB deferred rows -> unpriced (no priced row
+        # anywhere; in skipped_zero_value_deferred_rewards).
+        osbgt_unpriced_1 = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="OSBGT",
+            value_eur=Decimal("0"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1"),
+        )
+        osbgt_unpriced_2 = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="OSBGT",
+            value_eur=Decimal("0"),
+            wallet="Kraken",
+            platform="Kraken",
+            chain="Berachain",
+            amount=Decimal("1"),
+        )
+        bnb_unpriced_1 = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="BNB",
+            value_eur=Decimal("0"),
+            wallet="Kraken",
+            platform="Kraken",
+            chain="Binance",
+            amount=Decimal("1"),
+        )
+        bnb_unpriced_2 = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="BNB",
+            value_eur=Decimal("0"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Binance",
+            amount=Decimal("1"),
+        )
+        report = _make_crypto_tax_report(
+            reward_entries=[wbera_real, wbtc_real],
+            skipped_deferred_rewards=[
+                wbera_dust_1,
+                wbera_dust_2,
+                wbtc_dust_1,
+                osbgt_unpriced_1,
+                osbgt_unpriced_2,
+                bnb_unpriced_1,
+                bnb_unpriced_2,
+            ],
+        )
+        wb = openpyxl.Workbook()
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
+        ws = wb["Crypto Supplementary"]
+        keys = _section4_reconciliation_keys(ws)
+        assert keys["Deferred detail rows"] == 2, (
+            f"expected new 'Deferred detail rows' split line with value 2, got keys={keys}"
+        )
+        assert keys["Deferred dust rows (suppressed from detail)"] == 3, (
+            f"expected new 'Deferred dust rows (suppressed from detail)' split line with value 3, "
+            f"got keys={keys}"
+        )
+        assert keys["Deferred unpriced rows (suppressed from detail)"] == 4, (
+            f"expected new 'Deferred unpriced rows (suppressed from detail)' split line with value 4, "
+            f"got keys={keys}"
+        )
+        # The old single-line deferred reconciliation row must be absent after
+        # the split.
+        assert "Deferred-by-law rows (taxation deferred)" not in keys, (
+            f"old 'Deferred-by-law rows (taxation deferred)' line still present after split; keys={keys}"
+        )
+        # r1 review finding #2: the audit line is tautological on the Supplementary
+        # sheet (dust + unpriced == total by construction) and lives only on the
+        # Reconciliation sheet.
+        assert "Skipped zero-value deferred rewards (audit)" not in keys, (
+            f"tautological audit line present on Supplementary sheet; keys={keys}"
+        )
+
     def test_reconciliation_key_value_pairs(self):
         taxable = _make_reward_entry(classification=RewardTaxClassification.TAXABLE_NOW, value_eur=Decimal("100"))
         deferred = _make_reward_entry(
@@ -607,10 +757,9 @@ class TestCryptoSupplementarySheetClassificationReconciliation:
         write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
         keys = _section4_reconciliation_keys(ws)
-        # Unchanged reconciliation lines (preserved intent): the raw count,
-        # deferred count, and EUR totals are still rendered.
+        # Unchanged reconciliation lines (preserved intent): the raw count and
+        # the EUR totals are still rendered.
         assert keys["Total reward rows (raw)"] == 2
-        assert keys["Deferred-by-law rows (taxation deferred)"] == 1
         assert keys["Taxable-now total value (EUR)"] == float(Decimal("100"))
         assert keys["Deferred total value (EUR)"] == float(Decimal("200"))
         # New split lines replace the old single taxable-now count. The priced
@@ -623,9 +772,26 @@ class TestCryptoSupplementarySheetClassificationReconciliation:
             f"expected new 'Taxable-now dust rows (suppressed from detail)' split line with value 0, "
             f"got keys={keys}"
         )
-        # The old single-line reconciliation row must be absent after the split.
+        # New three-line deferred split replaces the old single deferred count.
+        # The priced BTC deferred row stays in detail (deferred_entries), and
+        # skipped_zero_value_deferred_rewards is empty so dust + unpriced are 0.
+        assert keys["Deferred detail rows"] == 1, (
+            f"expected new 'Deferred detail rows' split line with value 1, got keys={keys}"
+        )
+        assert keys["Deferred dust rows (suppressed from detail)"] == 0, (
+            f"expected new 'Deferred dust rows (suppressed from detail)' split line with value 0, "
+            f"got keys={keys}"
+        )
+        assert keys["Deferred unpriced rows (suppressed from detail)"] == 0, (
+            f"expected new 'Deferred unpriced rows (suppressed from detail)' split line with value 0, "
+            f"got keys={keys}"
+        )
+        # The old single-line reconciliation rows must be absent after the split.
         assert "Taxable-now rows (immediately taxable)" not in keys, (
             f"old 'Taxable-now rows (immediately taxable)' line still present after split; keys={keys}"
+        )
+        assert "Deferred-by-law rows (taxation deferred)" not in keys, (
+            f"old 'Deferred-by-law rows (taxation deferred)' line still present after split; keys={keys}"
         )
 
     def test_reconciliation_empty_rewards(self):
@@ -911,7 +1077,12 @@ def _section2_reward_detail_rows(ws) -> list[dict[int, object]]:
     """
     start, end = _section2_bounds(ws)
     rows: list[dict[int, object]] = []
-    skip_prefixes = ("Dust summary:", "No taxable-now", "All taxable-now")
+    skip_prefixes = (
+        "Dust summary:",
+        "Taxable-now dust",
+        "No taxable-now",
+        "All taxable-now",
+    )
     for r in range(start, end):
         c1 = ws.cell(r, 1).value
         c2 = ws.cell(r, 2).value
@@ -924,6 +1095,129 @@ def _section2_reward_detail_rows(ws) -> list[dict[int, object]]:
             continue
         row: dict[int, object] = {}
         for col in range(1, 12):
+            row[col] = ws.cell(r, col).value
+        rows.append(row)
+    return rows
+
+
+def _section3_bounds(ws) -> tuple[int, int]:
+    """Return the (start_row, end_row_exclusive) for Section 3.
+
+    ``end_row_exclusive`` is the row of the next section title (4. REWARDS
+    CLASSIFICATION RECONCILIATION) or ``ws.max_row + 1`` if not found, so
+    callers can iterate Section 3 with ``range(start, end)``.
+    """
+    start = None
+    for r in range(1, ws.max_row + 1):
+        if ws.cell(r, 1).value == "3. DEFERRED BY LAW - SUPPORT DETAIL":
+            start = r
+            break
+    assert start is not None, "Section 3 title not rendered"
+    end = ws.max_row + 1
+    for r in range(start + 1, ws.max_row + 1):
+        val = ws.cell(r, 1).value
+        if isinstance(val, str) and val.startswith("4."):
+            end = r
+            break
+    return start, end
+
+
+def _section3_strings(ws) -> list[str]:
+    """Collect all column-A string cell values rendered inside Section 3."""
+    start, end = _section3_bounds(ws)
+    out: list[str] = []
+    for r in range(start, end):
+        val = ws.cell(r, 1).value
+        if isinstance(val, str):
+            out.append(val)
+    return out
+
+
+def _section3_reward_detail_rows(ws) -> list[dict[int, object]]:
+    """Return Section 3 detail data rows (skipping header, labels, and the suppressed block).
+
+    Mirrors :func:`_section2_reward_detail_rows` for the deferred section. A row
+    is a detail row iff column 2 (Asset) and column 4 (Income type) are both
+    populated AND column 1 is not the header ``"Date"`` and not a label /
+    suppressed-block line.
+    """
+    start, end = _section3_bounds(ws)
+    rows: list[dict[int, object]] = []
+    skip_prefixes = (
+        "Suppressed zero-value deferred rewards",
+        "Deferred dust",
+        "Deferred unpriced",
+        "No deferred rewards",
+        "All deferred",
+    )
+    for r in range(start, end):
+        c1 = ws.cell(r, 1).value
+        c2 = ws.cell(r, 2).value
+        c4 = ws.cell(r, 4).value
+        if c2 in (None, ""):
+            continue
+        if c4 in (None, ""):
+            continue
+        if isinstance(c1, str) and (c1 == "Date" or c1.startswith(skip_prefixes)):
+            continue
+        row: dict[int, object] = {}
+        for col in range(1, 12):
+            row[col] = ws.cell(r, col).value
+        rows.append(row)
+    return rows
+
+
+def _all_sheet_strings(ws) -> list[str]:
+    """Collect every column-A string cell value rendered anywhere on the sheet.
+
+    Used to scan for the single-block "Suppressed zero-value deferred rewards"
+    header without having to predict which numbered section it falls under
+    (it renders AFTER the deferred detail table, so it lives inside Section 3).
+    """
+    out: list[str] = []
+    for r in range(1, ws.max_row + 1):
+        val = ws.cell(r, 1).value
+        if isinstance(val, str):
+            out.append(val)
+    return out
+
+
+def _find_table_rows_after(ws, anchor_text: str, num_cols: int) -> list[dict[int, object]]:
+    """Return the data rows of the column table whose header row is the first
+    row after the cell containing ``anchor_text`` in column A.
+
+    ``anchor_text`` is the sub-header line that immediately precedes the table's
+    header row (e.g. ``"Taxable-now dust (priced-asset rounding)"`` or
+    ``"Deferred dust (priced-asset rounding)"``). The next row is the table
+    header (Asset | Wallet | Rows | ...), and subsequent rows are data rows
+    until a blank cell or a new header/sub-header appears in column A.
+
+    Returns each data row as ``{col_idx_1based: value}`` for ``num_cols`` cols.
+    """
+    # Locate the anchor row (sub-header).
+    anchor_row = None
+    for r in range(1, ws.max_row + 1):
+        if ws.cell(r, 1).value == anchor_text:
+            anchor_row = r
+            break
+    assert anchor_row is not None, f"anchor {anchor_text!r} not found"
+    # Header row is the next row.
+    header_row = anchor_row + 1
+    rows: list[dict[int, object]] = []
+    for r in range(header_row + 1, ws.max_row + 1):
+        c1 = ws.cell(r, 1).value
+        # End the table at a blank cell, a new section header, a new sub-header,
+        # or a new outer header - whichever comes first.
+        if c1 in (None, ""):
+            break
+        if isinstance(c1, str) and (
+            c1.startswith(("Suppressed zero-value deferred rewards", "Deferred dust", "Deferred unpriced"))
+            or c1.startswith(("Dust summary:", "Taxable-now dust"))
+            or c1.startswith(("1.", "2.", "3.", "4.", "5."))
+        ):
+            break
+        row: dict[int, object] = {}
+        for col in range(1, num_cols + 1):
             row[col] = ws.cell(r, col).value
         rows.append(row)
     return rows
@@ -985,13 +1279,20 @@ class TestCryptoSupplementarySheetDustSummary:
                 str(row.get(2, "")) == "BTC" and float(row.get(3, -1)) == 0.0
             ), "zero-value BTC row leaked into Section 2 detail table"
 
-        # A dust summary block with a BTC line for 1 row summed to 0.00 must render.
+        # The dust summary block now renders as a column table under the
+        # "Taxable-now dust (...)" sub-header. Asset=BTC, Wallet=Demo Spot,
+        # Rows=1, Summed Value (EUR)=0.0, Category=dust.
         section_strs = _section2_strings(ws)
         assert any(s == "Dust summary:" for s in section_strs), "Dust summary header missing"
-        btc_line_present = any(
-            re.search(r"BTC dust .*: 1 rows, summed Value EUR = 0\.00", s) for s in section_strs
+        table = _find_table_rows_after(ws, _TAXABLE_NOW_DUST_SUBHEADER, num_cols=5)
+        btc_rows = [r for r in table if r.get(1) == "BTC"]
+        assert len(btc_rows) == 1, (
+            f"expected one BTC dust row in taxable-now table, got {btc_rows}; full table={table}"
         )
-        assert btc_line_present, f"BTC dust line missing in {section_strs}"
+        assert btc_rows[0].get(2) == "Demo Spot", f"wallet wrong: {btc_rows[0]}"
+        assert btc_rows[0].get(3) == 1, f"rows count wrong: {btc_rows[0]}"
+        assert float(btc_rows[0].get(4)) == 0.0, f"summed value wrong: {btc_rows[0]}"
+        assert btc_rows[0].get(5) == "dust", f"category wrong: {btc_rows[0]}"
 
     def test_osbgt_zero_keeps_per_row_yes(self):
         """OSBGT (no priced row anywhere) keeps per-row YES (the r9 headline fix).
@@ -1052,10 +1353,14 @@ class TestCryptoSupplementarySheetDustSummary:
 
         section_strs = _section2_strings(ws)
         assert any(s == "Dust summary:" for s in section_strs), "Dust summary header missing"
-        bgt_line_present = any(
-            re.search(r"BGT dust .*: 1 rows, summed Value EUR = 0\.00", s) for s in section_strs
+        table = _find_table_rows_after(ws, _TAXABLE_NOW_DUST_SUBHEADER, num_cols=5)
+        bgt_rows = [r for r in table if r.get(1) == "BGT"]
+        assert len(bgt_rows) == 1, (
+            f"expected one BGT dust row in taxable-now table, got {bgt_rows}; full table={table}"
         )
-        assert bgt_line_present, f"BGT dust line missing in {section_strs}"
+        assert bgt_rows[0].get(3) == 1, f"rows count wrong: {bgt_rows[0]}"
+        assert float(bgt_rows[0].get(4)) == 0.0, f"summed value wrong: {bgt_rows[0]}"
+        assert bgt_rows[0].get(5) == "dust", f"category wrong: {bgt_rows[0]}"
 
     def test_mixed_dust_and_detail_both_render(self):
         """A mix: priced BTC detail row, zero BTC dust row, zero OSBGT YES detail row."""
@@ -1090,10 +1395,12 @@ class TestCryptoSupplementarySheetDustSummary:
 
         section_strs = _section2_strings(ws)
         assert any(s == "Dust summary:" for s in section_strs), "Dust summary header missing"
-        btc_dust_present = any(
-            re.search(r"BTC dust .*: 1 rows, summed Value EUR = 0\.00", s) for s in section_strs
+        table = _find_table_rows_after(ws, _TAXABLE_NOW_DUST_SUBHEADER, num_cols=5)
+        btc_dust_rows = [r for r in table if r.get(1) == "BTC"]
+        assert len(btc_dust_rows) == 1, (
+            f"expected one BTC dust row in taxable-now table, got {btc_dust_rows}; full table={table}"
         )
-        assert btc_dust_present, "BTC dust line missing in mixed scenario"
+        assert float(btc_dust_rows[0].get(4)) == 0.0, f"summed value wrong: {btc_dust_rows[0]}"
 
     def test_all_dust_empty_label(self):
         """All taxable-now rows are dust: detail table shows the all-dust label and a dust block renders."""
@@ -1153,7 +1460,8 @@ class TestCryptoSupplementarySheetDustSummary:
         )
 
     def test_dust_line_empty_wallet_renders_explicitly(self):
-        """Empty-string wallet (reachable production degradation) renders as ``BTC dust ():`` with no 'None' literal."""
+        """Empty-string wallet (reachable production degradation) renders as
+        Wallet="" (empty cell value, not a 'None' literal)."""
         btc_priced = _make_reward_entry(
             asset="BTC", value_eur=Decimal("0.50"), wallet="Demo Spot", platform="Demo Spot", chain="Bitcoin"
         )
@@ -1165,17 +1473,15 @@ class TestCryptoSupplementarySheetDustSummary:
         write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
 
-        section_strs = _section2_strings(ws)
-        empty_wallet_lines = [
-            s for s in section_strs if s.startswith("BTC dust ()") and "1 rows, summed Value EUR = 0.00" in s
-        ]
-        assert empty_wallet_lines, (
-            f"expected an explicit 'BTC dust (): ...' line, got {section_strs}"
+        table = _find_table_rows_after(ws, _TAXABLE_NOW_DUST_SUBHEADER, num_cols=5)
+        btc_rows = [r for r in table if r.get(1) == "BTC"]
+        assert len(btc_rows) == 1, f"expected one BTC dust row, got {btc_rows}; table={table}"
+        # Wallet column renders empty-string, NOT "None".
+        wallet_val = btc_rows[0].get(2)
+        assert wallet_val in ("", None), (
+            f"expected empty wallet (None or '') for empty-string input, got {wallet_val!r}"
         )
-        # No 'None' literal may appear anywhere in the rendered Section 2 strings.
-        assert not any("None" in s for s in section_strs), (
-            f"'None' literal leaked into Section 2 output: {section_strs}"
-        )
+        assert wallet_val != "None", f"'None' literal leaked into Wallet column: {btc_rows[0]}"
 
     def test_dust_sorted_by_asset_wallet(self):
         """Dust rows are sorted by (asset, wallet) ascending across multiple keys."""
@@ -1201,16 +1507,7 @@ class TestCryptoSupplementarySheetDustSummary:
         write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
         ws = wb["Crypto Supplementary"]
 
-        section_strs = _section2_strings(ws)
-        # Collect the dust summary lines (the lines after the "Dust summary:" header).
-        try:
-            header_idx = section_strs.index("Dust summary:")
-        except ValueError as exc:  # pragma: no cover - RED until Task 4
-            raise AssertionError(f"Dust summary header missing in {section_strs}") from exc
-        dust_lines: list[str] = []
-        for s in section_strs[header_idx + 1 :]:
-            if s.startswith(("BTC dust", "ETH dust", "OSBGT dust", "BGT dust")):
-                dust_lines.append(s)
+        table = _find_table_rows_after(ws, _TAXABLE_NOW_DUST_SUBHEADER, num_cols=5)
 
         # Each (asset, wallet) group appears in the expected ascending order.
         # The expected order is (BTC, Demo Spot), (BTC, Wirex), (ETH, Demo Spot).
@@ -1219,13 +1516,77 @@ class TestCryptoSupplementarySheetDustSummary:
             ("BTC", "Wirex"),
             ("ETH", "Demo Spot"),
         ]
-        assert len(dust_lines) == len(expected_order), (
-            f"expected {len(expected_order)} dust lines, got {dust_lines}"
+        assert len(table) == len(expected_order), (
+            f"expected {len(expected_order)} dust rows, got {table}"
         )
-        for line, (asset, wallet) in zip(dust_lines, expected_order, strict=True):
-            assert line.startswith(f"{asset} dust ({wallet}):"), (
-                f"expected dust line to start with '{asset} dust ({wallet}):', got {line!r}"
-            )
+        for row, (asset, wallet) in zip(table, expected_order, strict=True):
+            assert row.get(1) == asset, f"expected asset {asset!r}, got {row}"
+            assert row.get(2) == wallet, f"expected wallet {wallet!r}, got {row}"
+
+    def test_taxable_now_block_has_outer_header_and_subheader(self):
+        """The taxable-now Dust summary block now has an outer 'Dust summary:'
+        header followed by a 'Taxable-now dust (...)' sub-header, then the
+        dust lines. Mirrors the deferred-side shape for consistency (user
+        answer #3).
+        """
+        btc_priced = _make_reward_entry(
+            asset="BTC", value_eur=Decimal("0.50"), wallet="Demo Spot", platform="Demo Spot", chain="Bitcoin"
+        )
+        btc_zero = _make_reward_entry(
+            asset="BTC", value_eur=Decimal("0"), wallet="Demo Spot", platform="Demo Spot", chain="Bitcoin"
+        )
+        report = _make_crypto_tax_report(reward_entries=[btc_priced, btc_zero])
+        wb = openpyxl.Workbook()
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
+        ws = wb["Crypto Supplementary"]
+
+        section_strs = _section2_strings(ws)
+        try:
+            outer_idx = section_strs.index("Dust summary:")
+        except ValueError as exc:
+            raise AssertionError(
+                f"'Dust summary:' outer header missing from Section 2: {section_strs}"
+            ) from exc
+        body = section_strs[outer_idx + 1 :]
+        assert _TAXABLE_NOW_DUST_SUBHEADER in body, (
+            f"taxable-now dust sub-header {_TAXABLE_NOW_DUST_SUBHEADER!r} missing after "
+            f"'Dust summary:' outer header; body={body}"
+        )
+        # The dust body row renders under the sub-header as a column table.
+        table = _find_table_rows_after(ws, _TAXABLE_NOW_DUST_SUBHEADER, num_cols=5)
+        btc_rows = [r for r in table if r.get(1) == "BTC"]
+        assert len(btc_rows) == 1, (
+            f"BTC dust row missing under {_TAXABLE_NOW_DUST_SUBHEADER!r}; table={table}"
+        )
+
+    def test_taxable_now_outer_header_preceded_by_blank_spacer_row(self):
+        """The taxable-now 'Dust summary:' outer header is preceded by a blank
+        spacer row (matches the section-header spacer convention). Fails RED
+        against unchanged production (today the header is flush against the
+        taxable-now detail table).
+        """
+        btc_priced = _make_reward_entry(
+            asset="BTC", value_eur=Decimal("0.50"), wallet="Demo Spot", platform="Demo Spot", chain="Bitcoin"
+        )
+        btc_zero = _make_reward_entry(
+            asset="BTC", value_eur=Decimal("0"), wallet="Demo Spot", platform="Demo Spot", chain="Bitcoin"
+        )
+        report = _make_crypto_tax_report(reward_entries=[btc_priced, btc_zero])
+        wb = openpyxl.Workbook()
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
+        ws = wb["Crypto Supplementary"]
+
+        header_row = None
+        for r in range(1, ws.max_row + 1):
+            if ws.cell(r, 1).value == "Dust summary:":
+                header_row = r
+                break
+        assert header_row is not None, "'Dust summary:' header not rendered"
+        above = ws.cell(header_row - 1, 1).value
+        assert above in (None, ""), (
+            f"expected blank spacer row above 'Dust summary:' header (row {header_row}); "
+            f"got row {header_row - 1} = {above!r}"
+        )
 
 
 @pytest.mark.unit
@@ -1306,6 +1667,167 @@ class TestPartitionTaxableNow:
 
 
 @pytest.mark.unit
+class TestPricedAssetsInExport:
+    """Direct unit test of the shared priced-asset discriminator (Invariant 3).
+
+    ``_priced_assets_in_export`` is the ONE helper both ``_partition_taxable_now``
+    (CRG-021) and ``_partition_skipped_rewards`` (CRG-022) call, so taxable-now
+    dust and deferred dust cannot silently desynchronize. The guarded import
+    keeps this test RED against the pre-Task-4 codebase.
+    """
+
+    def test_helper_exists(self):
+        try:
+            from tax_reporting.application.persisting.crypto_supplementary_sheet import (  # noqa: F401
+                _priced_assets_in_export,
+            )
+        except ImportError:
+            pytest.fail("Task 4 must add _priced_assets_in_export helper")
+
+    def test_empty_reward_entries_returns_empty_set(self):
+        from tax_reporting.application.persisting.crypto_supplementary_sheet import _priced_assets_in_export
+
+        assert _priced_assets_in_export([]) == frozenset()
+
+    def test_all_zero_rows_returns_empty_set(self):
+        from tax_reporting.application.persisting.crypto_supplementary_sheet import _priced_assets_in_export
+
+        btc_zero = _make_reward_entry(asset="BTC", value_eur=Decimal("0"))
+        eth_zero = _make_reward_entry(asset="ETH", value_eur=Decimal("0"))
+        assert _priced_assets_in_export([btc_zero, eth_zero]) == frozenset()
+
+    def test_all_priced_rows_returns_every_asset(self):
+        from tax_reporting.application.persisting.crypto_supplementary_sheet import _priced_assets_in_export
+
+        btc = _make_reward_entry(asset="BTC", value_eur=Decimal("1"))
+        eth = _make_reward_entry(asset="ETH", value_eur=Decimal("2"))
+        assert _priced_assets_in_export([btc, eth]) == frozenset({"BTC", "ETH"})
+
+    def test_mixed_priced_and_zero_returns_only_priced_assets(self):
+        from tax_reporting.application.persisting.crypto_supplementary_sheet import _priced_assets_in_export
+
+        btc_priced = _make_reward_entry(asset="BTC", value_eur=Decimal("1"))
+        btc_zero = _make_reward_entry(asset="BTC", value_eur=Decimal("0"))
+        osbgt_zero = _make_reward_entry(asset="OSBGT", value_eur=Decimal("0"))
+        # Only BTC has a priced row; the zero rows on BTC and OSBGT do not add
+        # OSBGT to the set.
+        result = _priced_assets_in_export([btc_priced, btc_zero, osbgt_zero])
+        assert result == frozenset({"BTC"})
+
+    def test_returns_frozenset_type(self):
+        from tax_reporting.application.persisting.crypto_supplementary_sheet import _priced_assets_in_export
+
+        result = _priced_assets_in_export([_make_reward_entry(asset="BTC", value_eur=Decimal("1"))])
+        assert isinstance(result, frozenset)
+
+
+@pytest.mark.unit
+class TestPartitionSkippedRewards:
+    """Direct unit test of the deferred-side partition (CRG-022).
+
+    Mirrors ``TestPartitionTaxableNow`` from Part 7. ``_partition_skipped_rewards``
+    is the deferred-side sibling that uses the shared ``_priced_assets_in_export``
+    discriminator (Invariant 3, AGENTS.md rule 30). Returns ``(dust_rows,
+    unpriced_rows)`` so the caller can reuse the partition once for both the
+    Section 3 block and the Section 4 reconciliation (Invariant 5).
+    """
+
+    def test_helper_exists(self):
+        try:
+            from tax_reporting.application.persisting.crypto_supplementary_sheet import (  # noqa: F401
+                _partition_skipped_rewards,
+            )
+        except ImportError:
+            pytest.fail("Task 4 must add _partition_skipped_rewards helper")
+
+    def test_empty_skipped_list_returns_two_empty_lists(self):
+        from tax_reporting.application.persisting.crypto_supplementary_sheet import _partition_skipped_rewards
+
+        dust_rows, unpriced_rows = _partition_skipped_rewards([], [])
+        assert dust_rows == []
+        assert unpriced_rows == []
+
+    def test_priced_asset_zero_routes_to_dust(self):
+        from tax_reporting.application.persisting.crypto_supplementary_sheet import _partition_skipped_rewards
+
+        btc_priced = _make_reward_entry(
+            asset="BTC", value_eur=Decimal("0.50"), wallet="Demo Spot", platform="Demo Spot", chain="Bitcoin"
+        )
+        btc_zero = _make_reward_entry(
+            asset="BTC", value_eur=Decimal("0"), wallet="Demo Spot", platform="Demo Spot", chain="Bitcoin"
+        )
+        # The priced BTC row is in reward_entries; the zero BTC row is in the
+        # skipped list.
+        reward_entries = [btc_priced]
+        skipped = [btc_zero]
+        dust_rows, unpriced_rows = _partition_skipped_rewards(skipped, reward_entries)
+        assert dust_rows == [btc_zero]
+        assert unpriced_rows == []
+
+    def test_unpriced_asset_zero_routes_to_unpriced(self):
+        from tax_reporting.application.persisting.crypto_supplementary_sheet import _partition_skipped_rewards
+
+        osbgt_zero = _make_reward_entry(
+            asset="OSBGT",
+            value_eur=Decimal("0"),
+            wallet="Demo Spot",
+            platform="Demo Spot",
+            chain="Berachain",
+        )
+        # No OSBGT row anywhere in reward_entries -> OSBGT is unpriced.
+        dust_rows, unpriced_rows = _partition_skipped_rewards([osbgt_zero], [])
+        assert dust_rows == []
+        assert unpriced_rows == [osbgt_zero]
+
+    def test_mixed_dust_and_unpriced_route_correctly(self):
+        from tax_reporting.application.persisting.crypto_supplementary_sheet import _partition_skipped_rewards
+
+        btc_priced = _make_reward_entry(
+            asset="BTC", value_eur=Decimal("1.00"), wallet="Demo Spot", platform="Demo Spot", chain="Bitcoin"
+        )
+        btc_zero = _make_reward_entry(
+            asset="BTC", value_eur=Decimal("0"), wallet="Demo Spot", platform="Demo Spot", chain="Bitcoin"
+        )
+        osbgt_zero = _make_reward_entry(
+            asset="OSBGT",
+            value_eur=Decimal("0"),
+            wallet="Demo Spot",
+            platform="Demo Spot",
+            chain="Berachain",
+        )
+        skipped = [btc_zero, osbgt_zero]
+        reward_entries = [btc_priced]
+        dust_rows, unpriced_rows = _partition_skipped_rewards(skipped, reward_entries)
+        assert dust_rows == [btc_zero]
+        assert unpriced_rows == [osbgt_zero]
+
+    def test_discriminator_uses_shared_helper(self):
+        """The two sibling partitions must call the same discriminator helper
+        (AGENTS.md rule 30). The contract: a priced-asset zero row routed to
+        taxable-now dust must also be routed to deferred dust when it appears in
+        the skipped list. If the helpers desynchronize, this test fails.
+        """
+        from tax_reporting.application.persisting.crypto_supplementary_sheet import (
+            _partition_skipped_rewards,
+            _partition_taxable_now,
+        )
+
+        btc_priced = _make_reward_entry(
+            asset="BTC", value_eur=Decimal("1.00"), wallet="Demo Spot", platform="Demo Spot", chain="Bitcoin"
+        )
+        btc_zero = _make_reward_entry(
+            asset="BTC", value_eur=Decimal("0"), wallet="Demo Spot", platform="Demo Spot", chain="Bitcoin"
+        )
+        # Same asset, same export -> both sides agree BTC is "priced".
+        real_rows, taxable_dust = _partition_taxable_now([btc_zero], [btc_priced, btc_zero])
+        deferred_dust, deferred_unpriced = _partition_skipped_rewards([btc_zero], [btc_priced, btc_zero])
+        assert taxable_dust == [btc_zero]
+        assert deferred_dust == [btc_zero]
+        assert deferred_unpriced == []
+        assert real_rows == []
+
+
+@pytest.mark.unit
 class TestWriteDustSummaryBlock:
     """Direct unit test of the extracted dust-block render helper.
 
@@ -1340,24 +1862,669 @@ class TestWriteDustSummaryBlock:
         start_row = 1
         next_row = _write_dust_summary_block(ws, start_row, dust_rows)
 
-        lines: list[str] = []
-        for r in range(start_row, next_row):
-            val = ws.cell(r, 1).value
-            if isinstance(val, str):
-                lines.append(val)
-
-        assert lines[0] == "Dust summary:", f"header wrong: {lines[0]!r}"
-        body = lines[1:]
-        assert len(body) == 3, f"expected 3 summary lines, got {body!r}"
+        # The helper writes: spacer row (row 1), outer "Dust summary:" header
+        # (row 2), sub-header "Taxable-now dust (...)" (row 3), table header
+        # row (row 4), then data rows.
+        assert ws.cell(2, 1).value == "Dust summary:", (
+            f"outer header wrong: {ws.cell(2, 1).value!r}"
+        )
+        assert ws.cell(3, 1).value == _TAXABLE_NOW_DUST_SUBHEADER, (
+            f"sub-header wrong: {ws.cell(3, 1).value!r}"
+        )
+        # Data rows start at row 5 (after the table header at row 4).
+        data_rows: list[tuple[str, str, int, float]] = []
+        for r in range(5, next_row):
+            asset = ws.cell(r, 1).value
+            wallet = ws.cell(r, 2).value
+            count = ws.cell(r, 3).value
+            summed = ws.cell(r, 4).value
+            data_rows.append((asset, wallet, count, summed))
+        assert len(data_rows) == 3, f"expected 3 data rows, got {data_rows!r}"
 
         # (BTC, Demo Spot) group sums two zero rows.
-        assert re.match(
-            r"BTC dust \(Demo Spot\): 2 rows, summed Value EUR = 0\.00", body[0]
-        ), f"first line wrong: {body[0]!r}"
+        assert data_rows[0] == ("BTC", "Demo Spot", 2, 0.0), (
+            f"first row wrong: {data_rows[0]!r}"
+        )
         # (BTC, Wirex) and (ETH, Demo Spot) each sum one zero row.
-        assert re.match(
-            r"BTC dust \(Wirex\): 1 rows, summed Value EUR = 0\.00", body[1]
-        ), f"second line wrong: {body[1]!r}"
-        assert re.match(
-            r"ETH dust \(Demo Spot\): 1 rows, summed Value EUR = 0\.00", body[2]
-        ), f"third line wrong: {body[2]!r}"
+        assert data_rows[1] == ("BTC", "Wirex", 1, 0.0), (
+            f"second row wrong: {data_rows[1]!r}"
+        )
+        assert data_rows[2] == ("ETH", "Demo Spot", 1, 0.0), (
+            f"third row wrong: {data_rows[2]!r}"
+        )
+
+
+# Outer header text the renderer must emit before the suppressed-rewards body
+# lines. The exact literal pins the outer-header design.
+_SUPPRESSED_HEADER = "Suppressed zero-value deferred rewards"
+
+# Sub-header text the renderer emits between the outer header and each bucket's
+# body lines. Pinned so a maintainer renaming a sub-header sees the change here.
+_DUST_SUBHEADER = "Deferred dust (priced-asset rounding)"
+_UNPRICED_SUBHEADER = "Deferred unpriced (no Koinly price feed)"
+
+# Symmetric taxable-now sub-header (CRG-021). Taxable-now has only one bucket
+# (unpriced taxable-now rows keep per-row YES in detail), so one sub-header.
+_TAXABLE_NOW_DUST_SUBHEADER = "Taxable-now dust (priced-asset rounding)"
+
+
+@pytest.mark.unit
+class TestCryptoSupplementarySheetDeferredSkip:
+    """Worksheet-level tests for the Section 3 suppressed-rewards block (CRG-022).
+
+    RED for Task 4: ``write_crypto_supplementary_sheet`` does not yet render the
+    single "Suppressed zero-value deferred rewards" block from
+    ``crypto_tax_report.skipped_zero_value_deferred_rewards``. The
+    ``skipped_zero_value_deferred_rewards`` report field itself already exists
+    (Task 2), so these tests fail via natural assertion failure (header /
+    line regex not found in the rendered sheet), not via ``pytest.fail``.
+    """
+
+    def test_dust_row_renders_with_dust_reason(self):
+        """A zero-value WBERA deferred row whose asset has a priced row renders
+        as a "dust" line in the suppressed-rewards block.
+
+        Discriminator: WBERA has a non-zero row in ``reward_entries``, so the
+        zero row is priced-asset rounding dust. The block must NOT render it
+        with the "unpriced" / "no Koinly price feed" reason.
+        """
+        wbera_priced = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBERA",
+            value_eur=Decimal("1.00"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("2.0"),
+        )
+        wbera_zero = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBERA",
+            value_eur=Decimal("0"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1.5"),
+        )
+        report = _make_crypto_tax_report(
+            reward_entries=[wbera_priced],
+            skipped_deferred_rewards=[wbera_zero],
+        )
+        wb = openpyxl.Workbook()
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
+        ws = wb["Crypto Supplementary"]
+
+        # The header renders exactly once.
+        all_strs = _all_sheet_strings(ws)
+        assert all_strs.count(_SUPPRESSED_HEADER) == 1, (
+            f"expected exactly one {_SUPPRESSED_HEADER!r} header, got {all_strs}"
+        )
+
+        # The dust sub-header renders, and the WBERA row appears under it as a
+        # column-table row with Category="dust" (NOT "unpriced").
+        table = _find_table_rows_after(ws, _DUST_SUBHEADER, num_cols=5)
+        wbera_rows = [r for r in table if r.get(1) == "WBERA"]
+        assert len(wbera_rows) == 1, (
+            f"expected one WBERA row in dust table, got {wbera_rows}; full table={table}"
+        )
+        row = wbera_rows[0]
+        assert row.get(2) == "Wirex", f"wallet wrong: {row}"
+        assert row.get(3) == 1, f"rows count wrong: {row}"
+        # Summed amount = 1.50000000 (Decimal "1.5" formatted :.8f).
+        assert row.get(4) == "1.50000000", f"summed amount wrong: {row}"
+        assert row.get(5) == "dust", f"category must be 'dust', got {row}"
+
+        # The zero-value WBERA row must NOT appear in the Section 3 detail table.
+        detail = _section3_reward_detail_rows(ws)
+        assert not any(
+            str(r.get(2, "")) == "WBERA" and float(r.get(3, -1)) == 0.0 for r in detail
+        ), "zero-value WBERA row leaked into Section 3 detail table"
+
+    def test_unpriced_row_renders_with_unpriced_reason(self):
+        """A zero-value OSBGT deferred row with NO priced row anywhere renders
+        as an "unpriced" line. OSBGT is in ``popular_crypto_tokens.json`` so it
+        survives the parse-time ``is_known`` gate and reaches the deferred-skip
+        path. The block must NOT render the "Re-export" reason.
+        """
+        osbgt_zero = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="OSBGT",
+            value_eur=Decimal("0"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("3.0"),
+        )
+        # No OSBGT row anywhere in reward_entries -> OSBGT is unpriced.
+        report = _make_crypto_tax_report(
+            reward_entries=[],
+            skipped_deferred_rewards=[osbgt_zero],
+        )
+        wb = openpyxl.Workbook()
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
+        ws = wb["Crypto Supplementary"]
+
+        all_strs = _all_sheet_strings(ws)
+        assert all_strs.count(_SUPPRESSED_HEADER) == 1, (
+            f"expected exactly one {_SUPPRESSED_HEADER!r} header, got {all_strs}"
+        )
+
+        # The unpriced sub-header renders, and the OSBGT row appears under it
+        # with Category="unpriced".
+        table = _find_table_rows_after(ws, _UNPRICED_SUBHEADER, num_cols=5)
+        osbgt_rows = [r for r in table if r.get(1) == "OSBGT"]
+        assert len(osbgt_rows) == 1, (
+            f"expected one OSBGT row in unpriced table, got {osbgt_rows}; full table={table}"
+        )
+        row = osbgt_rows[0]
+        assert row.get(2) == "Wirex", f"wallet wrong: {row}"
+        assert row.get(3) == 1, f"rows count wrong: {row}"
+        assert row.get(4) == "3.00000000", f"summed amount wrong: {row}"
+        assert row.get(5) == "unpriced", f"category must be 'unpriced', got {row}"
+
+        # The OSBGT row must NOT appear in the Section 3 detail table.
+        detail = _section3_reward_detail_rows(ws)
+        assert not any(str(r.get(2, "")) == "OSBGT" for r in detail), (
+            "OSBGT row leaked into Section 3 detail table"
+        )
+
+    def test_dust_and_unpriced_rows_render_under_separate_subheaders(self):
+        """A WBERA dust row and an OSBGT unpriced row render under one outer
+        header but TWO separate sub-headers. Reverses the predecessor plan's
+        single-block design per user feedback: the merged clause was hard to
+        read in a real export.
+
+        Asserts:
+          (a) exactly one outer header;
+          (b) both sub-headers render exactly once;
+          (c) the WBERA line appears AFTER the dust sub-header and BEFORE the
+              unpriced sub-header;
+          (d) the OSBGT line appears AFTER the unpriced sub-header.
+        """
+        wbera_priced = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBERA",
+            value_eur=Decimal("1.00"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1.0"),
+        )
+        wbera_dust = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBERA",
+            value_eur=Decimal("0"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1.0"),
+        )
+        osbgt_unpriced = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="OSBGT",
+            value_eur=Decimal("0"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1.0"),
+        )
+        report = _make_crypto_tax_report(
+            reward_entries=[wbera_priced],
+            skipped_deferred_rewards=[wbera_dust, osbgt_unpriced],
+        )
+        wb = openpyxl.Workbook()
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
+        ws = wb["Crypto Supplementary"]
+
+        all_strs = _all_sheet_strings(ws)
+        # (a) Exactly one outer header in the whole sheet.
+        assert all_strs.count(_SUPPRESSED_HEADER) == 1, (
+            f"expected exactly one {_SUPPRESSED_HEADER!r} outer header, "
+            f"got {all_strs.count(_SUPPRESSED_HEADER)} in {all_strs}"
+        )
+        # (b) Both sub-headers render exactly once.
+        assert all_strs.count(_DUST_SUBHEADER) == 1, (
+            f"expected exactly one {_DUST_SUBHEADER!r} sub-header, "
+            f"got {all_strs.count(_DUST_SUBHEADER)} in {all_strs}"
+        )
+        assert all_strs.count(_UNPRICED_SUBHEADER) == 1, (
+            f"expected exactly one {_UNPRICED_SUBHEADER!r} sub-header, "
+            f"got {all_strs.count(_UNPRICED_SUBHEADER)} in {all_strs}"
+        )
+        # (c) + (d) Ordering: outer -> dust sub -> WBERA row -> unpriced sub -> OSBGT row.
+        # The data rows now put Asset in column A (no trailing paren), so the
+        # ordering check looks for "WBERA" / "OSBGT" as the cell value (the
+        # column-table header row "Asset" also matches as a column-A string but
+        # sorts before/after via the sub-header indices).
+        outer_idx = all_strs.index(_SUPPRESSED_HEADER)
+        dust_sub_idx = all_strs.index(_DUST_SUBHEADER)
+        unpriced_sub_idx = all_strs.index(_UNPRICED_SUBHEADER)
+        wbera_idx = all_strs.index("WBERA")
+        osbgt_idx = all_strs.index("OSBGT")
+        assert outer_idx < dust_sub_idx < wbera_idx < unpriced_sub_idx < osbgt_idx, (
+            f"expected ordering outer < dust-sub < WBERA < unpriced-sub < OSBGT; "
+            f"got outer={outer_idx}, dust-sub={dust_sub_idx}, WBERA={wbera_idx}, "
+            f"unpriced-sub={unpriced_sub_idx}, OSBGT={osbgt_idx}"
+        )
+
+    def test_block_has_outer_header_and_two_subheaders(self):
+        """The suppressed block has an outer header followed by two sub-headers
+        in order: outer, dust sub, unpriced sub. Fails RED against unchanged
+        production (today there are no sub-headers).
+        """
+        wbera_priced = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBERA",
+            value_eur=Decimal("1.00"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1.0"),
+        )
+        wbera_dust = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBERA",
+            value_eur=Decimal("0"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1.0"),
+        )
+        osbgt_unpriced = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="OSBGT",
+            value_eur=Decimal("0"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1.0"),
+        )
+        report = _make_crypto_tax_report(
+            reward_entries=[wbera_priced],
+            skipped_deferred_rewards=[wbera_dust, osbgt_unpriced],
+        )
+        wb = openpyxl.Workbook()
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
+        ws = wb["Crypto Supplementary"]
+
+        section_strs = _section3_strings(ws)
+        try:
+            outer_idx = section_strs.index(_SUPPRESSED_HEADER)
+        except ValueError as exc:
+            raise AssertionError(
+                f"{_SUPPRESSED_HEADER!r} header missing from Section 3: {section_strs}"
+            ) from exc
+        body = section_strs[outer_idx + 1 :]
+        assert _DUST_SUBHEADER in body, (
+            f"dust sub-header {_DUST_SUBHEADER!r} missing after outer header; body={body}"
+        )
+        assert _UNPRICED_SUBHEADER in body, (
+            f"unpriced sub-header {_UNPRICED_SUBHEADER!r} missing after outer header; body={body}"
+        )
+        # Sub-headers render in the canonical order (dust before unpriced).
+        dust_idx = body.index(_DUST_SUBHEADER)
+        unpriced_idx = body.index(_UNPRICED_SUBHEADER)
+        assert dust_idx < unpriced_idx, (
+            f"expected dust sub-header before unpriced sub-header; "
+            f"got dust={dust_idx}, unpriced={unpriced_idx} in body={body}"
+        )
+
+    def test_outer_header_preceded_by_blank_spacer_row(self):
+        """The outer header is preceded by a blank spacer row (matches the
+        section-header spacer convention at every section boundary). Fails RED
+        against unchanged production (today the header is flush against the
+        deferred detail table).
+        """
+        wbera_priced = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBERA",
+            value_eur=Decimal("1.00"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1.0"),
+        )
+        wbera_dust = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBERA",
+            value_eur=Decimal("0"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1.0"),
+        )
+        report = _make_crypto_tax_report(
+            reward_entries=[wbera_priced],
+            skipped_deferred_rewards=[wbera_dust],
+        )
+        wb = openpyxl.Workbook()
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
+        ws = wb["Crypto Supplementary"]
+
+        # Locate the outer header cell row.
+        header_row = None
+        for r in range(1, ws.max_row + 1):
+            if ws.cell(r, 1).value == _SUPPRESSED_HEADER:
+                header_row = r
+                break
+        assert header_row is not None, f"{_SUPPRESSED_HEADER!r} header not rendered"
+        # Row immediately above MUST be blank (spacer row convention).
+        above = ws.cell(header_row - 1, 1).value
+        assert above in (None, ""), (
+            f"expected blank spacer row above {_SUPPRESSED_HEADER!r} header "
+            f"(row {header_row}); got row {header_row - 1} = {above!r}"
+        )
+
+    def test_dust_only_renders_dust_subheader_only(self):
+        """A dust-only skipped list renders the outer header + dust sub-header
+        but NOT the unpriced sub-header (conditional render guard).
+        """
+        wbera_priced = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBERA",
+            value_eur=Decimal("1.00"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1.0"),
+        )
+        wbera_dust = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBERA",
+            value_eur=Decimal("0"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1.0"),
+        )
+        report = _make_crypto_tax_report(
+            reward_entries=[wbera_priced],
+            skipped_deferred_rewards=[wbera_dust],
+        )
+        wb = openpyxl.Workbook()
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
+        ws = wb["Crypto Supplementary"]
+
+        all_strs = _all_sheet_strings(ws)
+        assert _SUPPRESSED_HEADER in all_strs, "outer header missing"
+        assert _DUST_SUBHEADER in all_strs, "dust sub-header missing"
+        assert _UNPRICED_SUBHEADER not in all_strs, (
+            f"unpriced sub-header should NOT render when there are no unpriced rows; "
+            f"sheet={all_strs}"
+        )
+
+    def test_unpriced_only_renders_unpriced_subheader_only(self):
+        """An unpriced-only skipped list renders the outer header + unpriced
+        sub-header but NOT the dust sub-header (symmetric conditional guard).
+        """
+        osbgt_unpriced = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="OSBGT",
+            value_eur=Decimal("0"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1.0"),
+        )
+        report = _make_crypto_tax_report(
+            reward_entries=[],
+            skipped_deferred_rewards=[osbgt_unpriced],
+        )
+        wb = openpyxl.Workbook()
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
+        ws = wb["Crypto Supplementary"]
+
+        all_strs = _all_sheet_strings(ws)
+        assert _SUPPRESSED_HEADER in all_strs, "outer header missing"
+        assert _UNPRICED_SUBHEADER in all_strs, "unpriced sub-header missing"
+        assert _DUST_SUBHEADER not in all_strs, (
+            f"dust sub-header should NOT render when there are no dust rows; "
+            f"sheet={all_strs}"
+        )
+
+
+    def test_amount_sum_uniform_no_pattern_exclusion(self):
+        """Two unpriced rows for the same (BGT, Wirex) group with amount=1000
+        each sum to ``2000.00000000 BGT``. The literal ``2000.00000000`` pins
+        the ``:.8f`` format spec and the absence of any pattern-based exclusion
+        (r1 review DROPPED ``_UNPRICED_NON_DISPOSEABLE_PATTERNS``). BGT is in
+        ``popular_crypto_tokens.json`` so it survives the parse-time ``is_known``
+        gate and reaches the deferred-skip path.
+        """
+        bgt_zero_1 = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="BGT",
+            value_eur=Decimal("0"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1000"),
+        )
+        bgt_zero_2 = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="BGT",
+            value_eur=Decimal("0"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1000"),
+        )
+        # No BGT row anywhere in reward_entries -> BGT is unpriced.
+        report = _make_crypto_tax_report(
+            reward_entries=[],
+            skipped_deferred_rewards=[bgt_zero_1, bgt_zero_2],
+        )
+        wb = openpyxl.Workbook()
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
+        ws = wb["Crypto Supplementary"]
+
+        # BGT appears in the unpriced column table. The Summed amount column
+        # pins the :.8f spec: str(Decimal("2000")) omits trailing zeros, so a
+        # no-spec regression renders "2000" and fails this assertion. Uniform
+        # sum (no pattern exclusion): r1 review DROPPED
+        # _UNPRICED_NON_DISPOSEABLE_PATTERNS.
+        table = _find_table_rows_after(ws, _UNPRICED_SUBHEADER, num_cols=5)
+        bgt_rows = [r for r in table if r.get(1) == "BGT"]
+        assert len(bgt_rows) == 1, (
+            f"expected one BGT row in unpriced table, got {bgt_rows}; full table={table}"
+        )
+        assert bgt_rows[0].get(4) == "2000.00000000", (
+            f"BGT summed amount did not pin :.8f spec: {bgt_rows[0]!r}"
+        )
+
+    def test_block_sorted_by_asset_wallet(self):
+        """Within each sub-header, the body lines appear in (asset, wallet)
+        ascending order. The two buckets (dust / unpriced) are now rendered
+        as separate sorted groups under their own sub-headers, not merged
+        (user feedback reversed the predecessor plan's single-block merge).
+        """
+        # Priced-asset rows make WBERA and WBTC "dust" (priced) assets; OSBGT
+        # and BNB are unpriced (no priced row anywhere).
+        wbera_priced = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBERA",
+            value_eur=Decimal("1.00"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1"),
+        )
+        wbtc_priced = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBTC",
+            value_eur=Decimal("2.00"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Bitcoin",
+            amount=Decimal("1"),
+        )
+        # Zero-value skipped rows (deliberately out of (asset, wallet) order).
+        wbera_wirex_dust = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBERA",
+            value_eur=Decimal("0"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1"),
+        )
+        wbera_kraken_dust = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBERA",
+            value_eur=Decimal("0"),
+            wallet="Kraken",
+            platform="Kraken",
+            chain="Berachain",
+            amount=Decimal("1"),
+        )
+        wbtc_wirex_dust = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBTC",
+            value_eur=Decimal("0"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Bitcoin",
+            amount=Decimal("1"),
+        )
+        osbgt_wirex_unpriced = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="OSBGT",
+            value_eur=Decimal("0"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1"),
+        )
+        bnb_kraken_unpriced = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="BNB",
+            value_eur=Decimal("0"),
+            wallet="Kraken",
+            platform="Kraken",
+            chain="Binance",
+            amount=Decimal("1"),
+        )
+        skipped = [
+            wbera_wirex_dust,
+            wbera_kraken_dust,
+            wbtc_wirex_dust,
+            osbgt_wirex_unpriced,
+            bnb_kraken_unpriced,
+        ]
+        report = _make_crypto_tax_report(
+            reward_entries=[wbera_priced, wbtc_priced],
+            skipped_deferred_rewards=skipped,
+        )
+        wb = openpyxl.Workbook()
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
+        ws = wb["Crypto Supplementary"]
+
+        # Dust sub-header appears first, followed by its column-table rows;
+        # unpriced sub-header appears second. Both sub-headers must render.
+        all_strs = _all_sheet_strings(ws)
+        try:
+            outer_idx = all_strs.index(_SUPPRESSED_HEADER)
+        except ValueError as exc:
+            raise AssertionError(
+                f"{_SUPPRESSED_HEADER!r} header missing in {all_strs}"
+            ) from exc
+        try:
+            dust_sub_idx = all_strs.index(_DUST_SUBHEADER)
+        except ValueError as exc:
+            raise AssertionError(
+                f"dust sub-header {_DUST_SUBHEADER!r} missing in {all_strs}"
+            ) from exc
+        try:
+            unpriced_sub_idx = all_strs.index(_UNPRICED_SUBHEADER)
+        except ValueError as exc:
+            raise AssertionError(
+                f"unpriced sub-header {_UNPRICED_SUBHEADER!r} missing in {all_strs}"
+            ) from exc
+        assert outer_idx < dust_sub_idx < unpriced_sub_idx, (
+            f"expected ordering outer < dust-sub < unpriced-sub; "
+            f"got outer={outer_idx}, dust-sub={dust_sub_idx}, unpriced-sub={unpriced_sub_idx}"
+        )
+
+        # Dust column-table rows, sorted by (asset, wallet) ascending.
+        dust_table = _find_table_rows_after(ws, _DUST_SUBHEADER, num_cols=5)
+        assert len(dust_table) == 3, f"expected 3 dust rows, got {dust_table!r}"
+        expected_dust_keys = [
+            ("WBERA", "Kraken"),
+            ("WBERA", "Wirex"),
+            ("WBTC", "Wirex"),
+        ]
+        for row, (asset, wallet) in zip(dust_table, expected_dust_keys, strict=True):
+            assert row.get(1) == asset, f"expected dust asset {asset!r}, got {row}"
+            assert row.get(2) == wallet, f"expected dust wallet {wallet!r}, got {row}"
+
+        # Unpriced column-table rows, sorted by (asset, wallet) ascending.
+        unpriced_table = _find_table_rows_after(ws, _UNPRICED_SUBHEADER, num_cols=5)
+        assert len(unpriced_table) == 2, f"expected 2 unpriced rows, got {unpriced_table!r}"
+        expected_unpriced_keys = [
+            ("BNB", "Kraken"),
+            ("OSBGT", "Wirex"),
+        ]
+        for row, (asset, wallet) in zip(unpriced_table, expected_unpriced_keys, strict=True):
+            assert row.get(1) == asset, f"expected unpriced asset {asset!r}, got {row}"
+            assert row.get(2) == wallet, f"expected unpriced wallet {wallet!r}, got {row}"
+
+    def test_empty_skipped_list_renders_no_block(self):
+        """With an empty ``skipped_zero_value_deferred_rewards`` list the block
+        header must NOT render (regression guard on the conditional render).
+        """
+        report = _make_crypto_tax_report(
+            reward_entries=[_make_reward_entry(classification=RewardTaxClassification.DEFERRED_BY_LAW)],
+            skipped_deferred_rewards=[],
+        )
+        wb = openpyxl.Workbook()
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
+        ws = wb["Crypto Supplementary"]
+
+        all_strs = _all_sheet_strings(ws)
+        assert _SUPPRESSED_HEADER not in all_strs, (
+            f"{_SUPPRESSED_HEADER!r} rendered on empty skipped list: {all_strs}"
+        )
+
+    def test_safe_cell_value_wrappers_on_line(self):
+        """A zero-value WBERA deferred row with an empty wallet renders as
+        ``"WBERA (): ..."`` with no ``"None"`` literal (mirrors the Part 7
+        Invariant 6 test; production contract is ``str``).
+        """
+        wbera_priced = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBERA",
+            value_eur=Decimal("1.00"),
+            wallet="Wirex",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1"),
+        )
+        wbera_zero = _make_reward_entry(
+            classification=RewardTaxClassification.DEFERRED_BY_LAW,
+            asset="WBERA",
+            value_eur=Decimal("0"),
+            wallet="",
+            platform="Wirex",
+            chain="Berachain",
+            amount=Decimal("1.5"),
+        )
+        report = _make_crypto_tax_report(
+            reward_entries=[wbera_priced],
+            skipped_deferred_rewards=[wbera_zero],
+        )
+        wb = openpyxl.Workbook()
+        write_crypto_supplementary_sheet(wb, report, build_koinly_jurisdiction())
+        ws = wb["Crypto Supplementary"]
+
+        # The WBERA row appears in the dust column table with an empty Wallet
+        # cell (empty string, NOT 'None').
+        table = _find_table_rows_after(ws, _DUST_SUBHEADER, num_cols=5)
+        wbera_rows = [r for r in table if r.get(1) == "WBERA"]
+        assert len(wbera_rows) == 1, (
+            f"expected one WBERA row in dust table, got {wbera_rows}; full table={table}"
+        )
+        wallet_val = wbera_rows[0].get(2)
+        assert wallet_val in ("", None), (
+            f"expected empty wallet (None or '') for empty-string input, got {wallet_val!r}"
+        )
+        assert wallet_val != "None", f"'None' literal leaked into Wallet column: {wbera_rows[0]}"
