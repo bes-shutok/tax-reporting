@@ -13,7 +13,6 @@ TICKER_FORMAT_PATTERN = r"^[A-Z]{1,5}[0-9]*$"
 CURRENCY_FORMAT_PATTERN = r"^[A-Z]{3}$"
 
 # File processing constants
-DEFAULT_LOG_LEVEL = "INFO"
 LOG_PROGRESS_INTERVAL = 100  # Log progress every N trades
 INITIAL_DEBUG_TRADES = 5  # Show first N trades in debug mode
 

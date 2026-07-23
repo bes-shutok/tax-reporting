@@ -7,7 +7,10 @@ downgrade on ambiguous or flagged rows.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+
+import pytest
 
 from tax_reporting.application.token_origin import TokenOriginResolver
 from tax_reporting.domain.token_origin import (
@@ -753,5 +756,127 @@ class TestOriginResolverExchangeLPHighConfidence:
         origin = resolver.resolve("2025-02-23", "CAKE-LP", "Ledger APTOS")
         # Different TxHash values should NOT merge - they disagree on from_asset
         assert origin == TokenOrigin.unknown()
+
+
+class TestTokenOriginResolverDisagreementCounter:
+    """Pattern B: group token_origin disagreement warnings via a resolver Counter + caller flush.
+
+    The shared ``TokenOriginResolver`` instance accumulates disagreement keys
+    from BOTH caller loops (``_parse_capital_gains_file`` and
+    ``_rebuild_fifo_for_loan_affected_assets``). Each caller invokes
+    ``log_and_reset_disagreements(scope)`` after its loop, emitting ONE
+    aggregate WARNING and clearing the Counter.
+    """
+
+    def test_disagreement_counter_accumulates(self, tmp_path, caplog: pytest.LogCaptureFixture) -> None:
+        """3 calls hitting the disagree branch accumulate 3 distinct keys and no WARNING.
+
+        Each call uses a distinct ``(asset, wallet, date)`` so the Counter
+        grows by one entry per call. The per-row WARNING is downgraded to
+        DEBUG (Design Invariant #3), so NO WARNING-level record fires
+        during ``resolve()``.
+        """
+        # Three exchange rows that disagree on from_asset, each on its own date
+        # so the (asset, wallet, date) key is distinct per call.
+        path = _write_th(
+            tmp_path,
+            # Disagreement 1: SOL on Kraken on 2025-03-10 (BTC vs USDT source)
+            "2025-03-10 08:00:00 UTC,exchange,,Kraken,100,BTC,5000,"
+            "Kraken,5,SOL,5000,,,,,,,,,\n"
+            "2025-03-10 14:00:00 UTC,exchange,,Kraken,3000,USDT,3000,"
+            "Kraken,5,SOL,3000,,,,,,,,,\n"
+            # Disagreement 2: ETH on Kraken on 2025-04-10
+            "2025-04-10 08:00:00 UTC,exchange,,Kraken,100,BTC,5000,"
+            "Kraken,2,ETH,5000,,,,,,,,,\n"
+            "2025-04-10 14:00:00 UTC,exchange,,Kraken,3000,USDT,3000,"
+            "Kraken,2,ETH,3000,,,,,,,,,\n"
+            # Disagreement 3: ETH on Binance on 2025-05-10
+            "2025-05-10 08:00:00 UTC,exchange,,Binance,100,BTC,5000,"
+            "Binance,2,ETH,5000,,,,,,,,,\n"
+            "2025-05-10 14:00:00 UTC,exchange,,Binance,3000,USDT,3000,"
+            "Binance,2,ETH,3000,,,,,,,,,\n",
+        )
+        resolver = _build_resolver(path)
+
+        with caplog.at_level(logging.DEBUG, logger="tax_reporting.application.token_origin"):
+            r1 = resolver.resolve("2025-03-10", "SOL", "Kraken")
+            r2 = resolver.resolve("2025-04-10", "ETH", "Kraken")
+            r3 = resolver.resolve("2025-05-10", "ETH", "Binance")
+
+        # Return contract unchanged (Design Invariant #5)
+        assert r1 == TokenOrigin.unknown()
+        assert r2 == TokenOrigin.unknown()
+        assert r3 == TokenOrigin.unknown()
+
+        # Counter has one entry per distinct (asset, wallet, date) key.
+        assert len(resolver._disagreements) == 3
+        # Per-row emission downgraded to DEBUG: no WARNING records during resolve.
+        warning_records = [
+            r for r in caplog.records if r.levelno >= logging.WARNING and "disagree" in r.message.lower()
+        ]
+        assert warning_records == []
+
+    def test_log_and_reset_disagreements_emits_summary_and_clears(
+        self, tmp_path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """With accumulated disagreements, ONE WARNING is emitted then the Counter clears."""
+        path = _write_th(
+            tmp_path,
+            "2025-03-10 08:00:00 UTC,exchange,,Kraken,100,BTC,5000,"
+            "Kraken,5,SOL,5000,,,,,,,,,\n"
+            "2025-03-10 14:00:00 UTC,exchange,,Kraken,3000,USDT,3000,"
+            "Kraken,5,SOL,3000,,,,,,,,,\n"
+            "2025-04-10 08:00:00 UTC,exchange,,Kraken,100,BTC,5000,"
+            "Kraken,2,ETH,5000,,,,,,,,,\n"
+            "2025-04-10 14:00:00 UTC,exchange,,Kraken,3000,USDT,3000,"
+            "Kraken,2,ETH,3000,,,,,,,,,\n"
+            "2025-05-10 08:00:00 UTC,exchange,,Binance,100,BTC,5000,"
+            "Binance,2,ETH,5000,,,,,,,,,\n"
+            "2025-05-10 14:00:00 UTC,exchange,,Binance,3000,USDT,3000,"
+            "Binance,2,ETH,3000,,,,,,,,,\n",
+        )
+        resolver = _build_resolver(path)
+        resolver.resolve("2025-03-10", "SOL", "Kraken")
+        resolver.resolve("2025-04-10", "ETH", "Kraken")
+        resolver.resolve("2025-05-10", "ETH", "Binance")
+        assert len(resolver._disagreements) == 3
+
+        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.token_origin"):
+            resolver.log_and_reset_disagreements(scope="capital gains parse")
+
+        summary_records = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+            and "TokenOriginResolver (capital gains parse)" in r.message
+            and "origin-resolution disagreement(s)" in r.message
+            and "distinct" in r.message
+        ]
+        assert len(summary_records) == 1
+        rec = summary_records[0]
+        # 3 total disagreements across 3 distinct keys.
+        assert "3 origin-resolution disagreement(s) across 3 distinct" in rec.message
+        # Counter cleared AFTER the emit (Design Invariant #10).
+        assert len(resolver._disagreements) == 0
+
+    def test_log_and_reset_disagreements_noop_when_empty(self, tmp_path, caplog: pytest.LogCaptureFixture) -> None:
+        """When no disagreements accumulated, ``log_and_reset_disagreements`` emits nothing."""
+        path = _write_th(tmp_path, "")
+        resolver = _build_resolver(path)
+        assert len(resolver._disagreements) == 0
+
+        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.token_origin"):
+            resolver.log_and_reset_disagreements(scope="FIFO rebuild")
+
+        summary_records = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+            and "TokenOriginResolver" in r.message
+            and "disagreement" in r.message.lower()
+        ]
+        assert summary_records == []
+        # Defensive clear still runs unconditionally.
+        assert len(resolver._disagreements) == 0
 
 

@@ -30,7 +30,13 @@ from .domain.exceptions import (
     ReportGenerationError,
     SharesReportingError,
 )
-from .infrastructure.config import Config, ConversionRate, TaxJurisdictionConfig, load_configuration_from_file
+from .infrastructure.config import (
+    DEFAULT_LOG_LEVEL,
+    Config,
+    ConversionRate,
+    TaxJurisdictionConfig,
+    load_configuration_from_file,
+)
 from .infrastructure.logging_config import configure_application_logging, create_module_logger
 from .infrastructure.validation import validate_output_directory
 
@@ -71,7 +77,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=str,
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         metavar="LEVEL",
-        help="Set logging level (default: INFO)",
+        help="Set console log level (overrides config.ini LOG_LEVEL; default: WARNING)",
     )
 
     return parser
@@ -102,7 +108,7 @@ def _validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) ->
 
 
 def _main(  # noqa: PLR0912, PLR0915
-    source_file: Path | None = None, output_dir: Path | None = None, log_level: str = "INFO"
+    source_file: Path | None = None, output_dir: Path | None = None, log_level: str | None = None
 ) -> None:
     """Main application implementation that raises domain exceptions."""
     if source_file is None:
@@ -111,8 +117,50 @@ def _main(  # noqa: PLR0912, PLR0915
         output_dir = Path("resources/result")
 
     log_file = Path("logs", "tax-reporting.log")
-    configure_application_logging(level=log_level, log_file=log_file)
+
+    # Design Invariant 9: load config FIRST, configure logging ONCE with the resolved
+    # level, then run the IB/FIFO block.
+    #
+    # Audit-trail integrity guard (r1 review F1): ``load_configuration_from_file`` emits
+    # ~10 diagnostic lines during the parse AND the load-bearing
+    # ``logger.error("Configuration parsing error: %s", ...)`` at config.py on the
+    # ``(KeyError, ValueError)`` failure path. If logging is configured only AFTER config
+    # load succeeds, those emissions run on an unconfigured root logger and never reach
+    # ``logs/tax-reporting.log`` (the audit trail). The pre-config call below establishes
+    # file logging at the conservative DEFAULT_LOG_LEVEL BEFORE config loads;
+    # ``configure_application_logging`` clears existing handlers, so the post-load
+    # RE-configure with the config-derived ``resolved_level`` is safe and simply replaces
+    # the pre-config handlers. The FileNotFoundError and ValueError paths are both covered
+    # by this pre-config call, so no per-branch configure call is needed for audit-trail
+    # integrity; the FileNotFoundError WARNING below is already guaranteed a file handler.
+    configure_application_logging(level=DEFAULT_LOG_LEVEL, log_file=log_file)
+
+    # Hoisted before the config-load try block: every branch below (success,
+    # FileNotFoundError, ValueError) shares this logger, and ``create_module_logger``
+    # is just ``logging.getLogger(name)`` (idempotent), so a single assignment suffices
+    # and no per-branch assignment is needed.
     logger = create_module_logger(__name__)
+
+    tax_jurisdiction = None
+    app_config: Config | None = None
+    try:
+        app_config = load_configuration_from_file()
+        tax_jurisdiction = app_config.tax_jurisdiction
+        resolved_level = log_level if log_level is not None else app_config.log_level
+        # RE-configure (handlers cleared by configure_application_logging) with the
+        # config-derived level now that config load succeeded.
+        configure_application_logging(level=resolved_level, log_file=log_file)
+    except MissingDecisionPointsError:
+        raise
+    except (FileNotFoundError, OSError):
+        # Logging was pre-configured at DEFAULT_LOG_LEVEL above; emit the not-found
+        # WARNING so the audit trail records why jurisdiction config is absent.
+        logger.warning(
+            "Config file not found; no jurisdiction config loaded. Crypto processing will "
+            "fail fast if a Koinly directory is present (naive Koinly dates need a zone to localize)"
+        )
+    except (ValueError, KeyError, configparser.Error) as exc:
+        raise ConfigurationError(f"Config file has invalid settings. Correct config.ini and retry: {exc}") from exc
 
     final_report_type = "capital gains"
 
@@ -171,23 +219,6 @@ def _main(  # noqa: PLR0912, PLR0915
         logger.info("Generated unmatched securities rollover file: %s", leftover_path)
     except Exception as e:
         raise ReportGenerationError(f"Failed to generate unmatched securities rollover file: {e}") from e
-
-    tax_jurisdiction = None
-    app_config: Config | None = None
-    try:
-        app_config = load_configuration_from_file()
-        tax_jurisdiction = app_config.tax_jurisdiction
-    except MissingDecisionPointsError:
-        raise
-    except (FileNotFoundError, OSError):
-        logger.warning(
-            "Config file not found; no jurisdiction config loaded. Crypto processing will "
-            "fail fast if a Koinly directory is present (naive Koinly dates need a zone to localize)"
-        )
-    except (ValueError, KeyError, configparser.Error) as exc:
-        raise ConfigurationError(
-            f"Config file has invalid settings. Correct config.ini and retry: {exc}"
-        ) from exc
 
     try:
         crypto_tax_report: CryptoTaxReport | None = None
@@ -253,9 +284,7 @@ def _main(  # noqa: PLR0912, PLR0915
     print("Processing completed successfully!")
 
 
-def main(
-    source_file: Path | None = None, output_dir: Path | None = None, log_level: str = "INFO"
-) -> None:
+def main(source_file: Path | None = None, output_dir: Path | None = None, log_level: str | None = None) -> None:
     """Main application entry point."""
     try:
         _main(source_file=source_file, output_dir=output_dir, log_level=log_level)
@@ -355,9 +384,7 @@ def _load_crypto_tax_report(
         )
 
     try:
-        crypto_tax_report = load_koinly_crypto_report(
-            koinly_dir, jurisdiction=tax_jurisdiction, rates=rates
-        )
+        crypto_tax_report = load_koinly_crypto_report(koinly_dir, jurisdiction=tax_jurisdiction, rates=rates)
     except ConfigurationError:
         # A configuration problem raised by the loader must fail the run. It must NOT
         # be degraded to "continue without crypto" like a parse/data error. (The
@@ -395,9 +422,7 @@ def _load_crypto_tax_report(
     return crypto_tax_report
 
 
-def _resolve_koinly_directory(
-    base_dir: Path, tax_year_hint: int | None, fiscal_year: int | None = None
-) -> Path | None:
+def _resolve_koinly_directory(base_dir: Path, tax_year_hint: int | None, fiscal_year: int | None = None) -> Path | None:
     # New personal-data layout: ``<base_dir>/<year>/koinly`` (e.g.
     # ``resources/source/2025/koinly``), where ``<year>`` is the configured fiscal
     # year. The fiscal_year from config is preferred (the source of truth for which
@@ -451,7 +476,7 @@ def cli() -> None:
     output_dir_path = Path(output_dir) if output_dir is not None else None
 
     # Apply default log level if not specified
-    log_level = args.log_level if args.log_level is not None else "INFO"
+    log_level = args.log_level  # may be None; _main resolves the default from config
 
     main(source_file=source_file_path, output_dir=output_dir_path, log_level=log_level)
 

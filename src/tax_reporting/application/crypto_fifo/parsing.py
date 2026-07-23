@@ -9,7 +9,7 @@ row parsing and classification.
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import MutableMapping, Sequence
 from pathlib import Path
 
@@ -170,6 +170,11 @@ def _classify_rows_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
     consumptions: defaultdict[str, list[ConsumptionContext]] = defaultdict(list)
     phantom_sending_transfers: set[tuple[str, str, str]] = set()
     parse_failures_by_asset: dict[str, list[int]] = {}
+    # Pattern E: per-asset tally of zero-Net-Value crypto_deposit rows, grouped
+    # into a single aggregate WARNING summary at the end of this function so
+    # the WARNING-level audit signal stays on the console while the per-row
+    # detail is preserved at DEBUG in the file (Design Invariant #3).
+    zero_net_deposits: Counter[str] = Counter()
 
     for row_index, row in enumerate(rows, start=1):
         tag = row.get("Tag", "").strip().lower()
@@ -272,9 +277,22 @@ def _classify_rows_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
             consumptions=consumptions,
             parse_failures_by_asset=parse_failures_by_asset,
             phantom_sending_transfers=phantom_sending_transfers,
+            zero_net_deposits=zero_net_deposits,
         )
 
     _dedup_by_tx_key(acquisitions, consumptions, parse_failures_by_asset)
+    # Pattern E: emit ONE aggregate WARNING for all zero-Net-Value crypto_deposit
+    # rows seen this run. The per-row detail is preserved at DEBUG in
+    # ``_classify_deposit_row`` so the file audit trail keeps full asset/row
+    # context; this single summary preserves the WARNING-level audit signal on
+    # the console without N redundant per-row WARNING lines.
+    if zero_net_deposits:
+        logger.warning(
+            "Flagged %d zero-Net-Value crypto_deposit(s) for review (%s); "
+            "see DEBUG log and review_reason field for details",
+            sum(zero_net_deposits.values()),
+            ", ".join(f"{a}: {n}" for a, n in sorted(zero_net_deposits.items())),
+        )
     return acquisitions, consumptions, frozenset(phantom_sending_transfers), parse_failures_by_asset
 
 
@@ -293,13 +311,17 @@ def _dedup_by_tx_key(
     The parse_failures_by_asset dict is updated for any row that is dropped so that the
     resulting FIFO realizations are flagged for manual review.
     """
+    dropped_acqs = 0
+    dropped_cons = 0
+    affected_assets: set[str] = set()
+
     for asset, acqs in acquisitions.items():
         seen_acqs: set[tuple[str, str]] = set()
         kept: list[AcquisitionContext] = []
         for acq in acqs:
             dedup_key = (acq.tx_key, acq.acq.source_type)
             if dedup_key in seen_acqs:
-                logger.warning(
+                logger.debug(
                     "Duplicate tx_key %r / source_type %r for asset %s acquisitions (row %d); "
                     "skipping to prevent doubled FIFO pool quantity. "
                     "Check for duplicate TxHash rows in the Koinly Transaction History export.",
@@ -309,6 +331,8 @@ def _dedup_by_tx_key(
                     acq.source_row_index,
                 )
                 parse_failures_by_asset.setdefault(asset, []).append(acq.source_row_index)
+                dropped_acqs += 1
+                affected_assets.add(asset)
             else:
                 seen_acqs.add(dedup_key)
                 kept.append(acq)
@@ -320,7 +344,7 @@ def _dedup_by_tx_key(
         for con in cons:
             dedup_key = (con.tx_key, con.con.event_type)
             if dedup_key in seen_cons:
-                logger.warning(
+                logger.debug(
                     "Duplicate tx_key %r / event_type %r for asset %s consumptions (row %d); "
                     "skipping to prevent phantom disposal. "
                     "Check for duplicate TxHash rows in the Koinly Transaction History export.",
@@ -330,10 +354,25 @@ def _dedup_by_tx_key(
                     con.source_row_index,
                 )
                 parse_failures_by_asset.setdefault(asset, []).append(con.source_row_index)
+                dropped_cons += 1
+                affected_assets.add(asset)
             else:
                 seen_cons.add(dedup_key)
                 kept_cons.append(con)
         consumptions[asset] = kept_cons
+
+    # Aggregate WARNING: the per-row drop detail is preserved at DEBUG above (one
+    # record per dropped row) so the file audit trail keeps full asset/row context;
+    # this single summary preserves the WARNING-level audit signal on the console
+    # without N redundant per-row WARNING lines (Pattern C grouping).
+    if dropped_acqs > 0 or dropped_cons > 0:
+        logger.warning(
+            "Dropped %d duplicate-tx_key acquisition(s) and %d consumption(s) across %d asset(s) "
+            "to prevent doubled FIFO pool; see DEBUG log for per-row detail",
+            dropped_acqs,
+            dropped_cons,
+            len(affected_assets),
+        )
 
 
 def _classify_th_row(
@@ -343,6 +382,7 @@ def _classify_th_row(
     consumptions: MutableMapping[str, list[ConsumptionContext]],
     parse_failures_by_asset: dict[str, list[int]],
     phantom_sending_transfers: set[tuple[str, str, str]],
+    zero_net_deposits: Counter[str],
 ) -> None:
     """Classify a single parsed TH row into acquisitions/consumptions for loan-affected assets."""
     match (parsed_row.row_type, parsed_row.sent_affected, parsed_row.received_affected):
@@ -380,6 +420,7 @@ def _classify_th_row(
                 acquisitions=acquisitions,
                 consumptions=consumptions,
                 parse_failures_by_asset=parse_failures_by_asset,
+                zero_net_deposits=zero_net_deposits,
             )
         case (_, True, _) | (_, _, True):
             _classify_unhandled_principal_row(
@@ -604,6 +645,7 @@ def _classify_deposit_row(
     acquisitions: MutableMapping[str, list[AcquisitionContext]],
     consumptions: MutableMapping[str, list[ConsumptionContext]],
     parse_failures_by_asset: dict[str, list[int]],
+    zero_net_deposits: Counter[str],
 ) -> None:
     if parsed_row.sent_affected:
         logger.warning(
@@ -618,12 +660,19 @@ def _classify_deposit_row(
     deposit_review_required = False
     deposit_review_reason: str | None = None
     if parsed_row.net_value == ZERO:
-        logger.warning(
+        # Pattern E: per-row detail is preserved at DEBUG in the file for the
+        # audit trail; the WARNING-level signal is grouped into ONE aggregate
+        # summary emitted by ``_classify_rows_for_loan_affected_assets`` so the
+        # console is not flooded with N redundant per-row WARNING lines. The
+        # ``deposit_review_reason`` field on the acquisition is UNCHANGED
+        # (Design Invariant #4: Excel review list content unchanged).
+        logger.debug(
             "Row %d: crypto_deposit of %s has zero Net Value (EUR); "
             "cost basis may be missing in Koinly: marking for review",
             parsed_row.row_index,
             parsed_row.received_currency,
         )
+        zero_net_deposits[parsed_row.received_currency] += 1
         deposit_review_required = True
         deposit_review_reason = (
             f"crypto_deposit of {parsed_row.received_currency} "

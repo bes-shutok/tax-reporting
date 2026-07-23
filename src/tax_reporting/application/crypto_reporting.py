@@ -734,170 +734,207 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
     skipped_loan_affected: Counter[str] = Counter()
     skipped_parse_errors: int = 0
     skipped_koinly_tracking: Counter[str] = Counter()
+    skipped_all_zero: Counter[str] = Counter()
 
-    for row_number, row in enumerate(rows, start=1):
-        asset = normalize_asset_ticker(row.get("Asset", ""))
-        is_loan_affected = asset in context.loan_affected_assets
-        if is_loan_affected:
-            skipped_loan_affected[asset] += 1
-        try:
-            cost_eur = parse_koinly_decimal(row.get("Cost (EUR)", ""))
-            proceeds_eur = parse_koinly_decimal(row.get("Proceeds (EUR)", ""))
-            gain_loss_eur = parse_koinly_decimal(row.get("Gain / loss", ""))
-            amount = parse_koinly_decimal(row.get("Amount", ""))
-            disposal_dt = parse_koinly_datetime(row.get("Date Sold", ""), zone=context.zone)
-            disposal_date = format_datetime(disposal_dt)
-            disposal_timestamp = disposal_dt.strftime("%Y-%m-%d %H:%M")
-            acquisition_date = format_datetime(parse_koinly_datetime(row.get("Date Acquired", ""), zone=context.zone))
-        except ValueError as exc:
-            logger.warning("Skipping capital gains row %d for %r: ambiguous decimal value: %s", row_number, asset, exc)
-            skipped_parse_errors += 1
-            continue
-
-        # Check for all-zero values (no taxable event)
-        # For popular tokens, flag for review instead of skipping - likely Koinly data issue
-        is_all_zero = cost_eur == ZERO and proceeds_eur == ZERO and gain_loss_eur == ZERO
-
-        review_required: bool = False
-        review_reason: str = ""
-        wallet = row.get("Wallet Name", "").strip()
-        platform = normalize_platform_name(wallet)
-
-        if is_all_zero:
-            # Koinly internal fee-accrual tracking entries (FEE, ...): never a
-            # user-held asset. Short-circuit before the popular-token / non-Latin
-            # lookups AND before _register_skipped_zero_asset so FEE does not
-            # pollute the skipped-tokens table (Design Invariant 4, r3 Critical #2).
-            if asset in _KOINLY_TRACKING_TOKENS:
-                skipped_koinly_tracking[asset] += 1
-                continue
-            # Lookups moved INSIDE the block: only consumed here at the
-            # is_known_token/known_assets check below and at the homoglyph-suffix
-            # branch / CryptoReviewEntry / _register_skipped_zero_asset below.
-            # The unconditional homoglyph check further down (after the block)
-            # does its own contains_non_latin_characters call and does not read
-            # is_suspicious, so this move is behaviour-preserving for non-all-zero
-            # rows (r3 Critical #2).
-            is_suspicious = contains_non_latin_characters(asset)
-            is_known_token = asset in _get_popular_crypto_tokens() or _contains_popular_token(asset)
-            if is_known_token or (context.known_assets and asset in context.known_assets):
-                review_reason = "Zero EUR value for known crypto asset - likely Koinly tracking entry or data error"
-                if is_suspicious:
-                    review_reason = (
-                        f"{review_reason}; Asset ticker contains non-Latin characters "
-                        "- potential homoglyph scam token"
-                    )
-
-                context.review_entries.append(
-                    CryptoReviewEntry(
-                        source_section="capital_gains",
-                        date=disposal_date,
-                        asset=asset,
-                        platform=platform,
-                        review_reason=review_reason,
-                        is_suspicious=is_suspicious,
-                    )
+    # Pattern B try/finally (r4 review F2): mirrors the FIFO-rebuild flush at
+    # ``fifo_helpers.py:398-413``. ``context.origin_resolver.resolve(...)`` at :860
+    # accumulates disagreements inside the loop, and ``CryptoCapitalGainEntry(...)``'s
+    # ``__post_init__`` validators at :863 can raise ``ValueError`` mid-loop. Without
+    # the finally, an exception propagates before the flush at :937, leaving the shared
+    # ``TokenOriginResolver._disagreements`` Counter with unflushed CG-stage state.
+    # The resolver is then reused by ``_rebuild_fifo_for_loan_affected_assets``
+    # (Design Invariant #10), whose downstream flush would absorb the leftover CG-stage
+    # disagreements and emit them under the WRONG scope label ("FIFO rebuild" instead of
+    # "capital gains parse"). The finally guarantees the flush runs on both the success
+    # path and any mid-loop raise.
+    try:
+        for row_number, row in enumerate(rows, start=1):
+            asset = normalize_asset_ticker(row.get("Asset", ""))
+            is_loan_affected = asset in context.loan_affected_assets
+            if is_loan_affected:
+                skipped_loan_affected[asset] += 1
+            try:
+                cost_eur = parse_koinly_decimal(row.get("Cost (EUR)", ""))
+                proceeds_eur = parse_koinly_decimal(row.get("Proceeds (EUR)", ""))
+                gain_loss_eur = parse_koinly_decimal(row.get("Gain / loss", ""))
+                amount = parse_koinly_decimal(row.get("Amount", ""))
+                disposal_dt = parse_koinly_datetime(row.get("Date Sold", ""), zone=context.zone)
+                disposal_date = format_datetime(disposal_dt)
+                disposal_timestamp = disposal_dt.strftime("%Y-%m-%d %H:%M")
+                acquisition_date = format_datetime(
+                    parse_koinly_datetime(row.get("Date Acquired", ""), zone=context.zone)
                 )
+            except ValueError as exc:
                 logger.warning(
-                    "Capital gains row %d for %r has all-zero values. Added to review list - "
-                    "this may be a Koinly tracking entry or data error.",
-                    row_number,
-                    asset,
+                    "Skipping capital gains row %d for %r: ambiguous decimal value: %s",
+                    row_number, asset, exc,
                 )
-                # Continue to create entry with review_required=True below for traceability
-                review_required = True
-            else:
-                # Unknown token with all-zero values - skip entirely
-                _register_skipped_zero_asset(context.skipped_assets, "capital_gains", asset, is_suspicious)
+                skipped_parse_errors += 1
                 continue
-        operator_origin = resolve_operator_origin(
-            platform,
-            transaction_type="crypto_disposal",
-            transaction_date=disposal_date,
-        )
-        notes = row.get("Notes", "").strip()
-        missing_cost_with_impact = "missing cost basis" in notes.lower()
-        review_required = review_required or operator_origin.review_required or missing_cost_with_impact
 
-        review_reason = review_reason or operator_origin.review_reason
-        if missing_cost_with_impact:
-            cost_basis_reason = "Missing cost basis with tax impact - verify cost calculation"
-            review_reason = f"{review_reason}; {cost_basis_reason}" if review_reason else cost_basis_reason
+            # Check for all-zero values (no taxable event)
+            # For popular tokens, flag for review instead of skipping - likely Koinly data issue
+            is_all_zero = cost_eur == ZERO and proceeds_eur == ZERO and gain_loss_eur == ZERO
 
-        review_required, review_reason = _build_zero_basis_review_reason(
-            cost_eur, proceeds_eur, review_required, review_reason,
-            min_proceeds=context.zero_basis_review_min_proceeds,
-        )
+            review_required: bool = False
+            review_reason: str = ""
+            wallet = row.get("Wallet Name", "").strip()
+            platform = normalize_platform_name(wallet)
 
-        # Flag assets with non-Latin characters as potential scam tokens (homoglyph detection)
-        if contains_non_latin_characters(asset):
-            review_required = True
-            scam_reason = f"Asset ticker '{asset}' contains non-Latin characters - potential homoglyph scam token"
-            review_reason = f"{review_reason}; {scam_reason}" if review_reason else scam_reason
+            if is_all_zero:
+                # Koinly internal fee-accrual tracking entries (FEE, ...): never a
+                # user-held asset. Short-circuit before the popular-token / non-Latin
+                # lookups AND before _register_skipped_zero_asset so FEE does not
+                # pollute the skipped-tokens table (Design Invariant 4, r3 Critical #2).
+                if asset in _KOINLY_TRACKING_TOKENS:
+                    skipped_koinly_tracking[asset] += 1
+                    continue
+                # Lookups moved INSIDE the block: only consumed here at the
+                # is_known_token/known_assets check below and at the homoglyph-suffix
+                # branch / CryptoReviewEntry / _register_skipped_zero_asset below.
+                # The unconditional homoglyph check further down (after the block)
+                # does its own contains_non_latin_characters call and does not read
+                # is_suspicious, so this move is behaviour-preserving for non-all-zero
+                # rows (r3 Critical #2).
+                is_suspicious = contains_non_latin_characters(asset)
+                is_known_token = asset in _get_popular_crypto_tokens() or _contains_popular_token(asset)
+                if is_known_token or (context.known_assets and asset in context.known_assets):
+                    review_reason = "Zero EUR value for known crypto asset - likely Koinly tracking entry or data error"
+                    if is_suspicious:
+                        review_reason = (
+                            f"{review_reason}; Asset ticker contains non-Latin characters "
+                            "- potential homoglyph scam token"
+                        )
 
-        holding_period = row.get("Holding period", "").strip() or "Unknown"
-        annex_hint = "G1" if holding_period.lower().startswith("long") else "J"
-
-        origin = context.origin_resolver.resolve(acquisition_date, asset, wallet, notes)
-        token_origin_str = str(origin)
-
-        entry = CryptoCapitalGainEntry(
-            disposal_date=disposal_date,
-            acquisition_date=acquisition_date,
-            asset=asset,
-            amount=amount,
-            cost_eur=cost_eur,
-            proceeds_eur=proceeds_eur,
-            gain_loss_eur=gain_loss_eur,
-            holding_period=holding_period,
-            wallet=wallet,
-            platform=platform,
-            chain=_derive_chain(wallet),
-            operator_origin=operator_origin,
-            annex_hint=annex_hint,
-            review_required=review_required,
-            review_reason=review_reason,
-            notes=notes,
-            token_swap_history=token_origin_str,
-            multi_acquisition_dates=False,
-            disposal_timestamp=disposal_timestamp,
-        )
-
-        if is_loan_affected:
-            # Buffer as fallback for when the FIFO rebuild fails.  These rows may
-            # include loan repayment disposals and must not reach the report unless
-            # the FIFO rebuild is unavailable.
-            fallback_reason = (
-                "Raw Koinly CG row for loan-affected asset: FIFO rebuild failed; "
-                "may include loan repayment disposals. Fix Transaction History and re-run."
+                    context.review_entries.append(
+                        CryptoReviewEntry(
+                            source_section="capital_gains",
+                            date=disposal_date,
+                            asset=asset,
+                            platform=platform,
+                            review_reason=review_reason,
+                            is_suspicious=is_suspicious,
+                        )
+                    )
+                    logger.debug(
+                        "Capital gains row %d for %r has all-zero values. Added to review list - "
+                        "this may be a Koinly tracking entry or data error.",
+                        row_number,
+                        asset,
+                    )
+                    skipped_all_zero[asset] += 1
+                    # Continue to create entry with review_required=True below for traceability
+                    review_required = True
+                else:
+                    # Unknown token with all-zero values - skip entirely
+                    _register_skipped_zero_asset(context.skipped_assets, "capital_gains", asset, is_suspicious)
+                    continue
+            operator_origin = resolve_operator_origin(
+                platform,
+                transaction_type="crypto_disposal",
+                transaction_date=disposal_date,
             )
-            combined_reason = f"{review_reason}; {fallback_reason}" if review_reason else fallback_reason
-            raw_loan_fallback.append(replace(entry, review_required=True, review_reason=combined_reason))
-        else:
-            capital_entries.append(entry)
+            notes = row.get("Notes", "").strip()
+            missing_cost_with_impact = "missing cost basis" in notes.lower()
+            review_required = review_required or operator_origin.review_required or missing_cost_with_impact
 
-    if skipped_loan_affected:
-        skipped_summary = ", ".join(f"{asset}: {count}" for asset, count in sorted(skipped_loan_affected.items()))
-        logger.warning(
-            "FIFO rebuild active: buffered %d raw CG row(s) for loan-affected assets %s as FIFO fallback",
-            sum(skipped_loan_affected.values()),
-            skipped_summary,
-        )
+            review_reason = review_reason or operator_origin.review_reason
+            if missing_cost_with_impact:
+                cost_basis_reason = "Missing cost basis with tax impact - verify cost calculation"
+                review_reason = f"{review_reason}; {cost_basis_reason}" if review_reason else cost_basis_reason
 
-    if skipped_parse_errors:
-        logger.warning(
-            "Skipped %d capital gains row(s) due to ambiguous decimal values; "
-            "these disposals are excluded from the report. Check the warnings above for details.",
-            skipped_parse_errors,
-        )
+            review_required, review_reason = _build_zero_basis_review_reason(
+                cost_eur, proceeds_eur, review_required, review_reason,
+                min_proceeds=context.zero_basis_review_min_proceeds,
+            )
 
-    if skipped_koinly_tracking:
-        summary = ", ".join(f"{asset}={count}" for asset, count in sorted(skipped_koinly_tracking.items()))
-        logger.info(
-            "Skipped %d Koinly tracking entries (assets: %s)",
-            sum(skipped_koinly_tracking.values()),
-            summary,
-        )
+            # Flag assets with non-Latin characters as potential scam tokens (homoglyph detection)
+            if contains_non_latin_characters(asset):
+                review_required = True
+                scam_reason = f"Asset ticker '{asset}' contains non-Latin characters - potential homoglyph scam token"
+                review_reason = f"{review_reason}; {scam_reason}" if review_reason else scam_reason
+
+            holding_period = row.get("Holding period", "").strip() or "Unknown"
+            annex_hint = "G1" if holding_period.lower().startswith("long") else "J"
+
+            origin = context.origin_resolver.resolve(acquisition_date, asset, wallet, notes)
+            token_origin_str = str(origin)
+
+            entry = CryptoCapitalGainEntry(
+                disposal_date=disposal_date,
+                acquisition_date=acquisition_date,
+                asset=asset,
+                amount=amount,
+                cost_eur=cost_eur,
+                proceeds_eur=proceeds_eur,
+                gain_loss_eur=gain_loss_eur,
+                holding_period=holding_period,
+                wallet=wallet,
+                platform=platform,
+                chain=_derive_chain(wallet),
+                operator_origin=operator_origin,
+                annex_hint=annex_hint,
+                review_required=review_required,
+                review_reason=review_reason,
+                notes=notes,
+                token_swap_history=token_origin_str,
+                multi_acquisition_dates=False,
+                disposal_timestamp=disposal_timestamp,
+            )
+
+            if is_loan_affected:
+                # Buffer as fallback for when the FIFO rebuild fails.  These rows may
+                # include loan repayment disposals and must not reach the report unless
+                # the FIFO rebuild is unavailable.
+                fallback_reason = (
+                    "Raw Koinly CG row for loan-affected asset: FIFO rebuild failed; "
+                    "may include loan repayment disposals. Fix Transaction History and re-run."
+                )
+                combined_reason = f"{review_reason}; {fallback_reason}" if review_reason else fallback_reason
+                raw_loan_fallback.append(replace(entry, review_required=True, review_reason=combined_reason))
+            else:
+                capital_entries.append(entry)
+
+        if skipped_loan_affected:
+            skipped_summary = ", ".join(f"{asset}: {count}" for asset, count in sorted(skipped_loan_affected.items()))
+            logger.warning(
+                "FIFO rebuild active: buffered %d raw CG row(s) for loan-affected assets %s as FIFO fallback",
+                sum(skipped_loan_affected.values()),
+                skipped_summary,
+            )
+
+        if skipped_parse_errors:
+            logger.warning(
+                "Skipped %d capital gains row(s) due to ambiguous decimal values; "
+                "these disposals are excluded from the report. Check the warnings above for details.",
+                skipped_parse_errors,
+            )
+
+        if skipped_koinly_tracking:
+            summary = ", ".join(f"{asset}={count}" for asset, count in sorted(skipped_koinly_tracking.items()))
+            logger.info(
+                "Skipped %d Koinly tracking entries (assets: %s)",
+                sum(skipped_koinly_tracking.values()),
+                summary,
+            )
+
+        if skipped_all_zero:
+            logger.warning(
+                "Flagged %d all-zero capital gains row(s) for review (%s); see DEBUG log and review list for details",
+                sum(skipped_all_zero.values()),
+                ", ".join(f"{a}: {n}" for a, n in sorted(skipped_all_zero.items())),
+            )
+    finally:
+        # Pattern B flush: emit ONE aggregate WARNING for any token_origin
+        # disagreements accumulated during this CG-parse pass, then clear the
+        # shared resolver Counter. The same resolver instance is reused by
+        # ``_rebuild_fifo_for_loan_affected_assets`` downstream (Design Invariant
+        # #10): this CG-parse flush MUST run before the FIFO-rebuild flush so the
+        # totals stay scoped to the stage that produced them. Runs in ``finally``
+        # (r4 review F2) so it still fires when ``CryptoCapitalGainEntry``'s
+        # ``__post_init__`` raises ``ValueError`` mid-loop (mirrors the FIFO-rebuild
+        # flush at ``fifo_helpers.py:398-413``).
+        context.origin_resolver.log_and_reset_disagreements(scope="capital gains parse")
 
     return capital_entries, raw_loan_fallback
 

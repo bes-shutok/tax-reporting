@@ -10,7 +10,7 @@ import tomllib
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, NamedTuple, get_args, get_type_hints
+from typing import Any, Final, NamedTuple, get_args, get_type_hints
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..domain.exceptions import MissingDecisionPointsError
@@ -72,6 +72,21 @@ _KNOWN_DECIMAL_POINTS: frozenset[str] = frozenset(
 # Identification is resolver-only; see ``docs/history/plans/2026-07-10-th-tx-view-phase-e.md``.
 
 
+# SINGLE source of truth for the default console log level. Used as the
+# ``Config.log_level`` dataclass default, as the parser fallback when
+# ``[COMMON] LOG_LEVEL`` is absent, and as the failure-path fallback in
+# ``main.py`` when config.ini cannot be read (see ``_main``). Do NOT introduce
+# additional hardcoded "WARNING" literals in the wiring modules; import this
+# constant instead. The file handler is hardcoded to ``logging.DEBUG``
+# regardless of this value.
+DEFAULT_LOG_LEVEL: Final[str] = "WARNING"
+
+# Allowed values for [COMMON] LOG_LEVEL (case-insensitive; normalized to uppercase
+# before comparison). This is the validation set, NOT a default; the default is
+# DEFAULT_LOG_LEVEL above.
+_VALID_LOG_LEVELS: Final[frozenset[str]] = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+
+
 @dataclass
 class Config:
     """Application configuration container.
@@ -82,11 +97,14 @@ class Config:
         tax_jurisdiction: Country-specific tax jurisdiction settings. Required; always
             set via load_configuration_from_file() which reads law-driven flags from
             the per-year TOML decision points file.
+        log_level: Console handler log level (one of DEBUG/INFO/WARNING/ERROR/CRITICAL).
+            Controls the console handler only; the file handler always captures DEBUG.
     """
 
     base: str
     rates: list[ConversionRate]
     tax_jurisdiction: TaxJurisdictionConfig
+    log_level: str = DEFAULT_LOG_LEVEL
 
 
 def _load_decision_points_flags(
@@ -416,6 +434,19 @@ def load_configuration_from_file() -> Config:
         target: str = config["COMMON"]["TARGET CURRENCY"]
         logger.debug("Target currency: %s", target)
 
+        # Console log level (controls the console handler only; the file handler always
+        # captures DEBUG). Case-insensitive; normalized to uppercase before validation.
+        # Raises plain ValueError (NOT ConfigurationError) on an invalid value, per the
+        # config.py convention; main.py's except-(ValueError, KeyError, configparser.Error)
+        # wrapper converts it to ConfigurationError.
+        raw_level = config["COMMON"].get("LOG_LEVEL", DEFAULT_LOG_LEVEL)
+        log_level = raw_level.strip().upper()
+        if log_level not in _VALID_LOG_LEVELS:
+            raise ValueError(
+                f"Invalid LOG_LEVEL {raw_level!r} in [COMMON]; expected one of DEBUG, INFO, WARNING, ERROR, CRITICAL"
+            )
+        logger.debug("Console log level: %s", log_level)
+
         rates: list[ConversionRate] = []
         for key in config["EXCHANGE RATES"]:
             base, calculated = key.split("/")
@@ -430,7 +461,7 @@ def load_configuration_from_file() -> Config:
         # Load tax jurisdiction settings
         tax_jurisdiction = _load_tax_jurisdiction_config(config, logger)
 
-        return Config(base=target, rates=rates, tax_jurisdiction=tax_jurisdiction)
+        return Config(base=target, rates=rates, tax_jurisdiction=tax_jurisdiction, log_level=log_level)
 
     except (KeyError, ValueError) as e:
         logger.error("Configuration parsing error: %s", e)

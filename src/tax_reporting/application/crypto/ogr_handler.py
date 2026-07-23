@@ -233,11 +233,14 @@ def _split_ogr_index(
 
     Safety net (r1 Medium #7): when ``separate_derivatives_reporting=True`` and
     classification returns ``Derivatives`` while ``len(cg_matches) == 0``, a
-    ``logger.warning`` is emitted so ambiguous platform cases (no CG counterpart
-    to confirm spot vs derivatives classification) are surfaced. The row is
-    still routed to ``derivatives_entries`` because the OGR ``Type`` column is
-    the authoritative signal: Profit rows are always derivatives, and Loss
-    rows with no CG counterpart have no spot anchor.
+    per-row ``logger.debug`` is emitted (with the (date, asset, wallet) detail)
+    and one aggregate ``logger.warning`` summarizing the total count is emitted
+    after the loop, so ambiguous platform cases (no CG counterpart to confirm
+    spot vs derivatives classification) are surfaced. The per-row detail stays
+    reachable at DEBUG (Design Invariant #3). The row is still routed to
+    ``derivatives_entries`` because the OGR ``Type`` column is the authoritative
+    signal: Profit rows are always derivatives, and Loss rows with no CG
+    counterpart have no spot anchor.
 
     Args:
         ogr_rows: Parsed OGR rows from ``_find_and_parse_other_gains_file``.
@@ -258,6 +261,10 @@ def _split_ogr_index(
 
     spot_index: dict[tuple[str, str, str], Decimal] = {}
     derivatives_entries: list[DerivativesPnLEntry] = []
+    # Pattern H (warning grouping): count no-CG-counterpart rows so ONE aggregate
+    # WARNING can be emitted after the loop, while the per-row detail stays at
+    # DEBUG (Design Invariant #3). Mirrors the summary at ogr_handler.py:130-136.
+    no_cg_counter: int = 0
 
     for row in ogr_rows:
         cg_matches = [
@@ -342,13 +349,21 @@ def _split_ogr_index(
         )
 
         if classification.kind == "derivatives" and len(cg_matches) == 0:
-            logger.warning(
+            logger.debug(
                 "OGR row at (%s, %s, %s) routed to derivatives by row type; "
                 "no CG counterpart to confirm spot vs derivatives classification",
                 row.date,
                 row.asset,
                 row.wallet,
             )
+            no_cg_counter += 1
+
+    if no_cg_counter > 0:
+        logger.warning(
+            "%d OGR row(s) routed to derivatives by row type with no CG counterpart to "
+            "confirm spot vs derivatives; see DEBUG log for per-row detail",
+            no_cg_counter,
+        )
 
     return spot_index, derivatives_entries
 

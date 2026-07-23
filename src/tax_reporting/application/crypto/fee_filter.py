@@ -550,7 +550,10 @@ def _surface_suspects(
     - appends a ``CryptoReviewEntry`` (``source_section="capital_gains"`` when
       it matched a CG lot, else the new ``"transaction_history"``) to the
       threaded ``review_entries`` list in place;
-    - logs a ``logger.warning`` naming the asset + ``Net Value (EUR)``.
+    - logs a ``logger.debug`` naming the asset + ``Net Value (EUR)`` (pattern D:
+      per-row detail preserved at DEBUG in the file; the in-loop WARNING was
+      downgraded to avoid ~110 duplicate console warnings whose content is
+      already shown in the Excel review list).
 
     Suspects are NOT removed (Design Invariant 3). A separate aggregate
     suspect WARNING is emitted to satisfy the plan.
@@ -603,7 +606,7 @@ def _surface_suspects(
                 is_suspicious=contains_non_latin_characters(suspect.asset),
             )
         )
-        logger.warning(
+        logger.debug(
             "Possible untagged fee for unlisted asset %s (Net Value %s EUR); "
             "not filtered. Add to exclude_transaction_fee_max_eur_per_asset if "
             "this is a fee.",

@@ -78,11 +78,10 @@ def _apply_phantom_lot_flags(
                 flagged.append(replace(r, review_required=True, review_reason=phantom_reason))
         else:
             flagged.append(r)
-    return AssetFifoResult(
-        realizations=flagged,
-        carryover_cost_by_tx_key=result.carryover_cost_by_tx_key,
-        partial_carryover_tx_keys=result.partial_carryover_tx_keys,
-    )
+    # Use ``dataclasses.replace`` instead of rebuilding the dataclass field-by-field
+    # so future ``AssetFifoResult`` fields (e.g. ``unmatched_taxable_count`` and any
+    # later additions) are auto-forwarded instead of silently dropped.
+    return replace(result, realizations=flagged)
 
 
 def _compute_cross_asset_receiver_totals(
@@ -118,6 +117,7 @@ def _process_single_asset_fifo(  # noqa: PLR0913
     all_asset_totals: dict[str, dict[str, Decimal]],
     phantom_transfers: dict,
     logger: logging.Logger,
+    total_unmatched_taxable: list[int],
 ) -> list[CryptoFifoRealization]:
     """Run FIFO for a single asset across all its platforms and return realizations.
 
@@ -137,6 +137,10 @@ def _process_single_asset_fifo(  # noqa: PLR0913
             ``_compute_cross_asset_receiver_totals``; used for proportional cost splits.
         phantom_transfers: Set of (asset, tx_key) pairs flagged as phantom transfers.
         logger: Logger for diagnostics.
+        total_unmatched_taxable: Single-cell mutable counter (``[int]``) accumulating
+            the number of taxable disposals with no matching acquisition at or before
+            the disposal date (pattern F) across all (asset, platform) results. Summed
+            by the caller to emit ONE aggregate WARNING.
 
     Returns:
         All realizations produced for this asset across all platforms.
@@ -177,6 +181,7 @@ def _process_single_asset_fifo(  # noqa: PLR0913
             asset_realizations.extend(result.realizations)
             per_platform_carryover[platform] = dict(result.carryover_cost_by_tx_key)
             per_platform_partial_map[platform] = result.partial_carryover_tx_keys
+            total_unmatched_taxable[0] += result.unmatched_taxable_count
             for key, cost in result.carryover_cost_by_tx_key.items():
                 platform_key = (key, platform)
                 if platform_key in merged_carryover:
@@ -264,6 +269,14 @@ def _rebuild_fifo_for_loan_affected_assets(
     # duplicating cost basis when two receiver assets share the same tx_key.
     all_asset_totals = _compute_cross_asset_receiver_totals(acquisitions_by_asset)
 
+    # Pattern F: single-cell mutable counter accumulating the number of taxable
+    # disposals with no matching acquisition at or before the disposal date across
+    # all (asset, platform) results. Emitted as ONE aggregate WARNING after the
+    # per-asset loop so the console shows a single summary while per-row detail
+    # stays at DEBUG (Design Invariant #3) and the review_reason field carries the
+    # actionable per-row context (Design Invariant #4).
+    total_unmatched_taxable: list[int] = [0]
+
     for asset in processing_order:
         all_realizations.extend(
             _process_single_asset_fifo(
@@ -275,7 +288,27 @@ def _rebuild_fifo_for_loan_affected_assets(
                 all_asset_totals,
                 phantom_transfers,
                 logger,
+                total_unmatched_taxable=total_unmatched_taxable,
             )
+        )
+
+    # Pattern F aggregate WARNING: emitted BEFORE the fiscal_year filter.
+    # ``total_unmatched_taxable[0]`` counts every unmatched-taxable disposal seen
+    # during FIFO computation across ALL processed years (not just ``fiscal_year``).
+    # The fiscal_year filter below then drops out-of-year realizations from
+    # ``all_realizations`` (the report list), but this WARNING honestly reports the
+    # FIFO-computation total across all processed years. The accumulator is
+    # structurally correct -- it is incremented only inside ``matching.py``'s
+    # actual unmatched-taxable branches (via ``unmatched_taxable_counter``), so it
+    # does NOT count matched disposals whose acquisition carries a partial-transfer
+    # "pool exhausted" review_reason (that reason would be a substring-collision
+    # false positive if the count were re-derived from review_reason text).
+    if total_unmatched_taxable[0] > 0:
+        logger.warning(
+            "%d taxable disposal(s) had no acquisition at or before the disposal date "
+            "(pool exhausted) across all processed years; flagged for review with zero "
+            "cost basis; see DEBUG log and realization review_reason for details",
+            total_unmatched_taxable[0],
         )
 
     # Flag realizations for assets with TH parse errors.
@@ -316,51 +349,68 @@ def _rebuild_fifo_for_loan_affected_assets(
 
     # Step 5: Convert realizations to CryptoCapitalGainEntry
     fifo_entries: list[CryptoCapitalGainEntry] = []
-    for r in all_realizations:
-        operator_origin = resolve_operator_origin(
-            r.platform, transaction_type="crypto_disposal", transaction_date=r.disposal_date,
-        )
-        annex_hint = "G1" if r.holding_period.lower().startswith("long") else "J"
-        chain = _derive_chain(r.wallet)
-        origin = origin_resolver.resolve(r.acquisition_date, r.asset, r.wallet, r.notes or "")
-        combined_review_required = r.review_required or operator_origin.review_required
-        combined_review_reason = (
-            "; ".join(filter(None, [r.review_reason, operator_origin.review_reason])) or None
-        )
-        # Defensive guard: review_required=True must always have a reason.
-        # This should be guaranteed by upstream __post_init__ validators, but guard explicitly
-        # to prevent a silent ValueError if any upstream invariant is bypassed (e.g. via replace()).
-        if combined_review_required and not combined_review_reason:
-            combined_review_reason = "Review required (reason not propagated from FIFO or origin resolver)"
-
-        combined_review_required, combined_review_reason = _build_zero_basis_review_reason(
-            r.cost_eur, r.proceeds_eur, combined_review_required, combined_review_reason or "",
-            min_proceeds=zero_basis_review_min_proceeds,
-        )
-
-        fifo_entries.append(
-            CryptoCapitalGainEntry(
-                disposal_date=r.disposal_date,
-                acquisition_date=r.acquisition_date,
-                asset=r.asset,
-                amount=r.amount,
-                cost_eur=r.cost_eur,
-                proceeds_eur=r.proceeds_eur,
-                gain_loss_eur=r.gain_loss_eur,
-                holding_period=r.holding_period,
-                wallet=r.wallet,
-                platform=r.platform,
-                chain=chain,
-                operator_origin=operator_origin,
-                annex_hint=annex_hint,
-                review_required=combined_review_required,
-                notes=r.notes or "",
-                review_reason=combined_review_reason,
-                token_swap_history=str(origin),
-                multi_acquisition_dates=False,
-                disposal_timestamp=r.disposal_timestamp,
+    try:
+        for r in all_realizations:
+            operator_origin = resolve_operator_origin(
+                r.platform, transaction_type="crypto_disposal", transaction_date=r.disposal_date,
             )
-        )
+            annex_hint = "G1" if r.holding_period.lower().startswith("long") else "J"
+            chain = _derive_chain(r.wallet)
+            origin = origin_resolver.resolve(r.acquisition_date, r.asset, r.wallet, r.notes or "")
+            combined_review_required = r.review_required or operator_origin.review_required
+            combined_review_reason = (
+                "; ".join(filter(None, [r.review_reason, operator_origin.review_reason])) or None
+            )
+            # Defensive guard: review_required=True must always have a reason.
+            # This should be guaranteed by upstream __post_init__ validators, but guard explicitly
+            # to prevent a silent ValueError if any upstream invariant is bypassed (e.g. via replace()).
+            if combined_review_required and not combined_review_reason:
+                combined_review_reason = "Review required (reason not propagated from FIFO or origin resolver)"
+
+            combined_review_required, combined_review_reason = _build_zero_basis_review_reason(
+                r.cost_eur, r.proceeds_eur, combined_review_required, combined_review_reason or "",
+                min_proceeds=zero_basis_review_min_proceeds,
+            )
+
+            fifo_entries.append(
+                CryptoCapitalGainEntry(
+                    disposal_date=r.disposal_date,
+                    acquisition_date=r.acquisition_date,
+                    asset=r.asset,
+                    amount=r.amount,
+                    cost_eur=r.cost_eur,
+                    proceeds_eur=r.proceeds_eur,
+                    gain_loss_eur=r.gain_loss_eur,
+                    holding_period=r.holding_period,
+                    wallet=r.wallet,
+                    platform=r.platform,
+                    chain=chain,
+                    operator_origin=operator_origin,
+                    annex_hint=annex_hint,
+                    review_required=combined_review_required,
+                    notes=r.notes or "",
+                    review_reason=combined_review_reason,
+                    token_swap_history=str(origin),
+                    multi_acquisition_dates=False,
+                    disposal_timestamp=r.disposal_timestamp,
+                )
+            )
+    finally:
+        # Pattern B flush: emit ONE aggregate WARNING for any token_origin
+        # disagreements accumulated during this FIFO-rebuild pass, then clear the
+        # shared resolver Counter. The CG-parse flush already ran upstream inside
+        # ``_parse_capital_gains_file`` (call site ordering: ``crypto_reporting.py:337``
+        # runs before this function at ``:361`` per Design Invariant #10), so
+        # this flush sees only FIFO-rebuild-stage disagreements.
+        #
+        # MUST run in a ``finally`` (r2 review F6): ``origin_resolver.resolve(...)``
+        # accumulates disagreements inside the loop, and ``CryptoCapitalGainEntry``'s
+        # ``__post_init__`` validators can raise ``ValueError`` mid-loop. Without the
+        # finally, an exception propagates before the flush, silently dropping the
+        # FIFO-rebuild-stage aggregate WARNING and leaving the shared Counter with
+        # unflushed state (Design Invariant #10's named load-bearing condition).
+        # The flush is also needed on the success path, which ``finally`` guarantees.
+        origin_resolver.log_and_reset_disagreements(scope="FIFO rebuild")
 
     return fifo_entries, th_assets
 

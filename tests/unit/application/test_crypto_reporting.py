@@ -9872,8 +9872,17 @@ class TestOgrSplit:
         assert spot_index == {("2025-01-12", "USDT", "ByBit"): Decimal("136.01")}
 
     def test_no_cg_no_th_tag_safety_net(self, caplog):
-        """Given a Profit OGR row with no CG counterpart, expects a safety-net logger.warning (r1 Medium #7)."""
-        from tax_reporting.application.crypto.ogr_handler import _split_ogr_index
+        """Given a Profit OGR row with no CG counterpart, expects ONE aggregate WARNING + one DEBUG per-row.
+
+        Pattern H: the per-row WARNING at ``ogr_handler.py:346`` ("OGR row at (...)
+        routed to derivatives by row type; no CG counterpart...") is downgraded
+        to DEBUG and grouped into ONE aggregate WARNING summary after the loop.
+        Design Invariant #3 (per-row detail preserved at DEBUG) and #4 (Excel
+        review list unchanged: ``DerivativesPnLEntry`` still appended) must hold.
+        """
+        from tax_reporting.application.crypto.ogr_handler import (
+            _split_ogr_index,
+        )
 
         rows = [
             ParsedOgrRow(
@@ -9886,20 +9895,64 @@ class TestOgrSplit:
         ]
         capital_entries: list[CryptoCapitalGainEntry] = []
 
-        caplog.set_level(logging.WARNING)
-        spot_index, derivatives_entries = _split_ogr_index(
-            rows, capital_entries, _ogr_split_jurisdiction(separate=True)
-        )
+        with caplog.at_level(
+            logging.DEBUG, logger="tax_reporting.application.crypto.ogr_handler"
+        ):
+            spot_index, derivatives_entries = _split_ogr_index(
+                rows, capital_entries, _ogr_split_jurisdiction(separate=True)
+            )
 
-        # Profit type is always derivatives, so the row is still routed
+        # Profit type is always derivatives, so the row is still routed.
+        # Design Invariant #4: DerivativesPnLEntry still appended (unchanged).
         assert len(derivatives_entries) == 1
         assert derivatives_entries[0].pnl_eur == Decimal("140.18")
         assert spot_index == {}
-        # Safety net warning fired for the no-CG-counterpart ambiguous case
-        assert any(
-            "routed to derivatives" in rec.message and "ByBit" in rec.message
+
+        ogr_handler_records = [
+            rec
             for rec in caplog.records
-        ), f"Expected safety-net warning; got messages: {[r.message for r in caplog.records]}"
+            if rec.name == "tax_reporting.application.crypto.ogr_handler"
+        ]
+
+        # ONE aggregate WARNING matching "routed to derivatives by row type".
+        warning_messages = [
+            rec.getMessage()
+            for rec in ogr_handler_records
+            if rec.levelno == logging.WARNING
+        ]
+        aggregate_warnings = [
+            m for m in warning_messages if "routed to derivatives by row type" in m
+        ]
+        assert len(aggregate_warnings) == 1, (
+            f"Expected exactly ONE aggregate WARNING, got {aggregate_warnings}"
+        )
+        # The summary names the total count of flagged rows.
+        assert "1 OGR row(s) routed to derivatives by row type" in aggregate_warnings[0]
+
+        # The legacy per-row substring must NOT appear at WARNING level (downgraded).
+        # The unique per-row discriminator is "OGR row at (" (the aggregate uses
+        # "N OGR row(s) routed...").
+        legacy_warnings = [
+            m for m in warning_messages if "OGR row at (" in m
+        ]
+        assert legacy_warnings == [], (
+            f"Per-row no-CG-counterpart WARNING must be downgraded to DEBUG, "
+            f"got {legacy_warnings}"
+        )
+
+        # Design Invariant #3: per-row detail preserved at DEBUG (1 record,
+        # captures the "ByBit" platform-name detail).
+        debug_messages = [
+            rec.getMessage()
+            for rec in ogr_handler_records
+            if rec.levelno == logging.DEBUG
+        ]
+        per_row_debug = [
+            m for m in debug_messages if "OGR row at (" in m and "ByBit" in m
+        ]
+        assert len(per_row_debug) == 1, (
+            f"Expected 1 per-row DEBUG record capturing 'ByBit', got {per_row_debug}"
+        )
 
     def test_derivatives_entry_carries_operator_entity_and_country(self):
         """Given an OGR row for ByBit routed to derivatives, expects operator_entity and operator_country from
@@ -13251,6 +13304,342 @@ def _write_cg_with_rows(koinly_dir: Path, rows: list[str]) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+@pytest.mark.unit
+class TestParseCapitalGainsFile:
+    """All-zero CG row warning grouping (Plan 2026-07-21 Task 3 / Pattern A).
+
+    The per-row WARNING at ``crypto_reporting.py:802`` ("Capital gains row N for
+    X has all-zero values...") is downgraded to DEBUG and grouped into ONE
+    aggregate WARNING summary after the loop. Design Invariant #3 (per-row
+    detail preserved at DEBUG in the file) and #4 (Excel review list
+    unchanged) must hold.
+    """
+
+    def test_all_zero_rows_grouped_into_single_summary(self, tmp_path, caplog):
+        """Three known-token all-zero CG rows emit ONE aggregate WARNING + 3 DEBUG.
+
+        The aggregate WARNING must match ``"Flagged %d all-zero capital gains row"``
+        and the 3 per-row DEBUG records must still be emitted. The 3
+        ``CryptoReviewEntry`` rows continue to be appended to
+        ``context.review_entries`` (Design Invariant #4: Excel review list
+        unchanged).
+        """
+        from unittest.mock import MagicMock
+
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        koinly_dir = tmp_path / "koinly2025"
+        koinly_dir.mkdir()
+        capital_file = _write_cg_with_rows(
+            koinly_dir,
+            [
+                _fee_all_zero_cg_row("BTC", "01/01/2025 10:00"),
+                _fee_all_zero_cg_row("ETH", "02/01/2025 10:00"),
+                _fee_all_zero_cg_row("BTC", "03/01/2025 10:00"),
+            ],
+        )
+
+        origin_resolver = MagicMock(spec=TokenOriginResolver)
+        origin_resolver.resolve.return_value = {"origin": "Unknown"}
+
+        review_entries: list = []
+        known_assets = frozenset(["BTC", "ETH"])
+        context = CapitalGainsParsingContext(
+            skipped_assets={},
+            origin_resolver=origin_resolver,
+            review_entries=review_entries,
+            known_assets=known_assets,
+            loan_affected_assets=frozenset(),
+        )
+
+        from unittest.mock import patch
+
+        with (
+            patch(
+                "tax_reporting.application.crypto_reporting._get_popular_crypto_tokens",
+                return_value=known_assets,
+            ),
+            caplog.at_level(
+                logging.DEBUG, logger="tax_reporting.application.crypto_reporting"
+            ),
+        ):
+            _parse_capital_gains_file(capital_file, context)
+
+        # Design Invariant #4: Excel review list unchanged (3 rows appended).
+        assert len(review_entries) == 3, (
+            f"Expected 3 CryptoReviewEntry rows, got {len(review_entries)}"
+        )
+
+        warning_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == "tax_reporting.application.crypto_reporting"
+        ]
+        all_zero_warnings = [
+            m for m in warning_messages if "all-zero capital gains row" in m
+        ]
+        assert len(all_zero_warnings) == 1, (
+            f"Expected exactly ONE aggregate all-zero WARNING, got {all_zero_warnings}"
+        )
+        # The summary names the total count of flagged rows.
+        assert "Flagged 3 all-zero capital gains row" in all_zero_warnings[0]
+
+        # The legacy per-row WARNING substring must NOT appear at WARNING level.
+        legacy_warnings = [
+            m for m in warning_messages if "has all-zero values" in m
+        ]
+        assert legacy_warnings == [], (
+            f"Per-row all-zero WARNING must be downgraded to DEBUG, got {legacy_warnings}"
+        )
+
+        # Design Invariant #3: per-row detail preserved at DEBUG (3 records).
+        debug_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.DEBUG
+            and rec.name == "tax_reporting.application.crypto_reporting"
+        ]
+        per_row_debug = [m for m in debug_messages if "has all-zero values" in m]
+        assert len(per_row_debug) == 3, (
+            f"Expected 3 per-row DEBUG records for all-zero rows, got {per_row_debug}"
+        )
+
+
+@pytest.mark.unit
+class TestParseCapitalGainsFileCallerFlush:
+    """Pattern B caller-level flush wiring (r3 review F1).
+
+    Design Invariant #10 names the CG-parse caller flush as load-bearing: the
+    shared ``TokenOriginResolver`` accumulates disagreement keys from BOTH
+    caller loops, and ``_parse_capital_gains_file`` MUST invoke
+    ``context.origin_resolver.log_and_reset_disagreements(scope="capital gains
+    parse")`` after its row loop (call site ``crypto_reporting.py:917``). The
+    ``log_and_reset_disagreements`` METHOD is well-tested in isolation, but the
+    CALLER wiring is not: mutation testing confirmed that deleting this flush
+    call leaves the suite green. These tests pre-seed the resolver's
+    ``_disagreements`` Counter and assert the caller-level flush fires, so a
+    future refactor that drops the call ships RED.
+    """
+
+    def test_capital_gains_parse_caller_flushes_disagreements(
+        self, tmp_path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A pre-seeded non-empty ``_disagreements`` is flushed by the CG-parse caller.
+
+        Given a resolver whose ``_disagreements`` Counter already holds one
+        disagreement key, running ``_parse_capital_gains_file`` flushes it: exactly
+        ONE WARNING matching ``"TokenOriginResolver (capital gains parse)"`` fires
+        at the caller (emitted by ``log_and_reset_disagreements`` via
+        ``logging.getLogger(__name__)`` in ``token_origin.py``), and
+        ``resolver._disagreements`` is empty after the call.
+
+        Mutation pin (r3 F1): deleting the
+        ``context.origin_resolver.log_and_reset_disagreements(scope="capital
+        gains parse")`` call at ``crypto_reporting.py:917`` leaves this test RED
+        (no caller-level WARNING, Counter still non-empty).
+        """
+        from collections import Counter
+
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        # Build a resolver from an EMPTY transaction history so resolve() returns
+        # unknown without mutating _disagreements (no disagree branch reached).
+        # Then pre-seed _disagreements as if a prior stage had accumulated one.
+        resolver = build_origin_resolver(None)
+        assert isinstance(resolver, TokenOriginResolver)
+        resolver._disagreements = Counter({("BTC", "Kraken", "2025-01-15"): 1})
+        assert len(resolver._disagreements) == 1
+
+        capital_csv = tmp_path / "capital.csv"
+        capital_csv.write_text(
+            "\n".join(
+                [
+                    "Capital gains report 2025",
+                    "",
+                    ",".join(
+                        [
+                            "Date Sold",
+                            "Date Acquired",
+                            "Asset",
+                            "Amount",
+                            "Cost (EUR)",
+                            "Proceeds (EUR)",
+                            "Gain / loss",
+                            "Notes",
+                            "Wallet Name",
+                            "Holding period",
+                        ]
+                    ),
+                    ",".join(
+                        [
+                            "15/03/2025 12:00",
+                            "15/01/2025 10:00",
+                            "BTC",
+                            '"0,10"',
+                            '"1000,00"',
+                            '"1200,00"',
+                            '"200,00"',
+                            "",
+                            "Kraken",
+                            "Short term",
+                        ]
+                    ),
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        review_entries: list = []
+        context = CapitalGainsParsingContext(
+            skipped_assets={},
+            origin_resolver=resolver,
+            review_entries=review_entries,
+        )
+
+        # caplog on the token_origin module logger (the flush emitter). Lesson #68:
+        # filter rec.name on the emitting module's fully-qualified __name__.
+        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.token_origin"):
+            _parse_capital_gains_file(capital_csv, context)
+
+        # (a) Exactly ONE WARNING matching the CG-parse caller scope fires.
+        caller_flush_warnings = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == "tax_reporting.application.token_origin"
+            and "TokenOriginResolver (capital gains parse)" in rec.getMessage()
+        ]
+        assert len(caller_flush_warnings) == 1, (
+            f"Expected exactly ONE caller-flush WARNING, got {caller_flush_warnings}"
+        )
+        # The summary names the scope and the disagreement count (1 across 1 distinct key).
+        assert "1 origin-resolution disagreement(s) across 1 distinct" in caller_flush_warnings[0]
+
+        # (b) The Counter is cleared after the call.
+        assert len(resolver._disagreements) == 0, (
+            f"Expected _disagreements cleared by caller flush, got {dict(resolver._disagreements)}"
+        )
+
+    def test_capital_gains_parse_caller_flush_still_fires_on_mid_loop_exception(
+        self, tmp_path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The CG-parse caller flush STILL fires when ``CryptoCapitalGainEntry`` raises mid-loop.
+
+        Mirrors the FIFO-rebuild variant
+        (``test_crypto_fifo.py::TestFifoRebuildCallerFlush::test_fifo_rebuild_caller_flush_still_fires_on_mid_loop_exception``)
+        to cover the r4-F2 ``finally`` justification symmetrically.
+        ``context.origin_resolver.resolve(...)`` accumulates disagreements inside the
+        CG-parse row loop, and ``CryptoCapitalGainEntry(...)``'s ``__post_init__``
+        validators can raise ``ValueError`` mid-loop. Without the ``finally``, an
+        exception propagates before the flush, silently dropping the CG-stage aggregate
+        WARNING and leaving the shared ``TokenOriginResolver._disagreements`` Counter
+        with unflushed CG-stage state (which the downstream FIFO-rebuild flush would
+        then absorb under the WRONG scope label). Forcing a mid-loop exception
+        (patching ``CryptoCapitalGainEntry`` to raise) must still emit the caller flush
+        WARNING.
+
+        Mutation pin (r5 F2): reverting the CG-parse ``finally`` to a plain trailing
+        call (or deleting the flush) leaves this test RED (no caller-level WARNING,
+        Counter still non-empty).
+        """
+        from collections import Counter
+        from unittest.mock import patch
+
+        from tax_reporting.application import crypto_reporting as crypto_reporting_module
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        # Build a resolver from an EMPTY transaction history so resolve() returns
+        # unknown without mutating _disagreements (no disagree branch reached).
+        # Then pre-seed _disagreements as if a prior stage had accumulated one.
+        resolver = build_origin_resolver(None)
+        assert isinstance(resolver, TokenOriginResolver)
+        resolver._disagreements = Counter({("BTC", "Kraken", "2025-01-15"): 1})
+        assert len(resolver._disagreements) == 1
+
+        # A valid CG CSV row that reaches the CryptoCapitalGainEntry(...) construction
+        # site (all required fields parse cleanly; non-zero proceeds so it is not an
+        # all-zero skip).
+        capital_csv = tmp_path / "capital.csv"
+        capital_csv.write_text(
+            "\n".join(
+                [
+                    "Capital gains report 2025",
+                    "",
+                    ",".join(
+                        [
+                            "Date Sold",
+                            "Date Acquired",
+                            "Asset",
+                            "Amount",
+                            "Cost (EUR)",
+                            "Proceeds (EUR)",
+                            "Gain / loss",
+                            "Notes",
+                            "Wallet Name",
+                            "Holding period",
+                        ]
+                    ),
+                    ",".join(
+                        [
+                            "15/03/2025 12:00",
+                            "15/01/2025 10:00",
+                            "BTC",
+                            '"0,10"',
+                            '"1000,00"',
+                            '"1200,00"',
+                            '"200,00"',
+                            "",
+                            "Kraken",
+                            "Short term",
+                        ]
+                    ),
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        review_entries: list = []
+        context = CapitalGainsParsingContext(
+            skipped_assets={},
+            origin_resolver=resolver,
+            review_entries=review_entries,
+        )
+
+        # Patch CryptoCapitalGainEntry (imported into crypto_reporting) to raise
+        # mid-loop, simulating a __post_init__ validation failure during the row loop.
+        # The function's ``finally`` block must still flush the resolver.
+        # caplog on the token_origin module logger (the flush emitter). Lesson #68:
+        # filter rec.name on the emitting module's fully-qualified __name__.
+        with (
+            caplog.at_level(logging.WARNING, logger="tax_reporting.application.token_origin"),
+            patch.object(
+                crypto_reporting_module,
+                "CryptoCapitalGainEntry",
+                side_effect=ValueError("simulated mid-loop validation failure"),
+            ),
+            pytest.raises(ValueError, match="simulated mid-loop validation failure"),
+        ):
+            _parse_capital_gains_file(capital_csv, context)
+
+        # Exactly ONE WARNING matching the CG-parse caller scope fired in the finally.
+        caller_flush_warnings = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == "tax_reporting.application.token_origin"
+            and "TokenOriginResolver (capital gains parse)" in rec.getMessage()
+        ]
+        assert len(caller_flush_warnings) == 1, (
+            f"Expected caller-flush WARNING to fire in the finally block, got {caller_flush_warnings}"
+        )
+
+        # The Counter is still cleared (the finally flush ran).
+        assert len(resolver._disagreements) == 0, (
+            f"Expected _disagreements cleared by finally-flush, got {dict(resolver._disagreements)}"
+        )
 
 
 @pytest.mark.unit

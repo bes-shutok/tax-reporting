@@ -11,21 +11,29 @@ import sys
 from pathlib import Path
 
 
-def configure_application_logging(
-    level: str = "INFO", log_file: Path | None = None, enable_console: bool = True
-) -> None:
+def configure_application_logging(level: str, log_file: Path | None = None, enable_console: bool = True) -> None:
     """Configure application logging with standardized formatting and output options.
 
     Args:
-        level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        level: Logging level for the CONSOLE handler (DEBUG, INFO, WARNING, ERROR, CRITICAL).
+            Required; every caller passes an explicit level derived from config or CLI.
+            The file handler always captures DEBUG regardless of this value.
         log_file: Optional path to log file for persistent logging
         enable_console: Whether to enable console output for real-time monitoring
     """
-    # Create root logger
+    # Root logger is ALWAYS DEBUG so DEBUG records reach the file handler (hardcoded DEBUG).
+    # The per-handler setLevel calls below enforce the console threshold; the root level
+    # must NOT gate DEBUG out before records reach the file handler (r5 finding #1).
     root_logger = logging.getLogger()
-    root_logger.setLevel(getattr(logging, level.upper()))
+    root_logger.setLevel(logging.DEBUG)
 
-    # Remove existing handlers to avoid duplicates
+    # Close existing handlers (release file descriptors on the double-configure path)
+    # before clearing them (r2 review F5). ``clear()`` alone drops the references and
+    # leaves the underlying FileHandler's FD held until GC; closing first releases it
+    # promptly. Records are NOT lost: the second configure re-opens the same path in
+    # append mode, so audit-trail continuity holds.
+    for handler in root_logger.handlers:
+        handler.close()
     root_logger.handlers.clear()
 
     # Create formatter

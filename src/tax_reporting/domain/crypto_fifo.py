@@ -103,3 +103,8 @@ class AssetFifoResult:
     realizations: list[CryptoFifoRealization]
     carryover_cost_by_tx_key: dict[str, Decimal]
     partial_carryover_tx_keys: frozenset[str] = field(default_factory=frozenset)
+    # Count of taxable disposals that had no matching acquisition at or before the
+    # disposal date (pool exhausted OR earliest available lot is after disposal).
+    # Pattern F: summed across all (asset, platform) results in
+    # ``_rebuild_fifo_for_loan_affected_assets`` to emit ONE aggregate WARNING.
+    unmatched_taxable_count: int = 0

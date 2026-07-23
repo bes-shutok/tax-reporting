@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
@@ -141,7 +142,7 @@ def test_cli_passes_example_args_to_main(mock_main):
         mock_main.assert_called_once_with(
             source_file=project_root / "resources/source/example/ib_export.csv",
             output_dir=project_root / "resources/result/example",
-            log_level="INFO",
+            log_level=None,
         )
 
 
@@ -153,7 +154,7 @@ def test_cli_passes_custom_paths_to_main(mock_main):
         mock_main.assert_called_once_with(
             source_file=Path("/custom/source.csv"),
             output_dir=Path("/custom/out"),
-            log_level="INFO",
+            log_level=None,
         )
 
 
@@ -167,6 +168,159 @@ def test_cli_passes_log_level_to_main(mock_main):
             output_dir=None,
             log_level="DEBUG",
         )
+
+
+@pytest.mark.unit
+class TestCliMain:
+    """Tests for main() / _main() boundary behavior."""
+
+    def _assert_console_handler_level(self, expected_level: int) -> None:
+        """Find the console StreamHandler on the root logger and assert its level."""
+        # ``logging.FileHandler`` is a subclass of ``logging.StreamHandler``, so a plain
+        # ``isinstance(h, StreamHandler)`` filter would also match the FileHandler
+        # that ``configure_application_logging`` attaches on the ``_main`` path
+        # (always, since ``_main`` passes ``log_file``). Filter to the console handler
+        # only by excluding FileHandler instances.
+        console_handlers = [
+            h
+            for h in logging.getLogger().handlers
+            if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+        ]
+        assert console_handlers, "Expected at least one console StreamHandler on the root logger"
+        assert console_handlers[0].level == expected_level, (
+            f"Console StreamHandler level is {console_handlers[0].level}; "
+            f"expected {expected_level} ({logging.getLevelName(expected_level)})"
+        )
+
+    def test_config_log_level_applied_to_console_handler(self, tmp_path, monkeypatch) -> None:
+        """Config-derived ``resolved_level`` is re-applied to the console handler.
+
+        Mutation-pins the re-configure-with-``resolved_level`` call at ``main.py:146``
+        (r2 review F1). On the happy path (config loads successfully), ``_main`` resolves
+        the level from ``app_config.log_level`` when no ``--log-level`` is passed, then
+        calls ``configure_application_logging(level=resolved_level, ...)`` so a user
+        setting ``LOG_LEVEL = ERROR`` in config.ini gets ERROR console output. Deleting
+        that re-configure call leaves this test RED: the console handler would stay at
+        ``DEFAULT_LOG_LEVEL`` (WARNING), not ERROR.
+
+        Asserts the FINAL handler state (not the call sequence), so it is robust to
+        whether the implementation uses a pre-config + re-configure or a single
+        conditional configure call. Patches downstream IB/FIFO/generate calls so
+        ``_main`` runs to completion.
+        """
+        from tax_reporting.domain.collections import IBExportData
+        from tax_reporting.domain.jurisdiction import TaxJurisdictionConfig
+        from tax_reporting.infrastructure.config import Config
+
+        # Build a Config whose log_level is ERROR (distinct from DEFAULT_LOG_LEVEL so a
+        # missing re-configure call cannot accidentally pass).
+        app_config = Config(
+            base="EUR",
+            rates=[],
+            tax_jurisdiction=TaxJurisdictionConfig(
+                country="PT",
+                fiscal_year=2025,
+                exclude_loan_repayment_gains=True,
+                zero_basis_review_threshold=Decimal("50"),
+            ),
+            log_level="ERROR",
+        )
+
+        source_file = tmp_path / "ib_export.csv"
+        source_file.write_text("header\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        # Snapshot root handlers so the test can restore them afterwards (the re-configure
+        # call installs a fresh StreamHandler/FileHandler pair on the root logger).
+        root = logging.getLogger()
+        original_level = root.level
+        original_handlers = list(root.handlers)
+        try:
+            with (
+                patch("tax_reporting.main.parse_ib_export_all", return_value=IBExportData({}, {})),
+                patch("tax_reporting.main.calculate_fifo_gains"),
+                patch("tax_reporting.main.export_rollover_file"),
+                patch("tax_reporting.main.generate_tax_report", return_value=False),
+                patch("tax_reporting.main.load_configuration_from_file", return_value=app_config),
+            ):
+                _main(source_file=source_file, output_dir=tmp_path, log_level=None)
+
+            # log_level=None -> resolved_level = app_config.log_level = "ERROR".
+            self._assert_console_handler_level(logging.ERROR)
+        finally:
+            for h in root.handlers:
+                h.close()
+            root.handlers.clear()
+            root.handlers.extend(original_handlers)
+            root.setLevel(original_level)
+
+    def test_cli_log_level_overrides_config_on_console_handler(self, tmp_path, monkeypatch) -> None:
+        """CLI ``--log-level`` wins over the config-derived level on the console handler.
+
+        Mutation-pins the CLI-override-wins branch of ``resolved_level`` (r2 review F1
+        variant 2): when ``log_level`` is passed explicitly, it must override
+        ``app_config.log_level``. Deleting the ``log_level if log_level is not None else ...``
+        branch (so resolved always falls to app_config) leaves this test RED: the handler
+        would be at ERROR (from config), not DEBUG (from CLI).
+        """
+        from tax_reporting.domain.collections import IBExportData
+        from tax_reporting.domain.jurisdiction import TaxJurisdictionConfig
+        from tax_reporting.infrastructure.config import Config
+
+        app_config = Config(
+            base="EUR",
+            rates=[],
+            tax_jurisdiction=TaxJurisdictionConfig(
+                country="PT",
+                fiscal_year=2025,
+                exclude_loan_repayment_gains=True,
+                zero_basis_review_threshold=Decimal("50"),
+            ),
+            log_level="ERROR",
+        )
+
+        source_file = tmp_path / "ib_export.csv"
+        source_file.write_text("header\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        root = logging.getLogger()
+        original_level = root.level
+        original_handlers = list(root.handlers)
+        try:
+            with (
+                patch("tax_reporting.main.parse_ib_export_all", return_value=IBExportData({}, {})),
+                patch("tax_reporting.main.calculate_fifo_gains"),
+                patch("tax_reporting.main.export_rollover_file"),
+                patch("tax_reporting.main.generate_tax_report", return_value=False),
+                patch("tax_reporting.main.load_configuration_from_file", return_value=app_config),
+            ):
+                # Explicit CLI log_level=DEBUG must override config's ERROR.
+                _main(source_file=source_file, output_dir=tmp_path, log_level="DEBUG")
+
+            self._assert_console_handler_level(logging.DEBUG)
+        finally:
+            for h in root.handlers:
+                h.close()
+            root.handlers.clear()
+            root.handlers.extend(original_handlers)
+            root.setLevel(original_level)
+
+    def test_invalid_log_level_surfaces_as_configuration_error(self, tmp_path, monkeypatch) -> None:
+        """A config.ini with LOG_LEVEL = VERBOSE raises ConfigurationError via main().
+
+        Proves the main.py except-(ValueError, KeyError, configparser.Error) wrapper converts
+        the ValueError raised inside config.py (per Design Invariant #6 / r1 finding #1) into
+        a ConfigurationError that propagates out of main().
+        """
+        from tax_reporting.domain.exceptions import ConfigurationError
+
+        (tmp_path / "config.ini").write_text(
+            "[COMMON]\nTARGET CURRENCY = EUR\nLOG_LEVEL = VERBOSE\n[EXCHANGE RATES]\nEUR/USD = 1.0\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(ConfigurationError, match="VERBOSE"):
+            _main(source_file=tmp_path / "ib_export.csv", output_dir=tmp_path)
 
 
 class TestMainWithMissingConfig:
@@ -204,6 +358,44 @@ class TestMainWithMissingConfig:
             "Configuration file not found" in record.message or "Config file not found" in record.message
             for record in caplog.records
         )
+
+    def test_main_file_not_found_configures_logging_and_warns_to_file(self, tmp_path, monkeypatch) -> None:
+        """On the FileNotFoundError path, _main() configures logging at DEFAULT_LOG_LEVEL
+        and the 'Config file not found' WARNING reaches the file audit trail.
+
+        Design Invariant 9(c) / r1 review F2: the not-found WARNING must not be lost to an
+        unconfigured root logger. Asserts the FINAL logging state (WARNING reaches the file)
+        rather than the exact call sequence, so it is robust to the pre-config-vs-branch-call
+        implementation approach. Patches the downstream IB/FIFO block so _main() runs to
+        completion on the FileNotFoundError path.
+        """
+        from tax_reporting.domain.collections import IBExportData
+        from tax_reporting.infrastructure.config import DEFAULT_LOG_LEVEL
+
+        source_file = tmp_path / "ib_export.csv"
+        source_file.write_text("header\n", encoding="utf-8")
+        # _main() hardcodes log_file = Path("logs", "tax-reporting.log") relative to cwd,
+        # so chdir into tmp_path to land the audit file there for inspection.
+        monkeypatch.chdir(tmp_path)
+        log_file = tmp_path / "logs" / "tax-reporting.log"
+
+        with (
+            patch("tax_reporting.main.parse_ib_export_all", return_value=IBExportData({}, {})),
+            patch("tax_reporting.main.calculate_fifo_gains"),
+            patch("tax_reporting.main.export_rollover_file"),
+            patch("tax_reporting.main.generate_tax_report", return_value=False),
+            patch("tax_reporting.main.load_configuration_from_file", side_effect=FileNotFoundError("no config")),
+        ):
+            _main(source_file=source_file, output_dir=tmp_path)
+
+        # The WARNING is emitted by _main() on the FileNotFoundError path and must reach
+        # the file audit trail. A regression that reorders logging configuration after the
+        # warning, or drops the pre-config safety-net call, leaves this assertion failing.
+        log_text = log_file.read_text(encoding="utf-8")
+        assert "Config file not found" in log_text
+        # Sanity: DEFAULT_LOG_LEVEL is the level used on this failure path (asserted to be a
+        # valid level name, not a bare literal in the wiring).
+        assert DEFAULT_LOG_LEVEL in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
 
 def test_main_raises_configuration_error_for_missing_decision_points(tmp_path):

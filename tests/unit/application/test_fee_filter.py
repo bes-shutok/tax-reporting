@@ -955,7 +955,15 @@ class TestSuspects:
     ) -> None:
         """Untagged RUNE (not a dict key) with Net Value 0.3 (<= max 1.0) -> retained,
         flagged review_required=True, CryptoReviewEntry(source_section=capital_gains)
-        appended, and a WARNING logged."""
+        appended.
+
+        Per-row detail is captured at DEBUG (pattern D conversion: the in-loop
+        emission was downgraded to ``logger.debug``); exactly one aggregate WARNING
+        summary ("Surfaced N suspect untagged network fees") is emitted. The
+        aggregate uses distinct "Surfaced" wording that must NOT collide with the
+        per-row "Possible untagged fee for unlisted asset" substring (see the
+        negative assertion in ``test_retains_untagged_non_whitelist_withdrawals``).
+        """
         th = tmp_path / "th.csv"
         _write_th_csv(
             th,
@@ -976,7 +984,8 @@ class TestSuspects:
         )
 
         review_entries: list[CryptoReviewEntry] = []
-        with caplog.at_level(logging.WARNING, logger=_FEE_LOGGER):
+        # caplog at DEBUG so the downgraded per-row detail is captured.
+        with caplog.at_level(logging.DEBUG, logger=_FEE_LOGGER):
             remaining, suspects = remove_transaction_fees(
                 capital_entries=[lot],
                 transaction_history_file=th,
@@ -997,11 +1006,27 @@ class TestSuspects:
         assert len(review_entries) == 1
         assert review_entries[0].source_section == "capital_gains"
         assert review_entries[0].asset == "RUNE"
-        # WARNING logged naming the asset + Net Value.
-        assert any(
-            "Possible untagged fee for unlisted asset RUNE" in r.getMessage()
-            and "0.3" in r.getMessage()
+        # Per-row detail is preserved at DEBUG (pattern D Design Invariant 3).
+        per_row_records = [
+            r
             for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and "Possible untagged fee for unlisted asset RUNE" in r.getMessage()
+            and "0.3" in r.getMessage()
+        ]
+        assert len(per_row_records) == 1, (
+            "per-row DEBUG detail for RUNE suspect must be captured exactly once"
+        )
+        # Exactly one aggregate WARNING summary using the distinct "Surfaced" wording.
+        summary_records = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+            and "Surfaced" in r.getMessage()
+            and "suspect untagged network fees" in r.getMessage()
+        ]
+        assert len(summary_records) == 1, (
+            "exactly one aggregate WARNING summary for suspect untagged network fees"
         )
 
     def test_warns_on_unlisted_suspected_fee_at_exact_max(

@@ -67,16 +67,33 @@ def compute_fifo_for_asset(
     realizations: list[CryptoFifoRealization] = []
     carryover_cost_by_tx_key: dict[str, Decimal] = {}
     partial_tx_keys: set[str] = set()
+    # Single-cell mutable counter accumulated across consumption events; the value
+    # is the number of taxable disposals that had no matching acquisition at or
+    # before the disposal date (pattern F). Threaded into ``_consume_against_pool_inplace``
+    # alongside the other mutable accumulators (``carryover_cost_by_tx_key``, ``partial_tx_keys``).
+    unmatched_taxable_counter: list[int] = [0]
 
     for con in sorted_cons:
         realizations.extend(
-            _consume_against_pool_inplace(con, pool, asset, platform, carryover_cost_by_tx_key, partial_tx_keys)
+            _consume_against_pool_inplace(
+                con, pool, asset, platform, carryover_cost_by_tx_key, partial_tx_keys, unmatched_taxable_counter
+            )
+        )
+
+    if partial_tx_keys:
+        logger.warning(
+            "FIFO pool exhausted for %d non-taxable %s consumption(s) on %s; "
+            "carry-over cost understated; see DEBUG log for per-row detail",
+            len(partial_tx_keys),
+            asset,
+            platform,
         )
 
     return AssetFifoResult(
         realizations=realizations,
         carryover_cost_by_tx_key=carryover_cost_by_tx_key,
         partial_carryover_tx_keys=frozenset(partial_tx_keys),
+        unmatched_taxable_count=unmatched_taxable_counter[0],
     )
 
 
@@ -200,13 +217,19 @@ def _consume_against_pool_inplace(  # noqa: PLR0912, PLR0913, PLR0915
     platform: str,
     carryover_cost_by_tx_key: dict[str, Decimal],
     partial_tx_keys: set[str],
+    unmatched_taxable_counter: list[int] | None = None,
 ) -> list[CryptoFifoRealization]:
     """Consume a single disposal event against the FIFO pool, mutating pool and accumulators.
 
     Mutates ``pool`` (lots consumed in FIFO order), ``carryover_cost_by_tx_key`` (records
-    deferred cost for non-taxable events), and ``partial_tx_keys`` (marks transactions
-    with incomplete carryover). Taxable lot matches are delegated to
-    ``_build_taxable_realization``.
+    deferred cost for non-taxable events), ``partial_tx_keys`` (marks transactions
+    with incomplete carryover), and ``unmatched_taxable_counter`` (increments by one for
+    each taxable disposal that had no matching acquisition at or before the disposal date,
+    pattern F). Taxable lot matches are delegated to ``_build_taxable_realization``.
+
+    ``unmatched_taxable_counter`` is a single-cell mutable list (``[int]``) following the
+    existing mutable-accumulator convention (``carryover_cost_by_tx_key``, ``partial_tx_keys``);
+    ``None`` is tolerated for direct callers that do not need the count.
 
     Returns the realizations generated for this consumption event.
     """
@@ -260,24 +283,36 @@ def _consume_against_pool_inplace(  # noqa: PLR0912, PLR0913, PLR0915
         if con.con.taxable:
             pool_truly_exhausted = not pool
             if pool_truly_exhausted:
-                fifo_warning = (
-                    "FIFO pool exhausted for %s on %s: %.8f units with no matching acquisition"
+                # Pattern F (pool-exhausted sub-branch): per-row emission is DEBUG;
+                # the audit signal is preserved via the placeholder realization's
+                # review_reason + ONE aggregate WARNING emitted by
+                # _rebuild_fifo_for_loan_affected_assets (sums unmatched_taxable_count).
+                logger.debug(
+                    "FIFO pool exhausted for %s on %s: %.8f units with no matching acquisition",
+                    asset,
+                    con.con.date,
+                    remaining,
                 )
                 review_reason = (
                     f"FIFO pool exhausted: {remaining.normalize()} {asset} disposed with zero cost basis"
                 )
             else:
                 earliest_future = pool[0][0].acq.date
-                fifo_warning = (
+                # Pattern F (no-acquisition-at-date sub-branch): per-row emission is DEBUG.
+                logger.debug(
                     "No acquisition available at or before disposal date for %s on %s: "
-                    "%.8f units unmatched; earliest available lot is after the disposal date"
+                    "%.8f units unmatched; earliest available lot is after the disposal date",
+                    asset,
+                    con.con.date,
+                    remaining,
                 )
                 review_reason = (
                     f"No acquisition available at or before disposal date {con.con.date}: "
                     f"{remaining.normalize()} {asset} unmatched; "
                     f"earliest available lot is {earliest_future}"
                 )
-            logger.warning(fifo_warning, asset, con.con.date, remaining)
+            if unmatched_taxable_counter is not None:
+                unmatched_taxable_counter[0] += 1
             realizations.append(
                 CryptoFifoRealization(
                     disposal_date=con.con.date,
@@ -297,7 +332,7 @@ def _consume_against_pool_inplace(  # noqa: PLR0912, PLR0913, PLR0915
                 )
             )
         else:
-            logger.warning(
+            logger.debug(
                 "FIFO pool exhausted for non-taxable %s consumption on %s: "
                 "%.8f units unmatched; carry-over cost will be understated",
                 asset,

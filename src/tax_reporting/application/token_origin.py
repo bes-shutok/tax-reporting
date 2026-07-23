@@ -11,6 +11,7 @@ Domain types (``AcquisitionMethod``, ``TokenOrigin``) live in
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -93,6 +94,12 @@ class TokenOriginResolver:
         self._withdrawal_by_txhash: dict[str, list[_WithdrawalRecord]] = {}
         self._treatment_by_row_index: dict[int, Treatment] = {}
         self._skipped_no_treatment = 0
+        # Pattern B: instance-state disagreement Counter accumulated by ``resolve()``
+        # when records disagree and flushed by callers via
+        # ``log_and_reset_disagreements(scope)``. The shared resolver instance is
+        # mutated from BOTH call sites (CG parse runs first, then FIFO rebuild;
+        # see Design Invariant #10); each caller flushes after its loop.
+        self._disagreements: Counter[tuple[str, str, str]] = Counter()
         if transactions is None or config is None:
             raise ValueError(
                 "TokenOriginResolver requires both `transactions` and `config`"
@@ -431,12 +438,17 @@ class TokenOriginResolver:
                             acquisition_method=best.method,
                             confidence=confidence,
                         )
-                    logger.warning(
+                    # Pattern B: downgrade per-row WARNING to DEBUG and accumulate the
+                    # disagreement key into the resolver Counter; the caller flushes
+                    # ONE aggregate WARNING via ``log_and_reset_disagreements(scope)``
+                    # after its loop (Design Invariant #3/#5/#10).
+                    logger.debug(
                         "Origin records disagree for %s at %s on %s; returning unknown",
                         asset,
                         wallet,
                         acquisition_date,
                     )
+                    self._disagreements[(asset, normalized_wallet, acquisition_date)] += 1
                     return TokenOrigin.unknown()
 
         if "missing cost basis" in notes.lower():
@@ -448,3 +460,32 @@ class TokenOriginResolver:
             acquisition_method=best.method,
             confidence=confidence,
         )
+
+    def log_and_reset_disagreements(self, scope: str) -> None:
+        """Emit ONE aggregate WARNING summarizing accumulated origin disagreements, then clear.
+
+        The shared ``TokenOriginResolver`` instance is mutated by ``resolve()``
+        from BOTH caller loops (``_parse_capital_gains_file`` runs first, then
+        ``_rebuild_fifo_for_loan_affected_assets``); each caller invokes this
+        method after its loop with a distinct ``scope`` label so the aggregate
+        WARNING identifies which stage produced the disagreements.
+
+        Emit happens BEFORE clear (Design Invariant #10): a logging-handling
+        failure cannot lose the accumulated state. The clear is unconditional
+        on both the empty and non-empty paths (defensive: an unflushed non-empty
+        Counter is a bug, so we always reset).
+
+        Args:
+            scope: Caller label interpolated into the aggregate WARNING message
+                (e.g. ``"capital gains parse"`` or ``"FIFO rebuild"``).
+        """
+        logger = logging.getLogger(__name__)
+        if self._disagreements:
+            logger.warning(
+                "TokenOriginResolver (%s): %d origin-resolution disagreement(s) across %d distinct "
+                "(asset, wallet, date) keys; returning unknown; see DEBUG log for details",
+                scope,
+                sum(self._disagreements.values()),
+                len(self._disagreements),
+            )
+        self._disagreements.clear()

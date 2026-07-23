@@ -684,11 +684,10 @@ class TestFifoHoldingPeriodLongTerm:
 
 
 class TestFifoPlaceholderWhenPoolExhausted:
-    def test_zero_cost_placeholder_with_review(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_zero_cost_placeholder_with_review(self) -> None:
         acquisitions = []
         consumptions = [_con(amount="1", proceeds_eur="200")]
-        with caplog.at_level(logging.WARNING):
-            result = compute_fifo_for_asset(acquisitions, consumptions, asset="WBTC", platform="Kraken")
+        result = compute_fifo_for_asset(acquisitions, consumptions, asset="WBTC", platform="Kraken")
 
         assert len(result.realizations) == 1
         r = result.realizations[0]
@@ -698,27 +697,30 @@ class TestFifoPlaceholderWhenPoolExhausted:
         assert r.review_required is True
         assert r.review_reason is not None
         assert "pool exhausted" in r.review_reason.lower()
-        assert any("pool exhausted" in rec.message.lower() for rec in caplog.records)
+        # The per-row WARNING was downgraded to DEBUG (pattern F) and grouped into
+        # one aggregate WARNING emitted by _rebuild_fifo_for_loan_affected_assets;
+        # calling compute_fifo_for_asset directly bypasses that aggregate. The
+        # review_reason field assertion above is the substantive audit check
+        # (Design Invariant #4). The aggregate WARNING is covered by TestFifoMatching.
 
 
 class TestFifoPartialSellPoolExhausted:
     """FIFO pool is exhausted mid-sell: matched portion uses real cost, remainder uses placeholder."""
 
-    def test_buy_5_sell_8_produces_two_realizations_and_warning(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_buy_5_sell_8_produces_two_realizations_and_warning(self) -> None:
         """Buy 5 units at EUR 100 each (EUR 500 total), then sell 8 units for EUR 200 total.
 
         Expected: two realizations:
           1. Matched portion (5 units): cost = 500, proceeds = 125, gain = −375
           2. Placeholder portion (3 units, pool exhausted): cost = 0, proceeds = 75, gain = 75
-        Both must appear in the output. A warning must be logged for pool exhaustion.
+        Both must appear in the output. The per-row pool-exhaustion warning was
+        downgraded to DEBUG and grouped into one aggregate WARNING (pattern F);
+        the review_reason field assertion below is the substantive audit check.
         """
         acquisitions = [_acq(amount="5", cost_basis_eur="100")]  # cost_basis_eur is total (EUR 100)
         consumptions = [_con(amount="8", proceeds_eur="200")]
 
-        with caplog.at_level(logging.WARNING):
-            result = compute_fifo_for_asset(acquisitions, consumptions, asset="WBTC", platform="Kraken")
+        result = compute_fifo_for_asset(acquisitions, consumptions, asset="WBTC", platform="Kraken")
 
         assert len(result.realizations) == 2, (
             f"Expected 2 realizations (matched + placeholder), got {len(result.realizations)}"
@@ -744,8 +746,6 @@ class TestFifoPartialSellPoolExhausted:
         assert placeholder.review_required is True
         assert placeholder.review_reason is not None
         assert "pool exhausted" in placeholder.review_reason.lower()
-
-        assert any("pool exhausted" in rec.message.lower() for rec in caplog.records)
 
 
 
@@ -1603,6 +1603,191 @@ class TestBuildCompositeTxKey:
         assert key_1 != key_2
 
 
+class TestCryptoFifoParsing:
+    """Duplicate tx_key warning grouping (Plan 2026-07-21 Task 4 / Pattern C).
+
+    The per-row WARNINGs in ``_dedup_by_tx_key`` (``parsing.py:303`` acquisitions
+    and ``:324`` consumptions) are downgraded to DEBUG and grouped into ONE
+    aggregate WARNING summary at the end of ``_dedup_by_tx_key``. Design
+    Invariant #3 (per-row detail preserved at DEBUG in the file) and #4
+    (``parse_failures_by_asset`` content unchanged) must hold.
+    """
+
+    def test_duplicate_tx_key_emits_single_summary(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        """Three acquisition rows sharing the same tx_key/source_type emit ONE aggregate WARNING + 3 DEBUG.
+
+        Given 3 buy rows for WBTC all sharing TxHash ``"dup_acq"`` (same
+        source_type ``"buy"``), ``_dedup_by_tx_key`` keeps the first and drops
+        the next two. The per-row drop emissions must be at DEBUG (3 records);
+        exactly ONE aggregate WARNING matching
+        ``"Dropped %d duplicate-tx_key acquisition(s) and %d consumption(s)"``
+        must be emitted. ``parse_failures_by_asset`` still records BOTH dropped
+        row indices for WBTC (Design Invariant #4 unchanged).
+        """
+        # 3 buy rows for WBTC all sharing TxHash "dup_acq"; rows 2 and 3 are dropped.
+        dup_buy = (
+            '2025-01-15 10:00:00 UTC,buy,"","","","","",'
+            'Kraken,"0,00200000",WBTC,"120,00",,,,"120,00",,,dup_acq,""""'
+        )
+        rows = [dup_buy, dup_buy, dup_buy]
+        path = _write_th_csv(tmp_path, rows)
+
+        with caplog.at_level(logging.DEBUG, logger="tax_reporting.application.crypto_fifo"):
+            _, _, _, parse_failures = parse_th_for_loan_affected_assets(
+                path, loan_affected_assets=_WBTC_SUI_LBTC,
+            )
+
+        # Design Invariant #4: parse_failures_by_asset still records both dropped rows.
+        assert "WBTC" in parse_failures, (
+            f"WBTC must still appear in parse_failures_by_asset; got {parse_failures}"
+        )
+        # 3 identical rows -> first kept, rows 2 and 3 dropped; both row indices recorded.
+        assert sorted(parse_failures["WBTC"]) == [2, 3], (
+            f"Expected both dropped row indices [2, 3]; got {parse_failures['WBTC']}"
+        )
+
+        # The parsing module's logger name is the fully-qualified module path.
+        parsing_logger = "tax_reporting.application.crypto_fifo.parsing"
+        warning_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING and rec.name == parsing_logger
+        ]
+
+        # Exactly ONE aggregate WARNING matching the prescribed summary substring.
+        aggregate_warnings = [
+            m for m in warning_messages
+            if "Dropped" in m and "duplicate-tx_key acquisition(s)" in m and "consumption(s)" in m
+        ]
+        assert len(aggregate_warnings) == 1, (
+            f"Expected exactly ONE aggregate duplicate-tx_key WARNING, got {aggregate_warnings}"
+        )
+        # The summary names the count of dropped acquisitions (2).
+        assert "Dropped 2 duplicate-tx_key acquisition(s)" in aggregate_warnings[0]
+        # And zero consumptions (only acquisitions duplicated in this fixture).
+        assert "0 consumption(s)" in aggregate_warnings[0]
+
+        # The legacy per-row WARNING substrings must NOT appear at WARNING level.
+        legacy_warnings = [m for m in warning_messages if "Duplicate tx_key" in m]
+        assert legacy_warnings == [], (
+            f"Per-row duplicate-tx_key WARNING must be downgraded to DEBUG, got {legacy_warnings}"
+        )
+
+        # Design Invariant #3: per-row detail preserved at DEBUG (2 dropped acquisition records).
+        debug_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.DEBUG and rec.name == parsing_logger
+        ]
+        per_row_debug = [m for m in debug_messages if "Duplicate tx_key" in m]
+        assert len(per_row_debug) == 2, (
+            f"Expected 2 per-row DEBUG records for dropped duplicate acquisitions, got {per_row_debug}"
+        )
+
+    def test_zero_net_value_deposit_summary(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        """Three zero-Net-Value crypto_deposit rows across 2 assets emit ONE aggregate WARNING + 3 DEBUG.
+
+        Plan 2026-07-21 Task 8 / Pattern E: the per-row WARNING in
+        ``_classify_deposit_row`` (``parsing.py`` zero Net Value branch) is
+        downgraded to DEBUG and grouped into ONE aggregate WARNING summary
+        emitted at the end of ``_classify_rows_for_loan_affected_assets``.
+        Design Invariant #3 (per-row detail preserved at DEBUG in the file) and
+        #4 (the ``deposit_review_reason`` field on the acquisition is UNCHANGED)
+        must hold.
+
+        Given 3 crypto_deposit rows with zero Net Value (2 WBTC + 1 SUI), the
+        per-row emissions must be at DEBUG (3 records); exactly ONE aggregate
+        WARNING matching ``"Flagged %d zero-Net-Value crypto_deposit(s) for
+        review"`` must be emitted.
+        """
+        # crypto_deposit row template with zero Net Value (EUR) at field index 14.
+        # Field layout: Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,
+        # Sent Cost Basis,Receiving Wallet,Received Amount,Received Currency,
+        # Received Cost Basis,Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),
+        # Fee Value (EUR),TxSrc,TxDest,TxHash,Description
+        zero_net_wbtc_a = (
+            '2025-03-15 10:00:00 UTC,crypto_deposit,"",Kraken,0,,,'
+            'Kraken Main,"0,5",WBTC,0,0,,0,0,0,src,dst,dep_wbtc_a,""""'
+        )
+        zero_net_wbtc_b = (
+            '2025-03-16 10:00:00 UTC,crypto_deposit,"",Kraken,0,,,'
+            'Kraken Main,"0,25",WBTC,0,0,,0,0,0,src,dst,dep_wbtc_b,""""'
+        )
+        zero_net_sui = (
+            '2025-03-17 10:00:00 UTC,crypto_deposit,"",Kraken,0,,,'
+            'Kraken Main,"100",SUI,0,0,,0,0,0,src,dst,dep_sui,""""'
+        )
+        rows = [zero_net_wbtc_a, zero_net_wbtc_b, zero_net_sui]
+        path = _write_th_csv(tmp_path, rows)
+
+        with caplog.at_level(logging.DEBUG, logger="tax_reporting.application.crypto_fifo"):
+            acquisitions, _, _, _ = parse_th_for_loan_affected_assets(
+                path, loan_affected_assets=_WBTC_SUI_LBTC,
+            )
+
+        # Design Invariant #4: the deposit_review_reason field on each acquisition
+        # is UNCHANGED - all 3 acquisitions still carry review_required and the
+        # "zero Net Value" review_reason string.
+        assert "WBTC" in acquisitions and len(acquisitions["WBTC"]) == 2, (
+            f"Expected 2 WBTC zero-Net-Value acquisitions, got {acquisitions.get('WBTC')}"
+        )
+        assert "SUI" in acquisitions and len(acquisitions["SUI"]) == 1, (
+            f"Expected 1 SUI zero-Net-Value acquisition, got {acquisitions.get('SUI')}"
+        )
+        for acq in acquisitions["WBTC"] + acquisitions["SUI"]:
+            assert acq.acq.review_required, (
+                f"deposit_review_required must remain True (Invariant #4); got {acq}"
+            )
+            assert acq.acq.review_reason is not None and "zero Net Value" in acq.acq.review_reason, (
+                f"deposit_review_reason must retain 'zero Net Value' (Invariant #4); got {acq}"
+            )
+
+        # The parsing module's logger name is the fully-qualified module path.
+        parsing_logger = "tax_reporting.application.crypto_fifo.parsing"
+        warning_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING and rec.name == parsing_logger
+        ]
+
+        # Exactly ONE aggregate WARNING matching the prescribed summary substring.
+        aggregate_warnings = [
+            m for m in warning_messages
+            if "Flagged" in m and "zero-Net-Value crypto_deposit(s) for review" in m
+        ]
+        assert len(aggregate_warnings) == 1, (
+            f"Expected exactly ONE aggregate zero-Net-Value WARNING, got {aggregate_warnings}"
+        )
+        # The summary names the total count of flagged deposits (3 across WBTC+SUI).
+        assert "Flagged 3 zero-Net-Value crypto_deposit(s) for review" in aggregate_warnings[0], (
+            f"Aggregate WARNING must name 3 flagged deposits; got {aggregate_warnings[0]}"
+        )
+        # The summary names the per-asset breakdown (SUI: 1, WBTC: 2 sorted alphabetically).
+        assert "SUI: 1" in aggregate_warnings[0], (
+            f"Aggregate WARNING must name SUI: 1; got {aggregate_warnings[0]}"
+        )
+        assert "WBTC: 2" in aggregate_warnings[0], (
+            f"Aggregate WARNING must name WBTC: 2; got {aggregate_warnings[0]}"
+        )
+
+        # The legacy per-row WARNING substrings must NOT appear at WARNING level.
+        legacy_warnings = [m for m in warning_messages if "zero Net Value" in m and "cost basis may be missing" in m]
+        assert legacy_warnings == [], (
+            f"Per-row zero-Net-Value WARNING must be downgraded to DEBUG, got {legacy_warnings}"
+        )
+
+        # Design Invariant #3: per-row detail preserved at DEBUG (3 records).
+        debug_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.DEBUG and rec.name == parsing_logger
+        ]
+        per_row_debug = [m for m in debug_messages if "zero Net Value" in m and "cost basis may be missing" in m]
+        assert len(per_row_debug) == 3, (
+            f"Expected 3 per-row DEBUG records for zero-Net-Value deposits, got {per_row_debug}"
+        )
+
+
 class TestParseThParseFail:
     """Tests for parse-error tracking in parse_th_for_loan_affected_assets."""
 
@@ -2098,8 +2283,16 @@ class TestConsumeAgainstPoolInplace:
         _, rem = pool[0]
         assert rem == Decimal("3")
 
-    def test_empty_pool_produces_placeholder_realization(self, caplog) -> None:
-        """Taxable consumption with empty pool yields a zero-cost placeholder flagged for review."""
+    def test_empty_pool_produces_placeholder_realization(self) -> None:
+        """Taxable consumption with empty pool yields a zero-cost placeholder flagged for review.
+
+        The per-row pool-exhaustion warning was downgraded to DEBUG and grouped into
+        one aggregate WARNING emitted by ``_rebuild_fifo_for_loan_affected_assets``
+        (pattern F); calling ``_consume_against_pool_inplace`` directly bypasses that
+        aggregate. The placeholder realization assertions below (zero cost,
+        review_required, populated review_reason) are the substantive audit checks
+        (Design Invariant #4).
+        """
         from tax_reporting.application.crypto_fifo.matching import _consume_against_pool_inplace
 
         con = _con(amount="1", proceeds_eur="200")
@@ -2107,8 +2300,7 @@ class TestConsumeAgainstPoolInplace:
         carryover: dict = {}
         partial: set = set()
 
-        with caplog.at_level(logging.WARNING):
-            result = _consume_against_pool_inplace(con, pool, "WBTC", "Kraken", carryover, partial)
+        result = _consume_against_pool_inplace(con, pool, "WBTC", "Kraken", carryover, partial)
 
         assert len(result) == 1
         placeholder = result[0]
@@ -2117,10 +2309,15 @@ class TestConsumeAgainstPoolInplace:
         assert placeholder.gain_loss_eur == Decimal("200")
         assert placeholder.review_required
         assert placeholder.review_reason is not None
-        assert any("exhausted" in r.message.lower() for r in caplog.records)
 
-    def test_partial_lot_match_buy5_sell8(self, caplog) -> None:
-        """Sell 8 when pool has only 5: 5-lot realization + 3-lot zero-cost placeholder, both in output."""
+    def test_partial_lot_match_buy5_sell8(self) -> None:
+        """Sell 8 when pool has only 5: 5-lot realization + 3-lot zero-cost placeholder, both in output.
+
+        The per-row pool-exhaustion warning was downgraded to DEBUG and grouped into
+        one aggregate WARNING (pattern F); calling ``_consume_against_pool_inplace``
+        directly bypasses that aggregate. The matched/placeholder realization
+        assertions below are the substantive checks (Design Invariant #4).
+        """
         from tax_reporting.application.crypto_fifo.matching import _consume_against_pool_inplace
 
         # Buy 5 tokens at total cost 100 EUR
@@ -2131,8 +2328,7 @@ class TestConsumeAgainstPoolInplace:
         carryover: dict = {}
         partial: set = set()
 
-        with caplog.at_level(logging.WARNING):
-            result = _consume_against_pool_inplace(con, pool, "BTC", "Kraken", carryover, partial)
+        result = _consume_against_pool_inplace(con, pool, "BTC", "Kraken", carryover, partial)
 
         # Expect two realizations: one for the matched 5-lot, one placeholder for the remaining 3-lot
         assert len(result) == 2, f"Expected 2 realizations (matched + placeholder), got {len(result)}"
@@ -2157,11 +2353,6 @@ class TestConsumeAgainstPoolInplace:
         assert placeholder.review_required
         assert placeholder.review_reason is not None
 
-        # Warning must have been logged for the pool exhaustion
-        assert any("exhausted" in r.message.lower() for r in caplog.records), (
-            "Expected a warning about pool exhaustion for the partially-unmatched sell"
-        )
-
     def test_non_taxable_updates_carryover_not_realizations(self) -> None:
         """Non-taxable consumption records cost in carryover dict and produces no realization."""
         from tax_reporting.application.crypto_fifo.matching import _consume_against_pool_inplace
@@ -2178,8 +2369,18 @@ class TestConsumeAgainstPoolInplace:
         assert carryover["tx_t"] == Decimal("210")  # 200 cost + 10 fee
         assert len(pool) == 0
 
-    def test_non_taxable_pool_exhausted_marks_partial_tx_key(self, caplog) -> None:
-        """Non-taxable consumption that exhausts the pool marks the tx_key as partial."""
+    def test_non_taxable_pool_exhausted_marks_partial_tx_key(self) -> None:
+        """Non-taxable consumption that exhausts the pool marks the tx_key as partial.
+
+        The per-row emission was downgraded to DEBUG (pattern G) and grouped into a
+        per-asset aggregate WARNING emitted by ``compute_fifo_for_asset``. Calling
+        ``_consume_against_pool_inplace`` directly bypasses that aggregate, so the
+        only substantive assertion left here is the ``partial_tx_keys`` membership
+        check (Design Invariant #4: the audit signal is preserved via the review
+        list flag, not the per-row log line). See the companion
+        ``test_non_taxable_pool_exhausted_emits_aggregate_via_compute_fifo`` for the
+        aggregate WARNING assertion through the public entry point.
+        """
         from tax_reporting.application.crypto_fifo.matching import _consume_against_pool_inplace
 
         acq = _acq(amount="1", cost_basis_eur="100")
@@ -2188,13 +2389,62 @@ class TestConsumeAgainstPoolInplace:
         carryover: dict = {}
         partial: set = set()
 
-        with caplog.at_level(logging.WARNING):
-            result = _consume_against_pool_inplace(con, pool, "WBTC", "Kraken", carryover, partial)
+        result = _consume_against_pool_inplace(con, pool, "WBTC", "Kraken", carryover, partial)
 
         assert result == []
         assert "tx_partial" in partial
         assert "tx_partial" in carryover
-        assert any("understated" in r.message.lower() or "exhausted" in r.message.lower() for r in caplog.records)
+
+    def test_non_taxable_pool_exhausted_emits_aggregate_via_compute_fifo(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Non-taxable consumption that exhausts the pool emits ONE aggregate WARNING
+        via ``compute_fifo_for_asset`` plus ONE DEBUG per-row emission (pattern G).
+
+        Per-row emission was downgraded from WARNING to DEBUG; the per-asset summary
+        at WARNING preserves the audit signal on the console (Design Invariant #3
+        and #4).
+        """
+        acquisitions = [_acq(amount="1", cost_basis_eur="100")]
+        consumptions = [
+            _con(amount="3", proceeds_eur="0", taxable=False, event_type="transfer_out", tx_key="tx_partial"),
+        ]
+
+        with caplog.at_level(logging.DEBUG):
+            result = compute_fifo_for_asset(
+                acquisitions, consumptions, asset="WBTC", platform="Kraken"
+            )
+
+        # Substantive data-flow assertions (Design Invariant #4: Excel review signal preserved)
+        assert result.realizations == []
+        assert "tx_partial" in result.partial_carryover_tx_keys
+        assert "tx_partial" in result.carryover_cost_by_tx_key
+
+        # Exactly ONE aggregate WARNING naming the count, asset, platform
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+            and "FIFO pool exhausted for 1 non-taxable WBTC consumption(s) on Kraken" in r.getMessage()
+        ]
+        assert len(warnings) == 1, (
+            f"Expected exactly one aggregate WARNING, got {len(warnings)}: "
+            f"{[r.getMessage() for r in warnings]}"
+        )
+
+        # Exactly ONE per-row DEBUG emission (caplog at DEBUG captures it)
+        debugs = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and (
+                "understated" in r.getMessage().lower() or "exhausted" in r.getMessage().lower()
+            )
+        ]
+        assert len(debugs) == 1, (
+            f"Expected exactly one per-row DEBUG emission, got {len(debugs)}: "
+            f"{[r.getMessage() for r in debugs]}"
+        )
 
     def test_negative_consumption_amount_returns_empty(self, caplog) -> None:
         from tax_reporting.application.crypto_fifo.matching import _consume_against_pool_inplace
@@ -2211,6 +2461,382 @@ class TestConsumeAgainstPoolInplace:
         assert result == []
         assert len(pool) == 1
         assert any("negative" in r.message.lower() for r in caplog.records)
+
+
+class TestFifoMatching:
+    """Taxable no-acquisition / pool-exhausted warning grouping (Plan 2026-07-21 Task 7 / Pattern F).
+
+    The shared ``logger.warning(fifo_warning, ...)`` emission in
+    ``_consume_against_pool_inplace`` is reached by TWO taxable sub-branches
+    (pool-truly-exhausted AND no-acquisition-at-date). Pattern F covers both:
+    the shared emission is split into two independent ``logger.debug(...)`` calls
+    (one per branch), and the audit signal is preserved via ONE aggregate WARNING
+    emitted by ``_rebuild_fifo_for_loan_affected_assets`` plus the unchanged
+    ``CryptoFifoRealization(review_required=True)`` + ``review_reason`` field.
+    """
+
+    def test_no_acquisition_summary_aggregates_across_platforms(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Two (asset, platform) pairs each producing 1 unmatched taxable disposal
+        emit ONE aggregate WARNING plus 2 per-row DEBUG records.
+
+        Given WBTC sold on Kraken with no acquisition and SUI sold on ByBit with
+        no acquisition, ``_rebuild_fifo_for_loan_affected_assets`` sums the
+        per-result ``unmatched_taxable_count`` and emits exactly ONE WARNING
+        matching ``"%d taxable disposal(s) had no acquisition at or before the
+        disposal date"``. Each per-row detail emission is at DEBUG (2 records,
+        one per branch). Each ``CryptoFifoRealization(review_required=True)``
+        still carries its ``review_reason`` (Design Invariant #4 unchanged).
+        """
+        from tax_reporting.application.crypto.fifo_helpers import _rebuild_fifo_for_loan_affected_assets
+        from tax_reporting.application.crypto.treatment_resolver import TreatmentConfig
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        # WBTC loan row (Kraken): triggers WBTC discovery without seeding the pool.
+        wbtc_loan = ",".join([
+            "2025-01-01 09:00:00 UTC", "exchange", "loan", "", "", "", "",
+            "Kraken", "0.01", "WBTC", "400", "", "", "", "400", "", "", "", "tx_wbtc_loan", "",
+        ])
+        # SUI loan row (ByBit): triggers SUI discovery without seeding the pool.
+        sui_loan = ",".join([
+            "2025-01-01 09:00:00 UTC", "exchange", "loan", "", "", "", "",
+            "ByBit", "0.01", "SUI", "400", "", "", "", "400", "", "", "", "tx_sui_loan", "",
+        ])
+        # Sell 1 WBTC on Kraken with NO prior WBTC acquisition -> pool-truly-exhausted branch.
+        wbtc_sell = ",".join([
+            "2025-06-15 10:00:00 UTC", "sell", "", "Kraken", "1.0", "WBTC", "",
+            "", "", "", "", "", "", "", "1500", "", "", "", "tx_wbtc_sell", "",
+        ])
+        # Sell 1 SUI on ByBit with NO prior SUI acquisition -> pool-truly-exhausted branch.
+        sui_sell = ",".join([
+            "2025-06-15 10:00:00 UTC", "sell", "", "ByBit", "1.0", "SUI", "",
+            "", "", "", "", "", "", "", "1500", "", "", "", "tx_sui_sell", "",
+        ])
+
+        rows = [wbtc_loan, sui_loan, wbtc_sell, sui_sell]
+        th_path = _write_th_csv(tmp_path, rows)
+        loan_affected = frozenset({"WBTC", "SUI"})
+        resolver = TokenOriginResolver(th_path, transactions=[], config=TreatmentConfig())
+
+        with caplog.at_level(logging.DEBUG):
+            entries, _ = _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        # Design Invariant #4: each unmatched taxable disposal still produces a
+        # placeholder realization with review_required=True and a populated review_reason.
+        assert len(entries) == 2, (
+            f"Expected 2 placeholder realizations (one per asset/platform), got {len(entries)}"
+        )
+        for entry in entries:
+            assert entry.cost_eur == Decimal("0"), (
+                f"Unmatched taxable disposal must have zero cost basis; got cost_eur={entry.cost_eur}"
+            )
+            assert entry.review_required is True
+            assert entry.review_reason is not None
+            reason_lower = entry.review_reason.lower()
+            assert "pool exhausted" in reason_lower or "no acquisition available" in reason_lower, (
+                f"review_reason must name pool exhaustion / no acquisition; got {entry.review_reason}"
+            )
+
+        # The fifo_helpers module's logger name is the fully-qualified module path.
+        helpers_logger = "tax_reporting.application.crypto.fifo_helpers"
+        # The matching module emits the per-row DEBUG records.
+        matching_logger = "tax_reporting.application.crypto_fifo.matching"
+
+        # Exactly ONE aggregate WARNING matching the prescribed summary substring.
+        aggregate_warnings = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == helpers_logger
+            and "taxable disposal(s) had no acquisition at or before the disposal date" in rec.getMessage()
+        ]
+        assert len(aggregate_warnings) == 1, (
+            f"Expected exactly ONE aggregate WARNING, got {aggregate_warnings}"
+        )
+        # The summary names the total count of unmatched taxable disposals (2).
+        assert "2 taxable disposal(s) had no acquisition at or before the disposal date" in aggregate_warnings[0]
+
+        # Exactly TWO per-row DEBUG emissions (one per unmatched disposal), at the matching layer.
+        per_row_debug = [
+            rec
+            for rec in caplog.records
+            if rec.levelno == logging.DEBUG
+            and rec.name == matching_logger
+            and (
+                "FIFO pool exhausted for" in rec.getMessage()
+                or "No acquisition available at or before disposal date" in rec.getMessage()
+            )
+        ]
+        assert len(per_row_debug) == 2, (
+            f"Expected 2 per-row DEBUG records (one per unmatched disposal), got {len(per_row_debug)}: "
+            f"{[r.getMessage() for r in per_row_debug]}"
+        )
+
+    def test_no_acquisition_summary_aggregates_across_platforms_else_branch(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Exercises the matching.py else-branch (non-empty pool, earliest lot AFTER disposal)
+        through the aggregate path (r2 review F4).
+
+        The sibling ``test_no_acquisition_summary_aggregates_across_platforms`` only seeds
+        the pool-truly-exhausted (True) sub-branch because each sell has NO acquisition at
+        all. This variant seeds the pool with a future-dated acquisition (date AFTER the
+        sell) so ``pool`` is non-empty but ``(acq.date, row_index) > (con.date, row_index)``
+        breaks the FIFO loop at ``matching.py:255`` with ``remaining > ZERO``, taking the
+        ``else`` branch at ``matching.py:299`` ("No acquisition available at or before
+        disposal date"). The shared counter increment and the aggregate WARNING still fire
+        (Design Invariant #8: both sub-branches feed ONE aggregate).
+        """
+        from tax_reporting.application.crypto.fifo_helpers import _rebuild_fifo_for_loan_affected_assets
+        from tax_reporting.application.crypto.treatment_resolver import TreatmentConfig
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        # WBTC loan row (Kraken): triggers WBTC discovery without seeding the pool.
+        wbtc_loan = ",".join([
+            "2025-01-01 09:00:00 UTC", "exchange", "loan", "", "", "", "",
+            "Kraken", "0.01", "WBTC", "400", "", "", "", "400", "", "", "", "tx_wbtc_loan", "",
+        ])
+        # WBTC buy (acquisition) DATED AFTER the sell below: the lot enters the FIFO pool
+        # but cannot be consumed by the earlier disposal, so the else-branch fires.
+        # Field order: Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Sent Cost Basis,
+        #   Receiving Wallet,Received Amount,Received Currency,Received Cost Basis,
+        #   Fee Amount,Fee Currency,Gain (EUR),Net Value (EUR),Fee Value (EUR),
+        #   TxSrc,TxDest,TxHash,Description
+        wbtc_buy_future = ",".join([
+            "2025-08-01 10:00:00 UTC", "buy", "", "", "", "", "",
+            "Kraken", "2.0", "WBTC", "", "", "", "", "", "300", "", "", "tx_wbtc_buy_future", "",
+        ])
+        # WBTC sell DATED BEFORE the buy above: disposal at 2025-06-15 < acquisition at 2025-08-01.
+        wbtc_sell_before = ",".join([
+            "2025-06-15 10:00:00 UTC", "sell", "", "Kraken", "1.0", "WBTC", "",
+            "", "", "", "", "", "", "", "1500", "", "", "", "tx_wbtc_sell_before", "",
+        ])
+
+        rows = [wbtc_loan, wbtc_buy_future, wbtc_sell_before]
+        th_path = _write_th_csv(tmp_path, rows)
+        loan_affected = frozenset({"WBTC"})
+        resolver = TokenOriginResolver(th_path, transactions=[], config=TreatmentConfig())
+
+        with caplog.at_level(logging.DEBUG):
+            entries, _ = _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        # Design Invariant #4: the unmatched taxable disposal still produces a placeholder
+        # realization flagged for review with a populated review_reason naming the no-acquisition
+        # case (the else-branch review_reason wording).
+        assert len(entries) == 1, (
+            f"Expected 1 placeholder realization (no-acquisition-at-date), got {len(entries)}"
+        )
+        entry = entries[0]
+        assert entry.cost_eur == Decimal("0")
+        assert entry.review_required is True
+        assert entry.review_reason is not None
+        assert "no acquisition available at or before disposal date" in entry.review_reason.lower(), (
+            f"Expected else-branch review_reason; got {entry.review_reason}"
+        )
+
+        # The fifo_helpers aggregate WARNING still fires for the else-branch sub-total.
+        helpers_logger = "tax_reporting.application.crypto.fifo_helpers"
+        matching_logger = "tax_reporting.application.crypto_fifo.matching"
+
+        aggregate_warnings = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == helpers_logger
+            and "taxable disposal(s) had no acquisition at or before the disposal date" in rec.getMessage()
+        ]
+        assert len(aggregate_warnings) == 1, (
+            f"Expected exactly ONE aggregate WARNING, got {aggregate_warnings}"
+        )
+        assert "1 taxable disposal(s) had no acquisition at or before the disposal date" in aggregate_warnings[0]
+
+        # Exactly ONE per-row DEBUG emission from the else-branch (NOT the pool-exhausted string).
+        per_row_debug = [
+            rec
+            for rec in caplog.records
+            if rec.levelno == logging.DEBUG
+            and rec.name == matching_logger
+            and "No acquisition available at or before disposal date" in rec.getMessage()
+        ]
+        assert len(per_row_debug) == 1, (
+            f"Expected 1 else-branch DEBUG record, got {len(per_row_debug)}: "
+            f"{[r.getMessage() for r in per_row_debug]}"
+        )
+        # And ZERO pool-exhausted DEBUG records (the True branch must NOT fire here).
+        pool_exhausted_debug = [
+            rec
+            for rec in caplog.records
+            if rec.levelno == logging.DEBUG
+            and rec.name == matching_logger
+            and "FIFO pool exhausted for" in rec.getMessage()
+        ]
+        assert len(pool_exhausted_debug) == 0, (
+            f"Expected no pool-exhausted DEBUG records (else-branch path); got "
+            f"{[r.getMessage() for r in pool_exhausted_debug]}"
+        )
+
+
+class TestFifoRebuildCallerFlush:
+    """Pattern B caller-level flush wiring for the FIFO-rebuild call site (r3 review F1).
+
+    Design Invariant #10 names the FIFO-rebuild caller flush as load-bearing: the
+    shared ``TokenOriginResolver`` accumulates disagreement keys from BOTH caller
+    loops, and ``_rebuild_fifo_for_loan_affected_assets`` MUST invoke
+    ``origin_resolver.log_and_reset_disagreements(scope="FIFO rebuild")`` after its
+    realization loop (call site ``fifo_helpers.py:405`` inside a ``finally``).
+    Mutation testing confirmed that deleting this flush call leaves the suite green.
+    These tests pre-seed the resolver's ``_disagreements`` Counter and assert the
+    caller-level flush fires (and STILL fires under a mid-loop exception, pinning
+    the r2-F6 ``finally`` justification), so a future refactor that drops the call
+    ships RED.
+    """
+
+    def test_fifo_rebuild_caller_flushes_disagreements(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A pre-seeded non-empty ``_disagreements`` is flushed by the FIFO-rebuild caller.
+
+        Given a resolver whose ``_disagreements`` Counter already holds one
+        disagreement key, running ``_rebuild_fifo_for_loan_affected_assets`` flushes
+        it: exactly ONE WARNING matching ``"TokenOriginResolver (FIFO rebuild)"``
+        fires at the caller (emitted by ``log_and_reset_disagreements`` via
+        ``logging.getLogger(__name__)`` in ``token_origin.py``), and
+        ``resolver._disagreements`` is empty after the call.
+
+        Mutation pin (r3 F1): deleting the
+        ``origin_resolver.log_and_reset_disagreements(scope="FIFO rebuild")`` call at
+        ``fifo_helpers.py:405`` leaves this test RED (no caller-level WARNING,
+        Counter still non-empty).
+        """
+        from collections import Counter
+
+        from tax_reporting.application.crypto.fifo_helpers import _rebuild_fifo_for_loan_affected_assets
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        # WBTC loan row (Kraken): triggers WBTC discovery without seeding the pool.
+        wbtc_loan = ",".join([
+            "2025-01-01 09:00:00 UTC", "exchange", "loan", "", "", "", "",
+            "Kraken", "0.01", "WBTC", "400", "", "", "", "400", "", "", "", "tx_wbtc_loan", "",
+        ])
+        # Sell 1 WBTC on Kraken with NO prior WBTC acquisition -> one unmatched taxable
+        # disposal, so the realization-conversion loop runs and origin_resolver.resolve
+        # is invoked at fifo_helpers.py:351.
+        wbtc_sell = ",".join([
+            "2025-06-15 10:00:00 UTC", "sell", "", "Kraken", "1.0", "WBTC", "",
+            "", "", "", "", "", "", "", "1500", "", "", "", "tx_wbtc_sell", "",
+        ])
+
+        th_path = _write_th_csv(tmp_path, [wbtc_loan, wbtc_sell])
+        loan_affected = frozenset({"WBTC"})
+        resolver = TokenOriginResolver(th_path, transactions=[], config=TreatmentConfig())
+
+        # Pre-seed _disagreements as if a prior stage (the CG-parse caller) had
+        # already flushed its own scope; the FIFO-rebuild flush must emit its own
+        # distinct-scope summary for whatever it accumulated/seeded.
+        resolver._disagreements = Counter({("BTC", "Kraken", "2025-01-15"): 1})
+        assert len(resolver._disagreements) == 1
+
+        # caplog on the token_origin module logger (the flush emitter). Lesson #68:
+        # filter rec.name on the emitting module's fully-qualified __name__.
+        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.token_origin"):
+            entries, _ = _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        # The realization-conversion loop ran (one unmatched taxable disposal).
+        assert len(entries) == 1, (
+            f"Expected 1 placeholder realization, got {len(entries)}"
+        )
+
+        # (a) Exactly ONE WARNING matching the FIFO-rebuild caller scope fires.
+        caller_flush_warnings = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == "tax_reporting.application.token_origin"
+            and "TokenOriginResolver (FIFO rebuild)" in rec.getMessage()
+        ]
+        assert len(caller_flush_warnings) == 1, (
+            f"Expected exactly ONE caller-flush WARNING, got {caller_flush_warnings}"
+        )
+        assert "1 origin-resolution disagreement(s) across 1 distinct" in caller_flush_warnings[0]
+
+        # (b) The Counter is cleared after the call.
+        assert len(resolver._disagreements) == 0, (
+            f"Expected _disagreements cleared by caller flush, got {dict(resolver._disagreements)}"
+        )
+
+    def test_fifo_rebuild_caller_flush_still_fires_on_mid_loop_exception(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The caller flush STILL fires when ``CryptoCapitalGainEntry`` raises mid-loop.
+
+        Pins the r2-F6 ``finally`` justification: ``origin_resolver.resolve(...)``
+        accumulates disagreements inside the realization-conversion loop, and
+        ``CryptoCapitalGainEntry``'s ``__post_init__`` validators can raise
+        ``ValueError`` mid-loop. Without the ``finally``, an exception propagates
+        before the flush, silently dropping the FIFO-rebuild-stage aggregate WARNING
+        and leaving the shared Counter with unflushed state. Forcing a mid-loop
+        exception (patching ``CryptoCapitalGainEntry`` to raise) must still emit the
+        caller flush WARNING.
+
+        Mutation pin (r3 F1 / r2 F6): reverting the ``finally`` to a plain trailing
+        call (or deleting the flush) leaves this test RED (no caller-level WARNING,
+        Counter still non-empty).
+        """
+        from collections import Counter
+        from unittest.mock import patch
+
+        from tax_reporting.application.crypto import fifo_helpers as fifo_helpers_module
+        from tax_reporting.application.crypto.fifo_helpers import _rebuild_fifo_for_loan_affected_assets
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        # WBTC loan + sell: produces one placeholder realization that reaches the
+        # CryptoCapitalGainEntry(...) construction site at fifo_helpers.py:367.
+        wbtc_loan = ",".join([
+            "2025-01-01 09:00:00 UTC", "exchange", "loan", "", "", "", "",
+            "Kraken", "0.01", "WBTC", "400", "", "", "", "400", "", "", "", "tx_wbtc_loan", "",
+        ])
+        wbtc_sell = ",".join([
+            "2025-06-15 10:00:00 UTC", "sell", "", "Kraken", "1.0", "WBTC", "",
+            "", "", "", "", "", "", "", "1500", "", "", "", "tx_wbtc_sell", "",
+        ])
+
+        th_path = _write_th_csv(tmp_path, [wbtc_loan, wbtc_sell])
+        loan_affected = frozenset({"WBTC"})
+        resolver = TokenOriginResolver(th_path, transactions=[], config=TreatmentConfig())
+        resolver._disagreements = Counter({("BTC", "Kraken", "2025-01-15"): 1})
+        assert len(resolver._disagreements) == 1
+
+        # Patch CryptoCapitalGainEntry (imported into fifo_helpers) to raise mid-loop,
+        # simulating a __post_init__ validation failure during the realization-conversion
+        # loop. The function's ``finally`` block must still flush the resolver.
+        with (
+            caplog.at_level(logging.WARNING, logger="tax_reporting.application.token_origin"),
+            patch.object(
+                fifo_helpers_module,
+                "CryptoCapitalGainEntry",
+                side_effect=ValueError("simulated mid-loop validation failure"),
+            ),
+            pytest.raises(ValueError, match="simulated mid-loop validation failure"),
+        ):
+            _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        # The ``finally`` flush still fired despite the mid-loop exception.
+        caller_flush_warnings = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == "tax_reporting.application.token_origin"
+            and "TokenOriginResolver (FIFO rebuild)" in rec.getMessage()
+        ]
+        assert len(caller_flush_warnings) == 1, (
+            f"Expected caller-flush WARNING to fire in the finally block, got {caller_flush_warnings}"
+        )
+
+        # The Counter is still cleared (the finally flush ran).
+        assert len(resolver._disagreements) == 0, (
+            f"Expected _disagreements cleared by finally-flush, got {dict(resolver._disagreements)}"
+        )
 
 
 class TestHandleTransferSamePlatform:
