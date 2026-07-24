@@ -420,7 +420,7 @@ When entries are aggregated by `_aggregate_capital_entries()`, multiple distinct
 review_reason="; ".join(dict.fromkeys(e.review_reason for e in group if e.review_reason)) or None,
 ```
 
-This joined reason is the **pre-filter input**, not the final word on the aggregated row's review fields. `_re_evaluate_aggregated_review` (inlined in `aggregation.py`) re-derives `review_required` / `review_reason` from the aggregated values, dropping zero-basis reasons when material and preserving non-zero-basis reasons; per-lot signals are NOT silenced (lot flags stay set, noise stays in `context.review_entries` + the WARNING log). See CRG-020 for the principle.
+This joined reason is the **pre-filter input**, not the final word on the aggregated row's review fields. `_re_evaluate_aggregated_review` (inlined in `aggregation.py`) re-derives `review_required` / `review_reason` from the aggregated values, dropping zero-basis reasons when material and preserving non-zero-basis reasons; per-lot signals are NOT silenced (lot flags stay set, noise stays in `context.review_entries` + the per-lot DEBUG log; aggregate WARNING summaries carry the warning-level signal on the console). See CRG-020 for the principle.
 
 **Reward dust partition (CRG-021).** The Crypto Supplementary sheet (Section 2) collapses zero-value taxable-now reward rows into a per-`(asset, wallet)` dust summary when the asset has at least one priced row in the export. The block shape: blank spacer row, then a bold outer header `"Dust summary:"`, then a bold sub-header `"Taxable-now dust (priced-asset rounding)"`, then a 5-column table (Asset | Wallet | Rows | Summed Value (EUR) | Category) sorted per-`(asset, wallet)`. The taxable-now side sums `value_eur` (EUR). The discriminator is `value_eur > 0` anywhere in `reward_entries`, NOT popular-token-set membership (the popular set has a different purpose; see CRG-021). The partition is presentation-layer only; it does not mutate `reward_entries` or change totals. Section 4 reconciliation splits into `("Taxable-now detail rows", N)` and `("Taxable-now dust rows (suppressed from detail)", M)`. The discriminator-regression guard is the direct unit test `TestPartitionTaxableNow` (no count-equality invariant, see plan's "dropped count-check guard" note).
 
@@ -878,7 +878,7 @@ Crypto-to-crypto exchanges are not taxable under Art. 10(20) / DP-002. The engin
 
 Cross-asset exchanges (e.g. LBTC to WBTC/SUI) are resolved by matching the TH transaction identifier (`tx_key`), never by date. Same-day exchanges must not cross-wire costs. `_build_cross_asset_order()` determines per-asset processing order so that the sending asset always runs before the receiving asset, enabling carry-over lookup in a single pass. `resolve_cross_asset_exchanges()` then resolves deferred acquisitions from the carry-over map.
 
-Unresolved deferred acquisitions (no matching carry-over entry) are flagged with `review_required=True` and a specific `review_reason`, and logged at warning level.
+Unresolved deferred acquisitions (no matching carry-over entry) are flagged with `review_required=True` and a specific `review_reason`, and the per-row emission is logged at DEBUG with the four sub-causes (unresolved, multi-sender, zero-carryover, partial) grouped into ONE aggregate WARNING emitted by `_rebuild_fifo_for_loan_affected_assets` after the per-asset loop. The `review_reason` surfaces as the Crypto Gains "YES:" cell.
 
 ### Cross-Platform Carry-Over Keying
 
@@ -900,7 +900,7 @@ When the Koinly `TxHash` column is empty, `_build_composite_tx_key` builds a fal
 
 However, for cross-platform transfers where the **same** asset movement appears on two separate TH rows (one for the sending wallet, one for the receiving wallet), both rows will have **different** `row_index` values, producing different composite keys. The resulting `transfer_in_deferred` acquisition will not match the `transfer_out` consumption, causing an unresolvable deferred entry and a `review_required=True` flag.
 
-This is a known limitation. Whenever a `transfer_in_deferred` remains unresolved, the engine must log at warning level with a message clearly attributing the review flag to the blank-TxHash condition rather than a FIFO pool issue.
+This is a known limitation. Whenever a `transfer_in_deferred` remains unresolved, the engine logs the per-row detail at DEBUG and emits ONE aggregate WARNING from `_rebuild_fifo_for_loan_affected_assets` (pattern K) carrying a per-cause breakdown (requires_review / unresolved); the per-row message must clearly attribute the review flag to the blank-TxHash condition rather than a FIFO pool issue.
 
 ### Transfer-Fee Handling
 
@@ -908,7 +908,7 @@ Transfer rows (`Type=transfer`) do not reset holding period or create taxable pr
 
 ### Placeholder Buys
 
-When the FIFO pool is exhausted (more sells than available acquisitions), a zero-cost placeholder realization is created with `review_required=True`, a specific `review_reason`, and `logger.warning(...)`. These entries must never be silently dropped.
+When the FIFO pool is exhausted (more sells than available acquisitions), a zero-cost placeholder realization is created with `review_required=True`, a specific `review_reason`, and a per-row `logger.debug(...)` (`crypto_fifo/matching.py:290`); the warning-level audit signal is carried by ONE aggregate `logger.warning(...)` from `_rebuild_fifo_for_loan_affected_assets` (`fifo_helpers.py:378`, threaded `unmatched_taxable` counter). These entries must never be silently dropped.
 
 ### Holding Period Labels
 
@@ -1739,7 +1739,7 @@ and is surfaced three ways so a legitimate gas token missing from the config
   (`source_section="capital_gains"` when the suspect matched a CG lot, else the
   new `"transaction_history"`), rendered in the Crypto Supplementary "Review
   required" section (SRG-009 already covers this section - no new SRG needed);
-- a `logger.warning` naming the asset and its `Net Value (EUR)`.
+- a per-suspect `logger.debug` naming the asset and its `Net Value (EUR)` (pattern A: the per-row detail is at DEBUG because the `CryptoReviewEntry` is the review surface); the warning-level signal is ONE aggregate `logger.warning` (`fee_filter.py:643`) carrying the suspect count.
 
 The suspect pass is run LATE in the pipeline (after `correct_payment_proceeds`,
 before aggregation) so any proceeds corrections are complete when the flag is
@@ -1764,10 +1764,12 @@ normalized Sending Wallet name (NOT `platform`, which is the institution).
 Matched lots are removed; suspects are matched in a match-only mode (no
 removal). The per-lot log records the removed lot's identity tuple
 `(disposal_timestamp, asset, wallet, amount)` plus the fee event's `TxHash`:
-tagged removals log at INFO (trusted); untagged-whitelisted removals log at
-WARNING (an untagged-whitelisted withdrawal CAN be a genuine dust disposal, so
-it must not be silent). Exactly one aggregate summary WARNING is emitted per
-fee pass via the caller-passed logger (`domain_label="fee"`).
+tagged removals log at INFO (trusted); untagged-whitelisted removals log per-lot
+at DEBUG (`fee_filter.py:422`): an untagged-whitelisted withdrawal CAN be a
+genuine dust disposal, so it must not be silent. Because fee removals have no
+Excel review surface, the fee pass emits TWO aggregate WARNINGs as the audit
+trail: the dedup summary (`fee_filter.py:554`) and the untagged-whitelisted
+summary (`fee_filter.py:434`).
 
 ### Accepted risk: cross-tx match
 

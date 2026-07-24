@@ -937,7 +937,14 @@ class TestResolveCrossAssetUnmatchedDeferredSetsReviewRequired:
         acquisitions_by_asset = {"LBTC": [], "WBTC": [wbtc_deferred]}
         fifo_results_by_asset = {"LBTC": lbtc_result}
 
-        with caplog.at_level(logging.WARNING):
+        # This test calls resolve_cross_asset_exchanges directly (via the in-test
+        # wrapper that does NOT forward flag_counts), so it bypasses the per-asset
+        # aggregate emitted by _rebuild_fifo_for_loan_affected_assets. Pattern J
+        # downgraded the per-row "Unresolved deferred acquisition" emission from
+        # WARNING to DEBUG (message text unchanged); assert the per-row detail is
+        # reachable at DEBUG. The aggregate is covered by the dedicated class
+        # TestResolveCrossAssetAggregateSummary below.
+        with caplog.at_level(logging.DEBUG):
             resolved = resolve_cross_asset_exchanges(acquisitions_by_asset, fifo_results_by_asset)
 
         wbtc_acq = resolved["WBTC"][0]
@@ -945,7 +952,11 @@ class TestResolveCrossAssetUnmatchedDeferredSetsReviewRequired:
         assert wbtc_acq.acq.review_required is True
         assert wbtc_acq.acq.review_reason is not None
         assert "tx_key" in wbtc_acq.acq.review_reason
-        assert any("unresolved" in rec.message.lower() or "deferred" in rec.message.lower() for rec in caplog.records)
+        assert any(
+            "unresolved" in r.getMessage().lower()
+            for r in caplog.records
+            if r.levelno == logging.DEBUG
+        )
 
 
 class TestResolveCrossAssetMultiSenderAmbiguity:
@@ -979,7 +990,11 @@ class TestResolveCrossAssetMultiSenderAmbiguity:
 
         import logging
 
-        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_fifo"):
+        # Pattern J downgraded the per-row multi-sender emission from WARNING to DEBUG
+        # (message text unchanged). This test calls resolve_cross_asset_exchanges
+        # directly via the in-test wrapper (no flag_counts threading), so it bypasses
+        # the per-asset aggregate. Assert the per-row detail is reachable at DEBUG.
+        with caplog.at_level(logging.DEBUG, logger="tax_reporting.application.crypto_fifo"):
             resolved = resolve_cross_asset_exchanges(
                 acquisitions_by_asset, fifo_results_by_asset, tx_key_to_sender
             )
@@ -990,9 +1005,10 @@ class TestResolveCrossAssetMultiSenderAmbiguity:
         assert eth_acq.acq.review_reason is not None
         assert "WBTC" in eth_acq.acq.review_reason
         assert "SUI" in eth_acq.acq.review_reason
-        warning_messages = [rec.message.lower() for rec in caplog.records]
         assert any(
-            "multi-sender" in m or "multiple source" in m for m in warning_messages
+            "multi-sender" in r.getMessage().lower()
+            for r in caplog.records
+            if r.levelno == logging.DEBUG
         )
 
     def test_single_sender_does_not_set_review_required(self) -> None:
@@ -1045,7 +1061,11 @@ class TestResolveCrossAssetMultiSenderAmbiguity:
         fifo_results_by_asset = {"B": b_result}
         tx_key_to_sender = {"tx1": ["B", "Z"]}
 
-        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_fifo"):
+        # Pattern J downgraded the per-row multi-sender/partial emission from WARNING
+        # to DEBUG (message text unchanged). This test calls resolve_cross_asset_exchanges
+        # directly via the in-test wrapper (no flag_counts threading), so it bypasses
+        # the per-asset aggregate. Assert the per-row detail is reachable at DEBUG.
+        with caplog.at_level(logging.DEBUG, logger="tax_reporting.application.crypto_fifo"):
             resolved = resolve_cross_asset_exchanges(
                 acquisitions_by_asset, fifo_results_by_asset, tx_key_to_sender
             )
@@ -1056,8 +1076,425 @@ class TestResolveCrossAssetMultiSenderAmbiguity:
         assert eth_acq.acq.review_reason is not None
         assert "Z" in eth_acq.acq.review_reason, "review_reason must name the unprocessed sender"
         assert "partial" in eth_acq.acq.review_reason.lower()
-        warning_messages = [rec.message for rec in caplog.records]
-        assert any("partial" in m.lower() or "unprocessed" in m.lower() for m in warning_messages)
+        assert any(
+            "partial" in r.getMessage().lower() or "unprocessed" in r.getMessage().lower()
+            for r in caplog.records
+            if r.levelno == logging.DEBUG
+        )
+
+
+class TestResolveCrossAssetAggregateSummary:
+    """Pattern J: cross-asset deferred-acquisition per-row emissions grouped into ONE aggregate.
+
+    ``_resolve_single_acquisition`` has 4 per-row WARNING sites (unresolved, multi-sender,
+    zero-carryover, partial) that Pattern J downgrades to DEBUG (message text unchanged),
+    incrementing a shared ``flag_counts`` dict keyed by cause. The aggregate fires ONCE in
+    ``_rebuild_fifo_for_loan_affected_assets`` (the per-asset loop driver), naming all present
+    sub-causes with counts. Per Design Invariant #3, the ``review_required``/``review_reason``
+    assignments in each branch are UNCHANGED; the audit signal stays on the data, not the log.
+    """
+
+    def test_j_aggregate_emits_once_with_per_cause_breakdown(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Two cross-asset dependency cycles each produce 1 unresolved + 1 zero-carryover
+        deferred acquisition; ``_rebuild_fifo_for_loan_affected_assets`` emits exactly ONE
+        WARNING matching ``"N cross-asset deferred acquisition(s) flagged"`` that names all
+        present sub-causes (unresolved, zero-carryover) with counts, AND the per-row detail
+        stays reachable at DEBUG.
+
+        Fixture: two independent cycles among loan-affected assets.
+        - Cycle A (LBTC<->WBTC) and Cycle B (ETH<->SUI), each with NO prior acquisition on
+          either side, so the sender's FIFO pool is empty.
+        - ``_build_cross_asset_order`` detects both cycles and processes the assets
+          alphabetically; for each cycle the first-processed asset's deferred acquisition is
+          ``unresolved`` (its sender is processed second) and the second-processed asset's
+          deferred acquisition resolves to a ``zero-carryover`` (sender processed first with
+          an exhausted pool). Net: 2 unresolved + 2 zero-carryover across 4 assets.
+
+        Each resolved acquisition still carries ``review_required=True`` + ``review_reason``
+        (Design Invariant #3, unchanged).
+        """
+        from tax_reporting.application.crypto.fifo_helpers import _rebuild_fifo_for_loan_affected_assets
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        # Cycle A: LBTC <-> WBTC (LedgerA). No prior acquisition -> empty pool.
+        ex1 = '2025-03-01 10:00:00 UTC,exchange,"",LedgerA,1.0,LBTC,30,LedgerA,1.0,WBTC,30,,,,30,,,tx_cycle1a,""'
+        ex2 = '2025-03-02 10:00:00 UTC,exchange,"",LedgerA,1.0,WBTC,40,LedgerA,1.0,LBTC,40,,,,40,,,tx_cycle1b,""'
+        # Cycle B: ETH <-> SUI (LedgerB). Independent; No prior acquisition -> empty pool.
+        ex3 = '2025-03-01 10:00:00 UTC,exchange,"",LedgerB,1.0,ETH,30,LedgerB,1.0,SUI,30,,,,30,,,tx_cycle2a,""'
+        ex4 = '2025-03-02 10:00:00 UTC,exchange,"",LedgerB,1.0,SUI,40,LedgerB,1.0,ETH,40,,,,40,,,tx_cycle2b,""'
+
+        th_path = _write_th_csv(tmp_path, [ex1, ex2, ex3, ex4])
+        loan_affected = frozenset({"LBTC", "WBTC", "ETH", "SUI"})
+        resolver = TokenOriginResolver(th_path, transactions=[], config=TreatmentConfig())
+
+        with caplog.at_level(logging.DEBUG):
+            entries, _ = _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        helpers_logger = "tax_reporting.application.crypto.fifo_helpers"
+        cross_asset_logger = "tax_reporting.application.crypto_fifo.cross_asset"
+
+        # Exactly ONE aggregate WARNING matching the prescribed summary substring.
+        aggregate_warnings = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == helpers_logger
+            and "cross-asset deferred acquisition(s) flagged" in rec.getMessage()
+        ]
+        assert len(aggregate_warnings) == 1, (
+            f"Expected exactly ONE aggregate WARNING, got {aggregate_warnings}"
+        )
+
+        # The summary names the total count (4 = 2 unresolved + 2 zero_carryover) ...
+        assert "4 cross-asset deferred acquisition(s) flagged" in aggregate_warnings[0]
+        # ... and the per-cause breakdown with counts (sorted by cause key).
+        msg = aggregate_warnings[0]
+        assert "unresolved: 2" in msg, (
+            f"Aggregate must name unresolved sub-cause with count; got {msg!r}"
+        )
+        assert "zero_carryover: 2" in msg, (
+            f"Aggregate must name zero_carryover sub-cause with count; got {msg!r}"
+        )
+        # The aggregate points reviewers at the DEBUG log and the review column.
+        assert "see DEBUG log" in msg, (
+            f"Aggregate must point at the DEBUG log for per-row detail; got {msg!r}"
+        )
+        assert "Crypto Gains review column" in msg, (
+            f"Aggregate must point at the review column; got {msg!r}"
+        )
+
+        # The per-row detail stays reachable at DEBUG (at least one unresolved and one
+        # zero-carryover per-row record, emitted by the cross_asset module logger).
+        per_row_unresolved = [
+            r for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and r.name == cross_asset_logger
+            and "unresolved" in r.getMessage().lower()
+        ]
+        per_row_zero = [
+            r for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and r.name == cross_asset_logger
+            and "carry-over cost" in r.getMessage().lower()
+            and "zero" in r.getMessage().lower()
+        ]
+        assert per_row_unresolved, (
+            "Expected at least one per-row unresolved DEBUG record"
+        )
+        assert per_row_zero, (
+            "Expected at least one per-row zero-carryover DEBUG record"
+        )
+
+    def test_j_aggregate_threads_multi_sender_and_partial_cause_keys(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The ``multi_sender`` and ``partial`` J sub-causes thread through
+        ``_rebuild_fifo_for_loan_affected_assets`` and appear in the aggregate breakdown.
+
+        The existing ``test_j_aggregate_emits_once_with_per_cause_breakdown`` covers only
+        ``unresolved`` and ``zero_carryover`` because its cycle fixture never produces a
+        multi-sender match or a partial carry-over. The two sibling J caplog tests
+        (``test_multi_sender_sums_costs_and_sets_review_required`` and
+        ``test_partial_sender_match_flags_review_when_expected_sender_unprocessed``) call the
+        in-test wrapper ``resolve_cross_asset_exchanges`` which deliberately drops
+        ``flag_counts``, so the counter is never threaded there and those tests cannot catch a
+        dropped / misspelled ``_bump("multi_sender")`` or ``_bump("partial")`` increment (r1 F1).
+
+        This test drives BOTH cause keys through the production threading path
+        (``_rebuild_fifo_for_loan_affected_assets`` -> ``_process_single_asset_fifo`` ->
+        ``resolve_cross_asset_exchanges(flag_counts=cross_asset_flag_counts)`` ->
+        ``_resolve_single_acquisition._bump(...)``) and asserts both keys appear in the single
+        aggregate WARNING's per-cause breakdown.
+
+        Fixture (loan_affected = {LBTC, SUI, ETH}):
+        - LBTC buy 1.0 (FIFO pool seeded with 1 LBTC); SUI buy 1.0 (FIFO pool seeded with 1 SUI).
+        - ``multi_x`` (shared TxHash across TWO cross-asset exchange rows):
+          - Row A: LBTC -> ETH (LBTC ``exchange_out`` of 0.5 LBTC; ETH ``exchange_in_deferred``
+            for tx_key=multi_x).
+          - Row B: SUI -> ETH (SUI ``exchange_out`` of 0.5 SUI; ETH ``exchange_in_deferred`` for
+            tx_key=multi_x -- deduped to one survivor since same (tx_key, source_type)).
+          ``_build_cross_asset_order`` records ``tx_key_to_sender["multi_x"] = [LBTC, SUI]``.
+          When the surviving ETH deferred acquisition on ``multi_x`` is resolved, BOTH senders
+          have carry-over -> ``len(matched_senders) > 1`` -> ``_bump("multi_sender")`` fires
+          (cross_asset.py multi-sender branch).
+        - ``part_y`` (separate TxHash):
+          - Exchange 1.5 LBTC -> ETH against an LBTC pool that -- after ``multi_x`` consumed 0.5
+            -- holds only 0.5 LBTC. The non-taxable ``exchange_out`` exhausts the pool with
+            ``remaining > 0``, so matching.py adds ``part_y`` to ``partial_carryover_tx_keys``
+            and records the consumed-cost carry-over. The ETH deferred acquisition on ``part_y``
+            then resolves with the sender (LBTC) present and ``acq.tx_key in
+            result.partial_carryover_tx_keys`` -> ``_bump("partial")`` fires (cross_asset.py
+            partial branch). Only one expected sender (LBTC), so ``multi_sender`` does NOT fire
+            here -- the ``partial`` cause is exercised in isolation.
+
+        Net aggregate breakdown: ``multi_sender: 1, partial: 1``.
+        """
+        from tax_reporting.application.crypto.fifo_helpers import _rebuild_fifo_for_loan_affected_assets
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        # Seed pools for the two senders (LBTC, SUI). EUR is not loan-affected, so these are
+        # received-only buy acquisitions for the loan-affected received currency.
+        lbtc_buy = (
+            '2025-02-01 10:00:00 UTC,buy,"",Bank,1.0,EUR,100,LedgerA,1.0,LBTC,100'
+            ',,,,100,,,,tx_lbtc_buy,""'
+        )
+        sui_buy = (
+            '2025-02-02 10:00:00 UTC,buy,"",Bank,1.0,EUR,200,LedgerB,1.0,SUI,200'
+            ',,,,200,,,,tx_sui_buy,""'
+        )
+        # multi_x: two cross-asset exchange rows sharing TxHash -> two senders recorded for one
+        # tx_key -> multi_sender cause on the surviving ETH deferred acquisition.
+        multi_x_row_a = (
+            '2025-03-01 10:00:00 UTC,exchange,"",LedgerA,0.5,LBTC,50,'
+            'LedgerA,0.5,ETH,50,,,,50,,,,multi_x,""'
+        )
+        multi_x_row_b = (
+            '2025-03-01 10:00:00 UTC,exchange,"",LedgerB,0.5,SUI,100,'
+            'LedgerB,0.5,ETH,100,,,,100,,,,multi_x,""'
+        )
+        # part_y: overdraws LBTC's remaining pool (0.5 LBTC left after multi_x) by requesting
+        # 1.5 LBTC -> partial carry-over -> partial cause on ETH's deferred acquisition.
+        part_y_row = (
+            '2025-03-02 10:00:00 UTC,exchange,"",LedgerA,1.5,LBTC,150,'
+            'LedgerA,1.5,ETH,150,,,,150,,,,part_y,""'
+        )
+
+        th_path = _write_th_csv(
+            tmp_path, [lbtc_buy, sui_buy, multi_x_row_a, multi_x_row_b, part_y_row]
+        )
+        loan_affected = frozenset({"LBTC", "SUI", "ETH"})
+        resolver = TokenOriginResolver(th_path, transactions=[], config=TreatmentConfig())
+
+        with caplog.at_level(logging.DEBUG):
+            _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        helpers_logger = "tax_reporting.application.crypto.fifo_helpers"
+        cross_asset_logger = "tax_reporting.application.crypto_fifo.cross_asset"
+
+        # Exactly ONE aggregate WARNING matching the prescribed summary substring.
+        aggregate_warnings = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == helpers_logger
+            and "cross-asset deferred acquisition(s) flagged" in rec.getMessage()
+        ]
+        assert len(aggregate_warnings) == 1, (
+            f"Expected exactly ONE aggregate WARNING, got {aggregate_warnings}"
+        )
+
+        msg = aggregate_warnings[0]
+        # Both threaded sub-causes must appear in the breakdown with their counts. These
+        # assertions are the load-bearing guard against a silently dropped or misspelled
+        # ``_bump("multi_sender")`` / ``_bump("partial")`` increment in
+        # ``_resolve_single_acquisition``: the counter is threaded from
+        # ``_rebuild_fifo_for_loan_affected_assets`` and rendered into this single message, so
+        # a missing key would not show up here (Design Invariant #5: per-cause breakdown).
+        assert "multi_sender: 1" in msg, (
+            f"Aggregate must name the multi_sender sub-cause with its count; got {msg!r}"
+        )
+        assert "partial: 1" in msg, (
+            f"Aggregate must name the partial sub-cause with its count; got {msg!r}"
+        )
+        # Total count = 1 multi_sender + 1 partial = 2 flagged acquisitions.
+        assert "2 cross-asset deferred acquisition(s) flagged" in msg, (
+            f"Aggregate must name the total count (multi_sender + partial); got {msg!r}"
+        )
+
+        # Per-row partial-carryover detail must reach DEBUG at the cross_asset logger (r3 R3-2).
+        # The aggregate-content assertions above cannot discriminate a level revert: ``_bump``
+        # still increments even when the partial branch's per-row emission is wrongly left at
+        # WARNING (the counter and the log level are independent). ``part_y`` fires the partial
+        # branch (``elif is_partial_carryover:`` at ``cross_asset.py:228``), whose message
+        # reads "...is partial; FIFO pool was partially exhausted...". This level guard is the
+        # only J sub-branch currently lacking a discriminating per-row-DEBUG assertion, so
+        # reverting just this branch's ``logger.debug`` back to ``logger.warning`` would let
+        # all 9 J-related tests pass for the wrong reason.
+        assert any(
+            r.levelno == logging.DEBUG
+            and r.name == cross_asset_logger
+            and "is partial" in r.getMessage().lower()
+            for r in caplog.records
+        ), (
+            "Expected at least one per-row partial-carryover DEBUG record from the "
+            "cross_asset logger; its absence means the partial-branch level downgrade is "
+            "unguarded (r3 R3-2)"
+        )
+
+
+class TestResolveIntraAssetTransfersAggregateSummary:
+    """Pattern K: transfer carry-over per-row emissions grouped into ONE aggregate.
+
+    ``_resolve_intra_asset_transfers`` has 2 per-row WARNING sites (``requires_review`` at
+    the resolved-but-flagged branch, ``unresolved`` at the could-not-resolve branch) that
+    Pattern K downgrades to DEBUG (message text unchanged), incrementing a shared
+    ``flag_counts`` dict keyed by cause. The aggregate fires ONCE in
+    ``_rebuild_fifo_for_loan_affected_assets`` (the per-asset / per-platform loop driver),
+    naming all present sub-causes with counts. Per Design Invariant #3, the
+    ``review_required``/``review_reason``/``cost_basis_eur`` assignments in each branch are
+    UNCHANGED; the audit signal stays on the data, not the log.
+    """
+
+    def test_k_aggregate_emits_once_after_all_platforms(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Two same-asset cross-platform transfer cycles each produce 1 unresolved +
+        1 requires-review transfer_in_deferred acquisition; ``_rebuild_fifo_for_loan_affected_assets``
+        emits exactly ONE WARNING matching ``"N transfer carry-over acquisition(s) flagged"``
+        that names all present sub-causes with counts, AND the per-row detail stays
+        reachable at DEBUG.
+
+        Fixture: two independent same-asset cross-platform transfer cycles.
+        - Cycle 1 (WBTC Kraken<->ByBit) and Cycle 2 (SUI LedgerA<->LedgerB).
+        - Each cycle is a genuine cyclic transfer dependency, so ``_order_platforms_for_transfers``
+          falls back to alphabetical order. The alphabetically-first platform is processed
+          before its sender ran FIFO, so its deferred acquisition is ``unresolved`` (sender
+          carry-over not found). The second platform's deferred acquisition resolves but the
+          sender's FIFO pool was exhausted (carry-over ZERO), landing in ``requires_review``.
+          Net per cycle: 1 unresolved + 1 requires_review -> 4 total across 2 assets.
+
+        Each resolved acquisition still carries ``review_required=True`` + ``review_reason``
+        (Design Invariant #3, unchanged).
+        """
+        from tax_reporting.application.crypto.fifo_helpers import _rebuild_fifo_for_loan_affected_assets
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        # Cycle 1: WBTC Kraken <-> ByBit (no prior WBTC acquisition on either side).
+        tx_a = ",".join([
+            "2025-01-15 10:00:00 UTC", "transfer", "", "Kraken", "1.0", "WBTC", "1000",
+            "ByBit", "1.0", "WBTC", "", "", "", "", "0", "", "", "", "tx_a", "",
+        ])
+        tx_b = ",".join([
+            "2025-01-16 10:00:00 UTC", "transfer", "", "ByBit", "1.0", "WBTC", "1000",
+            "Kraken", "1.0", "WBTC", "", "", "", "", "0", "", "", "", "tx_b", "",
+        ])
+        # Cycle 2: SUI LedgerA <-> LedgerB (independent; no prior SUI acquisition).
+        tx_c = ",".join([
+            "2025-01-15 10:00:00 UTC", "transfer", "", "LedgerA", "1.0", "SUI", "1000",
+            "LedgerB", "1.0", "SUI", "", "", "", "", "0", "", "", "", "tx_c", "",
+        ])
+        tx_d = ",".join([
+            "2025-01-16 10:00:00 UTC", "transfer", "", "LedgerB", "1.0", "SUI", "1000",
+            "LedgerA", "1.0", "SUI", "", "", "", "", "0", "", "", "", "tx_d", "",
+        ])
+
+        th_path = _write_th_csv(tmp_path, [tx_a, tx_b, tx_c, tx_d])
+        loan_affected = frozenset({"WBTC", "SUI"})
+        resolver = TokenOriginResolver(th_path, transactions=[], config=TreatmentConfig())
+
+        with caplog.at_level(logging.DEBUG):
+            _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        helpers_logger = "tax_reporting.application.crypto.fifo_helpers"
+        transfer_logger = "tax_reporting.application.crypto_fifo.transfer"
+
+        # Exactly ONE aggregate WARNING matching the prescribed summary substring.
+        aggregate_warnings = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == helpers_logger
+            and "transfer carry-over acquisition(s) flagged" in rec.getMessage()
+        ]
+        assert len(aggregate_warnings) == 1, (
+            f"Expected exactly ONE aggregate WARNING, got {aggregate_warnings}"
+        )
+
+        # The summary names the total count (4 = 2 requires_review + 2 unresolved) ...
+        assert "4 transfer carry-over acquisition(s) flagged" in aggregate_warnings[0]
+        # ... and the per-cause breakdown with counts (sorted by cause key).
+        msg = aggregate_warnings[0]
+        assert "requires_review: 2" in msg, (
+            f"Aggregate must name requires_review sub-cause with count; got {msg!r}"
+        )
+        assert "unresolved: 2" in msg, (
+            f"Aggregate must name unresolved sub-cause with count; got {msg!r}"
+        )
+        # The aggregate points reviewers at the DEBUG log and the review column.
+        assert "see DEBUG log" in msg, (
+            f"Aggregate must point at the DEBUG log for per-row detail; got {msg!r}"
+        )
+        assert "Crypto Gains review column" in msg, (
+            f"Aggregate must point at the review column; got {msg!r}"
+        )
+
+        # The per-row detail stays reachable at DEBUG (at least one unresolved and one
+        # requires-review per-row record, emitted by the transfer module logger).
+        per_row_unresolved = [
+            r for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and r.name == transfer_logger
+            and "carry-over not found" in r.getMessage().lower()
+        ]
+        per_row_review = [
+            r for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and r.name == transfer_logger
+            and "requires review" in r.getMessage().lower()
+        ]
+        assert per_row_unresolved, (
+            "Expected at least one per-row unresolved DEBUG record"
+        )
+        assert per_row_review, (
+            "Expected at least one per-row requires-review DEBUG record"
+        )
+
+    def test_jk_aggregates_not_emitted_when_no_cross_asset_or_transfer_flags(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Neither the J nor the K aggregate WARNING fires when a loan-affected rebuild
+        produces no cross-asset deferred acquisitions and no intra-asset transfer flags
+        (r3 R3-3 negative guard).
+
+        Both the J and K aggregates share the ``_emit_flagged_summary`` guard
+        (``fifo_helpers.py:244`` ``if not counts: return``). The positive tests above
+        cover the non-empty path for each; this test pins the empty path for BOTH in a
+        single rebuild-driven call. Without it, removing the ``if not counts: return``
+        guard leaves all 100 crypto_fifo tests green (verified by mutation in the r3
+        review), silently emitting noisy ``0 ... flagged ()`` WARNINGs on every run.
+
+        Fixture: a single loan-affected asset (WBTC) bought then sold on one platform
+        (Kraken). No cross-asset exchange row and no cross-platform transfer row means
+        ``_resolve_single_acquisition`` and ``_resolve_intra_asset_transfers`` never
+        increment any cause key, so both threaded counters stay empty.
+        """
+        from tax_reporting.application.crypto.fifo_helpers import _rebuild_fifo_for_loan_affected_assets
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        wbtc_buy = ",".join([
+            "2025-01-10 10:00:00 UTC", "buy", "", "", "", "", "",
+            "Kraken", "1.0", "WBTC", "1000", "", "", "", "1000", "", "", "", "tx_buy", "",
+        ])
+        wbtc_sell = ",".join([
+            "2025-06-15 10:00:00 UTC", "sell", "", "Kraken", "1.0", "WBTC", "1000",
+            "", "", "", "", "", "", "500", "1500", "", "", "", "tx_sell", "",
+        ])
+
+        th_path = _write_th_csv(tmp_path, [wbtc_buy, wbtc_sell])
+        loan_affected = frozenset({"WBTC"})
+        resolver = TokenOriginResolver(th_path, transactions=[], config=TreatmentConfig())
+
+        with caplog.at_level(logging.DEBUG):
+            _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        helpers_logger = "tax_reporting.application.crypto.fifo_helpers"
+
+        jk_warnings = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == helpers_logger
+            and (
+                "cross-asset deferred acquisition(s) flagged" in rec.getMessage()
+                or "transfer carry-over acquisition(s) flagged" in rec.getMessage()
+            )
+        ]
+        assert jk_warnings == [], (
+            "No J/K aggregate WARNING should fire when the rebuild produces no "
+            f"cross-asset/transfer flags; got {jk_warnings}"
+        )
 
 
 class TestResolveCrossAssetDuplicateReceiverSplitting:
@@ -2870,7 +3307,11 @@ class TestHandleTransferNoUnresolvedCarryover:
         )
         per_platform_carryover: dict[str, dict[str, Decimal]] = {}
 
-        with caplog.at_level(logging.WARNING):
+        # Pattern K (r1 finding #2): the per-row "Could not resolve transfer_in_deferred ...
+        # carry-over not found" emission was downgraded from WARNING to DEBUG. This direct
+        # call passes no ``flag_counts`` (default None), so the aggregate is not exercised;
+        # the per-row DEBUG record is the reachable audit detail here.
+        with caplog.at_level(logging.DEBUG):
             result = _resolve_intra_asset_transfers([acq], per_platform_carryover)
 
         assert len(result) == 1
@@ -2878,7 +3319,11 @@ class TestHandleTransferNoUnresolvedCarryover:
         assert result[0].acq.review_required
         assert result[0].acq.review_reason is not None
         assert "carry-over not available" in result[0].acq.review_reason or "not found" in result[0].acq.review_reason
-        assert any("carry-over not found" in r.message.lower() for r in caplog.records)
+        assert any(
+            "carry-over not found" in r.getMessage().lower()
+            for r in caplog.records
+            if r.levelno == logging.DEBUG
+        )
 
 
 class TestFifoHoldingPeriodLeapYearFeb29:

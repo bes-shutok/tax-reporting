@@ -1752,6 +1752,210 @@ def test_aggregate_single_lot_no_multi_date_flag():
     assert aggregated.notes == ""
 
 
+class TestAggregateCapitalEntries:
+    """Pattern L: aggregation no-acquisition-date per-row emissions grouped into ONE aggregate.
+
+    ``_aggregate_capital_entries`` has 2 per-row WARNING sites (no-acquisition-date at the
+    ``if not acquisition_date:`` branch, epoch-sentinel at the ``elif ... "1970-":`` branch)
+    that Pattern L downgrades to DEBUG (message text unchanged), incrementing a ``Counter[str]``
+    keyed by asset. The aggregate fires ONCE at the end of ``_aggregate_capital_entries`` (the
+    function is called once per run from ``crypto_reporting.py``, NOT inside a per-asset loop, so
+    no threading is needed). Per Design Invariant #3, the aggregated entry's
+    ``review_required``/``review_reason`` are UNCHANGED; the audit signal stays on the data, not
+    the log -- this is what surfaces in the Crypto Gains Excel "YES:" cell.
+    """
+
+    def test_l_aggregate_collapses_no_acquisition_date_warnings(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Aggregated entries built from pool-exhausted placeholder lots with either an empty
+        acquisition date (``if not acquisition_date:`` branch) or an epoch-sentinel
+        ``"1970-..."`` date (``elif acquisition_date.startswith("1970-")`` branch) produce
+        exactly ONE WARNING matching ``"N aggregated capital-gains entry(ies) with"`` that
+        names the affected assets with counts, AND both per-row DEBUG branches are exercised.
+
+        Fixture: three distinct assets, two of which hit the no-date branch (SEI, ATOM) and
+        one of which hits the epoch-sentinel branch (SOL). Each lot is a pool-exhausted
+        placeholder (``review_required=True`` with the inherited pool-exhausted
+        ``review_reason`` set by predecessor pattern F). Each aggregated entry keeps its
+        ``review_required=True`` + the inherited ``review_reason`` (Design Invariant #3,
+        unchanged). Driving the epoch branch via this aggregate path pins the
+        ``epoch_entries`` increment and the epoch DEBUG message (r1 F2): a regression
+        breaking only the epoch branch would otherwise pass the suite.
+        """
+        pool_exhausted_reason_sei = (
+            "FIFO pool exhausted: 100 SEI disposed with zero cost basis"
+        )
+        pool_exhausted_reason_atom = (
+            "FIFO pool exhausted: 50 ATOM disposed with zero cost basis"
+        )
+        epoch_missing_date_reason_sol = (
+            "Epoch sentinel acquisition date for SOL; "
+            "missing Date field in TH row: holding period unknown, Short term"
+        )
+        entries = [
+            _make_entry(
+                disposal_date="2025-06-14",
+                acquisition_date="",
+                asset="SEI",
+                amount=Decimal("100"),
+                cost_eur=Decimal("0"),
+                proceeds_eur=Decimal("100"),
+                gain_loss_eur=Decimal("100"),
+                holding_period="Short term",
+                wallet="ByBit",
+                platform="ByBit",
+                chain="ETH",
+                review_required=True,
+                review_reason=pool_exhausted_reason_sei,
+            ),
+            _make_entry(
+                disposal_date="2025-06-15",
+                acquisition_date="",
+                asset="ATOM",
+                amount=Decimal("50"),
+                cost_eur=Decimal("0"),
+                proceeds_eur=Decimal("50"),
+                gain_loss_eur=Decimal("50"),
+                holding_period="Short term",
+                wallet="Kraken",
+                platform="Kraken",
+                chain="ATOM",
+                review_required=True,
+                review_reason=pool_exhausted_reason_atom,
+            ),
+            _make_entry(
+                disposal_date="2025-06-16",
+                acquisition_date="1970-01-01",
+                asset="SOL",
+                amount=Decimal("25"),
+                cost_eur=Decimal("0"),
+                proceeds_eur=Decimal("25"),
+                gain_loss_eur=Decimal("25"),
+                holding_period="Short term",
+                wallet="LedgerA",
+                platform="LedgerA",
+                chain="SOL",
+                review_required=True,
+                review_reason=epoch_missing_date_reason_sol,
+            ),
+        ]
+
+        aggregation_logger = "tax_reporting.application.crypto.aggregation"
+
+        with caplog.at_level(logging.DEBUG, logger=aggregation_logger):
+            result = _aggregate_capital_entries(entries)
+
+        # Exactly ONE aggregate WARNING matching the prescribed summary substring.
+        aggregate_warnings = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == aggregation_logger
+            and "aggregated capital-gains entry(ies) with" in rec.getMessage()
+        ]
+        assert len(aggregate_warnings) == 1, (
+            f"Expected exactly ONE aggregate WARNING, got {aggregate_warnings}"
+        )
+
+        msg = aggregate_warnings[0]
+        # The summary names the total count (3 = one flagged entry per asset across both
+        # the no-date branch and the epoch-sentinel branch).
+        assert "3 aggregated capital-gains entry(ies) with" in msg, (
+            f"Aggregate must name the total count; got {msg!r}"
+        )
+        # ... and names each affected asset with its count (sorted by asset).
+        assert "ATOM: 1" in msg, (
+            f"Aggregate must name ATOM with count; got {msg!r}"
+        )
+        assert "SEI: 1" in msg, (
+            f"Aggregate must name SEI with count; got {msg!r}"
+        )
+        assert "SOL: 1" in msg, (
+            f"Aggregate must name SOL with count; got {msg!r}"
+        )
+        # The aggregate points reviewers at the DEBUG log and the review column.
+        assert "see DEBUG log" in msg, (
+            f"Aggregate must point at the DEBUG log for per-row detail; got {msg!r}"
+        )
+        assert "Crypto Gains review column" in msg, (
+            f"Aggregate must point at the review column; got {msg!r}"
+        )
+
+        # The per-row detail stays reachable at DEBUG. Both branches must be exercised:
+        # - two no-acquisition-date DEBUG records (SEI, ATOM) from the ``if not`` branch;
+        # - one epoch-sentinel DEBUG record (SOL) from the ``elif "1970-"`` branch.
+        per_row_no_date = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and r.name == aggregation_logger
+            and "no acquisition date" in r.getMessage().lower()
+        ]
+        assert len(per_row_no_date) == 2, (
+            f"Expected 2 per-row no-acquisition-date DEBUG records (SEI, ATOM), "
+            f"got {per_row_no_date}"
+        )
+        per_row_epoch = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and r.name == aggregation_logger
+            and "epoch sentinel" in r.getMessage().lower()
+        ]
+        assert len(per_row_epoch) == 1, (
+            f"Expected 1 per-row epoch-sentinel DEBUG record (SOL), got {per_row_epoch}"
+        )
+
+        # Design Invariant #3: the aggregated entries still carry review_required=True + the
+        # inherited pool-exhausted / epoch-sentinel review_reason (this is what surfaces in
+        # the Excel "YES:" cell).
+        by_asset = {e.asset: e for e in result}
+        assert by_asset["SEI"].review_required is True
+        assert by_asset["SEI"].review_reason == pool_exhausted_reason_sei
+        assert by_asset["ATOM"].review_required is True
+        assert by_asset["ATOM"].review_reason == pool_exhausted_reason_atom
+        assert by_asset["SOL"].review_required is True
+        assert by_asset["SOL"].review_reason == epoch_missing_date_reason_sol
+
+    def test_l_aggregate_not_emitted_when_all_dates_valid(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """No L-aggregate WARNING fires when every aggregated entry has a valid
+        acquisition date (r3 R3-3 negative guard).
+
+        The post-loop guard ``if no_date_entries or epoch_entries:`` at
+        ``aggregation.py:422`` is the only thing preventing a noisy ``0 ...
+        flagged ()`` WARNING on every run. The positive test above covers the
+        non-empty path; this test pins the empty path. Removing the guard leaves
+        the suite green, so without this assertion a future refactor dropping the
+        guard would ship silently. Fixture: two entries with the
+        ``_make_entry`` default valid ``acquisition_date`` (different assets so
+        they form distinct groups), neither empty nor epoch-sentinel.
+        """
+        entries = [
+            _make_entry(asset="BTC", disposal_date="2025-05-01", acquisition_date="2024-01-01"),
+            _make_entry(asset="ETH", disposal_date="2025-05-02", acquisition_date="2024-02-01"),
+        ]
+
+        aggregation_logger = "tax_reporting.application.crypto.aggregation"
+
+        with caplog.at_level(logging.DEBUG, logger=aggregation_logger):
+            _aggregate_capital_entries(entries)
+
+        aggregate_warnings = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == aggregation_logger
+            and "aggregated capital-gains entry(ies) with" in rec.getMessage()
+        ]
+        assert aggregate_warnings == [], (
+            "No L-aggregate WARNING should fire when all acquisition dates are valid; "
+            f"got {aggregate_warnings}"
+        )
+
+
 def test_mixed_lot_aggregated_drops_zero_basis_reason():
     """Mixed-lot group: one noisy all-zero lot does not poison the aggregated row.
 

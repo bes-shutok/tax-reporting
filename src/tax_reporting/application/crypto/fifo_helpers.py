@@ -118,6 +118,8 @@ def _process_single_asset_fifo(  # noqa: PLR0913
     phantom_transfers: dict,
     logger: logging.Logger,
     total_unmatched_taxable: list[int],
+    cross_asset_flag_counts: dict[str, int],
+    transfer_flag_counts: dict[str, int],
 ) -> list[CryptoFifoRealization]:
     """Run FIFO for a single asset across all its platforms and return realizations.
 
@@ -141,6 +143,16 @@ def _process_single_asset_fifo(  # noqa: PLR0913
             the number of taxable disposals with no matching acquisition at or before
             the disposal date (pattern F) across all (asset, platform) results. Summed
             by the caller to emit ONE aggregate WARNING.
+        cross_asset_flag_counts: Shared mutable dict (pattern J) keyed by cross-asset
+            deferred-acquisition cause (``unresolved`` / ``multi_sender`` /
+            ``zero_carryover`` / ``partial``), threaded into ``resolve_cross_asset_exchanges``
+            so each per-row DEBUG branch increments its cause. The caller sums the values
+            to emit ONE aggregate WARNING after the per-asset loop.
+        transfer_flag_counts: Shared mutable dict (pattern K) keyed by transfer carry-over
+            cause (``requires_review`` / ``unresolved``), threaded into
+            ``_resolve_intra_asset_transfers`` (the per-platform transfer-resolution loop
+            below) so each per-row DEBUG branch increments its cause. The caller sums the
+            values to emit ONE aggregate WARNING after the per-asset loop.
 
     Returns:
         All realizations produced for this asset across all platforms.
@@ -151,6 +163,7 @@ def _process_single_asset_fifo(  # noqa: PLR0913
         fifo_by_asset,
         tx_key_to_sender=tx_key_to_sender,
         tx_key_to_asset_totals=all_asset_totals,
+        flag_counts=cross_asset_flag_counts,
     )
     acqs = resolved.get(asset, raw_acqs)
 
@@ -174,7 +187,9 @@ def _process_single_asset_fifo(  # noqa: PLR0913
             continue
         p_acqs = [a for a in acqs if a.acq.platform == platform]
         p_cons = [c for c in cons if c.con.platform == platform]
-        p_acqs = _resolve_intra_asset_transfers(p_acqs, per_platform_carryover, per_platform_partial_map)
+        p_acqs = _resolve_intra_asset_transfers(
+            p_acqs, per_platform_carryover, per_platform_partial_map, flag_counts=transfer_flag_counts
+        )
         if p_acqs or p_cons:
             result = compute_fifo_for_asset(p_acqs, p_cons, asset, platform)
             result = _apply_phantom_lot_flags(result, asset, platform, phantom_transfers)
@@ -199,6 +214,42 @@ def _process_single_asset_fifo(  # noqa: PLR0913
         partial_carryover_tx_keys=frozenset(merged_partial_tx_keys),
     )
     return asset_realizations
+
+
+def _emit_flagged_summary(
+    counts: dict[str, int],
+    noun: str,
+    logger: logging.Logger,
+) -> None:
+    """Emit ONE aggregate WARNING summarizing a dict-counter of flagged causes.
+
+    Shared emitter for patterns J (cross-asset deferred-acquisition) and K (transfer
+    carry-over): each per-row WARNING branch in ``_resolve_single_acquisition`` /
+    ``_resolve_intra_asset_transfers`` was downgraded to DEBUG and increments its cause
+    key in a threaded mutable dict. This collapses the N per-row emissions into ONE
+    WARNING naming the total count and a per-cause breakdown (sorted by cause key),
+    pointing reviewers at the DEBUG log and the Crypto Gains review column for the
+    actionable per-row detail (Design Invariants #3, #5).
+
+    Pattern F (``total_unmatched_taxable``) is a single-cell ``list[int]`` with a
+    different message shape and stays inline at its emission site -- NOT routed here.
+
+    Args:
+        counts: Shared mutable dict ``{cause_key: count}``. No-op when empty.
+        noun: Aggregated noun phrase used in the message (e.g. ``"cross-asset deferred
+            acquisition(s)"``); interpolated as ``"<total> <noun> flagged (<breakdown>)"``.
+        logger: Logger to emit the WARNING on (the ``fifo_helpers`` module logger owns
+            the post-loop emission per Design Invariant #4).
+    """
+    if not counts:
+        return
+    total = sum(counts.values())
+    logger.warning(
+        "%d %s flagged (%s); see DEBUG log and Crypto Gains review column for per-row detail",
+        total,
+        noun,
+        ", ".join(f"{k}: {v}" for k, v in sorted(counts.items())),
+    )
 
 
 def _rebuild_fifo_for_loan_affected_assets(
@@ -276,6 +327,24 @@ def _rebuild_fifo_for_loan_affected_assets(
     # stays at DEBUG (Design Invariant #3) and the review_reason field carries the
     # actionable per-row context (Design Invariant #4).
     total_unmatched_taxable: list[int] = [0]
+    # Pattern J: shared mutable dict accumulating cross-asset deferred-acquisition
+    # causes (unresolved / multi_sender / zero_carryover / partial) across all assets.
+    # Threaded into ``_process_single_asset_fifo`` -> ``resolve_cross_asset_exchanges``
+    # -> ``_resolve_single_acquisition``, where each per-row WARNING branch was
+    # downgraded to DEBUG (message text unchanged) and increments its cause key. Emitted
+    # as ONE aggregate WARNING after the per-asset loop (Design Invariant #5: per-cause
+    # breakdown preserved). ``review_required``/``review_reason`` on each resolved
+    # acquisition are the UNCHANGED audit signal (Design Invariant #3).
+    cross_asset_flag_counts: dict[str, int] = {}
+    # Pattern K: shared mutable dict accumulating transfer carry-over causes
+    # (requires_review / unresolved) across all (asset, platform) transfer resolutions.
+    # Threaded into ``_process_single_asset_fifo`` (per-platform loop) ->
+    # ``_resolve_intra_asset_transfers``, where each per-row WARNING branch was
+    # downgraded to DEBUG (message text unchanged) and increments its cause key. Emitted
+    # as ONE aggregate WARNING after the per-asset loop. ``review_required`` /
+    # ``review_reason`` / ``cost_basis_eur`` on each resolved acquisition are the
+    # UNCHANGED audit signal (Design Invariant #3).
+    transfer_flag_counts: dict[str, int] = {}
 
     for asset in processing_order:
         all_realizations.extend(
@@ -289,6 +358,8 @@ def _rebuild_fifo_for_loan_affected_assets(
                 phantom_transfers,
                 logger,
                 total_unmatched_taxable=total_unmatched_taxable,
+                cross_asset_flag_counts=cross_asset_flag_counts,
+                transfer_flag_counts=transfer_flag_counts,
             )
         )
 
@@ -310,6 +381,20 @@ def _rebuild_fifo_for_loan_affected_assets(
             "cost basis; see DEBUG log and realization review_reason for details",
             total_unmatched_taxable[0],
         )
+
+    # Pattern J aggregate WARNING: cross-asset deferred-acquisition per-row emissions
+    # were downgraded to DEBUG in ``_resolve_single_acquisition``; this single summary
+    # preserves the audit signal with a per-cause breakdown (Design Invariant #5). Each
+    # resolved acquisition still carries ``review_required``/``review_reason``
+    # (Design Invariant #3, unchanged), which is the actionable per-row surface.
+    _emit_flagged_summary(cross_asset_flag_counts, "cross-asset deferred acquisition(s)", logger)
+
+    # Pattern K aggregate WARNING: transfer carry-over per-row emissions were downgraded
+    # to DEBUG in ``_resolve_intra_asset_transfers``; this single summary preserves the
+    # audit signal with a per-cause breakdown (requires_review / unresolved). Each
+    # resolved acquisition still carries ``review_required``/``review_reason``
+    # (Design Invariant #3, unchanged), which is the actionable per-row surface.
+    _emit_flagged_summary(transfer_flag_counts, "transfer carry-over acquisition(s)", logger)
 
     # Flag realizations for assets with TH parse errors.
     if parse_failures:

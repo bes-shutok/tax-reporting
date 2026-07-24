@@ -21,12 +21,11 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Catch row-level parse errors per row (warn and skip); do not let one bad row discard the whole dataset.
 - Inside a row-level `try...except`, reuse the parsed object for any second derived value; wrap a fallible secondary parse in a nested `try...except` when a trusted-path branch must not be skipped. See UL #80, #125.
 - When an optional field from external input is absent, use a type-safe sentinel (e.g. `"0"` for numeric, `"MISSING"` when `"0"` is itself valid), not `""`. See `coding_guidelines.md` #4.
-- Data-loss conditions (unmatched items, dropped records) must be logged at warning+, never debug. See `coding_guidelines.md` #5.
+- Data-loss conditions (unmatched items, dropped records) must never be silently discarded: apply an explicit fallback and log at warning+, never debug. See `coding_guidelines.md` #5.
 - All-or-nothing validation for required file sets: none present -> skip; partial set -> raise `FileProcessingError` listing missing files; all present -> proceed.
 - Verification/hygiene guards must fail closed when the manifest is absent; `grep -f <missing>` exits non-zero, so `cmd && echo BAD || echo GOOD` false-passes.
 - Validation that depends on complete state runs post-aggregation, not per-row (mid-accumulation state can be temporarily invalid).
 - When reusing a validation/security pattern, inherit the guards but recalibrate exception handling to the cost of silent failure at the new call site.
-- Unmatched items from matching algorithms must never be silently discarded; apply an explicit fallback and log a warning.
 - When an aggregator takes `entries[0]` for a field assumed constant across a group, add a heterogeneity guard. Sibling aggregators merging the same type must use byte-identical patterns or a shared helper.
 - Partial or uncertain results must carry an explicit indicator so the user cannot mistake them for complete. Review flags must include specific actionable explanations, not bare booleans.
 - User-facing output labels use self-explanatory terminology, not terse names from source formats; f-strings interpolating `str | None` must degrade explicitly. See `coding_guidelines.md` #6.
@@ -62,7 +61,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Wallet labels are discovery hints only; final chain/country mappings come from archived operator origin documents, not asset symbols. Use `Unknown` when labels don't allow chain derivation.
 - Test-side per-row platform attribution must mirror `wallet_kind._row_platform` (skip empty OR case-insensitive `"unknown"`); bare `tr.sending_wallet or tr.receiving_wallet` misattributes. See `development_lessons.md` #44.
 - Throwaway shadow/verification scripts re-parsing an external-report CSV must call the production reader, not `csv.DictReader` (preamble/header handling diverges). See `development_lessons.md` #45.
-- Doc-drift grep backstops must scan `docs/maintenance/`, `docs/architecture/`, `README.md` prose; when a constant is added, sweep the NEW value at every rendered-text site, not only the deleted literal. See `development_lessons.md` #55, #58.
+- Doc-drift grep backstops must scan `docs/maintenance/`, `docs/architecture/`, `README.md` prose; when a constant is added, sweep the NEW value at every rendered-text site, not only the deleted literal. See `development_lessons.md` #55, #58, #70.
 - Operator mapping temporal validity: `service_start_date` (matching) vs `valid_from` (audit-only); set `service_start_date <= valid_from`, leave `valid_from` null when unknown.
 - Module size: when a module exceeds 1,000 lines or 50 functions/classes, extract cohesive responsibilities into separate modules.
 - Orchestration layers stay thin (~500 lines max); extract sub-orchestrators or move domain logic to dedicated services when coordination grows.
@@ -70,7 +69,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 ### 3. Repository Constraints
 
 - Optional crypto ingestion is non-blocking: missing/mismatched-year/unparseable Koinly input emits a warning and continues IB report generation without crypto data.
-- Partially-unmatched sells (FIFO exhausts all buys before all sells are consumed) must never be silently dropped. Apply the placeholder-buy mechanism to the remaining sell quantity, log at `logger.warning`, and include the capital gain line.
+- Partially-unmatched sells must never be silently dropped. Apply the placeholder-buy mechanism to the remaining sell quantity, log at `logger.warning`, and include the capital gain line.
 - Partially-matched buys written to the rollover CSV use proportional fee: `proportional_fee = action.fee * (rolled_quantity / original_quantity)`.
 - Dividend per-symbol validation runs after all rows for all symbols are accumulated, not per row. Symbols that fail post-accumulation validation are skipped with `logger.warning`; they must not abort other symbols.
 - Aggregate crypto capital gains by `(disposal_date, asset, platform, holding_period)` before reporting. Do not bypass `_aggregate_capital_entries()`.
@@ -85,7 +84,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - When a downstream consumer synthesises a `review_reason` from a flag multiple upstream cases set, branch on the discriminator (sentinel/enum) the upstream sets; RED tests must exercise each cause. See UL #91.
 - When migrating real fixtures to synthetic data, keep assertions scoped to the target behavior and use e2e-realizable analogs when literal inputs cannot reach the full pipeline. See UL #114, #193.
 - Crypto capital gains statistics must be computed via `CryptoCapitalGainStats.from_entries()` and rendered as "1b. CAPITAL GAINS STATISTICS"; grand totals come from the full entries list, not per-period subtotals.
-- Token origin resolution uses `TokenOriginResolver` with implicit `(date, asset, wallet)` correlation; unmatched rows return `unknown` (blank). Supports LP/airdrop operations (`AIRDROP`, `LIQUIDITY_WITHDRAWAL`, `LIQUIDITY_PROVISION`, `DIRECT_PURCHASE`); do not reintroduce same-day disposal-context matching.
+- Token origin resolution uses `TokenOriginResolver` with implicit `(date, asset, wallet)` correlation; unmatched rows return `unknown` (see `crypto_implementation_guidelines.md`). Do not reintroduce same-day disposal-context matching.
 - `token_swap_history` aggregation via `_aggregate_origin_field()`: all lots same origin -> use it; else join unique non-empty origins with '; '; append "N lot(s) unresolved" when some are unknown.
 - Koinly transaction history files use `*transaction_history*.csv`, not `*transactions_report*.csv`.
 - Koinly TH `TxHash` is the on-chain tx identifier; `TxSrc`/`TxDest` are wallet addresses, not tx-id candidates. `TxCorrelationKey.tx_id` derives from `tx_hash` alone; never collapse the three fields into one precedence chain. See `development_lessons.md` #43.
@@ -111,34 +110,34 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - When a plan is revised between RED and GREEN, re-read each RED test against current design invariants before flipping GREEN. Update changed assertions and cite the invariant.
 - A committed RED test that is itself the deliverable (a later task flips it GREEN) must fail via `pytest.fail(<message>)` naming the resolving task, never an unhandled exception.
 - A pre-existing RED draft matching the Task spec's names is an abstraction over the verbatim spec; re-derive its mechanism before trusting it. See `development_lessons.md` #62.
-- A completed plan's task status note (`SKIPPED`/`deferred`/`done`) or feature-notes Status header is not ground truth for whether the artifact shipped; read the canonical artifact (PD/ADR file, constant). See `development_lessons.md` #65.
+- A completed plan's task status note (`SKIPPED`/`deferred`/`done`) or feature-notes Status header is not ground truth for whether the artifact shipped; read the canonical artifact (PD/ADR, constant). See `development_lessons.md` #65.
 - A regression test must exercise the production call site it claims to guard (not an adjacent derived value); before merging, revert the guarded change and confirm the test fails. See `development_lessons.md` #46.
-- A test fixture binding a named local from a positional CSV field must put the value at the column index the production reader extracts; a wrong comma count leaves the field at its default while green hides it. See `development_lessons.md` #59.
+- A test fixture binding a named local from a positional CSV field must put the value at the column index the production reader extracts; a wrong comma count leaves it at its default while green hides it. See `development_lessons.md` #59, #60.
 - When building an index from source data, handle duplicate keys by summing, never silent overwrite.
-- Test string sanitization/validation/parsing for edge cases: empty, whitespace-only, multi-byte, control chars, multi-char prefixes, padded.
+- Test string sanitization/validation/parsing edge cases: empty, whitespace-only, multi-byte, control chars, multi-char prefixes, padded.
 - Test error paths including double-failure (e.g. aggregation fails AND workbook.close fails).
-- Examine existing source data files (`resources/source/koinly*/`) directly before asking for samples (Glob/Read).
+- Examine existing source data files (`resources/source/koinly*/`) directly before asking for samples.
 - Commits allowed by default; never push/PR without instruction (Git Push Policy); `~/Projects/myrepos` stay local-only.
 - Always use `uv run pytest`, not `uvx pytest`.
 - Never write to `docs/review/` (singular); use `docs/history/reviews/` (plural). See `development_lessons.md` #29.
 - **Never introduce a hardcoded value (asset ticker, constant set, threshold, magic string, fixed ordering) without first flagging it and asking the user.**
-- Verification-first task ordering for "is X handled correctly?": code inspection, test execution, doc review before implementation; skip if verification shows correctness.
-- **CRITICAL:** Code inspection is INSUFFICIENT for "is X handled correctly?". Perform full data-trace verification across all source reports and confirm code branches on every authority-cited discriminator. (Also applies to logging-config runtime claims; see `development_lessons.md` #66.)
-- When a user provides multiple examples to investigate, trace and document ALL; do not assume the first example's root cause covers the rest.
+- Verification-first ordering for "is X handled correctly?": code inspection, test execution, doc review before implementation; skip if verification shows correctness.
+- **CRITICAL:** Code inspection is INSUFFICIENT for "is X handled correctly?". Perform full data-trace verification across all source reports; confirm code branches on every authority-cited discriminator. (Logging-config runtime claims too; see `development_lessons.md` #66.)
+- When a user provides multiple examples to investigate, trace and document ALL; do not assume the first's root cause covers the rest.
 - When verifying a claim that a specific amount is missing from source data, verify whether the report output is an aggregation before concluding it is missing.
-- When adding cross-module utility calls, verify imports resolve (`uv run python -c "from module import function"`).
+- When adding cross-module utility calls, verify imports resolve (`uv run python -c "from m import f"`).
 - Static hygiene/leak guards must scan every file the protected value could realistically reach, including `skip`-in-CI tests whose real fixture is absent.
 - New boolean-flag features need backward-compat tests verifying the "disabled" state preserves existing behavior, not just "enabled" works.
 - When flipping a boolean-flag DEFAULT, characterization tests pinning legacy behavior must set the flag to its old value; add dedicated tests for the new path. See `development_lessons.md` #51.
 - When extracting a function to a new module, check dependencies on constants from the source module (circular imports).
 - On refactoring branches, fix all in-scope code review findings in the same branch, including findings touching changed files or addressing tech debt exposed by the extraction. See `development_lessons.md` #28.
-- When a task REORDERS (moves) a block inside a large function, verify structural singularity (moved block and `def` each appear once); "tests pass" is insufficient when the path lacks end-to-end coverage. See `development_lessons.md` #67.
-- When invoking `doing-code-review` (directly or via `execute-plan` Phase 3), launch the full `review-panel-selection.md` panel; "Solo" is a dedup label, not a skip mode. See user-level `development_lessons.md` #190.
-- For edge case tests, read the function implementation first to understand what patterns it supports; don't assume from name/docs.
+- When a task REORDERS (moves) a block in a large function, verify structural singularity (moved block and `def` each appear once); "tests pass" is insufficient without end-to-end coverage. See `development_lessons.md` #67.
+- When invoking `doing-code-review` (directly or via `execute-plan` Phase 3), launch the full `review-panel-selection.md` panel; "Solo" is a dedup label, not a skip mode. See user-level lessons #190.
+- For edge-case tests, read the function implementation first to understand its patterns; don't assume from name/docs.
 - Validation functions with conditional logic need comprehensive edge case coverage (format, zero-padding, range, calendar/time validity, boundaries, whitespace).
-- Extracted helpers need direct unit test coverage, not just indirect integration. Verify early returns, branches, boundaries, state mutation, edge cases.
+- Extracted helpers need direct unit tests, not just indirect integration (early returns, branches, boundaries, state mutation, edge cases).
 - Discriminating tests assert a property that FAILS under a wrong implementation; cover N independent guards as N parametrized cases, each asserting its own signal (not one OR'd case).
-- When a plan task, design invariant, or gist example claims something about production code (field semantics, file path, line number, function behavior, return shape), verify against actual source BEFORE writing dependent plan tasks.
+- When a plan task, design invariant, or gist example makes any production-code claim (semantics, path, line, behavior, return shape), verify against actual source BEFORE writing dependent plan tasks.
 - Resolve pseudocode-vs-test contradictions before implementation.
 - In a refactor with a byte-identical non-regression criterion, a clause adding a net-new side effect the code does NOT emit is contradictory; verify it exists pre-refactor, else route to the owning feature task.
 - Trace filtered TH rows back to their OGR source rows to confirm Type.
@@ -148,18 +147,20 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Run fallible resolutions before mutating shared match structures.
 - Recompute tolerance after shrinking sliding-window matchers.
 - Re-run feasibility checks against the mutated post-phase-1 input set.
-- When a task changes data flow semantics (filter/dedup/transformation split), grep ALL `tests/` for assertions on the affected data identity tuple, not just the current task's file.
-- When a plan task changes a function signature OR rendered output text (description/label cell), grep ALL test tiers for callers and row-locators matching the stale label, including method/function identifiers, not just prose.
+- When a task changes data flow semantics (filter/dedup/split), grep ALL `tests/` for assertions on the affected data identity tuple, not just the current task's file.
+- When a plan task changes a function signature OR rendered output text (label cell), grep ALL test tiers for callers and row-locators matching the stale label, including method/function identifiers, not just prose.
 - When renaming fixture paths/filenames, grep ALL test files AND docs for every shape (directory, filename, stem, prose); update conftest constants and scattered refs. See `development_lessons.md` #47.
+- Before downgrading a per-row `logger.warning` to `logger.debug` (warning-grouping recipe, `project-guidelines.md` #7), verify the site's review surface and sweep ALL `caplog.at_level(WARNING)` assertions on the substring; also sweep docs for the level phrase. See `development_lessons.md` #69, #70.
 - When a plan task removes dataclass fields, grep test construction sites; shared conftest helpers forwarding `**overrides` must filter removed keys or the suite becomes uncollectable. See `development_lessons.md` #54.
-- A collection-time `NameError` naming a fixture the edited code does not use after inserting a `class`/`def` signals an orphaned indented body re-parented onto the new block; remove it. See `development_lessons.md` #57.
-- For verification-only tasks inspecting `git diff <base>..HEAD` with missing expected files, check if a prior same-session commit already applied the change.
+- A collection-time `NameError` naming a fixture the edited code does not use, after inserting a `class`/`def`, signals an orphaned indented body re-parented onto the new block; remove it. See `development_lessons.md` #57.
+- For verification-only tasks inspecting `git diff <base>..HEAD` with missing expected files, check if a prior same-session commit already applied them.
 - For comparing tool output against the committed baseline (linter/formatter), pipe the committed blob or use `git worktree add`; never `git stash`.
-- Before `execute-plan` Step 1.1 on a pre-migration plan, grep and translate moved path prefixes (`docs/<module>/`) to their migrated locations in the plan body and `execute-plan` Step 0.4b.
-- When validating branch compliance (e.g. em dashes), do not rely on working-tree filters like "touched"/"unstaged" if changes are already committed; diff explicitly against the target branch.
+- Before a commit following a sub-agent `docs-branch`/worktree op, verify the working tree matches HEAD (a botched op can leave a staged index revert that a blind commit captures as a rollback). See `development_lessons.md` #71.
+- Before `execute-plan` Step 1.1 on a pre-migration plan, grep and translate moved path prefixes (`docs/<module>/`) to migrated locations in the plan body and Step 0.4b.
+- When validating branch compliance (e.g. em dashes) after changes are committed, diff explicitly against the target branch; do not rely on working-tree "touched"/"unstaged" filters.
 - **Never proceed to plan execution or make code changes without explicit user approval when in Planning Mode.**
 - Request a plan amendment before omitting prescribed behaviors.
-- Temporary artifacts must not be placed in git-tracked folders: **documents** (`.md`/`.patch`) in `{tmp_dir}` (`docs/tmp/`); throwaway **scripts/scratch data** (`.py`/`.csv`/`__pycache__`) in repo-root `tmp/`. See `development_lessons.md` #34.
+- Temporary artifacts must not be in git-tracked folders: **documents** (`.md`/`.patch`) in `{tmp_dir}` (`docs/tmp/`); throwaway **scripts/scratch data** (`.py`/`.csv`/`__pycache__`) in repo-root `tmp/`. See `development_lessons.md` #34.
 
 ### 5. Domain Knowledge References
 
@@ -209,8 +210,8 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 ## Code Quality
 
 - **Ruff** is primary linter/formatter (`pyproject.toml`: Python 3.14, line length 120, full ruleset). Do not run `ruff check --fix` on modules that re-export for backward compat (e.g. `crypto_reporting.py`); `F401` strips re-exported names tests depend on.
-- Type hints: modern syntax (`X | Y`) with `from __future__ import annotations`; `datetime.UTC`, `pathlib.Path`, lazy logging, f-string exceptions, named-constant magic numbers (except tests). Never default essential identifiers/indices to 0. Refactor high-complexity functions; `# noqa: PLR0912` with comment if unavoidable.
-- Docstrings: always for public modules/classes/`__init__`/complex functions; skip trivial getters/setters/`__repr__`/clear private methods/test functions (Google convention).
+- Type hints: modern syntax (`X | Y`) with `from __future__ import annotations`; lazy logging, f-string exceptions, named-constant magic numbers (except tests). Never default essential indices/identifiers to 0. Refactor complex functions.
+- Docstrings: always for public modules/classes/`__init__`/complex functions; skip trivial getters/setters/`__repr__`/private methods/test functions.
 - **Code review checklist:** required params truly required; error messages have row context; exception chaining preserves originals; logging parameterized; fail-fast vs missing-data distinction correct.
 
 ## Data Handling

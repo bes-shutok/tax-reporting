@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import replace
 from decimal import Decimal
 from typing import TYPE_CHECKING, Final, TypedDict
@@ -338,24 +339,35 @@ def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[Cr
 
     logger = logging.getLogger(__name__)
     result = []
+    # Pattern L (per-row -> DEBUG + post-loop aggregate): this function is called once
+    # per run from crypto_reporting.py (NOT inside a per-asset loop), so the counter +
+    # aggregate live directly here -- the predecessor's "EASY" pattern-A shape. The
+    # audit signal stays on the data: the aggregated entry inherits the lot's
+    # review_required/review_reason set by predecessor pattern F, which surfaces in the
+    # Crypto Gains "YES:" cell. The aggregate just collapses N identical WARNINGs into
+    # one naming the affected assets.
+    no_date_entries: Counter[str] = Counter()
+    epoch_entries: Counter[str] = Counter()
     for group in groups.values():
         first = group[0]
         non_empty_dates = [e.acquisition_date for e in group if e.acquisition_date]
         acquisition_date = min(non_empty_dates) if non_empty_dates else ""
         if not acquisition_date:
-            logger.warning(
+            logger.debug(
                 "Aggregated entry for %r sold %s has no acquisition date; "
                 "one or more lots had a pool-exhausted placeholder with empty acquisition date",
                 first.asset,
                 first.disposal_date,
             )
+            no_date_entries[first.asset] += 1
         elif acquisition_date.startswith("1970-"):
-            logger.warning(
+            logger.debug(
                 "Aggregated entry for %r sold %s has epoch sentinel acquisition date; "
                 "one or more lots had missing Date Acquired in Koinly export",
                 first.asset,
                 first.disposal_date,
             )
+            epoch_entries[first.asset] += 1
         # Detect multiple acquisition dates within the aggregated group
         unique_acquisition_dates = sorted(set(dict.fromkeys(non_empty_dates)))
         multi_acquisition_dates = len(unique_acquisition_dates) > 1
@@ -400,6 +412,23 @@ def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[Cr
             replace(aggregated_entry, review_required=review_required, review_reason=review_reason)
         )
     result.sort(key=lambda e: (e.disposal_date, e.asset, e.platform, e.holding_period))
+    # Pattern L: emit ONE aggregate WARNING when any aggregated entry had a missing or
+    # epoch-sentinel acquisition date from a pool-exhausted placeholder lot. The per-row
+    # detail (asset + disposal date + cause) is reachable at DEBUG above; the Excel Crypto
+    # Gains "YES:" review column carries the inherited pool-exhausted review_reason. The
+    # breakdown is keyed by asset with a SUMMED count across both causes (no-date and epoch
+    # are added per-asset via Counter addition), so the summary names the total and the
+    # affected assets without distinguishing the per-cause split.
+    if no_date_entries or epoch_entries:
+        combined: Counter[str] = no_date_entries + epoch_entries
+        total = sum(combined.values())
+        logger.warning(
+            "%d aggregated capital-gains entry(ies) with missing/epoch acquisition dates "
+            "from pool-exhausted placeholders (%s); see DEBUG log and Crypto Gains review "
+            "column for details",
+            total,
+            ", ".join(f"{a}: {n}" for a, n in sorted(combined.items())),
+        )
     return result
 
 

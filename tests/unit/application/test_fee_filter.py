@@ -852,17 +852,25 @@ class TestMalformedRows:
 
 
 class TestUntaggedWhitelistedWarning:
-    """r7 M5: untagged-whitelisted removals emit a per-lot WARNING (not INFO)."""
+    """Pattern I: untagged-whitelisted removals group-collapse to ONE aggregate WARNING.
 
-    def test_untagged_whitelisted_removal_emits_warning(
+    The per-tx_hash detail moves to DEBUG (audit trail preserved at DEBUG in the
+    file handler); exactly ONE aggregate WARNING carries the count + per-asset
+    breakdown. Stays WARNING because there is no Excel review surface for these
+    removals - the WARNING is the audit trail (distinct from J/K/L downgrades).
+    """
+
+    def test_untagged_whitelisted_per_row_at_debug_and_one_aggregate_warning(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Untagged-whitelisted SOL removal -> lot removed AND a per-lot WARNING logged.
+        """Untagged-whitelisted SOL removal -> per-tx_hash detail at DEBUG + ONE aggregate WARNING.
 
-        Asserts the WARNING's FORMATTED MESSAGE contains BOTH the asset (SOL) AND
-        the parsed Net Value (EUR) string. SCOPE the assertion to the per-lot
-        WARNING (the fee pass ALSO emits one aggregate "Fee CG dedup summary"
-        WARNING); filter records to exclude the summary.
+        Pattern I (group-collapse, NOT downgrade): the per-tx_hash detail
+        (asset=SOL, Net Value=0.3, tx_hash=0xAAA) is captured at DEBUG, and
+        exactly ONE WARNING-level record carries the new aggregate leading-phrase
+        (a count followed by the pluralizable ``"disposal(s)"`` tail that
+        distinguishes it from the per-row singular ``"disposal for"``). The
+        aggregate carries the count and a per-asset breakdown.
         """
         th = tmp_path / "th.csv"
         _write_th_csv(
@@ -883,7 +891,8 @@ class TestUntaggedWhitelistedWarning:
             amount=Decimal("0.00100000"),
         )
 
-        with caplog.at_level(logging.WARNING, logger=_FEE_LOGGER):
+        # caplog at DEBUG so the downgraded per-row detail is captured.
+        with caplog.at_level(logging.DEBUG, logger=_FEE_LOGGER):
             remaining, _suspects = remove_transaction_fees(
                 capital_entries=[lot],
                 transaction_history_file=th,
@@ -891,24 +900,65 @@ class TestUntaggedWhitelistedWarning:
             )
 
         assert remaining == []
-        per_lot_warnings = [
+
+        # Per-tx_hash detail captured at DEBUG (not WARNING): the aggregate
+        # leading-phrase must NOT match a per-row record.
+        per_row_debug = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and "Removed untagged-whitelisted fee disposal for" in r.getMessage()
+        ]
+        assert per_row_debug, (
+            "expected the per-tx_hash detail at DEBUG for the untagged-whitelisted removal"
+        )
+        per_row_msg = per_row_debug[0].getMessage()
+        assert "SOL" in per_row_msg
+        assert "0.3" in per_row_msg
+        assert "0xAAA" in per_row_msg
+
+        # Exactly ONE WARNING-level aggregate record matching the new aggregate
+        # leading-phrase; it carries the count and per-asset breakdown. The
+        # aggregate wording uses the pluralizable "disposal(s)" tail.
+        aggregate_warnings = [
             r
             for r in caplog.records
             if r.levelno == logging.WARNING
-            and "Removed untagged-whitelisted fee disposal" in r.getMessage()
+            and "untagged-whitelisted fee disposal(s) (" in r.getMessage()
         ]
-        assert per_lot_warnings, "expected a per-lot WARNING for the untagged-whitelisted removal"
-        msg = per_lot_warnings[0].getMessage()
-        assert "SOL" in msg
-        assert "0.3" in msg
-        assert "0xAAA" in msg
-        # The aggregate summary WARNING also fired (so >= 2 WARNINGs total).
-        assert len([r for r in caplog.records if r.levelno == logging.WARNING]) >= 2
+        assert len(aggregate_warnings) == 1, (
+            "expected exactly ONE aggregate WARNING for the untagged-whitelisted removals, "
+            f"got {len(aggregate_warnings)}"
+        )
+        aggregate_msg = aggregate_warnings[0].getMessage()
+        assert aggregate_msg.startswith("Removed 1 untagged-whitelisted fee disposal"), (
+            f"aggregate must start with count + leading-phrase; got {aggregate_msg!r}"
+        )
+        # Per-asset breakdown names SOL with count 1.
+        assert "SOL: 1" in aggregate_msg, (
+            f"aggregate per-asset breakdown must name 'SOL: 1'; got {aggregate_msg!r}"
+        )
+        # The aggregate tail reminds the reviewer to verify each is a network fee.
+        assert "verify each is a network fee" in aggregate_msg, (
+            f"aggregate must carry the 'verify each is a network fee' reminder; got {aggregate_msg!r}"
+        )
 
-    def test_tagged_removal_logs_info_not_warning(
+    def test_tagged_removal_does_not_emit_untagged_aggregate(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """A tagged Cost removal logs at INFO (not WARNING)."""
+        """A tagged Cost removal logs at INFO and emits NO untagged-whitelisted aggregate.
+
+        Verifies the aggregate wording does not collide with the tagged path:
+        no WARNING matching the untagged-whitelisted aggregate leading-phrase
+        AND no DEBUG record containing the per-row prefix. The ``not any(...)``
+        predicate keys on the aggregate-distinguishing tail
+        (``"disposal(s) ("`` / ``"verify each is a network fee"``), NOT on the
+        shared ``"Removed untagged-whitelisted fee disposal"`` prefix alone, so a
+        mixed tagged+untagged fixture would not let the aggregate trip the
+        negative check (r1 finding #3 wording discipline). The Task 1 grep-gate
+        (count of ``"disposal for"`` == 1) is the load-bearing invariant; this
+        negative assertion mirrors it.
+        """
         th = tmp_path / "th.csv"
         _write_th_csv(
             th,
@@ -929,22 +979,35 @@ class TestUntaggedWhitelistedWarning:
             amount=Decimal("0.00100000"),
         )
 
-        with caplog.at_level(logging.INFO, logger=_FEE_LOGGER):
+        # caplog at DEBUG so a stray per-row emission would be captured too.
+        with caplog.at_level(logging.DEBUG, logger=_FEE_LOGGER):
             remove_transaction_fees(
                 capital_entries=[lot],
                 transaction_history_file=th,
                 jurisdiction=_make_jurisdiction(),
             )
 
+        # Tagged removal still logs at INFO (the INFO branch is UNCHANGED).
         assert any(
             r.levelno == logging.INFO and "Removed fee-matched CG lot" in r.getMessage()
             for r in caplog.records
         ), "tagged removal must log at INFO"
+
+        # No WARNING-level record matches the untagged-whitelisted aggregate
+        # (keys on the aggregate-distinguishing tail, not the shared prefix).
         assert not any(
             r.levelno == logging.WARNING
-            and "Removed untagged-whitelisted fee disposal" in r.getMessage()
+            and "untagged-whitelisted fee disposal(s) (" in r.getMessage()
             for r in caplog.records
-        ), "tagged removal must NOT log the untagged-whitelisted WARNING"
+        ), "tagged removal must NOT emit the untagged-whitelisted aggregate WARNING"
+
+        # No DEBUG per-row record contains the per-row prefix (the load-bearing
+        # grep-gate invariant: ``"disposal for"`` count is 0 for a tagged-only run).
+        assert not any(
+            r.levelno == logging.DEBUG
+            and "Removed untagged-whitelisted fee disposal for" in r.getMessage()
+            for r in caplog.records
+        ), "tagged removal must NOT emit the untagged-whitelisted per-row DEBUG record"
 
 
 class TestSuspects:

@@ -378,17 +378,28 @@ def _identify_fee_and_suspect_events(
 def _log_fee_removals(
     matched_metadata: list[tuple[IndexedLot[CryptoCapitalGainEntry], str, FeeThEvent]],
 ) -> None:
-    """Per-lot INFO/WARNING logs for fee-matched CG lot removals.
+    """Per-lot INFO/DEBUG logs for fee-matched CG lot removals + ONE aggregate WARNING.
 
-    Trusted tagged-fee removals log at INFO. Untagged-whitelisted removals log
-    at WARNING (they CAN be a genuine dust disposal; Design Invariant 3) naming
-    the asset + ``Net Value (EUR)`` + TxHash so a misclassification is visible
-    during the release-gate spot-check (r7 M5).
+    Trusted tagged-fee removals log at INFO. Embedded-fee removals log at INFO.
+    Untagged-whitelisted removals log the per-tx_hash detail at DEBUG (asset +
+    ``Net Value (EUR)`` + TxHash), then ONE aggregate WARNING collapses them into
+    a count + per-asset breakdown. The aggregate stays WARNING because there is
+    NO Excel review surface for these removals (the removal returns
+    ``capital_entries`` minus the lot; nothing is appended to ``review_entries``) -
+    the WARNING is the only audit trail, so only the per-tx_hash detail moves to
+    DEBUG. This is a group-collapse (pattern I), DISTINCT from the J/K/L
+    downgrade: the single aggregate stays loud while the per-row lines quiet.
 
     Reads lot fields THROUGH ``lot.entry`` (r8 M1): ``lot`` is the
     :class:`IndexedLot` wrapper, not the bare entry; the date field is
     ``disposal_timestamp``, not ``date``.
+
+    Called once per run from :func:`remove_transaction_fees` after the existing
+    dedup-summary WARNING; the new aggregate is a second WARNING from this call.
+    The dedup summary covers ALL removals; this aggregate covers only the
+    untagged-whitelisted subset that needs per-row verification.
     """
+    untagged_whitelisted_by_asset: Counter[str] = Counter()
     for lot, _match_type, event in matched_metadata:
         if event.tagged:
             logger.info(
@@ -408,7 +419,7 @@ def _log_fee_removals(
                 event.tx_hash,
             )
         else:
-            logger.warning(
+            logger.debug(
                 "Removed untagged-whitelisted fee disposal for %s (Net Value "
                 "%s EUR, tx_hash=%s) - verify this is a network fee, not a "
                 "real disposal",
@@ -416,6 +427,20 @@ def _log_fee_removals(
                 event.net_value_eur,
                 event.tx_hash,
             )
+            untagged_whitelisted_by_asset[event.asset] += 1
+
+    if untagged_whitelisted_by_asset:
+        total = sum(untagged_whitelisted_by_asset.values())
+        logger.warning(
+            "Removed %d untagged-whitelisted fee disposal(s) (%s); "
+            "per-tx_hash detail at DEBUG; verify each is a network fee, not a "
+            "real disposal",
+            total,
+            ", ".join(
+                f"{asset}: {count}"
+                for asset, count in sorted(untagged_whitelisted_by_asset.items())
+            ),
+        )
 
 
 def remove_transaction_fees(

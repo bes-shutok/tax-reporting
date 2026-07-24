@@ -57,9 +57,33 @@ def _resolve_intra_asset_transfers(  # noqa: PLR0912
     platform_acquisitions: list[AcquisitionContext],
     per_platform_carryover: dict[str, dict[str, Decimal]],
     per_platform_partial: dict[str, frozenset[str]] | None = None,
+    flag_counts: dict[str, int] | None = None,
 ) -> list[AcquisitionContext]:
-    """Resolve transfer_in_deferred acquisitions using sender-platform FIFO carry-over costs."""
+    """Resolve transfer_in_deferred acquisitions using sender-platform FIFO carry-over costs.
+
+    Args:
+        platform_acquisitions: Per-platform acquisition contexts for the current asset.
+        per_platform_carryover: Sender-platform FIFO carry-over costs keyed by tx_key.
+        per_platform_partial: Per-platform sets of tx_keys whose carry-over was partial.
+        flag_counts: Pattern K shared mutable dict keyed by transfer carry-over cause
+            (``requires_review`` / ``unresolved``). When provided, each per-row WARNING
+            branch (downgraded to DEBUG) increments its cause key so the caller emits ONE
+            aggregate WARNING after the per-asset / per-platform loop. ``None`` keeps the
+            per-row DEBUG emission without counting (backward-compat for direct callers).
+            The ``review_required``/``review_reason``/``cost_basis_eur`` assignments are
+            UNCHANGED in every branch (Design Invariant #3).
+    """
     result: list[AcquisitionContext] = []
+
+    def _bump(cause_key: str) -> None:
+        """Increment ``flag_counts[cause_key]`` (pattern K) when threaded; no-op when ``None``.
+
+        Mirrors the ``_bump`` closure in ``cross_asset._resolve_single_acquisition`` (pattern
+        J) so the two sibling files share the same guard shape at every per-row branch.
+        """
+        if flag_counts is not None:
+            flag_counts[cause_key] = flag_counts.get(cause_key, 0) + 1
+
     for acq in platform_acquisitions:
         if acq.acq.source_type != "transfer_in_deferred":
             result.append(acq)
@@ -101,12 +125,17 @@ def _resolve_intra_asset_transfers(  # noqa: PLR0912
             else:
                 review_reason = None
             if review_required:
-                logger.warning(
+                # Pattern K: per-row emission downgraded to DEBUG (message text unchanged).
+                # When ``flag_counts`` is threaded, increment ``requires_review`` so the
+                # caller emits ONE aggregate WARNING; the audit signal stays on the
+                # ``review_required``/``review_reason`` fields (Design Invariant #3).
+                logger.debug(
                     "Transfer carry-over for %s tx_key=%s requires review: %s",
                     acq.acq.asset,
                     acq.tx_key,
                     review_reason,
                 )
+                _bump("requires_review")
             result.append(
                 acq.with_acq(
                     cost_basis_eur=resolved_cost,
@@ -120,12 +149,17 @@ def _resolve_intra_asset_transfers(  # noqa: PLR0912
                 f"transfer_in_deferred (tx_key={acq.tx_key}) could not be resolved: "
                 f"sender platform FIFO carry-over not available."
             )
-            logger.warning(
+            # Pattern K: per-row emission downgraded to DEBUG (message text unchanged).
+            # When ``flag_counts`` is threaded, increment ``unresolved`` so the caller
+            # emits ONE aggregate WARNING; the audit signal stays on the
+            # ``review_required=True``/``review_reason`` fields (Design Invariant #3).
+            logger.debug(
                 "Could not resolve transfer_in_deferred for %s tx_key=%s: "
                 "sender platform carry-over not found; flagging for review.",
                 acq.acq.asset,
                 acq.tx_key,
             )
+            _bump("unresolved")
             result.append(
                 acq.with_acq(
                     cost_basis_eur=ZERO,

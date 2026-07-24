@@ -146,8 +146,21 @@ def _resolve_single_acquisition(
     fifo_results_by_asset: dict[str, MergedAssetFifoResult],
     tx_key_to_sender: dict[str, list[str]],
     tx_key_to_asset_totals: dict[str, dict[str, Decimal]],
+    flag_counts: dict[str, int] | None = None,
 ) -> AcquisitionContext:
-    """Resolve a single deferred cross-asset acquisition from carry-over costs."""
+    """Resolve a single deferred cross-asset acquisition from carry-over costs.
+
+    ``flag_counts`` is an optional shared mutable dict (pattern J) threaded from
+    ``_rebuild_fifo_for_loan_affected_assets`` so each per-row WARNING branch below can be
+    downgraded to DEBUG (message text unchanged) while incrementing the matching cause key
+    (``unresolved`` / ``multi_sender`` / ``zero_carryover`` / ``partial``). The caller emits
+    ONE aggregate WARNING from the per-asset loop. ``None`` (default) preserves backward-
+    compat with direct callers (e.g. unit tests via the in-test wrapper) that bypass the
+    aggregate: those callers see only the DEBUG per-row emission and do not accumulate causes.
+
+    The ``review_required``/``review_reason``/``cost_basis_eur`` assignments in every branch
+    are UNCHANGED (Design Invariant #3): the audit signal stays on the data, not the log.
+    """
     if acq.acq.source_type != "exchange_in_deferred":
         return acq
 
@@ -155,8 +168,15 @@ def _resolve_single_acquisition(
     if matched:
         cost, ambiguity_reason = _apply_receiver_proportional_split(acq, cost, tx_key_to_asset_totals, ambiguity_reason)
 
+    def _bump(cause_key: str) -> None:
+        if flag_counts is not None:
+            flag_counts[cause_key] = flag_counts.get(cause_key, 0) + 1
+
     if not matched:
-        logger.warning(
+        # Pattern J: per-row emission downgraded WARNING -> DEBUG (message text unchanged);
+        # the audit signal is preserved via review_required/review_reason (Design Invariant
+        # #3) plus ONE aggregate WARNING emitted by the per-asset loop driver.
+        logger.debug(
             "Unresolved deferred acquisition for %s tx_key=%s: cost remains zero: "
             "the sending asset's FIFO produced no carry-over entry for this tx_key. "
             "Possible causes: tx_key mismatch between the exchange_out consumption and the "
@@ -166,6 +186,7 @@ def _resolve_single_acquisition(
             acq.acq.asset,
             acq.tx_key,
         )
+        _bump("unresolved")
         return acq.with_acq(
             review_required=True,
             review_reason=(
@@ -186,28 +207,34 @@ def _resolve_single_acquisition(
         acq.tx_key in result.partial_carryover_tx_keys for result in fifo_results_by_asset.values()
     )
     if ambiguity_reason:
-        logger.warning(
+        # Pattern J: per-row multi-sender emission WARNING -> DEBUG.
+        logger.debug(
             "Multi-sender carry-over for %s tx_key=%s: %s",
             acq.acq.asset,
             acq.tx_key,
             ambiguity_reason,
         )
+        _bump("multi_sender")
     needs_review = is_zero_carryover or is_partial_carryover or ambiguity_reason is not None
     if is_zero_carryover:
-        logger.warning(
+        # Pattern J: per-row zero-carryover emission WARNING -> DEBUG.
+        logger.debug(
             "Resolved carry-over cost for %s tx_key=%s is zero; "
             "likely caused by FIFO pool exhaustion on the sending asset",
             acq.acq.asset,
             acq.tx_key,
         )
+        _bump("zero_carryover")
     elif is_partial_carryover:
-        logger.warning(
+        # Pattern J: per-row partial-carryover emission WARNING -> DEBUG.
+        logger.debug(
             "Resolved carry-over cost for %s tx_key=%s is partial; "
             "FIFO pool was partially exhausted on the sending asset: "
             "cost basis may be understated",
             acq.acq.asset,
             acq.tx_key,
         )
+        _bump("partial")
     return acq.with_acq(
         cost_basis_eur=cost,
         source_type="exchange_in_resolved",
@@ -243,11 +270,24 @@ def resolve_cross_asset_exchanges(
     fifo_results_by_asset: dict[str, MergedAssetFifoResult],
     tx_key_to_sender: dict[str, list[str]],
     tx_key_to_asset_totals: dict[str, dict[str, Decimal]],
+    flag_counts: dict[str, int] | None = None,
 ) -> dict[str, list[AcquisitionContext]]:
-    """Resolve deferred cross-asset acquisitions from carry-over costs."""
+    """Resolve deferred cross-asset acquisitions from carry-over costs.
+
+    ``flag_counts`` (pattern J) is threaded to ``_resolve_single_acquisition`` so each per-row
+    DEBUG branch can increment its cause key. The aggregate WARNING is NOT emitted here (would
+    fire once per asset-set); the caller (``_rebuild_fifo_for_loan_affected_assets``'s
+    per-asset loop) owns the single aggregate emission.
+    """
     return {
         asset: [
-            _resolve_single_acquisition(acq, fifo_results_by_asset, tx_key_to_sender, tx_key_to_asset_totals)
+            _resolve_single_acquisition(
+                acq,
+                fifo_results_by_asset,
+                tx_key_to_sender,
+                tx_key_to_asset_totals,
+                flag_counts=flag_counts,
+            )
             for acq in acqs
         ]
         for asset, acqs in acquisitions_by_asset.items()
