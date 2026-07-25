@@ -238,6 +238,22 @@ Reasoning record for chain/operator origin mappings used by this repository.
   - This eliminates the complexity of tracking two separate dates and the additional verification gate logic.
   - See CMD-021 for the final implementation details.
 
+### CMD-022: Berachain PoL Next Token-Model Change (2026-07-25)
+
+- Decision Date: `2026-07-25`
+- Mapping: `Berachain -> British Virgin Islands` (UNCHANGED; see CMD-001)
+- Source basis:
+  - [berachain_pol_next_2026-07-08.md](official/berachain_pol_next_2026-07-08.md)
+- Reasoning:
+  - The PoL Next upgrade (mainnet hard fork 2026-07-08 16:00 UTC, per the official `@berachain` thread) deprecated `BGT`, switched emissions to `WBERA`, and introduced `sWBERA` liquid staking.
+  - This is a token-model / reward-mechanism change, NOT a chain domicile, operator entity, or governing-law change. The BVI origin mapping from CMD-001 remains the correct filing-facing anchor.
+  - The docs changelog's "May 2026" grouping reflects when the changelog entry / Bepolia testnet deployment was filed, not mainnet activation; the authoritative mainnet date is recorded in the extract.
+- Forward-looking note (no code/config change in this decision):
+  - When 2026 Koinly data becomes available, a data-driven plan should review: `WBERA` / `sWBERA` / residual `BGT` tokens in `popular_crypto_tokens.json`; the `BERA = 0.1` EUR fee-exclusion ceiling in `decision_points/2025.toml` against new staking tokens; and ensure `BGT -> WBERA/BERA` redemptions surface as taxable disposals via the existing capital-gains pipeline.
+  - Until then, no speculative token-list or fee-ceiling edits, per the repo's verification-first ordering (changes must be testable against real 2026 Koinly data, not hypothetical).
+- Domicile caveat (carried from research, not acted on):
+  - A leaked Nov 2025 side letter (secondary, unverified) references both a BVI operating company and a Cayman-exempted company in the Berachain corporate structure. The official ToS governing-law clause (BVI) remains the stronger source for tax governing law and is retained. Flagged here only for future review if foundation seat-of-incorporation (distinct from governing law) becomes material to a filing.
+
 ### CMD-021: Wirex Implementation Simplification (Updated 2026-03-26)
 
 - Decision Date: `2026-03-25` (updated `2026-03-26`)

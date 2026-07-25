@@ -15,6 +15,12 @@ Retrieved on: 2026-03-15
 - Issuing date: 2025-02-05
 - Purpose: Berachain Foundation / governing-law extract for Berachain origin mapping.
 
+18. `official/berachain_pol_next_2026-07-08.md`
+- URL: https://docs.berachain.com/general/proof-of-liquidity/changelog
+- Companion URL: https://x.com/berachain/status/2074495712000426195
+- Issuing date: 2026-07-08 (mainnet activation; date conflict resolved in extract)
+- Purpose: PoL Next token-model change (BGT deprecation, WBERA emissions, sWBERA) and taxable-event dating for 2026 BERA-ecosystem activity. Does not change the BVI origin mapping.
+
 2. `official/starknet_foundation_privacy_undated.md`
 - URL: https://www.starknet.io/privacy-policy/
 - Issuing date: undated
