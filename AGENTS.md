@@ -1,12 +1,12 @@
 # Instructions
 
-Guidance for coding agents (canonical `AGENTS.md`; `CLAUDE.md` is a symlink to it). Hard rules first; detail lives in `README.md` and `docs/`.
+Guidance for coding agents (canonical `AGENTS.md`; `CLAUDE.md` is a symlink to it). Detail lives in `README.md` and `docs/`.
 
 ## Documentation Hierarchy
 
 This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` skill).
 - **Layer 1:** [README.md](docs/README.md) (concise overview).
-- **Layer 2 (Shared):** `docs/architecture/` and `docs/maintenance/` (guidelines, glossary, decisions, tax-law). Update in the same session when behavior or rules change.
+- **Layer 2 (Shared):** `docs/architecture/` and `docs/maintenance/` (guidelines, glossary, decisions, tax-law). Update in-session when behavior or rules change.
 - **Layer 3 (History):** `docs/history/` (plans, completed plans).
 - **LLM-only / Temporary:** `docs/tmp/` and gitignored `docs/history/reviews/` and `docs/maintenance/personal/`.
 - **Resolution:** Other skills resolve paths (like `{plans_dir}`) from `.ai-playbook/facts.md` (using-skills Step 0).
@@ -16,7 +16,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 ### 1. Reusable Engineering Rules
 
 - For numeric fields from external reports, detect thousands/decimal separators or fail clearly.
-- Do not classify a leading-zero integer part (e.g. `0,001`) as thousands-grouped; treat exactly one dot-grouped triplet (e.g. `1.234`) as ambiguous and raise. Only multi-group dot patterns (e.g. `1.234.567`) may be stripped as European thousands.
+- Do not classify a leading-zero integer part (e.g. `0,001`) as thousands-grouped; treat a single dot-grouped triplet (e.g. `1.234`) as ambiguous and raise. Only multi-group dot patterns (e.g. `1.234.567`) may be stripped as European thousands.
 - Use f-strings in exception constructors; never pass multiple positional args.
 - Catch row-level parse errors per row (warn and skip); do not let one bad row discard the whole dataset.
 - Inside a row-level `try...except`, reuse the parsed object for any second derived value; wrap a fallible secondary parse in a nested `try...except` when a trusted-path branch must not be skipped. See UL #80, #125.
@@ -33,7 +33,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 ### 2. Repository Style and Conventions
 
 - Specific type annotations for generic collections (`list[Type] | None`, not `list | None`). See `development_lessons.md` #4.
-- For generic collection or matching primitives, use TypeVar parameterization so subclass fields stay visible to static analysis.
+- For generic collection or matching primitives, use TypeVar parameterization (keeps subclass fields visible to static analysis).
 - For type dispatch on generic hints in config loaders use `get_args(hint) == (str, Decimal)`, not `get_origin(hint) is dict`; overwrite the validated entry.
 - Matching event fields must mirror domain entry field normalization; normalizing one side breaks matching for affected platforms.
 - Type heterogeneous kwargs dicts as `dict[str, Any]` before `**`-unpacking into a dataclass; per-key narrowing doesn't survive a splat.
@@ -47,7 +47,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - `docs/maintenance/tax/.../official/` keeps only source-origin files; derived notes and numbered guidance belong outside `official/`; `sources.md` records issuing/effective/superseded dates. See `project-guidelines.md` #1.
 - For fiscal-year versioned tax decision points, see `docs/maintenance/project-guidelines.md` #2.
 - When AT guidance cites a CIRS paragraph number, verify against the consolidated CIRS/CPPT/CIS PDFs; AT documents may predate renumbering amendments. See `docs/maintenance/project-guidelines.md` #3.
-- For tax/origin web sources, prefer authoritative PDFs or extracted Markdown/PDF over raw HTML; reuse local mirrors. A locally-archived official source wins outright over a conflicting secondary source.
+- For tax/origin web sources, prefer authoritative PDFs or extracted Markdown over raw HTML; reuse local mirrors. A locally-archived official source wins over a conflicting secondary source.
 - Authoritative law portals render the CURRENT version by default; for a prior fiscal year, use the version in force then ("Redações anteriores"), cross-checked against a year-dated secondary source. See `development_lessons.md` #31.
 - Before assuming an official source is unavailable, probe the authority's canonical URL with a HEAD request; a web/search MCP tool quota/rate-limit is a tool outage, not a missing source. See `development_lessons.md` #37.
 - Under `docs/maintenance/tax/`, use `laws/<jurisdiction>/crypto-tax/` for tax-law archives and `crypto-origin/` for chain/operator domicile archives.
@@ -75,7 +75,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Aggregate crypto capital gains by `(disposal_date, asset, platform, holding_period)` before reporting. Do not bypass `_aggregate_capital_entries()`.
 - After aggregation, exclude entries where `|gain/loss| < 1 EUR`. Do not remove `_filter_immaterial_entries()` or parameterize `_MATERIALITY_THRESHOLD` without a `crypto_rules.md` update.
 - Crypto reward income must be aggregated by `(income_code, source_country)` before inclusion in the IRS-ready filing table. Do not bypass `aggregate_taxable_rewards()`.
-- Reward classification (taxable_now vs deferred_by_law) uses `_classify_reward_tax_status()` (cite CRG-001/002). Taxable-now crypto-origin fiat rewards are the `Reporting`/`OTHER CAPITAL INVESTMENT INCOME` target; `Crypto Supplementary` is support only. See SRG-008.
+- Reward classification (taxable_now vs deferred_by_law) uses `_classify_reward_tax_status()` (cite CRG-001/002). Taxable-now crypto-origin fiat rewards target `Reporting`/`OTHER CAPITAL INVESTMENT INCOME`; `Crypto Supplementary` is support only. See SRG-008.
 - The aggregation step fails with `FileProcessingError` if any taxable-now row cannot be assigned all mandatory IRS fields (valid Tabela X country code).
 - When `review_required=True`, `review_reason` must contain a specific, actionable explanation; Excel shows "YES: \<reason\>", not a bare boolean. See PT-C-030.
 - `OperatorOrigin` has two review flags: `review_required` (row-level) and `platform_review_required` (platform-level). Never conflate them. See CRG-016.
@@ -87,13 +87,13 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Token origin resolution uses `TokenOriginResolver` with implicit `(date, asset, wallet)` correlation; unmatched rows return `unknown` (see `crypto_implementation_guidelines.md`). Do not reintroduce same-day disposal-context matching.
 - `token_swap_history` aggregation via `_aggregate_origin_field()`: all lots same origin -> use it; else join unique non-empty origins with '; '; append "N lot(s) unresolved" when some are unknown.
 - Koinly transaction history files use `*transaction_history*.csv`, not `*transactions_report*.csv`.
-- Koinly TH `TxHash` is the on-chain tx identifier; `TxSrc`/`TxDest` are wallet addresses, not tx-id candidates. `TxCorrelationKey.tx_id` derives from `tx_hash` alone; never collapse the three fields into one precedence chain. See `development_lessons.md` #43.
+- Koinly TH `TxHash` is the on-chain tx identifier; `TxSrc`/`TxDest` are wallet addresses, not tx-id candidates. `TxCorrelationKey.tx_id` derives from `tx_hash` alone; never collapse the three into one precedence chain. See `development_lessons.md` #43.
 - When `TaxJurisdictionConfig.exclude_loan_repayment_gains` is True, loan-affected assets (from `discover_loan_affected_assets()`) are excluded from CG parsing and rebuilt from TH; non-loan assets use Koinly CG (FIFO in `crypto_fifo/`).
 - `discover_loan_affected_assets()` uses only `"loan"` and `"loan repayment"` tags (not `"loan fee"`); loan fee rows' Sent Currency is the gas/service fee asset, not the loan principal.
 - `discover_loan_affected_assets()` delegates to `resolve_treatment` and needs the Invariant 11 `OTHER + tag="loan"` clause (borrowing-side principal classifies as `Treatment.OTHER`, not `LOAN_REPAYMENT`). See `development_lessons.md` #52.
 - When IB data has no current-year trades (`tax_year_hint` is None), the Koinly directory year hint falls back to `TaxJurisdictionConfig.fiscal_year` (drives Koinly directory selection for crypto-only runs).
 - Run `_validate_capital_entries_have_valid_countries()`, `_aggregate_capital_entries()`, `_filter_immaterial_entries()` only after FIFO-derived entries are merged with raw CG rows.
-- Keep pipeline stages decoupled: run value corrections and data recovery before manual review flags or suspect-identification passes (prevents clobbering/reason-joining).
+- Keep pipeline stages decoupled: run value corrections and data recovery before manual review flags or suspect-identification passes.
 - OGR overrides apply BEFORE `_aggregate_capital_entries()` when `jurisdiction.use_other_gains_report=True`; when porting, preserve each threshold gate's original scope. See `development_lessons.md` #42.
 - When one numeric value drives both a branch decision and a user-facing display, both must use the same precision (rounded, not raw), or two rows with identical visible text can route oppositely. See `development_lessons.md` #60.
 - When plan pseudocode compares two same-unit fields by name across domain objects, confirm they represent the same economic quantity before implementing; set them to DIFFERENT values in RED fixtures so a conflation fails visibly.
@@ -108,7 +108,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 
 - Bug fixes follow TDD: failing test first (RED), then fix (GREEN). See `development_lessons.md` #27.
 - When a plan is revised between RED and GREEN, re-read each RED test against current design invariants before flipping GREEN. Update changed assertions and cite the invariant.
-- A committed RED test that is itself the deliverable (a later task flips it GREEN) must fail via `pytest.fail(<message>)` naming the resolving task, never an unhandled exception.
+- A committed RED test that is itself the deliverable must fail via `pytest.fail(<message>)` naming the resolving task, never an unhandled exception.
 - A pre-existing RED draft matching the Task spec's names is an abstraction over the verbatim spec; re-derive its mechanism before trusting it. See `development_lessons.md` #62.
 - A completed plan's task status note (`SKIPPED`/`deferred`/`done`) or feature-notes Status header is not ground truth for whether the artifact shipped; read the canonical artifact (PD/ADR, constant). See `development_lessons.md` #65.
 - A regression test must exercise the production call site it claims to guard (not an adjacent derived value); before merging, revert the guarded change and confirm the test fails. See `development_lessons.md` #46.
@@ -117,7 +117,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Test string sanitization/validation/parsing edge cases: empty, whitespace-only, multi-byte, control chars, multi-char prefixes, padded.
 - Test error paths including double-failure (e.g. aggregation fails AND workbook.close fails).
 - Examine existing source data files (`resources/source/koinly*/`) directly before asking for samples.
-- Commits allowed by default; never push/PR without instruction (Git Push Policy); `~/Projects/myrepos` stay local-only.
+- Commits allowed by default; never push/PR without instruction; `~/Projects/myrepos` stay local-only.
 - Always use `uv run pytest`, not `uvx pytest`.
 - Never write to `docs/review/` (singular); use `docs/history/reviews/` (plural). See `development_lessons.md` #29.
 - **Never introduce a hardcoded value (asset ticker, constant set, threshold, magic string, fixed ordering) without first flagging it and asking the user.**
@@ -143,7 +143,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Trace filtered TH rows back to their OGR source rows to confirm Type.
 - Add match-count warnings for non-unique deduplication keys.
 - Deduplicate overlapping items when splitting shared tax pipelines.
-- When N source events pair against M target items by non-unique key, use an ordered queue (deque) per key and pop one target per event. Never `dict[key] = item` (silently overwrites on collisions).
+- When N source events pair against M target items by non-unique key, use an ordered queue (deque) per key and pop one target per event. Never `dict[key] = item` (silently overwrites on collision).
 - Run fallible resolutions before mutating shared match structures.
 - Recompute tolerance after shrinking sliding-window matchers.
 - Re-run feasibility checks against the mutated post-phase-1 input set.
@@ -164,11 +164,11 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 
 ### 5. Domain Knowledge References
 
-- Before changing crypto reporting logic or implementing new crypto features, read `docs/maintenance/crypto_rules.md`, `crypto_reporting_guidelines.md`, and `crypto_implementation_guidelines.md` (pitfalls); cite PT-C/CRG rule IDs for law-driven changes.
+- Before changing crypto reporting logic, read `docs/maintenance/crypto_rules.md`, `crypto_reporting_guidelines.md`, and `crypto_implementation_guidelines.md` (pitfalls); cite PT-C/CRG rule IDs for law-driven changes.
 - Before processing Koinly exports or changing Koinly-related code, read `docs/maintenance/koinly_guidelines.md` (loan repayment disposal treatment, wrapped-asset repair, OGR relevance, required settings).
 - Before discussing crypto tax treatment, proposing architecture, or advising on Koinly settings, check `docs/maintenance/tax/decision_points/` first.
 - Before changing cross-cutting report-generation behavior, read `docs/maintenance/tax_reporting_guidelines.md` (also documents Excel report sections) and cite SRG IDs.
-- Before changing cross-cutting logic that prior incidents cover, consult the root-cause principle catalog (`coding_guidelines.md` #17-#25; grep `**Principle:** Family X` tags in `docs/maintenance/development_lessons.md` and the user-level corpus; see the `generalize` skill).
+- Before changing cross-cutting logic that prior incidents cover, consult the root-cause principle catalog (`coding_guidelines.md` #17-#25; grep `**Principle:** Family X` tags in `development_lessons.md` and the user-level corpus; see the `generalize` skill).
 - Before writing implementation plans, repository walkthroughs, or presentation artifacts, read `docs/maintenance/plan_quality_guidelines.md`.
 - When adding terms to `docs/maintenance/glossary.md`, keep English as the defining language (preserve non-English naming in italics) and separate generic from PT-specific terms. See `development_lessons.md` #32.
 - When a crypto presentation makes legal/filing claims, verify the current source set in `docs/maintenance/tax/laws/pt/crypto-tax/sources.md` and cite mirrored official documents.
@@ -185,13 +185,13 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - **Purpose:** Processes Interactive Brokers and Koinly exports into Portuguese tax-reporting outputs (capital gains, dividends, crypto rewards).
 - **Entry point:** `uv run tax-reporting` (flags in `README.md`). Alt: `uv run python ./src/tax_reporting/main.py`.
 - **Dependencies:** `uv` (local, not on PyPI). Tests: `uv run pytest`.
-- **Architecture:** Layered (domain -> application -> infrastructure -> presentation). Full walkthrough in `README.md`; discover the source tree directly.
+- **Architecture:** Layered (domain -> application -> infrastructure -> presentation). Full walkthrough in `README.md`.
 - **Excel report sections** (Capital Gains, Crypto Gains, Loan Activity, Dividend Income, Report Structure): documented in `docs/maintenance/tax_reporting_guidelines.md`.
-- **Data flow:** Input CSVs in `resources/source/` -> domain-driven transform (currency conversion, ISIN mapping) -> Excel reports + rollover CSV in `resources/result/`; see `README.md` (incl. `shares-leftover.csv` merge ordering).
+- **Data flow:** `resources/source/` CSVs -> domain-driven transform (currency conversion, ISIN mapping) -> Excel reports + rollover CSV in `resources/result/`; see `README.md` (incl. `shares-leftover.csv` merge ordering).
 
 ## Configuration
 
-- `configparser` INI files: `config.ini` (prod), `tests/config.ini` (test). Three sections: `[COMMON]`, `[EXCHANGE RATES]`, `[TAX JURISDICTION]` (fields and defaults documented in `README.md`). Update exchange rates annually.
+- `configparser` INI files: `config.ini` (prod), `tests/config.ini` (test). Sections `[COMMON]`, `[EXCHANGE RATES]`, `[TAX JURISDICTION]` (fields/defaults in `README.md`). Update exchange rates annually.
 - `IANA_TIMEZONE`: auto-deduces `Europe/Lisbon` for `TAX_COUNTRY=PT`; REQUIRED for other countries with crypto data, else fails fast.
 - **Law-driven flags** (e.g. `exclude_loan_repayment_gains`) live in `docs/maintenance/tax/decision_points/<fiscal_year>.toml`, NOT `config.ini` (user preferences only); update the `.md` and `.toml` sidecar together.
 - TOML schema: `[meta].fiscal_year` (integer) + `[countries.XX]` boolean tables (multi-type loader also accepts `dict[str, Decimal]`); copy `2025.toml` per year. Missing TOML raises `MissingDecisionPointsError`; invalid `[TAX JURISDICTION]` raises `ConfigurationError`; both surface unwrapped.
@@ -209,7 +209,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 
 ## Code Quality
 
-- **Ruff** is primary linter/formatter (`pyproject.toml`: Python 3.14, line length 120, full ruleset), but **unenforced** (no pre-commit hook, no CI workflow): a clean working-tree `ruff check` is necessary but not sufficient, because pre-existing violations can accumulate on `master`. Before adding a `# noqa`, check the HEAD blob (`git show HEAD:<file>` piped to `ruff check`) to avoid mis-attributing pre-existing master debt to the current change. Do not run `ruff check --fix` on modules that re-export for backward compat (e.g. `crypto_reporting.py`); `F401` strips re-exported names tests depend on. See `development_lessons.md` #72.
+- **Ruff** is primary linter/formatter (`pyproject.toml`: Python 3.14, line length 120, full ruleset), but **unenforced** (no pre-commit/CI), so pre-existing violations accumulate on `master`. Before adding `# noqa`, check the HEAD blob (`git show HEAD:<file> | ruff check`) to avoid mis-attributing master debt. Do not run `ruff check --fix` on modules that re-export for backward compat (e.g. `crypto_reporting.py`); `F401` strips re-exported names tests depend on. See `development_lessons.md` #72.
 - Type hints: modern syntax (`X | Y`) with `from __future__ import annotations`; lazy logging, f-string exceptions, named-constant magic numbers (except tests). Never default essential indices/identifiers to 0. Refactor complex functions.
 - Docstrings: always for public modules/classes/`__init__`/complex functions; skip trivial getters/setters/`__repr__`/private methods/test functions.
 - **Code review checklist:** required params truly required; error messages have row context; exception chaining preserves originals; logging parameterized; fail-fast vs missing-data distinction correct.
