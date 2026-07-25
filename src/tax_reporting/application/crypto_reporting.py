@@ -897,7 +897,7 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
 
         if skipped_loan_affected:
             skipped_summary = ", ".join(f"{asset}: {count}" for asset, count in sorted(skipped_loan_affected.items()))
-            logger.warning(
+            logger.info(
                 "FIFO rebuild active: buffered %d raw CG row(s) for loan-affected assets %s as FIFO fallback",
                 sum(skipped_loan_affected.values()),
                 skipped_summary,
@@ -919,7 +919,7 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
             )
 
         if skipped_all_zero:
-            logger.warning(
+            logger.info(
                 "Flagged %d all-zero capital gains row(s) for review (%s); see DEBUG log and review list for details",
                 sum(skipped_all_zero.values()),
                 ", ".join(f"{a}: {n}" for a, n in sorted(skipped_all_zero.items())),

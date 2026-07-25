@@ -1846,19 +1846,22 @@ class TestAggregateCapitalEntries:
         with caplog.at_level(logging.DEBUG, logger=aggregation_logger):
             result = _aggregate_capital_entries(entries)
 
-        # Exactly ONE aggregate WARNING matching the prescribed summary substring.
-        aggregate_warnings = [
+        # Exactly ONE aggregate INFO matching the prescribed summary substring
+        # (demoted from WARNING to INFO in Task 8; aggregated entries inherit
+        # ``review_required`` from their pool-exhausted placeholder lots, which is
+        # the Excel-surfaced signal).
+        aggregate_infos = [
             rec.getMessage()
             for rec in caplog.records
-            if rec.levelno == logging.WARNING
+            if rec.levelno == logging.INFO
             and rec.name == aggregation_logger
             and "aggregated capital-gains entry(ies) with" in rec.getMessage()
         ]
-        assert len(aggregate_warnings) == 1, (
-            f"Expected exactly ONE aggregate WARNING, got {aggregate_warnings}"
+        assert len(aggregate_infos) == 1, (
+            f"Expected exactly ONE aggregate INFO, got {aggregate_infos}"
         )
 
-        msg = aggregate_warnings[0]
+        msg = aggregate_infos[0]
         # The summary names the total count (3 = one flagged entry per asset across both
         # the no-date branch and the epoch-sentinel branch).
         assert "3 aggregated capital-gains entry(ies) with" in msg, (
@@ -1921,12 +1924,12 @@ class TestAggregateCapitalEntries:
     def test_l_aggregate_not_emitted_when_all_dates_valid(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """No L-aggregate WARNING fires when every aggregated entry has a valid
+        """No L-aggregate INFO fires when every aggregated entry has a valid
         acquisition date (r3 R3-3 negative guard).
 
         The post-loop guard ``if no_date_entries or epoch_entries:`` at
         ``aggregation.py:422`` is the only thing preventing a noisy ``0 ...
-        flagged ()`` WARNING on every run. The positive test above covers the
+        flagged ()`` INFO on every run. The positive test above covers the
         non-empty path; this test pins the empty path. Removing the guard leaves
         the suite green, so without this assertion a future refactor dropping the
         guard would ship silently. Fixture: two entries with the
@@ -1943,16 +1946,16 @@ class TestAggregateCapitalEntries:
         with caplog.at_level(logging.DEBUG, logger=aggregation_logger):
             _aggregate_capital_entries(entries)
 
-        aggregate_warnings = [
+        aggregate_infos = [
             rec.getMessage()
             for rec in caplog.records
-            if rec.levelno == logging.WARNING
+            if rec.levelno == logging.INFO
             and rec.name == aggregation_logger
             and "aggregated capital-gains entry(ies) with" in rec.getMessage()
         ]
-        assert aggregate_warnings == [], (
-            "No L-aggregate WARNING should fire when all acquisition dates are valid; "
-            f"got {aggregate_warnings}"
+        assert aggregate_infos == [], (
+            "No L-aggregate INFO should fire when all acquisition dates are valid; "
+            f"got {aggregate_infos}"
         )
 
 
@@ -13582,16 +13585,33 @@ class TestParseCapitalGainsFile:
             if rec.levelno == logging.WARNING
             and rec.name == "tax_reporting.application.crypto_reporting"
         ]
+
+        # Task 4 (Plan 2026-07-24): the aggregate "Flagged N all-zero" summary was
+        # demoted from WARNING to INFO at crypto_reporting.py:922 (Bucket B:
+        # Excel-surfaced, no silent data loss). Capture it at INFO now.
+        info_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.INFO
+            and rec.name == "tax_reporting.application.crypto_reporting"
+        ]
         all_zero_warnings = [
-            m for m in warning_messages if "all-zero capital gains row" in m
+            m for m in info_messages if "all-zero capital gains row" in m
         ]
         assert len(all_zero_warnings) == 1, (
-            f"Expected exactly ONE aggregate all-zero WARNING, got {all_zero_warnings}"
+            f"Expected exactly ONE aggregate all-zero INFO, got {all_zero_warnings}"
         )
         # The summary names the total count of flagged rows.
         assert "Flagged 3 all-zero capital gains row" in all_zero_warnings[0]
 
-        # The legacy per-row WARNING substring must NOT appear at WARNING level.
+        # The aggregate AND the legacy per-row WARNING substring must NOT appear at
+        # WARNING level (aggregate demoted to INFO; per-row demoted to DEBUG).
+        aggregate_at_warning = [
+            m for m in warning_messages if "all-zero capital gains row" in m
+        ]
+        assert aggregate_at_warning == [], (
+            f"All-zero aggregate must be INFO, not WARNING, got {aggregate_at_warning}"
+        )
         legacy_warnings = [
             m for m in warning_messages if "has all-zero values" in m
         ]
@@ -14399,4 +14419,275 @@ class TestParseIncomeFileDeferredSkip:
         )
         assert entries[0].value_eur == Decimal("100.00")
         assert entries[0].tax_classification == RewardTaxClassification.DEFERRED_BY_LAW
+
+
+@pytest.mark.unit
+class TestCryptoReporting:
+    """Bucket-B aggregate demotions in the CG-parse cluster (Plan 2026-07-24 Task 4).
+
+    The cluster at ``crypto_reporting.py`` lines 900/907/915/922 is handled
+    PER-LINE (Invariant #5): the FIFO-rebuild-buffered aggregate (:900) and the
+    all-zero-flagged aggregate (:922) are Excel-surfaced Bucket-B signals
+    demoted to INFO; the parse-error aggregate (:907) is Bucket-C (silent data
+    loss) and MUST stay WARNING; :915 is already INFO. These tests pin the
+    level discrimination with two separate emissions (Invariant #4) for the
+    demoted sites and a positive-at-WARNING guard for the parse-error site.
+    """
+
+    def test_fifo_rebuild_buffered_aggregate_at_info(self, tmp_path, caplog):
+        """A loan-affected asset's buffered raw CG row emits the aggregate at INFO.
+
+        Positive: the "FIFO rebuild active: buffered N raw CG row(s)" aggregate
+        appears at ``logging.INFO``. Negative: it does NOT appear at
+        ``logging.WARNING`` (two separate emissions, Invariant #4). Each
+        buffered entry in ``raw_loan_fallback`` retains ``review_required=True``
+        (Excel-surface regression guard).
+        """
+        from collections import Counter
+        from unittest.mock import MagicMock, patch
+
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        newasset_row = ",".join(
+            [
+                "13/01/2025 13:01",
+                "18/11/2024 00:15",
+                "NEWASSET",
+                '"1,00000000"',
+                '"500,00"',
+                '"600,00"',
+                '"100,00"',
+                "",
+                "Kraken",
+                "Short term",
+            ]
+        )
+        eth_row = ",".join(
+            [
+                "20/01/2025 10:10",
+                "01/01/2024 00:00",
+                "ETH",
+                '"0,50000000"',
+                '"1000,00"',
+                '"1200,00"',
+                '"200,00"',
+                "",
+                "Kraken",
+                "Long term",
+            ]
+        )
+        cg_path = tmp_path / "cg.csv"
+        cg_path.write_text(
+            "\n".join(["Capital gains report 2025", "", _FIFO_CG_HEADER, newasset_row, eth_row]),
+            encoding="utf-8",
+        )
+
+        def _run() -> object:
+            skipped: Counter[tuple[str, str]] = Counter()
+            resolver = MagicMock(spec=TokenOriginResolver)
+            resolver.resolve.return_value = {"origin": "Unknown"}
+            review_entries: list = []
+            context = CapitalGainsParsingContext(
+                skipped_assets=skipped,
+                origin_resolver=resolver,
+                review_entries=review_entries,
+                loan_affected_assets=frozenset({"NEWASSET"}),
+            )
+            with patch(
+                "tax_reporting.application.crypto_reporting._get_popular_crypto_tokens",
+                return_value=frozenset({"ETH", "NEWASSET"}),
+            ):
+                entries, raw_loan_fallback = _parse_capital_gains_file(cg_path, context)
+            return entries, raw_loan_fallback
+
+        # Positive: aggregate appears at INFO.
+        with caplog.at_level(logging.INFO, logger="tax_reporting.application.crypto_reporting"):
+            entries, raw_loan_fallback = _run()
+
+        info_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.INFO
+            and rec.name == "tax_reporting.application.crypto_reporting"
+        ]
+        fifo_info = [m for m in info_messages if "FIFO rebuild active: buffered" in m]
+        assert len(fifo_info) == 1, (
+            f"Expected ONE FIFO-rebuild-buffered aggregate at INFO, got {fifo_info}"
+        )
+        assert "buffered 1 raw CG row" in fifo_info[0]
+
+        # Excel-surface regression: each buffered entry retains review_required.
+        assert len(raw_loan_fallback) == 1, (
+            f"Expected 1 buffered raw CG fallback entry, got {len(raw_loan_fallback)}"
+        )
+        assert raw_loan_fallback[0].asset == "NEWASSET"
+        assert raw_loan_fallback[0].review_required is True, (
+            "Buffered loan-affected entry must retain review_required=True"
+        )
+        assert raw_loan_fallback[0].review_reason, (
+            "Buffered loan-affected entry must retain a review_reason"
+        )
+
+        # Negative: aggregate does NOT appear at WARNING (fresh emission).
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"):
+            _run()
+
+        warning_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == "tax_reporting.application.crypto_reporting"
+        ]
+        fifo_at_warning = [m for m in warning_messages if "FIFO rebuild active: buffered" in m]
+        assert fifo_at_warning == [], (
+            f"FIFO-rebuild-buffered aggregate must be INFO, not WARNING, got {fifo_at_warning}"
+        )
+
+    def test_all_zero_flagged_aggregate_at_info(self, tmp_path, caplog):
+        """All-zero CG rows emit the "Flagged N all-zero" aggregate at INFO.
+
+        Positive: the aggregate appears at ``logging.INFO``. Negative: it does
+        NOT appear at ``logging.WARNING`` (two separate emissions, Invariant
+        #4). Each entry in ``review_entries`` retains ``review_required=True``
+        and a ``review_reason`` (Excel-surface regression guard).
+        """
+        from unittest.mock import MagicMock, patch
+
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        koinly_dir = tmp_path / "koinly2025"
+        koinly_dir.mkdir()
+        capital_file = _write_cg_with_rows(
+            koinly_dir,
+            [_fee_all_zero_cg_row("BTC", "01/01/2025 10:00")],
+        )
+
+        def _run() -> list:
+            resolver = MagicMock(spec=TokenOriginResolver)
+            resolver.resolve.return_value = {"origin": "Unknown"}
+            review_entries: list = []
+            known_assets = frozenset({"BTC"})
+            context = CapitalGainsParsingContext(
+                skipped_assets={},
+                origin_resolver=resolver,
+                review_entries=review_entries,
+                known_assets=known_assets,
+                loan_affected_assets=frozenset(),
+            )
+            with patch(
+                "tax_reporting.application.crypto_reporting._get_popular_crypto_tokens",
+                return_value=known_assets,
+            ):
+                _parse_capital_gains_file(capital_file, context)
+            return review_entries
+
+        # Positive: aggregate appears at INFO.
+        with caplog.at_level(logging.INFO, logger="tax_reporting.application.crypto_reporting"):
+            review_entries = _run()
+
+        info_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.INFO
+            and rec.name == "tax_reporting.application.crypto_reporting"
+        ]
+        all_zero_info = [m for m in info_messages if "all-zero capital gains row" in m]
+        assert len(all_zero_info) == 1, (
+            f"Expected ONE all-zero aggregate at INFO, got {all_zero_info}"
+        )
+        assert "Flagged 1 all-zero capital gains row" in all_zero_info[0]
+
+        # Excel-surface regression: the all-zero row is still surfaced as a
+        # CryptoReviewEntry carrying a review_reason (Design Invariant #4).
+        assert len(review_entries) == 1, (
+            f"Expected 1 review entry, got {len(review_entries)}"
+        )
+        assert review_entries[0].asset == "BTC"
+        assert review_entries[0].review_reason, (
+            "All-zero review entry must retain a review_reason"
+        )
+
+        # Negative: aggregate does NOT appear at WARNING (fresh emission).
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"):
+            _run()
+
+        warning_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == "tax_reporting.application.crypto_reporting"
+        ]
+        all_zero_at_warning = [m for m in warning_messages if "all-zero capital gains row" in m]
+        assert all_zero_at_warning == [], (
+            f"All-zero aggregate must be INFO, not WARNING, got {all_zero_at_warning}"
+        )
+
+    def test_parse_error_drops_stay_warning(self, tmp_path, caplog):
+        """A CG row with an ambiguous decimal keeps the parse-error aggregate at WARNING.
+
+        Regression guard for Invariant #5 (Bucket-C must not be swept): the
+        "Skipped N capital gains row(s) due to ambiguous decimal values"
+        aggregate at ``crypto_reporting.py:907`` is silent-data-loss signal
+        and MUST remain at ``logging.WARNING`` (positive-at-WARNING).
+        """
+        from unittest.mock import MagicMock, patch
+
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        ambiguous_row = ",".join(
+            [
+                "13/01/2025 13:01",
+                "18/11/2024 00:15",
+                "ETH",
+                "1",
+                "1.234",  # ambiguous single-group dot decimal -> row skipped
+                "1.500",
+                "0.266",
+                "",
+                "Kraken",
+                "Short term",
+            ]
+        )
+        cg_path = tmp_path / "cg.csv"
+        cg_path.write_text(
+            "\n".join(["Capital gains report 2025", "", _FIFO_CG_HEADER, ambiguous_row]),
+            encoding="utf-8",
+        )
+
+        resolver = MagicMock(spec=TokenOriginResolver)
+        resolver.resolve.return_value = {"origin": "Unknown"}
+        review_entries: list = []
+        context = CapitalGainsParsingContext(
+            skipped_assets={},
+            origin_resolver=resolver,
+            review_entries=review_entries,
+            known_assets=frozenset({"ETH"}),
+            loan_affected_assets=frozenset(),
+        )
+
+        with (
+            caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_reporting"),
+            patch(
+                "tax_reporting.application.crypto_reporting._get_popular_crypto_tokens",
+                return_value=frozenset({"ETH"}),
+            ),
+        ):
+            _parse_capital_gains_file(cg_path, context)
+
+        warning_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == "tax_reporting.application.crypto_reporting"
+        ]
+        parse_error_warnings = [
+            m for m in warning_messages if "ambiguous decimal values" in m
+        ]
+        assert len(parse_error_warnings) == 1, (
+            f"Expected parse-error aggregate to STAY at WARNING, got {parse_error_warnings}"
+        )
+        assert "Skipped 1 capital gains row" in parse_error_warnings[0]
+
 

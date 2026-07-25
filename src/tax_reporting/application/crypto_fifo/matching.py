@@ -53,15 +53,21 @@ def compute_fifo_for_asset(
     sorted_cons = sorted(consumptions, key=lambda c: (c.con.date, c.source_row_index))
 
     pool: deque[tuple[AcquisitionContext, Decimal]] = deque()
+    # Bucket C (silent data loss, no Excel surface): count of acquisitions with
+    # amount <= 0 skipped during pool construction. Per-row emission is DEBUG;
+    # the count is returned on AssetFifoResult.non_positive_acq_count and summed
+    # by _rebuild_fifo_for_loan_affected_assets into ONE aggregate WARNING (Invariant #7).
+    non_positive_acq_count = 0
     for a in sorted_acqs:
         if a.acq.amount <= ZERO:
-            logger.warning(
+            logger.debug(
                 "Skipping non-positive acquisition for %s at %s (amount=%s, source row %d)",
                 asset,
                 a.acq.date,
                 a.acq.amount,
                 a.source_row_index,
             )
+            non_positive_acq_count += 1
             continue
         pool.append((a, a.acq.amount))
     realizations: list[CryptoFifoRealization] = []
@@ -72,16 +78,37 @@ def compute_fifo_for_asset(
     # before the disposal date (pattern F). Threaded into ``_consume_against_pool_inplace``
     # alongside the other mutable accumulators (``carryover_cost_by_tx_key``, ``partial_tx_keys``).
     unmatched_taxable_counter: list[int] = [0]
+    # Single-cell mutable counter for negative-amount consumption events skipped by
+    # the ``remaining < ZERO`` early-return guard (Bucket C). Threaded alongside
+    # ``unmatched_taxable_counter``; summed onto ``AssetFifoResult.negative_consumption_count``.
+    negative_consumption_counter: list[int] = [0]
+    # Single-cell mutable counters for Bucket-B realization-time annotations emitted
+    # by ``_build_taxable_realization`` (the leaf with no ``AssetFifoResult`` handle).
+    # Threaded through ``_consume_against_pool_inplace`` alongside the existing
+    # mutable accumulators and summed onto ``AssetFifoResult.epoch_date_count`` /
+    # ``AssetFifoResult.deferred_consumed_count`` for ONE aggregate INFO emission by
+    # ``_rebuild_fifo_for_loan_affected_assets`` (Invariant #7 r2 F1: leaf-threading).
+    epoch_counter: list[int] = [0]
+    deferred_consumed_counter: list[int] = [0]
 
     for con in sorted_cons:
         realizations.extend(
             _consume_against_pool_inplace(
-                con, pool, asset, platform, carryover_cost_by_tx_key, partial_tx_keys, unmatched_taxable_counter
+                con,
+                pool,
+                asset,
+                platform,
+                carryover_cost_by_tx_key,
+                partial_tx_keys,
+                unmatched_taxable_counter,
+                negative_consumption_counter,
+                epoch_counter,
+                deferred_consumed_counter,
             )
         )
 
     if partial_tx_keys:
-        logger.warning(
+        logger.info(
             "FIFO pool exhausted for %d non-taxable %s consumption(s) on %s; "
             "carry-over cost understated; see DEBUG log for per-row detail",
             len(partial_tx_keys),
@@ -94,6 +121,10 @@ def compute_fifo_for_asset(
         carryover_cost_by_tx_key=carryover_cost_by_tx_key,
         partial_carryover_tx_keys=frozenset(partial_tx_keys),
         unmatched_taxable_count=unmatched_taxable_counter[0],
+        non_positive_acq_count=non_positive_acq_count,
+        negative_consumption_count=negative_consumption_counter[0],
+        epoch_date_count=epoch_counter[0],
+        deferred_consumed_count=deferred_consumed_counter[0],
     )
 
 
@@ -106,6 +137,8 @@ def _build_taxable_realization(  # noqa: PLR0913
     proportional_proceeds: Decimal,
     asset: str,
     platform: str,
+    epoch_counter: list[int] | None = None,
+    deferred_consumed_counter: list[int] | None = None,
 ) -> CryptoFifoRealization:
     """Build a CryptoFifoRealization for a single taxable lot match.
 
@@ -122,6 +155,15 @@ def _build_taxable_realization(  # noqa: PLR0913
         proportional_proceeds: Proportional disposal proceeds for the consumed amount.
         asset: Asset ticker (for logging and realization fields).
         platform: Platform name for the realization.
+        epoch_counter: Optional single-cell mutable accumulator (``[int]``) incremented
+            once per realization with an epoch-sentinel acquisition and/or disposal date
+            (Bucket B). Threaded up to ``compute_fifo_for_asset`` -> ``AssetFifoResult``
+            so the top-level caller emits ONE aggregate INFO. ``None`` tolerated for
+            direct callers that do not need the count.
+        deferred_consumed_counter: Optional single-cell mutable accumulator (``[int]``)
+            incremented once per realization consuming an UNRESOLVED deferred
+            acquisition (Bucket B; realization-time consequence, distinct from Pattern
+            J's resolution-time cause). Threaded alongside ``epoch_counter``.
 
     Returns:
         A fully-constructed CryptoFifoRealization for this taxable lot match.
@@ -131,19 +173,25 @@ def _build_taxable_realization(  # noqa: PLR0913
     is_epoch_con = not con.con.date or con.con.date.startswith("1970-")
     is_deferred_acq = acq.acq.source_type == "exchange_in_deferred"
     if is_epoch_acq:
-        logger.warning(
+        logger.debug(
             "Empty or epoch acquisition date for %s at source_row_index=%d; "
             "holding period unknown, defaulting to Short term",
             asset,
             acq.source_row_index,
         )
     if is_epoch_con:
-        logger.warning(
+        logger.debug(
             "Empty or epoch disposal date for %s at source_row_index=%d; "
             "holding period unknown, defaulting to Short term",
             asset,
             con.source_row_index,
         )
+    # Bucket B (epoch dates): count ONE per realization whose acquisition and/or
+    # disposal date carries an epoch sentinel, to match the aggregate wording
+    # "N realization(s) with epoch-sentinel dates". ``None`` is tolerated for direct
+    # callers that do not surface the count.
+    if (is_epoch_acq or is_epoch_con) and epoch_counter is not None:
+        epoch_counter[0] += 1
     holding_period = (
         "Short term" if is_epoch_acq or is_epoch_con else _compute_holding_period(acq.acq.date, con.con.date)
     )
@@ -172,7 +220,7 @@ def _build_taxable_realization(  # noqa: PLR0913
         else None
     )
     if is_deferred_acq:
-        logger.warning(
+        logger.debug(
             "FIFO: %s disposal on %s uses unresolved deferred acquisition (tx_key=%s); "
             "cost basis is zero: capital gain is overstated. "
             "Review required: %s",
@@ -181,6 +229,11 @@ def _build_taxable_realization(  # noqa: PLR0913
             acq.tx_key,
             deferred_reason,
         )
+        # Bucket B (deferred-acquisition consumed): count ONE per realization that
+        # consumed an UNRESOLVED deferred acquisition (realization-time consequence,
+        # distinct from Pattern J's resolution-time cause). ``None`` tolerated.
+        if deferred_consumed_counter is not None:
+            deferred_consumed_counter[0] += 1
     return CryptoFifoRealization(
         disposal_date=con.con.date,
         acquisition_date=acq.acq.date,
@@ -218,18 +271,28 @@ def _consume_against_pool_inplace(  # noqa: PLR0912, PLR0913, PLR0915
     carryover_cost_by_tx_key: dict[str, Decimal],
     partial_tx_keys: set[str],
     unmatched_taxable_counter: list[int] | None = None,
+    negative_consumption_counter: list[int] | None = None,
+    epoch_counter: list[int] | None = None,
+    deferred_consumed_counter: list[int] | None = None,
 ) -> list[CryptoFifoRealization]:
     """Consume a single disposal event against the FIFO pool, mutating pool and accumulators.
 
     Mutates ``pool`` (lots consumed in FIFO order), ``carryover_cost_by_tx_key`` (records
     deferred cost for non-taxable events), ``partial_tx_keys`` (marks transactions
-    with incomplete carryover), and ``unmatched_taxable_counter`` (increments by one for
+    with incomplete carryover), ``unmatched_taxable_counter`` (increments by one for
     each taxable disposal that had no matching acquisition at or before the disposal date,
-    pattern F). Taxable lot matches are delegated to ``_build_taxable_realization``.
+    pattern F), and ``negative_consumption_counter`` (increments by one for each
+    negative-amount consumption skipped by the early-return guard, Bucket C). Taxable
+    lot matches are delegated to ``_build_taxable_realization``, which also receives
+    ``epoch_counter`` and ``deferred_consumed_counter`` (Bucket B: epoch-sentinel dates
+    and unresolved-deferred-acquisition consumption) so their counts thread up to
+    ``compute_fifo_for_asset`` -> ``AssetFifoResult`` for ONE aggregate INFO emission.
 
-    ``unmatched_taxable_counter`` is a single-cell mutable list (``[int]``) following the
-    existing mutable-accumulator convention (``carryover_cost_by_tx_key``, ``partial_tx_keys``);
-    ``None`` is tolerated for direct callers that do not need the count.
+    ``unmatched_taxable_counter``, ``negative_consumption_counter``, ``epoch_counter``,
+    and ``deferred_consumed_counter`` are single-cell mutable lists (``[int]``)
+    following the existing mutable-accumulator convention (``carryover_cost_by_tx_key``,
+    ``partial_tx_keys``); ``None`` is tolerated for direct callers that do not need
+    the counts.
 
     Returns the realizations generated for this consumption event.
     """
@@ -241,13 +304,20 @@ def _consume_against_pool_inplace(  # noqa: PLR0912, PLR0913, PLR0915
         return realizations
 
     if remaining < ZERO:
-        logger.warning(
+        # Bucket C (silent data loss, no Excel surface): per-row emission demoted to
+        # DEBUG; the count is threaded via negative_consumption_counter up to
+        # _rebuild_fifo_for_loan_affected_assets (summed onto
+        # AssetFifoResult.negative_consumption_count) and emitted as ONE aggregate
+        # WARNING there. The consumption is still dropped (early return unchanged).
+        logger.debug(
             "Negative consumption amount %.8f for %s at %s (source_row_index=%d); skipping",
             remaining,
             con.con.asset,
             con.con.date,
             con.source_row_index,
         )
+        if negative_consumption_counter is not None:
+            negative_consumption_counter[0] += 1
         return realizations
 
     while remaining > ZERO and pool:
@@ -262,7 +332,9 @@ def _consume_against_pool_inplace(  # noqa: PLR0912, PLR0913, PLR0915
         if con.con.taxable:
             realizations.append(
                 _build_taxable_realization(
-                    acq, con, consumed, proportional_cost, proportional_acq_fee, proportional_proceeds, asset, platform
+                    acq, con, consumed, proportional_cost, proportional_acq_fee, proportional_proceeds, asset, platform,
+                    epoch_counter=epoch_counter,
+                    deferred_consumed_counter=deferred_consumed_counter,
                 )
             )
         else:

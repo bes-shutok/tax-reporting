@@ -1080,16 +1080,26 @@ class TestSuspects:
         assert len(per_row_records) == 1, (
             "per-row DEBUG detail for RUNE suspect must be captured exactly once"
         )
-        # Exactly one aggregate WARNING summary using the distinct "Surfaced" wording.
+        # Exactly one aggregate INFO summary using the distinct "Surfaced" wording
+        # (demoted from WARNING to INFO in Task 8; CryptoReviewEntry is appended
+        # downstream, preserving the Excel review signal).
         summary_records = [
             r
             for r in caplog.records
-            if r.levelno == logging.WARNING
+            if r.levelno == logging.INFO
             and "Surfaced" in r.getMessage()
             and "suspect untagged network fees" in r.getMessage()
         ]
         assert len(summary_records) == 1, (
-            "exactly one aggregate WARNING summary for suspect untagged network fees"
+            "exactly one aggregate INFO summary for suspect untagged network fees"
+        )
+
+        # Negative-at-WARNING guard (Invariant #4): summary demoted to INFO, no WARNING.
+        assert not any(
+            r.levelno == logging.WARNING
+            and "Surfaced" in r.getMessage()
+            and "suspect untagged network fees" in r.getMessage()
+            for r in caplog.records
         )
 
     def test_warns_on_unlisted_suspected_fee_at_exact_max(

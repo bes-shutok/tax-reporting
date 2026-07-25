@@ -45,7 +45,7 @@ def _order_platforms_for_transfers(
         forward_edges=forward_edges,
     )
     if cyclic:
-        logger.warning(
+        logger.info(
             "Cyclic transfer dependency detected between platforms %s; "
             "falling back to alphabetical order",
             cyclic,

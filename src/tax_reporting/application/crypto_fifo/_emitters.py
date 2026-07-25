@@ -10,6 +10,7 @@ from collections.abc import MutableMapping
 
 from ...domain.crypto_fifo import CryptoAcquisition, CryptoConsumption
 from ...infrastructure.koinly_parser import normalize_platform_name
+from ..crypto.chain_derivation import is_native_gas_fee
 from .contexts import ZERO, AcquisitionContext, ConsumptionContext, ParsedTxRow
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,7 @@ def _handle_exchange(
     *,
     acquisitions: MutableMapping[str, list[AcquisitionContext]],
     consumptions: MutableMapping[str, list[ConsumptionContext]],
+    empty_cost_basis_counter: list[int] | None = None,
 ) -> None:
     if parsed_row.sent_affected and parsed_row.received_affected:
         _emit_cross_asset_exchange(
@@ -32,6 +34,7 @@ def _handle_exchange(
             parsed_row,
             acquisitions=acquisitions,
             consumptions=consumptions,
+            empty_cost_basis_counter=empty_cost_basis_counter,
         )
     elif parsed_row.sent_affected and not parsed_row.received_affected:
         _emit_sent_only_exchange(
@@ -62,16 +65,28 @@ def _emit_cross_asset_exchange(
         else ZERO
     )
     if third_currency_fee_recv > ZERO:
-        logger.warning(
-            "Row %d: exchange %s->%s has fee in third currency %s (%.6f EUR); "
-            "adding to %s deferred acquisition cost basis",
-            parsed_row.row_index,
-            parsed_row.sent_currency,
-            parsed_row.received_currency,
-            parsed_row.fee_currency,
-            third_currency_fee_recv,
-            parsed_row.received_currency,
-        )
+        if is_native_gas_fee(sending_wallet, parsed_row.fee_currency):
+            logger.debug(
+                "Row %d: exchange %s->%s has fee in third currency %s (%.6f EUR); "
+                "adding to %s deferred acquisition cost basis",
+                parsed_row.row_index,
+                parsed_row.sent_currency,
+                parsed_row.received_currency,
+                parsed_row.fee_currency,
+                third_currency_fee_recv,
+                parsed_row.received_currency,
+            )
+        else:
+            logger.warning(
+                "Row %d: exchange %s->%s has fee in third currency %s (%.6f EUR); "
+                "adding to %s deferred acquisition cost basis",
+                parsed_row.row_index,
+                parsed_row.sent_currency,
+                parsed_row.received_currency,
+                parsed_row.fee_currency,
+                third_currency_fee_recv,
+                parsed_row.received_currency,
+            )
     _con = ConsumptionContext(
         con=CryptoConsumption(
             date=parsed_row.date_str,
@@ -165,6 +180,7 @@ def _emit_received_only_exchange(
     *,
     acquisitions: MutableMapping[str, list[AcquisitionContext]],
     consumptions: MutableMapping[str, list[ConsumptionContext]],
+    empty_cost_basis_counter: list[int] | None = None,
 ) -> None:
     wallet = parsed_row.row.get("Receiving Wallet", "").strip()
     platform = normalize_platform_name(wallet)
@@ -174,12 +190,19 @@ def _emit_received_only_exchange(
     review_required = False
     review_reason: str | None = None
     if cost == ZERO:
-        logger.warning(
+        # Bucket B (HAS_EXCEL_SURFACE): per-row emission demoted to DEBUG; the count
+        # is threaded up to _rebuild_fifo_for_loan_affected_assets (via the parsing
+        # path's empty_cost_basis_counter) and emitted as ONE aggregate INFO there.
+        # The acquisition still carries review_required=True + review_reason
+        # (Invariant #3 unchanged); the Excel review cell is the canonical surface.
+        logger.debug(
             "Row %d: exchange %s->%s has empty Sent Cost Basis; keeping zero cost, marking for review",
             parsed_row.row_index,
             parsed_row.sent_currency,
             parsed_row.received_currency,
         )
+        if empty_cost_basis_counter is not None:
+            empty_cost_basis_counter[0] += 1
         review_required = True
         review_reason = (
             f"Empty Sent Cost Basis on exchange {parsed_row.sent_currency}->{parsed_row.received_currency}; "
@@ -192,15 +215,26 @@ def _emit_received_only_exchange(
         else ZERO
     )
     if third_currency_fee_recv > ZERO:
-        logger.warning(
-            "Row %d: exchange %s->%s has fee in third currency %s (%.6f EUR); adding to %s acquisition cost basis",
-            parsed_row.row_index,
-            parsed_row.sent_currency,
-            parsed_row.received_currency,
-            parsed_row.fee_currency,
-            third_currency_fee_recv,
-            parsed_row.received_currency,
-        )
+        if is_native_gas_fee(sending_wallet, parsed_row.fee_currency):
+            logger.debug(
+                "Row %d: exchange %s->%s has fee in third currency %s (%.6f EUR); adding to %s acquisition cost basis",
+                parsed_row.row_index,
+                parsed_row.sent_currency,
+                parsed_row.received_currency,
+                parsed_row.fee_currency,
+                third_currency_fee_recv,
+                parsed_row.received_currency,
+            )
+        else:
+            logger.warning(
+                "Row %d: exchange %s->%s has fee in third currency %s (%.6f EUR); adding to %s acquisition cost basis",
+                parsed_row.row_index,
+                parsed_row.sent_currency,
+                parsed_row.received_currency,
+                parsed_row.fee_currency,
+                third_currency_fee_recv,
+                parsed_row.received_currency,
+            )
     fee_same = parsed_row.fee_value if parsed_row.fee_currency == parsed_row.received_currency else ZERO
     _acq = AcquisitionContext(
         acq=CryptoAcquisition(
@@ -336,7 +370,7 @@ def _handle_transfer(
                 receiving_wallet,
             )
         elif not receiving_wallet:
-            logger.warning(
+            logger.info(
                 "Row %d: transfer of loan-affected asset %s (%s) has unknown receiver platform: "
                 "principal movement not tracked. Sending platform (%s) retains phantom lots; "
                 "future disposals from that platform will be flagged review_required=True.",

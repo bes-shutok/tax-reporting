@@ -116,6 +116,8 @@ def discover_loan_affected_assets(
 def parse_th_for_loan_affected_assets(
     transaction_history_path: Path,
     loan_affected_assets: frozenset[str] = frozenset(),
+    *,
+    empty_cost_basis_counter: list[int] | None = None,
 ) -> tuple[
     dict[str, list[AcquisitionContext]],
     dict[str, list[ConsumptionContext]],
@@ -132,6 +134,12 @@ def parse_th_for_loan_affected_assets(
     Args:
         transaction_history_path: Path to the Koinly transaction history CSV.
         loan_affected_assets: Set of asset tickers to process (from discover_loan_affected_assets).
+        empty_cost_basis_counter: Optional single-cell mutable counter (``[int]``)
+            incremented once per received-only exchange with an empty Sent Cost Basis
+            (Bucket B). Threaded down to ``_emit_received_only_exchange``; the caller
+            (``_rebuild_fifo_for_loan_affected_assets``) emits ONE aggregate INFO from
+            the total. ``None`` (the default) is tolerated for callers that do not need
+            the count.
 
     Returns:
         Tuple of (acquisitions_by_asset, consumptions_by_asset, phantom_sending_transfers,
@@ -141,12 +149,16 @@ def parse_th_for_loan_affected_assets(
         each loan-affected asset with a parse error to the list of failing row indices.
     """
     rows = read_koinly_rows(transaction_history_path)
-    return _classify_rows_for_loan_affected_assets(rows, loan_affected_assets)
+    return _classify_rows_for_loan_affected_assets(
+        rows, loan_affected_assets, empty_cost_basis_counter=empty_cost_basis_counter
+    )
 
 
 def _classify_rows_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
     rows: Sequence[dict[str, str]],
     loan_affected_assets: frozenset[str] = frozenset(),
+    *,
+    empty_cost_basis_counter: list[int] | None = None,
 ) -> tuple[
     dict[str, list[AcquisitionContext]],
     dict[str, list[ConsumptionContext]],
@@ -162,6 +174,10 @@ def _classify_rows_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
     Args:
         rows: Pre-loaded Koinly transaction history rows.
         loan_affected_assets: Set of asset tickers to process.
+        empty_cost_basis_counter: Optional single-cell mutable counter (``[int]``)
+            incremented once per received-only exchange with an empty Sent Cost Basis
+            (Bucket B); threaded down to ``_emit_received_only_exchange``. ``None`` is
+            tolerated for callers that do not need the count.
 
     Returns:
         Same tuple structure as parse_th_for_loan_affected_assets.
@@ -278,6 +294,7 @@ def _classify_rows_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
             parse_failures_by_asset=parse_failures_by_asset,
             phantom_sending_transfers=phantom_sending_transfers,
             zero_net_deposits=zero_net_deposits,
+            empty_cost_basis_counter=empty_cost_basis_counter,
         )
 
     _dedup_by_tx_key(acquisitions, consumptions, parse_failures_by_asset)
@@ -375,7 +392,7 @@ def _dedup_by_tx_key(
         )
 
 
-def _classify_th_row(
+def _classify_th_row(  # noqa: PLR0913
     parsed_row: ParsedTxRow,
     *,
     acquisitions: MutableMapping[str, list[AcquisitionContext]],
@@ -383,11 +400,17 @@ def _classify_th_row(
     parse_failures_by_asset: dict[str, list[int]],
     phantom_sending_transfers: set[tuple[str, str, str]],
     zero_net_deposits: Counter[str],
+    empty_cost_basis_counter: list[int] | None = None,
 ) -> None:
     """Classify a single parsed TH row into acquisitions/consumptions for loan-affected assets."""
     match (parsed_row.row_type, parsed_row.sent_affected, parsed_row.received_affected):
         case ("exchange", _, _):
-            _classify_exchange_row(parsed_row, acquisitions=acquisitions, consumptions=consumptions)
+            _classify_exchange_row(
+                parsed_row,
+                acquisitions=acquisitions,
+                consumptions=consumptions,
+                empty_cost_basis_counter=empty_cost_basis_counter,
+            )
         case ("transfer", _, _):
             _classify_transfer_row(
                 parsed_row,
@@ -437,11 +460,13 @@ def _classify_exchange_row(
     *,
     acquisitions: MutableMapping[str, list[AcquisitionContext]],
     consumptions: MutableMapping[str, list[ConsumptionContext]],
+    empty_cost_basis_counter: list[int] | None = None,
 ) -> None:
     _handle_exchange(
         parsed_row,
         acquisitions=acquisitions,
         consumptions=consumptions,
+        empty_cost_basis_counter=empty_cost_basis_counter,
     )
 
 

@@ -234,6 +234,14 @@ Test both positive matches and negative (unknown) cases:
 - Address stripping: `Ethereum (ETH) - 0x6ABd...` → `Ethereum`
 - Unknown wallets: `RandomWallet` → `Unknown` (not guessed)
 
+### Native gas-token mapping (`_CHAIN_NATIVE_FEE_ASSET`)
+
+`_CHAIN_NATIVE_FEE_ASSET` is a module-level frozen dict constant in `src/tax_reporting/application/crypto/chain_derivation.py` mapping each known chain to its native gas-token ticker (Ethereum -> ETH, Solana -> SOL, Sui -> SUI, Binance Smart Chain -> BNB, Berachain -> BERA, Polygon -> MATIC, TON -> TON, Aptos -> APT, Filecoin -> FIL, and the EVM L2s Arbitrum / BASE / zkSync ERA / Mantle / Starknet -> ETH). The chain list MIRRORS `_KNOWN_CHAINS` (the crypto-origin registry's canonical chain set); when a chain is added to the registry, add its native gas asset here in the same change.
+
+Native gas is a **protocol-level fact** (not jurisdiction- or year-dependent law), so the constant lives next to `_KNOWN_CHAINS` in `chain_derivation.py`, NOT in the decision-points TOML (which holds law, not protocol facts).
+
+The constant is consumed by the third-currency-fee emitter (`crypto/_emitters.py`) via the unified two-model expected-case rule: a fee is EXPECTED (no warning) when it is a trade leg (CEX model) OR `_CHAIN_NATIVE_FEE_ASSET[_derive_chain(wallet)]` (DEX native-gas model). **Asset-keyed matching is unsafe** (ETH/BNB/MATIC are native gas on one chain but regular bridged tokens on others); the lookup MUST be chain-keyed, derived per-row. When `_derive_chain` returns `"Unknown"` the lookup fails closed and the fee STAYS WARNING (fail-safe). Cross-reference: project-guidelines rule #7 (native-gas split / Bucket A-split), plan `docs/history/plans/2026-07-24-silence-expected-and-excel-surfaced-warnings.md`.
+
 ## Operator Origin Resolution
 
 When adding or modifying operator/chain mappings:

@@ -209,7 +209,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 
 ## Code Quality
 
-- **Ruff** is primary linter/formatter (`pyproject.toml`: Python 3.14, line length 120, full ruleset). Do not run `ruff check --fix` on modules that re-export for backward compat (e.g. `crypto_reporting.py`); `F401` strips re-exported names tests depend on.
+- **Ruff** is primary linter/formatter (`pyproject.toml`: Python 3.14, line length 120, full ruleset), but **unenforced** (no pre-commit hook, no CI workflow): a clean working-tree `ruff check` is necessary but not sufficient, because pre-existing violations can accumulate on `master`. Before adding a `# noqa`, check the HEAD blob (`git show HEAD:<file>` piped to `ruff check`) to avoid mis-attributing pre-existing master debt to the current change. Do not run `ruff check --fix` on modules that re-export for backward compat (e.g. `crypto_reporting.py`); `F401` strips re-exported names tests depend on. See `development_lessons.md` #72.
 - Type hints: modern syntax (`X | Y`) with `from __future__ import annotations`; lazy logging, f-string exceptions, named-constant magic numbers (except tests). Never default essential indices/identifiers to 0. Refactor complex functions.
 - Docstrings: always for public modules/classes/`__init__`/complex functions; skip trivial getters/setters/`__repr__`/private methods/test functions.
 - **Code review checklist:** required params truly required; error messages have row context; exception chaining preserves originals; logging parameterized; fail-fast vs missing-data distinction correct.

@@ -687,6 +687,272 @@ def _make_cg_lot(  # noqa: PLR0913
     )
 
 
+class TestEmitters:
+    """Tests for the third-currency-fee unified-rule split (Tasks 1-3 RED).
+
+    A third-currency fee (fee_currency not in (sent_currency, received_currency)
+    with fee_value > 0) follows a unified two-model rule:
+
+      * CEX model (leg-check, kept): ``fee_currency in (sent, received)`` -> no
+        third-currency message at all.
+      * DEX model (new native-gas check): ``fee_currency == native_gas_asset``
+        of ``_derive_chain(wallet)`` -> demoted to ``logging.DEBUG`` (expected
+        gas behavior, fee folded into ``AcquisitionContext.acq.fee_eur``).
+      * Anomalous (fee in neither a leg nor native gas) or unknown chain ->
+        STAYS ``logging.WARNING`` (Invariant #8 fail-safe).
+
+    The ``native_gas_fee*`` tests below are RED drivers: today
+    ``_emit_cross_asset_exchange`` (``_emitters.py:65``) and
+    ``_emit_received_only_exchange`` (``_emitters.py:195``) ALWAYS emit the
+    third-currency message at WARNING, so the DEBUG-positive / WARNING-negative
+    pair fails pre-Task-3. The ``..._stays_warning`` and ``cex_leg_fee`` tests
+    assert pre-existing behavior (regression guards) and pass now.
+    """
+
+    _LOGGER_NAME = "tax_reporting.application.crypto_fifo._emitters"
+    _FEE_MSG_MARKER = "fee in third currency"
+
+    @staticmethod
+    def _eth_cross_asset_row() -> dict[str, str]:
+        """Cross-asset exchange row on Ethereum paying gas in ETH.
+
+        sent=FARMDWBTCV3, received=WBTC (both loan-affected), fee_currency=ETH
+        (neither a leg), wallet "Ethereum (ETH)" so ``_derive_chain`` -> "Ethereum"
+        and ``is_native_gas_fee`` -> True. ``fee_value > 0`` reaches the warning.
+        """
+        return {
+            "Date": "2025-01-24 23:40:53 UTC",
+            "Type": "exchange",
+            "Tag": "",
+            "Sending Wallet": "Ethereum (ETH)",
+            "Receiving Wallet": "Ethereum (ETH)",
+            "Sent Amount": "1.0",
+            "Sent Currency": "FARMDWBTCV3",
+            "Received Amount": "0.001",
+            "Received Currency": "WBTC",
+            "Fee Amount": "0.0025",
+            "Fee Currency": "ETH",
+            "Fee Value (EUR)": "0.65",
+            "Sent Cost Basis": "10",
+            "Net Value (EUR)": "10",
+            "TxHash": "",
+        }
+
+    @staticmethod
+    def _eth_received_only_row() -> dict[str, str]:
+        """Received-only exchange row on Ethereum paying gas in ETH.
+
+        sent=EUR (NOT loan-affected), received=WBTC (loan-affected), so the row
+        routes to ``_emit_received_only_exchange``. fee_currency=ETH is neither
+        a leg, wallet "Ethereum (ETH)" -> native gas.
+        """
+        return {
+            "Date": "2025-01-24 23:40:53 UTC",
+            "Type": "exchange",
+            "Tag": "",
+            "Sending Wallet": "Ethereum (ETH)",
+            "Receiving Wallet": "Ethereum (ETH)",
+            "Sent Amount": "100.0",
+            "Sent Currency": "EUR",
+            "Received Amount": "0.001",
+            "Received Currency": "WBTC",
+            "Fee Amount": "0.0025",
+            "Fee Currency": "ETH",
+            "Fee Value (EUR)": "0.65",
+            "Sent Cost Basis": "100",
+            "Net Value (EUR)": "100",
+            "TxHash": "",
+        }
+
+    def test_native_gas_fee_cross_asset_logs_at_debug(self, caplog: pytest.LogCaptureFixture):
+        """Given a cross-asset exchange on wallet "Ethereum (ETH)" with
+        fee_currency="ETH" (native gas, fee_value > 0), expects the
+        "fee in third currency ... deferred acquisition cost basis" message at
+        ``logging.DEBUG`` (positive) and NOT at ``logging.WARNING`` (negative),
+        as two separate emissions. Also asserts ``fee_eur`` on the resulting
+        ``AcquisitionContext`` includes the fee value (data-unchanged regression).
+        """
+        from tax_reporting.application.crypto_fifo.parsing import (
+            _classify_rows_for_loan_affected_assets,
+        )
+
+        rows = [self._eth_cross_asset_row()]
+        loan_affected = frozenset({"FARMDWBTCV3", "WBTC"})
+
+        # Positive: message present at DEBUG.
+        with caplog.at_level(logging.DEBUG, logger=self._LOGGER_NAME):
+            acquisitions, _consumptions, _, _ = _classify_rows_for_loan_affected_assets(
+                rows, loan_affected_assets=loan_affected
+            )
+        debug_messages = [r.getMessage() for r in caplog.records]
+        assert any(self._FEE_MSG_MARKER in m for m in debug_messages), (
+            "native-gas third-currency fee must be reachable at DEBUG"
+        )
+
+        # Regression: the fee value is folded into the acquisition's fee_eur
+        # regardless of the log level (data unchanged).
+        wbtc_acqs = acquisitions.get("WBTC", [])
+        assert wbtc_acqs, "cross-asset exchange must produce a WBTC acquisition"
+        assert wbtc_acqs[0].acq.fee_eur == Decimal("0.65"), (
+            f"fee_eur must include the 0.65 third-currency fee; got {wbtc_acqs[0].acq.fee_eur}"
+        )
+
+        # Negative: message NOT present at WARNING. Fresh caplog context, re-invoke
+        # the emitter so the record is captured under the WARNING filter (Invariant #4).
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger=self._LOGGER_NAME):
+            _classify_rows_for_loan_affected_assets(rows, loan_affected_assets=loan_affected)
+        warning_messages = [r.getMessage() for r in caplog.records]
+        assert not any(self._FEE_MSG_MARKER in m for m in warning_messages), (
+            "native-gas third-currency fee must NOT appear at WARNING; "
+            f"got {[m for m in warning_messages if self._FEE_MSG_MARKER in m]}"
+        )
+
+    def test_native_gas_fee_received_only_logs_at_debug(self, caplog: pytest.LogCaptureFixture):
+        """Given a received-only exchange on wallet "Ethereum (ETH)" with
+        fee_currency="ETH" (native gas), expects the third-currency message at
+        DEBUG (positive) and NOT at WARNING (negative), plus fee_eur regression.
+        """
+        from tax_reporting.application.crypto_fifo.parsing import (
+            _classify_rows_for_loan_affected_assets,
+        )
+
+        rows = [self._eth_received_only_row()]
+        loan_affected = frozenset({"WBTC"})
+
+        with caplog.at_level(logging.DEBUG, logger=self._LOGGER_NAME):
+            acquisitions, _consumptions, _, _ = _classify_rows_for_loan_affected_assets(
+                rows, loan_affected_assets=loan_affected
+            )
+        debug_messages = [r.getMessage() for r in caplog.records]
+        assert any(self._FEE_MSG_MARKER in m for m in debug_messages), (
+            "native-gas third-currency fee must be reachable at DEBUG (received-only)"
+        )
+
+        # Regression: fee folded into the WBTC acquisition's fee_eur.
+        wbtc_acqs = acquisitions.get("WBTC", [])
+        assert wbtc_acqs, "received-only exchange must produce a WBTC acquisition"
+        assert wbtc_acqs[0].acq.fee_eur == Decimal("0.65"), (
+            f"fee_eur must include the 0.65 third-currency fee; got {wbtc_acqs[0].acq.fee_eur}"
+        )
+
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger=self._LOGGER_NAME):
+            _classify_rows_for_loan_affected_assets(rows, loan_affected_assets=loan_affected)
+        warning_messages = [r.getMessage() for r in caplog.records]
+        assert not any(self._FEE_MSG_MARKER in m for m in warning_messages), (
+            "native-gas third-currency fee must NOT appear at WARNING (received-only); "
+            f"got {[m for m in warning_messages if self._FEE_MSG_MARKER in m]}"
+        )
+
+    def test_anomalous_third_token_fee_cross_asset_stays_warning(self, caplog: pytest.LogCaptureFixture):
+        """Given a cross-asset exchange on "Ethereum (ETH)" with fee_currency="USDC"
+        (neither a leg nor native gas), expects the third-currency message STILL at
+        ``logging.WARNING`` (genuinely-anomalous case is not silenced). Regression
+        guard: asserts pre-existing behavior.
+        """
+        from tax_reporting.application.crypto_fifo.parsing import (
+            _classify_rows_for_loan_affected_assets,
+        )
+
+        rows = [
+            {
+                "Date": "2025-01-24 23:40:53 UTC",
+                "Type": "exchange",
+                "Tag": "",
+                "Sending Wallet": "Ethereum (ETH)",
+                "Receiving Wallet": "Ethereum (ETH)",
+                "Sent Amount": "1.0",
+                "Sent Currency": "FARMDWBTCV3",
+                "Received Amount": "0.001",
+                "Received Currency": "WBTC",
+                "Fee Amount": "1.0",
+                "Fee Currency": "USDC",
+                "Fee Value (EUR)": "0.65",
+                "Sent Cost Basis": "10",
+                "Net Value (EUR)": "10",
+                "TxHash": "",
+            }
+        ]
+        with caplog.at_level(logging.WARNING, logger=self._LOGGER_NAME):
+            _classify_rows_for_loan_affected_assets(rows, loan_affected_assets=frozenset({"FARMDWBTCV3", "WBTC"}))
+        warning_messages = [r.getMessage() for r in caplog.records]
+        assert any(self._FEE_MSG_MARKER in m for m in warning_messages), (
+            "anomalous third-token fee (USDC) MUST stay at WARNING"
+        )
+
+    def test_unknown_chain_third_token_fee_stays_warning(self, caplog: pytest.LogCaptureFixture):
+        """Given an exchange on wallet "Some Unknown DEX" with a third-currency
+        fee, expects WARNING (Invariant #8 fail-safe: unknown chain -> no native
+        gas map entry -> STAYS WARNING). Regression guard.
+        """
+        from tax_reporting.application.crypto_fifo.parsing import (
+            _classify_rows_for_loan_affected_assets,
+        )
+
+        rows = [
+            {
+                "Date": "2025-01-24 23:40:53 UTC",
+                "Type": "exchange",
+                "Tag": "",
+                "Sending Wallet": "Some Unknown DEX",
+                "Receiving Wallet": "Some Unknown DEX",
+                "Sent Amount": "1.0",
+                "Sent Currency": "FARMDWBTCV3",
+                "Received Amount": "0.001",
+                "Received Currency": "WBTC",
+                "Fee Amount": "0.0025",
+                "Fee Currency": "ETH",
+                "Fee Value (EUR)": "0.65",
+                "Sent Cost Basis": "10",
+                "Net Value (EUR)": "10",
+                "TxHash": "",
+            }
+        ]
+        with caplog.at_level(logging.WARNING, logger=self._LOGGER_NAME):
+            _classify_rows_for_loan_affected_assets(rows, loan_affected_assets=frozenset({"FARMDWBTCV3", "WBTC"}))
+        warning_messages = [r.getMessage() for r in caplog.records]
+        assert any(self._FEE_MSG_MARKER in m for m in warning_messages), (
+            "third-currency fee on an unknown chain MUST stay at WARNING (fail-safe)"
+        )
+
+    def test_cex_leg_fee_no_warning(self, caplog: pytest.LogCaptureFixture):
+        """Given a CEX exchange (wallet "ByBit") where fee_currency == received_currency
+        (the existing leg-check), expects NO third-currency-fee message at all. The
+        leg-check suppresses CEX fees; the native-gas check composes, does not replace.
+        Regression guard: asserts pre-existing behavior (passes pre-Task-3).
+        """
+        from tax_reporting.application.crypto_fifo.parsing import (
+            _classify_rows_for_loan_affected_assets,
+        )
+
+        rows = [
+            {
+                "Date": "2025-01-24 23:40:53 UTC",
+                "Type": "exchange",
+                "Tag": "",
+                "Sending Wallet": "ByBit",
+                "Receiving Wallet": "ByBit",
+                "Sent Amount": "1.0",
+                "Sent Currency": "USDT",
+                "Received Amount": "0.001",
+                "Received Currency": "WBTC",
+                "Fee Amount": "0.0005",
+                "Fee Currency": "WBTC",
+                "Fee Value (EUR)": "0.65",
+                "Sent Cost Basis": "10",
+                "Net Value (EUR)": "10",
+                "TxHash": "",
+            }
+        ]
+        with caplog.at_level(logging.DEBUG, logger=self._LOGGER_NAME):
+            _classify_rows_for_loan_affected_assets(rows, loan_affected_assets=frozenset({"USDT", "WBTC"}))
+        messages = [r.getMessage() for r in caplog.records]
+        assert not any(self._FEE_MSG_MARKER in m for m in messages), (
+            "CEX leg fee (fee_currency == received_currency) must not emit the third-currency message at any level"
+        )
+
+
 class TestRemoveDerivativesFlaggedLots:
     """Tests for remove_derivatives_flagged_lots (Task 5).
 

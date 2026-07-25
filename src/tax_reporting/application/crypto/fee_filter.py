@@ -640,7 +640,7 @@ def _surface_suspects(
         )
 
     if suspect_events:
-        logger.warning("Surfaced %d suspect untagged network fees for manual review", len(suspect_events))
+        logger.info("Surfaced %d suspect untagged network fees for manual review", len(suspect_events))
 
     return flagged
 

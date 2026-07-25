@@ -319,15 +319,34 @@ class TestClassifyExchangeEmptySentCostBasisMarksReviewRequired:
         assert "ETH" in acq.acq.review_reason
 
     def test_logs_warning_on_empty_cost_basis(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        """5a stale-test conversion (r1 F3): the per-row "empty Sent Cost Basis"
+        emission was demoted from WARNING to DEBUG and grouped into ONE aggregate
+        INFO. Assert BOTH: (positive) the per-row message is reachable at DEBUG, AND
+        (negative) it does NOT appear at WARNING. Two separate ``caplog.at_level``
+        blocks, each re-invoking the code under test (Invariant #4).
+        """
         row = (
             '2025-06-01 12:00:00 UTC,exchange,"",SomeWallet,"10,00000000",ETH,'
             ',SomeWallet,"0,10000000",WBTC,,,,"100,00",,,,tx_empty2,""'
         )
         path = _write_th_csv(tmp_path, [row])
+
+        # Positive: per-row detail reachable at DEBUG.
+        with caplog.at_level(logging.DEBUG):
+            parse_th_for_loan_affected_assets(path, loan_affected_assets=_WBTC_SUI_LBTC)
+        assert any(
+            "empty Sent Cost Basis" in r.message for r in caplog.records
+            if r.levelno == logging.DEBUG
+        )
+
+        # Negative: per-row message must NOT appear at WARNING.
+        caplog.clear()
         with caplog.at_level(logging.WARNING):
             parse_th_for_loan_affected_assets(path, loan_affected_assets=_WBTC_SUI_LBTC)
-
-        assert any("empty Sent Cost Basis" in r.message for r in caplog.records)
+        assert not any(
+            "empty Sent Cost Basis" in r.message for r in caplog.records
+            if r.levelno == logging.WARNING
+        )
 
 
 class TestClassifyCryptoDepositNonLoanCreatesAcquisition:
@@ -1135,22 +1154,24 @@ class TestResolveCrossAssetAggregateSummary:
         helpers_logger = "tax_reporting.application.crypto.fifo_helpers"
         cross_asset_logger = "tax_reporting.application.crypto_fifo.cross_asset"
 
-        # Exactly ONE aggregate WARNING matching the prescribed summary substring.
-        aggregate_warnings = [
+        # Exactly ONE aggregate INFO matching the prescribed summary substring
+        # (demoted from WARNING to INFO in Task 8 via the ``_emit_flagged_summary``
+        # ``level`` kwarg; per-row acquisitions still carry ``review_required``).
+        aggregate_infos = [
             rec.getMessage()
             for rec in caplog.records
-            if rec.levelno == logging.WARNING
+            if rec.levelno == logging.INFO
             and rec.name == helpers_logger
             and "cross-asset deferred acquisition(s) flagged" in rec.getMessage()
         ]
-        assert len(aggregate_warnings) == 1, (
-            f"Expected exactly ONE aggregate WARNING, got {aggregate_warnings}"
+        assert len(aggregate_infos) == 1, (
+            f"Expected exactly ONE aggregate INFO, got {aggregate_infos}"
         )
 
         # The summary names the total count (4 = 2 unresolved + 2 zero_carryover) ...
-        assert "4 cross-asset deferred acquisition(s) flagged" in aggregate_warnings[0]
+        assert "4 cross-asset deferred acquisition(s) flagged" in aggregate_infos[0]
         # ... and the per-cause breakdown with counts (sorted by cause key).
-        msg = aggregate_warnings[0]
+        msg = aggregate_infos[0]
         assert "unresolved: 2" in msg, (
             f"Aggregate must name unresolved sub-cause with count; got {msg!r}"
         )
@@ -1273,19 +1294,21 @@ class TestResolveCrossAssetAggregateSummary:
         helpers_logger = "tax_reporting.application.crypto.fifo_helpers"
         cross_asset_logger = "tax_reporting.application.crypto_fifo.cross_asset"
 
-        # Exactly ONE aggregate WARNING matching the prescribed summary substring.
-        aggregate_warnings = [
+        # Exactly ONE aggregate INFO matching the prescribed summary substring
+        # (demoted from WARNING to INFO in Task 8 via ``_emit_flagged_summary``'s
+        # ``level`` kwarg).
+        aggregate_infos = [
             rec.getMessage()
             for rec in caplog.records
-            if rec.levelno == logging.WARNING
+            if rec.levelno == logging.INFO
             and rec.name == helpers_logger
             and "cross-asset deferred acquisition(s) flagged" in rec.getMessage()
         ]
-        assert len(aggregate_warnings) == 1, (
-            f"Expected exactly ONE aggregate WARNING, got {aggregate_warnings}"
+        assert len(aggregate_infos) == 1, (
+            f"Expected exactly ONE aggregate INFO, got {aggregate_infos}"
         )
 
-        msg = aggregate_warnings[0]
+        msg = aggregate_infos[0]
         # Both threaded sub-causes must appear in the breakdown with their counts. These
         # assertions are the load-bearing guard against a silently dropped or misspelled
         # ``_bump("multi_sender")`` / ``_bump("partial")`` increment in
@@ -1390,22 +1413,24 @@ class TestResolveIntraAssetTransfersAggregateSummary:
         helpers_logger = "tax_reporting.application.crypto.fifo_helpers"
         transfer_logger = "tax_reporting.application.crypto_fifo.transfer"
 
-        # Exactly ONE aggregate WARNING matching the prescribed summary substring.
-        aggregate_warnings = [
+        # Exactly ONE aggregate INFO matching the prescribed summary substring
+        # (demoted from WARNING to INFO in Task 8 via ``_emit_flagged_summary``'s
+        # ``level`` kwarg; per-row acquisitions still carry ``review_required``).
+        aggregate_infos = [
             rec.getMessage()
             for rec in caplog.records
-            if rec.levelno == logging.WARNING
+            if rec.levelno == logging.INFO
             and rec.name == helpers_logger
             and "transfer carry-over acquisition(s) flagged" in rec.getMessage()
         ]
-        assert len(aggregate_warnings) == 1, (
-            f"Expected exactly ONE aggregate WARNING, got {aggregate_warnings}"
+        assert len(aggregate_infos) == 1, (
+            f"Expected exactly ONE aggregate INFO, got {aggregate_infos}"
         )
 
         # The summary names the total count (4 = 2 requires_review + 2 unresolved) ...
-        assert "4 transfer carry-over acquisition(s) flagged" in aggregate_warnings[0]
+        assert "4 transfer carry-over acquisition(s) flagged" in aggregate_infos[0]
         # ... and the per-cause breakdown with counts (sorted by cause key).
-        msg = aggregate_warnings[0]
+        msg = aggregate_infos[0]
         assert "requires_review: 2" in msg, (
             f"Aggregate must name requires_review sub-cause with count; got {msg!r}"
         )
@@ -1481,19 +1506,19 @@ class TestResolveIntraAssetTransfersAggregateSummary:
 
         helpers_logger = "tax_reporting.application.crypto.fifo_helpers"
 
-        jk_warnings = [
+        jk_aggregates = [
             rec.getMessage()
             for rec in caplog.records
-            if rec.levelno == logging.WARNING
+            if rec.levelno == logging.INFO
             and rec.name == helpers_logger
             and (
                 "cross-asset deferred acquisition(s) flagged" in rec.getMessage()
                 or "transfer carry-over acquisition(s) flagged" in rec.getMessage()
             )
         ]
-        assert jk_warnings == [], (
-            "No J/K aggregate WARNING should fire when the rebuild produces no "
-            f"cross-asset/transfer flags; got {jk_warnings}"
+        assert jk_aggregates == [], (
+            "No J/K aggregate INFO should fire when the rebuild produces no "
+            f"cross-asset/transfer flags; got {jk_aggregates}"
         )
 
 
@@ -1973,7 +1998,7 @@ class TestBuildCrossAssetOrder:
         assert tx_key_to_sender == {}
 
     def test_cycle_falls_back_to_alphabetical_with_warning(self, caplog) -> None:
-        """A→B and B→A cross-asset swaps both present → log WARNING, return alphabetical."""
+        """A→B and B→A cross-asset swaps both present → log INFO, return alphabetical."""
         from tax_reporting.application.crypto_fifo.cross_asset import _build_cross_asset_order
 
         # WBTC receives from LBTC (tx1), AND LBTC receives from WBTC (tx2)
@@ -1989,11 +2014,17 @@ class TestBuildCrossAssetOrder:
 
         import logging
 
-        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_fifo"):
+        with caplog.at_level(logging.INFO, logger="tax_reporting.application.crypto_fifo"):
             order, _tx_key_to_sender = _build_cross_asset_order(acquisitions, consumptions)
 
         assert "Cyclic" in caplog.text or "cyclic" in caplog.text.lower()
         assert order == sorted(order)
+
+        # Negative-at-WARNING guard (Invariant #4): demoted to INFO, must NOT be WARNING.
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.crypto_fifo"):
+            _order2, _ = _build_cross_asset_order(acquisitions, consumptions)
+        assert not any("Cyclic" in r.message or "cyclic" in r.message.lower() for r in caplog.records)
 
     def test_two_senders_sharing_same_txhash_both_recorded(self) -> None:
         """Two different loan-affected assets with exchange_out events sharing the same TxHash.
@@ -2449,9 +2480,9 @@ class TestHandleTransfer:
     def test_transfer_with_unknown_receiver_falls_back_to_phantom_flag(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        # Empty Receiving Wallet → unknown receiver → phantom fallback
+        # Empty Receiving Wallet → unknown receiver → phantom fallback (logged at INFO)
         path = self._transfer_row(tmp_path, receiving_wallet="")
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.INFO):
             acquisitions, consumptions, phantom, _ = parse_th_for_loan_affected_assets(
                 path, loan_affected_assets=_WBTC_SUI_LBTC
             )
@@ -2464,8 +2495,19 @@ class TestHandleTransfer:
         phantom_assets = {a for (a, _p, _d) in phantom}
         assert "WBTC" in phantom_assets
 
-        # Warning was logged
+        # Info was logged (demoted from WARNING in Task 8)
         assert any("unknown receiver" in r.message.lower() or "transfer" in r.message.lower() for r in caplog.records)
+
+        # Negative-at-WARNING guard (Invariant #4): demoted to INFO, must NOT be WARNING.
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            _acq2, _con2, _phantom2, _ = parse_th_for_loan_affected_assets(
+                path, loan_affected_assets=_WBTC_SUI_LBTC
+            )
+        assert not any(
+            "unknown receiver" in r.message.lower() or "transfer" in r.message.lower()
+            for r in caplog.records
+        )
 
 
 class TestFifoCrossPlatformTransfer:
@@ -2835,12 +2877,13 @@ class TestConsumeAgainstPoolInplace:
     def test_non_taxable_pool_exhausted_emits_aggregate_via_compute_fifo(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Non-taxable consumption that exhausts the pool emits ONE aggregate WARNING
+        """Non-taxable consumption that exhausts the pool emits ONE aggregate INFO
         via ``compute_fifo_for_asset`` plus ONE DEBUG per-row emission (pattern G).
 
         Per-row emission was downgraded from WARNING to DEBUG; the per-asset summary
-        at WARNING preserves the audit signal on the console (Design Invariant #3
-        and #4).
+        was demoted from WARNING to INFO in Task 8 (downstream
+        ``partial_carryover_tx_keys`` feeds ``review_required``), preserving the
+        Excel review signal (Design Invariant #3 and #4).
         """
         acquisitions = [_acq(amount="1", cost_basis_eur="100")]
         consumptions = [
@@ -2857,16 +2900,16 @@ class TestConsumeAgainstPoolInplace:
         assert "tx_partial" in result.partial_carryover_tx_keys
         assert "tx_partial" in result.carryover_cost_by_tx_key
 
-        # Exactly ONE aggregate WARNING naming the count, asset, platform
-        warnings = [
+        # Exactly ONE aggregate INFO naming the count, asset, platform (demoted in Task 8)
+        infos = [
             r
             for r in caplog.records
-            if r.levelno == logging.WARNING
+            if r.levelno == logging.INFO
             and "FIFO pool exhausted for 1 non-taxable WBTC consumption(s) on Kraken" in r.getMessage()
         ]
-        assert len(warnings) == 1, (
-            f"Expected exactly one aggregate WARNING, got {len(warnings)}: "
-            f"{[r.getMessage() for r in warnings]}"
+        assert len(infos) == 1, (
+            f"Expected exactly one aggregate INFO, got {len(infos)}: "
+            f"{[r.getMessage() for r in infos]}"
         )
 
         # Exactly ONE per-row DEBUG emission (caplog at DEBUG captures it)
@@ -2883,21 +2926,74 @@ class TestConsumeAgainstPoolInplace:
             f"{[r.getMessage() for r in debugs]}"
         )
 
+        # Negative-at-WARNING guard (Invariant #4): aggregate demoted to INFO, no WARNING.
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            compute_fifo_for_asset(
+                acquisitions, consumptions, asset="WBTC", platform="Kraken"
+            )
+        assert not any(
+            "FIFO pool exhausted for" in r.getMessage() and "non-taxable" in r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+        )
+
     def test_negative_consumption_amount_returns_empty(self, caplog) -> None:
+        """6 stale-test conversion (Task 0 manifest): the per-row "Negative
+        consumption amount" emission was demoted from WARNING to DEBUG and grouped
+        into ONE aggregate WARNING (emitted by _rebuild_fifo_for_loan_affected_assets).
+        Assert BOTH: (positive) the per-row message is reachable at DEBUG, AND
+        (negative) it does NOT appear at WARNING. Two separate ``caplog.at_level``
+        blocks, each re-invoking the code under test (Invariant #4).
+        """
         from tax_reporting.application.crypto_fifo.matching import _consume_against_pool_inplace
 
         acq = _acq(amount="1", cost_basis_eur="100")
         con = _con(amount="-1", proceeds_eur="0")
-        pool = self._pool(acq)
-        carryover: dict = {}
-        partial: set = set()
 
-        with caplog.at_level(logging.WARNING):
-            result = _consume_against_pool_inplace(con, pool, "WBTC", "Kraken", carryover, partial)
-
+        # Positive: per-row detail reachable at DEBUG.
+        pool_pos = self._pool(acq)
+        with caplog.at_level(logging.DEBUG):
+            result = _consume_against_pool_inplace(
+                con, pool_pos, "WBTC", "Kraken", {}, set()
+            )
         assert result == []
-        assert len(pool) == 1
-        assert any("negative" in r.message.lower() for r in caplog.records)
+        assert len(pool_pos) == 1
+        assert any(
+            "negative" in r.message.lower() and r.levelno == logging.DEBUG
+            for r in caplog.records
+        ), "per-row Negative consumption message must be reachable at DEBUG"
+
+        # Negative: per-row message must NOT appear at WARNING.
+        caplog.clear()
+        pool_neg = self._pool(acq)
+        with caplog.at_level(logging.WARNING):
+            _consume_against_pool_inplace(
+                con, pool_neg, "WBTC", "Kraken", {}, set()
+            )
+        assert not any(
+            "negative" in r.message.lower() and r.levelno == logging.WARNING
+            for r in caplog.records
+        ), "per-row Negative consumption message must NOT appear at WARNING after demotion"
+
+    def test_negative_consumption_count_returned_on_result(self) -> None:
+        """6: the negative-consumption count is threaded onto
+        ``AssetFifoResult.negative_consumption_count`` via
+        ``_consume_against_pool_inplace``'s ``negative_consumption_counter`` param
+        (the ``unmatched_taxable_counter`` precedent). Calling
+        ``compute_fifo_for_asset`` with a negative-amount consumption returns the
+        count on the result so the top-level caller can emit ONE aggregate WARNING.
+        """
+        acquisitions = [_acq(amount="1", cost_basis_eur="100")]
+        consumptions = [_con(amount="-1", proceeds_eur="0")]
+        result = compute_fifo_for_asset(
+            acquisitions, consumptions, asset="WBTC", platform="Kraken"
+        )
+
+        # The negative consumption is dropped (early return); no realization.
+        assert result.realizations == []
+        # The count is surfaced on the result for the aggregate emitter.
+        assert result.negative_consumption_count == 1
 
 
 class TestFifoMatching:
@@ -3664,3 +3760,531 @@ class TestApplyPhantomLotFlags:
 
         assert result_out.carryover_cost_by_tx_key == carryover
         assert result_out.partial_carryover_tx_keys == partial_keys
+
+
+class TestCryptoFifo:
+    """Plan 2026-07-24 Task 5: grouped empty-Sent-Cost-Basis (Bucket B) and
+    non-positive-acquisition (Bucket C) emissions.
+
+    5a (empty Sent Cost Basis, Bucket B): the per-row ``logger.warning`` in
+    ``_emit_received_only_exchange`` (``_emitters.py``) is demoted to DEBUG and
+    grouped into ONE aggregate ``logger.info`` emitted by
+    ``_rebuild_fifo_for_loan_affected_assets``. The acquisition's
+    ``review_required`` / ``review_reason`` are UNCHANGED (Invariant #3).
+
+    5b (non-positive acquisition, Bucket C): the per-row ``logger.warning`` in
+    ``compute_fifo_for_asset`` (``matching.py:58``) is demoted to DEBUG and the
+    count is returned on ``AssetFifoResult.non_positive_acq_count`` (the
+    ``unmatched_taxable_count`` precedent), summed in
+    ``_process_single_asset_fifo`` and emitted as ONE aggregate ``logger.warning``
+    from ``_rebuild_fifo_for_loan_affected_assets``. STAYS WARNING (Bucket C,
+    silent data loss with no Excel surface).
+    """
+
+    def test_empty_sent_cost_basis_per_row_debug_aggregate_info(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """5a: empty-Sent-Cost-Basis per-row at DEBUG + ONE aggregate INFO from _rebuild.
+
+        Given a received-only exchange (ETH->WBTC, WBTC loan-affected) with an empty
+        Sent Cost Basis, the per-row "empty Sent Cost Basis" message must appear at
+        DEBUG (NOT WARNING), exactly ONE aggregate INFO "N exchange(s) with empty Sent
+        Cost Basis" summary must emit from ``_rebuild_fifo_for_loan_affected_assets``,
+        and the resulting acquisition must retain ``review_required=True`` plus the
+        carry-over "Empty Sent Cost Basis" review_reason.
+
+        Two separate ``caplog.at_level`` blocks per Invariant #4 (positive at DEBUG,
+        negative at WARNING), each re-invoking the code under test.
+        """
+        from tax_reporting.application.crypto.fifo_helpers import _rebuild_fifo_for_loan_affected_assets
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        # Received-only exchange: ETH (not loan-affected) -> WBTC (loan-affected),
+        # with an EMPTY Sent Cost Basis field -> _emit_received_only_exchange empty-cost branch.
+        row = (
+            '2025-06-01 12:00:00 UTC,exchange,"",SomeWallet,"10,00000000",ETH,'
+            ',SomeWallet,"0,10000000",WBTC,,,,"100,00",,,,tx_empty,""'
+        )
+        th_path = _write_th_csv(tmp_path, [row])
+        loan_affected = frozenset({"WBTC"})
+        resolver = TokenOriginResolver(th_path, transactions=[], config=TreatmentConfig())
+
+        helpers_logger = "tax_reporting.application.crypto.fifo_helpers"
+        emitters_logger = "tax_reporting.application.crypto_fifo._emitters"
+
+        # --- Positive half: per-row message reachable at DEBUG + ONE aggregate INFO. ---
+        with caplog.at_level(logging.DEBUG):
+            entries, _ = _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        # The acquisition retains review_required=True + the carry-over review_reason.
+        # (entries may be empty if the acquisition is never disposed; the carry-over
+        # review flag lives on the parsed acquisition. Assert the per-row + aggregate
+        # log shape instead, which is the load-bearing Task-5a check.)
+        per_row_debug = [
+            r for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and r.name == emitters_logger
+            and "empty Sent Cost Basis" in r.getMessage()
+        ]
+        assert per_row_debug, (
+            "Expected at least one per-row DEBUG 'empty Sent Cost Basis' record"
+        )
+
+        aggregate_infos = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.INFO
+            and rec.name == helpers_logger
+            and "empty Sent Cost Basis" in rec.getMessage()
+        ]
+        assert len(aggregate_infos) == 1, (
+            f"Expected exactly ONE aggregate INFO, got {aggregate_infos}"
+        )
+        assert "1 exchange(s) with empty Sent Cost Basis" in aggregate_infos[0], (
+            f"Aggregate INFO must name the count; got {aggregate_infos[0]!r}"
+        )
+
+        # --- Negative half: the per-row message must NOT appear at WARNING. ---
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        warning_messages = [
+            rec.getMessage() for rec in caplog.records if rec.levelno == logging.WARNING
+        ]
+        assert not any("empty Sent Cost Basis" in m for m in warning_messages), (
+            f"Per-row empty-Sent-Cost-Basis message must NOT appear at WARNING; "
+            f"got {warning_messages}"
+        )
+
+    def test_non_positive_acquisition_per_row_debug_aggregate_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """5b: non-positive-acquisition per-row at DEBUG + ONE aggregate WARNING.
+
+        Given a WBTC acquisition with ``amount <= 0`` (a zero-amount buy) followed by
+        a taxable WBTC sell, ``compute_fifo_for_asset`` skips the non-positive
+        acquisition (``continue`` at ``matching.py:65``). The per-row "Skipping
+        non-positive acquisition" message must appear at DEBUG (NOT WARNING), exactly
+        ONE aggregate WARNING "Skipped N non-positive acquisition(s) for WBTC" must
+        emit from ``_rebuild_fifo_for_loan_affected_assets``, and the acquisition is
+        still dropped from the FIFO pool (the sell produces a zero-cost placeholder).
+
+        Two separate ``caplog.at_level`` blocks per Invariant #4.
+        """
+        from tax_reporting.application.crypto.fifo_helpers import _rebuild_fifo_for_loan_affected_assets
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        # Zero-amount WBTC buy (non-positive acquisition -> skipped by matching.py:58).
+        zero_buy = (
+            '2025-01-15 10:00:00 UTC,buy,"","","","","",'
+            'Kraken,"0,00000000",WBTC,"120,00",,,,"120,00",,,tx_zero_buy,""""'
+        )
+        # Taxable WBTC sell: with the pool empty (zero buy skipped), this produces a
+        # zero-cost placeholder realization and drives compute_fifo_for_asset.
+        sell = (
+            '2025-06-01 12:00:00 UTC,sell,"",Kraken,"0,01000000",WBTC,"608,54",'
+            'Kraken,"500,00",EUR,,"0,01000000",WBTC,"","500,00",,,tx_sell_np,""""'
+        )
+        th_path = _write_th_csv(tmp_path, [zero_buy, sell])
+        loan_affected = frozenset({"WBTC"})
+        resolver = TokenOriginResolver(th_path, transactions=[], config=TreatmentConfig())
+
+        helpers_logger = "tax_reporting.application.crypto.fifo_helpers"
+        matching_logger = "tax_reporting.application.crypto_fifo.matching"
+
+        # --- Positive half: per-row DEBUG + ONE aggregate WARNING. ---
+        with caplog.at_level(logging.DEBUG):
+            entries, _ = _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        per_row_debug = [
+            r for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and r.name == matching_logger
+            and "Skipping non-positive acquisition" in r.getMessage()
+        ]
+        assert per_row_debug, (
+            "Expected at least one per-row DEBUG 'Skipping non-positive acquisition' record"
+        )
+
+        aggregate_warnings = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == helpers_logger
+            and "non-positive acquisition" in rec.getMessage()
+        ]
+        assert len(aggregate_warnings) == 1, (
+            f"Expected exactly ONE aggregate WARNING, got {aggregate_warnings}"
+        )
+        assert "Skipped 1 non-positive acquisition(s)" in aggregate_warnings[0], (
+            f"Aggregate WARNING must name the total count; got {aggregate_warnings[0]!r}"
+        )
+        assert "WBTC: 1" in aggregate_warnings[0], (
+            f"Aggregate WARNING must name the per-asset breakdown; got {aggregate_warnings[0]!r}"
+        )
+
+        # Regression (Invariant #3 / data-loss treatment unchanged): the non-positive
+        # acquisition is still DROPPED from the pool, so the sell realizes against an
+        # empty pool -> zero-cost placeholder with review_required.
+        assert any(
+            e.asset == "WBTC" and e.cost_eur == Decimal("0") and e.review_required
+            for e in entries
+        ), f"Expected a zero-cost WBTC placeholder realization; got {entries}"
+
+        # --- Negative half: the per-row message must NOT appear at WARNING. ---
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        # Filter out the aggregate WARNING (which legitimately stays WARNING); only the
+        # PER-ROW message must be absent at WARNING.
+        per_row_at_warning = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == matching_logger
+            and "Skipping non-positive acquisition" in rec.getMessage()
+        ]
+        assert per_row_at_warning == [], (
+            f"Per-row non-positive-acquisition message must NOT appear at WARNING; "
+            f"got {per_row_at_warning}"
+        )
+
+    def test_negative_consumption_per_row_debug_aggregate_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """6: negative-consumption per-row at DEBUG + ONE aggregate WARNING (Bucket C).
+
+        Given a WBTC buy followed by a taxable WBTC sell whose sent amount is
+        negative (a malformed row), ``_consume_against_pool_inplace`` hits the
+        ``remaining < ZERO`` early-return guard (``matching.py:250``). The per-row
+        "Negative consumption amount" message must appear at DEBUG (NOT WARNING),
+        exactly ONE aggregate WARNING "Skipped N negative-consumption event(s)"
+        must emit from ``_rebuild_fifo_for_loan_affected_assets``, and the
+        consumption is still dropped (no realization for it). STAYS WARNING
+        (Bucket C: silent data loss, no Excel surface).
+
+        Two separate ``caplog.at_level`` blocks per Invariant #4.
+        """
+        from tax_reporting.application.crypto.fifo_helpers import _rebuild_fifo_for_loan_affected_assets
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        # Valid WBTC buy so the FIFO pool is non-empty (isolates the negative-consumption path).
+        buy = (
+            '2025-01-15 10:00:00 UTC,buy,"","","","","",'
+            'Kraken,"0,01000000",WBTC,"120,00",,,,"120,00",,,tx_buy_neg,""""'
+        )
+        # Taxable WBTC sell with a NEGATIVE sent amount (malformed -> negative consumption).
+        neg_sell = (
+            '2025-06-01 12:00:00 UTC,sell,"",Kraken,"-0,01000000",WBTC,"608,54",'
+            'Kraken,"500,00",EUR,,"-0,01000000",WBTC,"","500,00",,,tx_neg_sell,""""'
+        )
+        th_path = _write_th_csv(tmp_path, [buy, neg_sell])
+        loan_affected = frozenset({"WBTC"})
+        resolver = TokenOriginResolver(th_path, transactions=[], config=TreatmentConfig())
+
+        helpers_logger = "tax_reporting.application.crypto.fifo_helpers"
+        matching_logger = "tax_reporting.application.crypto_fifo.matching"
+
+        # --- Positive half: per-row DEBUG + ONE aggregate WARNING. ---
+        with caplog.at_level(logging.DEBUG):
+            _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        per_row_debug = [
+            r for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and r.name == matching_logger
+            and "Negative consumption amount" in r.getMessage()
+        ]
+        assert per_row_debug, (
+            "Expected at least one per-row DEBUG 'Negative consumption amount' record"
+        )
+
+        aggregate_warnings = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == helpers_logger
+            and "negative-consumption" in rec.getMessage()
+        ]
+        assert len(aggregate_warnings) == 1, (
+            f"Expected exactly ONE aggregate WARNING, got {aggregate_warnings}"
+        )
+        assert "Skipped 1 negative-consumption event(s)" in aggregate_warnings[0], (
+            f"Aggregate WARNING must name the total count; got {aggregate_warnings[0]!r}"
+        )
+
+        # --- Negative half: the per-row message must NOT appear at WARNING. ---
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        per_row_at_warning = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == matching_logger
+            and "Negative consumption amount" in rec.getMessage()
+        ]
+        assert per_row_at_warning == [], (
+            f"Per-row Negative-consumption message must NOT appear at WARNING; "
+            f"got {per_row_at_warning}"
+        )
+
+    def test_epoch_dates_per_row_debug_aggregate_info(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """7a: epoch-date per-row at DEBUG + ONE aggregate INFO from _rebuild (Bucket B).
+
+        Given a WBTC buy with a 1970-01-01 Date (an epoch-sentinel acquisition date
+        that ``parse_koinly_datetime`` keeps as ``1970-01-01``), followed by a taxable
+        WBTC sell that consumes it, ``_build_taxable_realization`` sets
+        ``is_epoch_acq=True``. The per-row "Empty or epoch acquisition date" message
+        must appear at DEBUG (NOT WARNING), exactly ONE aggregate INFO "N realization(s)
+        with epoch-sentinel dates" summary must emit from
+        ``_rebuild_fifo_for_loan_affected_assets``, and the realization must retain
+        ``review_required=True`` (via the ``or is_epoch_acq`` clause).
+
+        Two separate ``caplog.at_level`` blocks per Invariant #4 (positive at DEBUG,
+        negative at WARNING), each re-invoking the code under test.
+        """
+        from tax_reporting.application.crypto.fifo_helpers import _rebuild_fifo_for_loan_affected_assets
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        # Epoch-sentinel WBTC buy: Date parses to 1970-01-01 (is_epoch_acq fires).
+        epoch_buy = (
+            '1970-01-01 00:00:00 UTC,buy,"","","","","",'
+            'Kraken,"0,01000000",WBTC,"120,00",,,,"120,00",,,tx_epoch_buy,""""'
+        )
+        # Taxable WBTC sell consuming the epoch buy -> _build_taxable_realization path.
+        # Fee currency is EUR (not loan-affected) so this row yields exactly ONE WBTC
+        # taxable consumption (avoiding a duplicate WBTC-as-fee consumption).
+        sell = (
+            '2025-06-01 12:00:00 UTC,sell,"",Kraken,"0,01000000",WBTC,"608,54",'
+            'Kraken,"500,00",EUR,,"1,00000000",EUR,"","500,00",,,tx_epoch_sell,""""'
+        )
+        th_path = _write_th_csv(tmp_path, [epoch_buy, sell])
+        loan_affected = frozenset({"WBTC"})
+        resolver = TokenOriginResolver(th_path, transactions=[], config=TreatmentConfig())
+
+        helpers_logger = "tax_reporting.application.crypto.fifo_helpers"
+        matching_logger = "tax_reporting.application.crypto_fifo.matching"
+
+        # --- Positive half: per-row DEBUG + ONE aggregate INFO. ---
+        with caplog.at_level(logging.DEBUG):
+            entries, _ = _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        per_row_debug = [
+            r for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and r.name == matching_logger
+            and "Empty or epoch acquisition date" in r.getMessage()
+        ]
+        assert per_row_debug, (
+            "Expected at least one per-row DEBUG 'Empty or epoch acquisition date' record"
+        )
+
+        aggregate_infos = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.INFO
+            and rec.name == helpers_logger
+            and "epoch-sentinel dates" in rec.getMessage()
+        ]
+        assert len(aggregate_infos) == 1, (
+            f"Expected exactly ONE aggregate INFO, got {aggregate_infos}"
+        )
+        assert "1 realization(s) with epoch-sentinel dates" in aggregate_infos[0], (
+            f"Aggregate INFO must name the count; got {aggregate_infos[0]!r}"
+        )
+
+        # Regression (Invariant #3): the realization retains review_required=True via
+        # the ``or is_epoch_acq`` clause (the Crypto Gains "YES:" cell is unchanged).
+        assert any(
+            e.asset == "WBTC" and e.review_required for e in entries
+        ), f"Expected a review_required WBTC realization; got {entries}"
+
+        # --- Negative half: the per-row message must NOT appear at WARNING. ---
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        per_row_at_warning = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == matching_logger
+            and "Empty or epoch acquisition date" in rec.getMessage()
+        ]
+        assert per_row_at_warning == [], (
+            f"Per-row epoch-acquisition message must NOT appear at WARNING; "
+            f"got {per_row_at_warning}"
+        )
+
+    def test_deferred_acquisition_consumed_reachable_in_production(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """7b-reachable: matching.py:175 fires in production when an UNRESOLVED
+        deferred acquisition (``source_type="exchange_in_deferred"`` retained) is
+        consumed by a taxable disposal.
+
+        Mirrors ``test_unmatched_deferred_flagged`` (tx_key="orphan_key", no sender)
+        but adds a taxable consumption so the deferred lot reaches
+        ``_build_taxable_realization``. The per-row message must appear at DEBUG
+        (NOT WARNING) and the realization must retain ``review_required=True`` plus
+        the ``deferred_reason`` (Invariant #2: reachable via the unresolved branch of
+        ``cross_asset._resolve_single_acquisition``, which returns via
+        ``with_acq(review_required=True, ...)`` WITHOUT rewriting ``source_type``).
+        """
+        # Unresolved deferred acquisition: source_type retained as exchange_in_deferred.
+        wbtc_deferred = _acq(
+            asset="WBTC",
+            amount="0.5",
+            cost_basis_eur="0",
+            source_type="exchange_in_deferred",
+            tx_key="orphan_key",
+        )
+        # Taxable disposal consuming the deferred lot -> _build_taxable_realization.
+        wbtc_sell = _con(
+            asset="WBTC",
+            amount="0.5",
+            proceeds_eur="100",
+            taxable=True,
+            tx_key="tx_sell_def",
+        )
+
+        matching_logger = "tax_reporting.application.crypto_fifo.matching"
+
+        # --- Positive half: per-row message reachable at DEBUG. ---
+        with caplog.at_level(logging.DEBUG):
+            result = compute_fifo_for_asset(
+                [wbtc_deferred], [wbtc_sell], asset="WBTC", platform="Kraken",
+            )
+
+        per_row_debug = [
+            r for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and r.name == matching_logger
+            and "unresolved deferred acquisition" in r.getMessage()
+        ]
+        assert per_row_debug, (
+            "Expected at least one per-row DEBUG 'unresolved deferred acquisition' record"
+        )
+
+        # Regression: the realization retains review_required=True + deferred_reason.
+        assert result.realizations, "Expected at least one realization"
+        realized = result.realizations[0]
+        assert realized.review_required is True, (
+            f"Realization must retain review_required=True; got {realized!r}"
+        )
+        assert realized.review_reason is not None, (
+            f"Realization must carry a review_reason; got {realized!r}"
+        )
+        assert "Deferred acquisition" in realized.review_reason, (
+            f"Realization must carry the deferred_reason; got {realized.review_reason!r}"
+        )
+
+        # --- Negative half: the per-row message must NOT appear at WARNING. ---
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            compute_fifo_for_asset(
+                [wbtc_deferred], [wbtc_sell], asset="WBTC", platform="Kraken",
+            )
+
+        per_row_at_warning = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == matching_logger
+            and "unresolved deferred acquisition" in rec.getMessage()
+        ]
+        assert per_row_at_warning == [], (
+            f"Per-row deferred-consumed message must NOT appear at WARNING; "
+            f"got {per_row_at_warning}"
+        )
+
+    def test_deferred_acquisition_consumed_aggregate_info(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """7b-aggregate: ONE aggregate INFO from _rebuild for deferred-acquisition-consumed.
+
+        Given a cross-asset dependency cycle (LBTC<->WBTC) producing an UNRESOLVED
+        deferred WBTC acquisition (``source_type="exchange_in_deferred"`` retained),
+        followed by a taxable WBTC sell that consumes it,
+        ``_rebuild_fifo_for_loan_affected_assets`` emits exactly ONE aggregate INFO
+        matching "N realization(s) consumed an unresolved deferred-acquisition lot"
+        -- distinct wording from Pattern J's "cross-asset deferred acquisition(s)
+        flagged" (Invariant #2: realization-time consequence vs resolution-time cause).
+        """
+        from tax_reporting.application.crypto.fifo_helpers import _rebuild_fifo_for_loan_affected_assets
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        # Cycle: LBTC <-> WBTC (no prior acquisition -> empty pool -> unresolved deferred).
+        # LBTC is alphabetically first, so its deferred acquisition (tx_cycle1b) stays
+        # UNRESOLVED (source_type="exchange_in_deferred" retained by cross_asset's
+        # unresolved branch), while WBTC's resolves to zero_carryover.
+        ex1 = '2025-03-01 10:00:00 UTC,exchange,"",LedgerA,1.0,LBTC,30,LedgerA,1.0,WBTC,30,,,,30,,,tx_cycle1a,""'
+        ex2 = '2025-03-02 10:00:00 UTC,exchange,"",LedgerA,1.0,WBTC,40,LedgerA,1.0,LBTC,40,,,,40,,,tx_cycle1b,""'
+        # Taxable LBTC sell consuming the UNRESOLVED deferred acquisition (tx_cycle1b).
+        sell = (
+            '2025-06-01 12:00:00 UTC,sell,"",LedgerA,"1,00000000",LBTC,"608,54",'
+            'LedgerA,"500,00",EUR,,"1,00000000",EUR,"","500,00",,,tx_def_sell,""""'
+        )
+        th_path = _write_th_csv(tmp_path, [ex1, ex2, sell])
+        loan_affected = frozenset({"LBTC", "WBTC"})
+        resolver = TokenOriginResolver(th_path, transactions=[], config=TreatmentConfig())
+
+        helpers_logger = "tax_reporting.application.crypto.fifo_helpers"
+        matching_logger = "tax_reporting.application.crypto_fifo.matching"
+
+        # --- Positive half: per-row DEBUG + ONE aggregate INFO. ---
+        with caplog.at_level(logging.DEBUG):
+            entries, _ = _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        per_row_debug = [
+            r for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and r.name == matching_logger
+            and "unresolved deferred acquisition" in r.getMessage()
+        ]
+        assert per_row_debug, (
+            "Expected at least one per-row DEBUG 'unresolved deferred acquisition' record"
+        )
+
+        aggregate_infos = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.INFO
+            and rec.name == helpers_logger
+            and "unresolved deferred-acquisition lot" in rec.getMessage()
+        ]
+        assert len(aggregate_infos) == 1, (
+            f"Expected exactly ONE aggregate INFO, got {aggregate_infos}"
+        )
+        assert "1 realization(s) consumed an unresolved deferred-acquisition lot" in aggregate_infos[0], (
+            f"Aggregate INFO must name the count with the distinct realization-time wording; "
+            f"got {aggregate_infos[0]!r}"
+        )
+
+        # Distinct from Pattern J's resolution-time aggregate wording (Invariant #2).
+        assert "cross-asset deferred acquisition(s) flagged" not in aggregate_infos[0], (
+            f"Aggregate INFO must NOT reuse Pattern J wording; got {aggregate_infos[0]!r}"
+        )
+
+        # --- Negative half: the per-row message must NOT appear at WARNING. ---
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        per_row_at_warning = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == matching_logger
+            and "unresolved deferred acquisition" in rec.getMessage()
+        ]
+        assert per_row_at_warning == [], (
+            f"Per-row deferred-consumed message must NOT appear at WARNING; "
+            f"got {per_row_at_warning}"
+        )

@@ -45,7 +45,7 @@ def _build_cross_asset_order(
         forward_edges=forward_edges,
     )
     if cyclic:
-        logger.warning(
+        logger.info(
             "Cyclic swap dependency detected between %s; deferred acquisitions for the "
             "later-processed asset will be unresolved (review_required=True)",
             cyclic,

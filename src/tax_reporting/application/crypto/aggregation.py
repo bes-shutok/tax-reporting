@@ -422,7 +422,7 @@ def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[Cr
     if no_date_entries or epoch_entries:
         combined: Counter[str] = no_date_entries + epoch_entries
         total = sum(combined.values())
-        logger.warning(
+        logger.info(
             "%d aggregated capital-gains entry(ies) with missing/epoch acquisition dates "
             "from pool-exhausted placeholders (%s); see DEBUG log and Crypto Gains review "
             "column for details",

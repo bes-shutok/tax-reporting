@@ -43,6 +43,40 @@ _KNOWN_CHAINS: Final = frozenset(
 )
 _KNOWN_CHAINS_BY_LENGTH: Final = tuple(sorted(_KNOWN_CHAINS, key=len, reverse=True))
 
+# Chain -> native gas-token ticker. Native gas is a protocol fact (not jurisdiction/year
+# law), so it lives next to _KNOWN_CHAINS. CEX names (ByBit, Kraken, Binance, Gate.io,
+# Wirex, Tonkeeper) are intentionally absent: their fees are a CEX mechanic caught by the
+# leg-check, not on-chain native gas. Tickers are uppercase (case-sensitive comparison).
+_CHAIN_NATIVE_FEE_ASSET: Final[dict[str, str]] = {
+    "Ethereum": "ETH",
+    "Solana": "SOL",
+    "Sui": "SUI",
+    "Binance Smart Chain": "BNB",
+    "Berachain": "BERA",
+    "Polygon": "MATIC",
+    "TON": "TON",
+    "Aptos": "APT",
+    "Filecoin": "FIL",
+    # EVM L2s settle gas in ETH.
+    "Arbitrum": "ETH",
+    "BASE": "ETH",
+    "zkSync ERA": "ETH",
+    "Mantle": "ETH",
+    "Starknet": "ETH",
+}
+
+
+def is_native_gas_fee(wallet: str, fee_currency: str) -> bool:
+    """Return True if ``fee_currency`` is the native gas token of the chain derived from ``wallet``.
+
+    Returns False when the chain is absent from the map or is "Unknown"
+    (``.get`` returns ``None``, and the comparison is False), so unknown/CEX
+    wallets fail safe and the caller warns. The comparison is case-insensitive
+    on the fee ticker so a non-uppercase export variant still matches the
+    uppercase map values.
+    """
+    return fee_currency.upper() == _CHAIN_NATIVE_FEE_ASSET.get(_derive_chain(wallet))
+
 
 def _derive_chain(wallet: str) -> str:  # noqa: PLR0911, PLR0912
     """Derive the blockchain/chain identifier from a wallet label.

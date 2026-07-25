@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from tax_reporting.application.crypto.chain_derivation import _derive_chain
+from tax_reporting.application.crypto.chain_derivation import (
+    _CHAIN_NATIVE_FEE_ASSET,
+    _KNOWN_CHAINS,
+    _derive_chain,
+    is_native_gas_fee,
+)
 
 
 def test_derive_chain_ethereum() -> None:
@@ -115,3 +120,75 @@ def test_derive_chain_direct_match_special_cases() -> None:
     assert _derive_chain("bnb") == "Binance Smart Chain"
     assert _derive_chain("bsc") == "Binance Smart Chain"
     assert _derive_chain("gate") == "Gate.io"
+
+
+class TestChainDerivation:
+    """Tests for the chain -> native gas-fee-asset map and is_native_gas_fee helper."""
+
+    def test_chain_native_fee_asset_map_complete(self) -> None:
+        """On-chain chains have a native-fee entry; CEX names are absent; L2s map to ETH."""
+        on_chain = {
+            "Ethereum",
+            "Solana",
+            "Sui",
+            "Binance Smart Chain",
+            "Berachain",
+            "Polygon",
+            "TON",
+            "Aptos",
+            "Filecoin",
+            "Arbitrum",
+            "BASE",
+            "zkSync ERA",
+            "Mantle",
+            "Starknet",
+        }
+        cex_names = {"ByBit", "Kraken", "Binance", "Gate.io", "Wirex", "Tonkeeper"}
+
+        # Every on-chain chain has a native fee-asset entry.
+        for chain in on_chain:
+            assert chain in _CHAIN_NATIVE_FEE_ASSET, f"Missing native fee asset for chain: {chain}"
+
+        # Every CEX name is intentionally absent.
+        for chain in cex_names:
+            assert chain not in _CHAIN_NATIVE_FEE_ASSET, f"CEX {chain} should be absent from the map"
+
+        # EVM L2s map to ETH.
+        for l2 in ("Arbitrum", "BASE", "zkSync ERA", "Mantle", "Starknet"):
+            assert _CHAIN_NATIVE_FEE_ASSET[l2] == "ETH"
+
+        # The map covers every on-chain chain in _KNOWN_CHAINS and no CEX.
+        on_chain_known = _KNOWN_CHAINS - cex_names
+        assert set(_CHAIN_NATIVE_FEE_ASSET) == on_chain_known
+
+    def test_is_native_gas_fee_true_for_eth_on_ethereum(self) -> None:
+        """Given wallet 'Ethereum (ETH)' and fee_currency 'ETH', expects True."""
+        assert is_native_gas_fee("Ethereum (ETH)", "ETH") is True
+
+    def test_is_native_gas_fee_false_for_eth_on_solana(self) -> None:
+        """Given wallet 'Solana (SOL)' and fee_currency 'ETH', expects False (map is chain-keyed, not asset-keyed)."""
+        assert is_native_gas_fee("Solana (SOL)", "ETH") is False
+
+    def test_is_native_gas_fee_false_for_unknown_chain(self) -> None:
+        """Given unknown wallet and any fee_currency, expects False (fail-safe)."""
+        assert is_native_gas_fee("Some Unknown Wallet", "ETH") is False
+
+    def test_is_native_gas_fee_false_for_bnb_on_binance_cex(self) -> None:
+        """Given wallet 'Binance (2)' (CEX) and fee_currency 'BNB', expects False (CEX absent from map)."""
+        assert is_native_gas_fee("Binance (2)", "BNB") is False
+
+    def test_is_native_gas_fee_true_for_eth_on_zksync_era_bare(self) -> None:
+        """Given bare chain name 'zkSync ERA' and fee 'ETH', expects True (word-boundary match + L2->ETH)."""
+        assert is_native_gas_fee("zkSync ERA", "ETH") is True
+
+    def test_is_native_gas_fee_case_insensitive_on_fee_ticker(self) -> None:
+        """Given a lowercase fee ticker 'eth' on Ethereum, expects True.
+
+        The map values are uppercase; the comparison normalizes the fee ticker so
+        a non-uppercase export variant still matches (review-loop r1 Low:
+        quality#edge-case-input-casing). Unknown chain still fails safe.
+        """
+        assert is_native_gas_fee("Ethereum (ETH)", "eth") is True
+        assert is_native_gas_fee("Ethereum (ETH)", "Eth") is True
+        # Unknown chain unaffected: lowercase non-native ticker still False.
+        assert is_native_gas_fee("Some Unknown Wallet", "eth") is False
