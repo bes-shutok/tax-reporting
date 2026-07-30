@@ -76,8 +76,18 @@ def test_file(tmp_path: Path) -> Path:
 
 ## 10. Test CSV Data Construction: Column Alignment
 
-See `~/Projects/.ai-playbook/python_guidelines.md` #1 for full prevention rules.
-Repo context: Koinly `_TH_HEADER` has 20 columns; hand-counting commas is the biggest source of wasted debug iterations.
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
+
+See `~/Projects/.ai-playbook/python_guidelines.md` #1 for the full prevention rules.
+
+When writing CSV test fixture rows for multi-column formats (e.g. Koinly TH rows), verify each value is at the correct column index by counting quoted fields as single units (quoted content containing commas counts as one field).
+
+A misaligned column can make a test pass even with the bug it is designed to detect. Example: a test asserting `cost_basis_eur == 0` when `Sent Cost Basis` is empty will still pass if `Net Value (EUR)` is also empty, because an FMV-fallback bug would also produce 0. Place a non-zero value in `Net Value (EUR)` (col 14) to make the bug detectable.
+
+Use `csv.DictReader([TH_HEADER, row])` or the test helper `_parse_row()` to verify field-to-column mapping before relying on a fixture row as a correctness check.
+
+Repo witness: Koinly `_TH_HEADER` has 20 columns; hand-counting commas is the biggest source of wasted debug iterations.
 
 
 ## 11. Post-Extraction Cleanup
@@ -568,7 +578,7 @@ When reviewing for operator precedence bugs involving logical `or` and `and`, ve
 
 **Rule:** When porting logic that contains a threshold gate, identify EVERY decision the original code made and confirm which decisions the gate did and did not apply to. The gate's scope must be preserved verbatim at the new call site. Do NOT let the gate "naturally extend" to a sibling decision because the sibling reads the same fields or because the gate "feels like a sensible significance check" for that branch. Branch routing that the original code made PURELY on sign (or another primitive comparator) must remain sign-only; the magnitude gate stays on the review-flag decision where the original put it.
 
-**What happened (2026-07-05 OGR event-level port, Task 1):** The legacy `_apply_ogr_direction_override` decided `direction_conflict` PURELY on sign - `(ogr < 0) != (cg < 0)` - and applied the `> 1 EUR` absolute-magnitude gate ONLY to the review flag (so trivially small conflicts do not produce a noisy "YES: ..." review row). When porting to `apply_ogr_event_level` (event-level aggregation), the first draft applied the `> 1 EUR` gate to the BRANCH decision too, treating sub-1-EUR sign conflicts as "agree". This broke `test_single_lot_conflict_byte_identical`: a CG +4.00 / OGR -1.00 event must take the conflict branch (final = -4.00, material), but the gated draft routed it to the agree branch and produced +4.00. The fix made `_decide_event_branch` sign-only and kept the `> 1 EUR` gate on the review flag via `_conflict_review_state` / `_agree_review_state`. See user-level #54 for the dual-decision structure (this lesson is the threshold-scope refinement that #54 does not state).
+**What happened (2026-07-05 OGR event-level port, Task 1):** The legacy `_apply_ogr_direction_override` decided `direction_conflict` PURELY on sign - `(ogr < 0) != (cg < 0)` - and applied the `> 1 EUR` absolute-magnitude gate ONLY to the review flag (so trivially small conflicts do not produce a noisy "YES: ..." review row). When porting to `apply_ogr_event_level` (event-level aggregation), the first draft applied the `> 1 EUR` gate to the BRANCH decision too, treating sub-1-EUR sign conflicts as "agree". This broke `test_single_lot_conflict_byte_identical`: a CG +4.00 / OGR -1.00 event must take the conflict branch (final = -4.00, material), but the gated draft routed it to the agree branch and produced +4.00. The fix made `_decide_event_branch` sign-only and kept the `> 1 EUR` gate on the review flag via `_conflict_review_state` / `_agree_review_state`. See lesson #92 for the dual-decision structure (this lesson is the threshold-scope refinement that #92 does not state).
 
 **Why this happens:** When a function is rewritten at a higher abstraction level, the porter reads the original top-to-bottom and tends to fold "similar-looking" checks together. A magnitude gate that reads `if abs(...) > 1 EUR` next to a sign check feels like a unified "is this significant?" guard, so the porter applies it to the branch condition as well as the flag. The original code's separation (sign = routing policy; magnitude = reporting/noise policy) is implicit and easy to collapse.
 
@@ -580,7 +590,7 @@ When reviewing for operator precedence bugs involving logical `or` and `and`, ve
 
 **Distinguishing from Family C (sentinel vs None vs exception):** Family C is about how "absent/invalid" is represented differently across two consumers. This lesson is about a threshold whose SCOPE (which decision it controls) is the policy distinction that drifted, not the threshold's representation.
 
-**See also:** User-level lesson #54 (OGR Directional Authority vs Wholesale Replacement - the dual-decision structure this refines), CLAUDE.md §4 Agent Workflow Rules (re-read each RED test against current design invariants before flipping GREEN).
+**See also:** Lesson #92 (OGR Directional Authority vs Wholesale Replacement - the dual-decision structure this refines), CLAUDE.md §4 Agent Workflow Rules (re-read each RED test against current design invariants before flipping GREEN).
 
 ## 43. Lock Key-Resolution Rules from Field Semantics, Not Population Counts
 
@@ -1327,6 +1337,12 @@ For `received_amount=100, repaid_amount=101.00004`: `raw_pct = 1.00004` (above t
 
 **Why this happens:** The warning-grouping recipe is mechanical enough (Counter + post-loop summary + per-row → DEBUG) that the plan author focuses on the conversion mechanism and treats the two justifications as given: (a) "of course it has a review surface, the convention says so" and (b) "I found the test that asserts on it." Both are abstractions over the real thing. The convention rule is prose that can lag the code (someone added `review_required=True` after the rule was written); the "first test found" is a sampling artifact when a multi-branch function has one test class per branch. The review panel catches both because it reads every emission site and greps the whole `tests/` tree, which is exactly the verification the plan author should have done up front.
 
+**Scope confirmation (2026-07-25 `2026-07-25-relocate-crypto-warnings-to-extract` Task 2):** the rule is not specific to the DEBUG target. Demoting the W10 sub-1-EUR capital-gain aggregate `logger.warning(...)` to `logger.info(...)` flipped `test_parse_capital_gains_file_filters_sub_1_eur_after_aggregation` (no explicit `at_level`, so caplog captured at the implicit WARNING default and the INFO record vanished). Same Family H shape, same fix (wrap the call in `caplog.at_level(logging.INFO, logger="<emitter>")`); no new lesson, witness only. Confirms Rule #2's "implicit-WARNING default" already covers the WARNING→INFO direction, not only WARNING→DEBUG.
+
+**Scope confirmation (2026-07-25 `2026-07-25-relocate-crypto-warnings-to-extract` Task 8):** the sibling-sweep rule applies even when the sweep is scoped to one call-flush family inside one task. Demoting the shared W1/W5 token_origin disagreement aggregate `logger.warning(...)` to `logger.info(...)` required rewriting the three caller-flush tests that pin the post-flush emission. The implementer updated two of three (the normal-flush and finally-on-exception cases); the mid-loop-exception sibling (`test_fifo_rebuild_caller_flush_still_fires_on_mid_loop_exception`) was missed and recovered by the orchestrator on diff inspection. Same Family H shape, same fix (`caplog.at_level(logging.INFO)`, `rec.levelno == logging.INFO`); no new lesson, witness only. Confirms Rule #2's "do not stop at the first match" extends to siblings within a single task's own sweep list, not only across the whole `tests/` tree.
+
+**Scope confirmation (2026-07-25 `2026-07-25-relocate-crypto-warnings-to-extract` Task 9):** the rule applies to PER-ROW WARNING→INFO demotions, not only aggregate-flush ones. Demoting the W9 OGR no-CG-counterpart per-row `logger.warning(...)` in `_split_ogr_index` to `logger.info(...)` required updating the sibling safety-net test (`test_no_cg_no_th_tag_safety_net`) from WARNING to INFO assertions. Nuance worth recording: that test already captured via `caplog.at_level(logging.DEBUG)`, so the capture WINDOW already included INFO records and the records were present in `caplog.records` after the demotion - only the ASSERTION level (`rec.levelno == logging.INFO`, and the expected count) needed updating, not the `at_level` aperture. So a pre-existing DEBUG capture window makes the demotion cheaper than the Task 2/8 cases (no window rewrite), but the assertion still flips and must be swept. Same Family H shape, same fix family; no new lesson, witness only. Confirms Rule #2's sweep applies to per-row emission sites, and that a sibling test capturing at DEBUG needs only an assertion-level update rather than an aperture change.
+
 **Distinguishing from lesson #47 (rename requires multi-pattern grep across ALL tests):** #47 is about grepping all tests when a RENAME touches scattered references (directory, filename, stem, glob, prose). This lesson is about grepping all tests when a LOG-LEVEL DOWNGRADE invalidates `caplog.at_level(WARNING)` capture windows - a different shape (the assertion predicate's level filter, not a renamed identifier) that #47's "multi-pattern rename grep" does not cover. Both share the Family H root: verify the real thing, not the first match.
 
 **Distinguishing from lesson #68 (`rec.name` filter must match emitting module `__name__`):** #68 is about a caplog assertion that captures the record but FILTERS it away with a too-coarse `rec.name` predicate (false negative: "got 0"). This lesson is about a caplog assertion that never captures the record at all because the capture WINDOW (`at_level(WARNING)`) excludes the new DEBUG level after the downgrade (also "got 0", but the root cause is the level, not the name filter). Both are Family H; #68's fix is the `rec.name` string, this lesson's fix is switching the window to `at_level(DEBUG)` or dropping the caplog assertion.
@@ -1489,3 +1505,777 @@ For `received_amount=100, repaid_amount=101.00004`: `raw_pct = 1.00004` (above t
 **Distinguishing from lesson #65 (plan status note vs canonical artifact):** #65 is about trusting a SUMMARY over the real artifact. This lesson is about trusting a SCOPE ASSUMPTION ("external change -> must build") over a pipeline trace. Same Family H shape, different target: #65 targets decision-status correctness, this targets feature-necessity correctness.
 
 **See also:** AGENTS.md "Verification-first ordering" and "CRITICAL: Code inspection is INSUFFICIENT" (data-flow verification, the change-level rule this scope-level rule precedes), lesson #65 (verify against canonical artifact, not summary - same Family H shape, decision-status target), `docs/maintenance/tax/crypto-origin/mapping_decision_log.md` CMD-022 (the documented deferral that resulted from applying this lesson), `docs/maintenance/tax/crypto-origin/official/berachain_pol_next_2026-07-08.md` (the archive deliverable produced instead of code), `coding_guidelines.md` Family H (verify the real thing) / Family A (mechanical invariants over prompt advice).
+
+## 76. Console WARNINGs Are Reserved for Project/Processing Problems; Every Data Issue and Methodology Decision Lives in the Excel Extract. Pin Demotion/Grep Tasks to a Stable Signature Substring, Not a Line Number (Line Numbers Drift Across a Session)
+
+**Principle:** Two related rules share this lesson.
+
+(a) **Governing principle (console vs extract separation).** Family D (Single source of truth) and Family H (Verify the real thing, not the abstraction) - "this anomaly should be a WARNING because the user needs to see it" is an abstraction over an unverified claim about WHERE the audit surface lives. The concrete invariant is: a console `logger.warning(...)` is the signal that *something is wrong with the project or the way it processes data*; every *data issue* (per-row anomaly attributable to the source export or pipeline edge case) and every *methodology decision* (dedup, materiality filter, OGR routing) lives in the user-facing Excel extract - either as `CryptoReviewEntry` rows in Crypto Supplementary's "Review required" section or as a run-specific count suffix on an A&M methodology item. A console WARNING that merely announces a count of items the user can already see in the extract duplicates the audit surface. When the extract already carries the signal (per-row review cell, explicit review row, or A&M count), the console aggregate demotes to `logger.info(...)`; the WARNING level is preserved only for sites with NO extract surface (rule #7 DEVELOPER_ACTIONABLE class). This is codified in `project-guidelines.md` rule #7 as the 4th target class **EXTRACT_SURFACED** (per-row DEBUG + aggregate INFO + rows in Crypto Supplementary OR a count cell in A&M), distinct from HAS_EXCEL_SURFACE (where the per-row entry's OWN schema already renders a review cell - no new rows are added).
+
+(b) **Line-number-drift root cause (pin to a substring, not a line number).** Family E (Temporal / ordering invariants) and Family H - a plan task that pins a "demote this WARNING" or "grep for this emission" step to a FILE:LINE coordinate is pinning to a value that goes STALE the moment any edit above the site shifts line numbers within the same session. The concrete precondition the task actually needs is "find the emission whose SIGNATURE SUBSTRING is S and demote it"; a line number is an abstraction over that substring that drifts as soon as code is inserted or removed above the site. When the task is implemented by an agent that reads the pinned line number verbatim, a 125-line upstream drift (e.g. 378 -> 503 across a single session) silently points at the wrong call site, the demotion falls through, and the WARNING survives into the real-run log. The detection signal is mechanical: the 10-substring `logger.warning` grep in `src/tax_reporting/application/` returns a non-zero count after the plan claims "all demoted to INFO".
+
+**Why this matters:** Without (a), the operator's real-run console fills with WARNINGs that are not bugs (dedup summaries, materiality filter counts, OGR routing decisions), burying genuine project/processing WARNINGs and training the operator to ignore the console. Without (b), a planned demotion silently no-ops because the line-number pin drifted, and the no-op is invisible to the plan's "tests pass" gate (the existing tests do not assert the level of the drifted site) - it is only caught when the operator re-runs the pipeline and re-counts WARNINGs. Both share Family H: the plan author trusted an abstraction (a prose claim that "the user needs a WARNING here", a line-number pin) over the real thing (the extract surface that already carries the signal, the signature substring that uniquely identifies the call).
+
+**Shape trigger (when to suspect this family):**
+- For (a): you are classifying a per-row or aggregate WARNING site, or a plan proposes adding/maintaining a WARNING. Ask: "Is this WARNING announcing a *project/processing* problem, or is it announcing a *data issue* / *methodology decision* the extract already surfaces (per-row review cell, `CryptoReviewEntry` row, A&M count)? If the extract already carries the signal, the WARNING is a duplicate and belongs at INFO."
+- For (b): you are writing or reviewing a plan task that says "demote the WARNING at `foo.py:378`" or "grep `foo.py:378` for the substring". Ask: "Is the step pinned to a LINE NUMBER or to a SIGNATURE SUBSTRING? If a line number, what happens if 125 lines are inserted above it during this session? Is there a substring (the WARNING's format string literal, a unique variable name) that uniquely identifies the call regardless of line drift?"
+
+**General form:**
+1. **Console vs extract:** Classify every console WARNING by tracing its information to the extract. If the same information reaches the user via a per-row review cell (HAS_EXCEL_SURFACE), an explicit `CryptoReviewEntry` row in Crypto Supplementary, or an A&M count suffix (both EXTRACT_SURFACED), the WARNING is a duplicate and demotes to aggregate INFO. Reserve WARNING for DEVELOPER_ACTIONABLE sites (data loss or anomaly with NO extract surface). This is the rule #7 four-class taxonomy (EXPECTED_BEHAVIOR / HAS_EXCEL_SURFACE / EXTRACT_SURFACED / DEVELOPER_ACTIONABLE).
+2. **Pin to a substring, not a line number:** When a plan task must locate an emission for demotion or grep verification, pin the locator to a stable SIGNATURE SUBSTRING (the `logger.warning(...)` format-string literal, a unique local variable, or a function name) - NEVER to a bare `file:line`. The implementation step should read the file, find the substring, and demote/grep THAT call. Add a "Validation Command" that re-greps for the substring at WARNING and asserts zero hits, so a drifted no-op is caught mechanically.
+
+**Required behavior:**
+1. When classifying a WARNING site, run the rule #7 trace (per-row entry schema -> rendered cell; or pipeline adds `CryptoReviewEntry` rows / A&M count) before deciding the level. Demote to aggregate INFO whenever the extract carries the signal; keep WARNING only for no-surface sites.
+2. When writing a plan task that demotes or greps an emission, pin the locator to a signature substring, not a line number. If a line number is given as a cross-reference, also record the substring so the implementer can re-find the site after drift.
+3. Every "demote WARNING to INFO" plan task must include a post-condition grep that counts the substring at `logger.warning` in the affected module(s) and asserts zero. A non-zero count after the plan ships means a demotion fell through (drift, missed branch, or wrong site) and the task is not done.
+
+**What happened (2026-07-25 `2026-07-25-relocate-crypto-warnings-to-extract`):** The predecessor plan (`2026-07-24-silence-expected-and-excel-surfaced-warnings.md`) demoted the *non-taxable* pool-exhausted sibling (`crypto_fifo/matching.py:111`) to INFO, but the *taxable* pool-exhausted aggregate at `fifo_helpers.py` was MISSED. The predecessor task had pinned the taxable demotion to a line number (`fifo_helpers.py:378`); across the predecessor session the taxable aggregate drifted from line 378 to line 503 as code was inserted above it, and the demotion task fell through - it pointed at stale coordinates and no-oped. When the operator ran the predecessor plan against real data, 11 console WARNINGs survived, one of them the drifted W4 taxable aggregate. The follow-up plan re-located the site by its signature substring and demoted it, and codified the EXTRACT_SURFACED class + this lesson. The lesson's two parts are inseparable: (a) explains WHY the W4 aggregate (and W1/W2/W3/W5/W6/W7/W9/W10) should be INFO not WARNING (the extract surfaces them), and (b) explains WHY the predecessor missed W4 specifically (line-number pin drifted 378->503).
+
+**Distinguishing from lesson #69 (caplog sibling sweep for WARNING->DEBUG):** #69 is the TEST-SIDE rule: when a per-row WARNING becomes DEBUG, every `caplog.at_level(WARNING)` assertion on the substring flips RED and must be rewritten. This lesson's part (b) is the PLAN-SIDE rule: when a demotion task is pinned to a line number, the locator drifts and the demotion no-ops. Both share Family H (verify the real thing - the caplog window / the substring, not the abstraction - the captured-level claim / the line number), but the failure mode and the fix differ: #69 rewrites the caplog window; this lesson rewrites the plan locator from line-number to substring.
+
+**Distinguishing from lesson #47 (rename requires multi-pattern grep across ALL tests):** #47 is about grepping ALL tests when a RENAME touches scattered references. This lesson is about pinning a DEMOTION/GREP locator to a stable substring so it survives line drift. #47 widens the grep SCOPE; this lesson changes the grep LOCATOR TYPE (substring vs line number). Both are Family H.
+
+**Distinguishing from lesson #70 (doc-family prose sweep for logging-level changes):** #70 is the DOCS-SIDE rule: when a logging level changes, sweep docs for the level phrase. This lesson's part (b) is the PLAN-SIDE rule: pin the locator to a substring. They are complementary (docs prose + plan locator) but distinct failure modes.
+
+**Witness (2026-07-26 `2026-07-25-relocate-crypto-warnings-to-extract` review r2, post-r1-fix commit b9ddb02):** r1's address-review corrected a stale pattern-A aggregate line ref in `project-guidelines.md` rule #7 from `:939` to the right value, but r1's OWN concurrent L2 edit (same commit) shifted the emit 939->943, so the freshly-corrected line was stale again the moment r1 landed; r2's fresh panel re-flagged it. The fix chosen was again line-correction rather than dropping the locator or pinning to the signature substring (`logger.info(` for the koinly-tracking summary continuation arg). Reinforces part (b): a line-number locator is a value that goes stale the moment ANY edit above the site shifts line numbers - including an edit in the SAME commit. Pin to the substring or drop the line; do not re-correct the line per round.
+
+**Witness (2026-07-26 `2026-07-25-relocate-crypto-warnings-to-extract` review r3, STRUCTURAL M2-r3):** r1 and r2 each "fixed" a stale `file:line` ref in rule #7 by re-correcting the line number, and each freshly-corrected line was stale again the next round. The r3 review diagnosed this as systemic: rule #7's lookup-table Site column and prose were SATURATED with ~14 bare `file:line` citations, so the lesson's OWN canonical home was the densest violator of part (b). The root-cause fix (r3 M2-r3, STRUCTURAL) converted rule #7's Site column and prose to signature/substring citations (file + containing function + the `logger.info/warning(...)` format-string substring), dropping every bare line number; this also corrected a non-existent `crypto/_emitters.py` path (actual: `crypto_fifo/_emitters.py`) that the line-pinned prose had carried. Operationalizes part (b) on the lesson's own codification: a rule that pins to line numbers is itself a violator of the rule, and the durable fix is to convert the locator type, not to re-correct the line per round.
+
+**Witness (2026-07-26 `2026-07-25-relocate-crypto-warnings-to-extract` review r4, L1-r4):** r3's structural conversion reached the project guidelines but stopped there; the SAME anti-pattern persisted in 12 bare `matching.py:NN` citations inside `fifo_helpers.py` SOURCE COMMENTS (Args docstrings, outer declaration comments, post-loop block comments across 4 emit sites x 3 occurrences each). The r4 review surfaced these as the last codified SOURCE-COMMENT violators of part (b) in the production tree (production-DOC violators in `crypto_implementation_guidelines.md` remained and were caught in r5; see r5 witness). Converting them to function+substring citations exposed a SECOND failure mode beyond staleness: one `:175` pointer was cited for the deferred-acquisition branch but actually pointed at the `if is_epoch_acq:` branch (a WRONG-BRANCH pointer, not a drifted-line one), and a `:250` pointer was cited for the negative-consumption guard whose code now sits at line 306 (pure stale drift). Extends part (b): a bare `file:line` can be wrong in two independent ways - the line drifted (stale) or it was the wrong branch from the start - and only a signature/substring citation makes either detectable on review.
+
+**Witness (2026-07-26 `2026-07-25-relocate-crypto-warnings-to-extract` review r5, M2-r5 + L1-r4 narrowing):** r4's structural conversion reached the source comments but again STOPPED at the file boundary: the SIBLING production doc `crypto_implementation_guidelines.md` still carried 6 bare `file:line` citations (`matching.py:290`, `fifo_helpers.py:378`, `fee_filter.py:643/422/554/434`). r4's L1-r4 witness had claimed "the last codified violators in the production tree" when it meant "last SOURCE-COMMENT violators"; the production-DOC violators were outside r4's source-file sweep. r5 converted all 6 to signature/substring citations and narrowed the L1-r4 wording to "last codified SOURCE-COMMENT violator" with this forward reference. Two extensions of part (b): (1) a "comprehensive sweep" claim is itself an abstraction over the file set the sweep actually visited - r4's 8-file sweep covered `src/`-adjacent files but skipped the sibling doc-family file, and the witness repeated the abstraction; (2) a witness's scope claim must be as precise as the rule it serves. Saying "last violator in the production tree" when the verified scope is "last source-comment violator" is the SAME over-claim part (b) polices (line-number vs substring) applied one level up: the scope WORD is an abstraction over the concrete file set swept, and it drifts the moment a file outside that set exists. State the verified scope verbatim; never generalize a witness's scope beyond what the round actually inspected.
+
+**Witness (2026-07-30 `2026-07-25-relocate-crypto-warnings-to-extract` review r6, M1/M2-r6):** r5's sweep stopped at the `src/tax_reporting/application/` boundary the plan's validation grep scans; the SIBLING domain-layer file `src/tax_reporting/domain/crypto_fifo.py` (NOT in the plan's Files lists, NOT in the diff, NOT reached by the validation grep) carried the same stale Pattern-F "aggregate WARNING" field comment r5 swept in `crypto/fifo_helpers.py` plus 4 bare `matching.py:NN` source-comment citations of the same Family-(b) anti-pattern. This is the SAME scope-boundary over-claim r5's witness already polices ("a 'comprehensive sweep' claim is an abstraction over the file set swept"), recursing one boundary further: each round's sweep has a boundary defined by where the validation grep or the round's file set ends, and the next fresh adversarial pass finds the file just outside it. No new rule; this witness exists only to record that the recursion is unbounded without a scope statement that names every causally-related layer, and that a validation grep scoped to one package cannot certify layers the grep never visits.
+
+**Witness (2026-07-30 `2026-07-25-relocate-crypto-warnings-to-extract` review r7, convergence):** the r6 witness stated the recursion is "unbounded without a scope statement that names every causally-related layer." r7 falsifies the unqualified "unbounded": when the panel is primed to scan the FULL tree (application + domain + infrastructure + docs + tests) rather than a per-round file set, the recursion reached its last layer (tests) and converged at ZERO Medium - only 1 stale test-class docstring (L1-r7) and 5 out-of-scope soft bare-`file:line` production-comment cross-refs (L2-r7) remained. The recursion's depth is FINITE and equal to the number of distinct causally-related layers (here source -> docs -> domain -> tests); it terminates once the scope covers every layer rather than ending where a validation grep's package ends. Qualifies (does not duplicate) r6: r6's "unbounded" is correct for any sweep scoped to a subset of layers; r7 shows the subset qualifier was the load-bearing condition. Operational rule unchanged - name every causally-related layer in the scope statement - but the expected outcome is convergence, not infinite regress, once all layers are in scope.
+
+**Witness (2026-07-30 `2026-07-25-relocate-crypto-warnings-to-extract` review r8, stability confirmation):** r8 is the SECOND consecutive zero-Medium round, confirming r7's convergence was stable rather than a single-round fluke - exactly the signal the two-consecutive-clear-rounds exit rule exists to catch. No new layer surfaced; the only residual findings were 4 Lows, all tests-layer docstring drift (one carried from r7, three newly noted), none touching the demotion logic or locator-citation rule this lesson polices. Reinforces r7 without duplicating it: the convergence mechanism is unchanged, and the residual debt is non-blocking prose in the last layer the sweep reached.
+
+**See also:** `docs/maintenance/project-guidelines.md` rule #7 (the four-class taxonomy - EXPECTED_BEHAVIOR / HAS_EXCEL_SURFACE / EXTRACT_SURFACED / DEVELOPER_ACTIONABLE - and the W1-W10 pattern table where this principle is codified), `docs/history/plans/2026-07-25-relocate-crypto-warnings-to-extract.md` (the plan that added the EXTRACT_SURFACED class and re-located the drifted W4 site), `docs/history/plans/completed/2026-07-24-silence-expected-and-excel-surfaced-warnings.md` (the predecessor plan whose line-number-pinned W4 task drifted 378->503 and no-oped), `src/tax_reporting/application/crypto/fifo_helpers.py` (W4 taxable aggregate, the drifted site), lesson #69 (caplog sibling sweep - test-side mirror), lesson #47 (rename multi-pattern grep - same family, scope-vs-locator distinction), lesson #70 (doc-family prose sweep - docs-side mirror), `coding_guidelines.md` Family D (single source of truth) / Family E (temporal ordering) / Family H (verify the real thing).
+
+
+## 77. Operator Mapping Field Semantics (`service_start_date` / `valid_from`)
+
+**Principle:** Family D (Single source of truth)
+
+
+See `~/Projects/.ai-playbook/agent_workflow_guidelines.md` #3 for the generic field-semantics lesson.
+Repo-specific constraint: `valid_from` is audit-only (when the mapping was verified from source docs). `service_start_date` is for transaction matching (when the platform started offering this service). Never use `valid_from` as a matching gate. When both are known, `service_start_date <= valid_from`.
+
+**See also (principle cluster D):** #96 (same family, distinct angle: field-semantics determine strategy (#96) vs field-identity (playbook lesson "A Locally-Archived Official Source Outranks a Conflicting External Secondary Source")).
+
+## 78. AT Guidance May Cite Pre-Amendment Paragraph Numbers
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
+
+See `docs/maintenance/project-guidelines.md` #3 for the full rule.
+Concrete instance: AT folheto 2026-01-12 (published after Lei n.º 31/2024) still cited CIRS art. 43 as "(n.º 6)(g)" and "(n.º 7)"; the old numbers before the June 2024 amendment renumbered them to n.8(g) and n.9 respectively. The stale numbers had silently propagated into `sources.md` and `platform-divergences.md`. The discrepancy was only caught by cross-checking the folheto against the consolidated CIRS PDF (which shows inline annotations like `(Anterior n.º 7 - Lei n.º 31/2024)`).
+
+Prevention: whenever consulting AT guidance that cites a CIRS paragraph number, search for that legal text in the consolidated CIRS PDF and confirm the current paragraph number before recording citations.
+
+---
+
+## 79. Decision Points TOML Missing Must Raise `ConfigurationError`, Not Bare `FileNotFoundError`
+
+**Principle:** Family B (Error-policy propagation)
+
+
+`_load_decision_points_flags()` must convert `FileNotFoundError` (missing TOML for the configured fiscal year) to `ConfigurationError` before it reaches `main.py`. The `main.py` exception handler has a separate `(FileNotFoundError, OSError)` branch for a missing `config.ini`, which logs "Config file not found; crypto pipeline will run without jurisdiction filters" and continues. If the TOML-not-found error reaches that branch, the pipeline silently proceeds with `exclude_loan_repayment_gains=False`; loan repayment disposals are incorrectly included in capital gains with no error raised.
+
+Fix pattern in `_load_tax_jurisdiction_config`:
+```python
+try:
+    flags = _load_decision_points_flags(country, fiscal_year, logger)
+except FileNotFoundError as e:
+    raise ConfigurationError(
+        f"Decision points file missing for fiscal year {fiscal_year}; "
+        f"create docs/maintenance/tax/decision_points/{fiscal_year}.toml before running"
+    ) from e
+```
+
+**See also (principle cluster B):** #77 (same family, distinct angle: write-side (catch specific not broad, #77) vs escape-side (convert the specific type so it evades the broad handler, playbook lesson "Verify Staged Diff Matches Implementation Before Finalizing")).
+
+## 80. Defensive Warnings Must Also Record Items in the Failure-Tracking Structure
+
+**Principle:** Family G (Data-loss observability)
+
+
+When a defensive branch fires because a row cannot be fully processed (e.g. "both sides loan-affected"), always append the untracked item to `parse_failures_by_asset`; do not rely on a `logger.warning` alone. A logged warning is invisible to the workbook consumer; only items recorded in the failure-tracking structure surface as `review_required` flags in the output.
+
+Example: in `_classify_th_row`, when both the sent and received currencies are loan-affected, the non-principal side was silently ignored. Fix: `parse_failures_by_asset.setdefault(untracked_currency, []).append(row_index)` in all four affected branches (sell, crypto_withdrawal, buy, crypto_deposit).
+
+General principle: "Unmatched items must never be silently discarded" (see CLAUDE.md §1) applies to defensive-path items too; logging is necessary but insufficient when a failure-tracking collection exists.
+
+**See also (principle cluster G):** playbook lesson "Recalculate Validation Metrics from Aggregated Values" (same family, distinct angle: structure-recording (playbook lesson "Update Documentation When Code Structure Changes") vs baseline log-it (playbook lesson "Recalculate Validation Metrics from Aggregated Values")).
+
+## 81. Two-Level Review Flags: Separate Platform-Level from Row-Level
+
+**Principle:** Family C (Representation: sentinel vs None vs exception)
+
+
+When a dataclass field serves two semantically different purposes, introduce a second explicitly named field rather than overloading the first.
+
+Example: `OperatorOrigin.review_required` was used for both (a) per-transaction issues (temporal validity failure, unknown platform) that should color transaction rows, and (b) platform-level concerns (e.g. account-region ambiguity) that should only appear on a summary tab. Adding `platform_review_required: bool = False` as a distinct field removed the conflation cleanly. See CRG-016.
+
+**See also (principle cluster C):** playbook lesson "Calibrate Exception-Handling Strategy to the Cost of Silent Failure When Reusing a Helper Pattern" (same family, distinct angle: platform-vs-row flags (playbook lesson "Fail Fast for Data-Completeness Operations") vs independent-validation-vs-entry flags (playbook lesson "Calibrate Exception-Handling Strategy to the Cost of Silent Failure When Reusing a Helper Pattern", cites playbook lesson "Fail Fast for Data-Completeness Operations")).
+
+## 82. Deduplication Key Must Capture Minimum Sufficient Identity
+
+**Principle:** Family G (Data-loss observability)
+
+
+When deduplicating domain events by a hash/key, verify that the chosen key uniquely
+identifies each *distinct event*, not just each distinct source row. A single external row
+can legitimately produce multiple events with the same primary key.
+
+Example: a Koinly transfer row emits both a `fee_disposal` and a `transfer_out`
+consumption; both share the same TxHash / `tx_key`. Deduplicating on `tx_key` alone drops
+one of them. Correct granularity: `(tx_key, event_type)` for consumptions,
+`(tx_key, source_type)` for acquisitions.
+
+Test approach: write a fixture with a single transfer-with-fee row and assert that two
+distinct consumption events are produced before assuming single-field dedup is safe.
+
+## 83. Fiscal Year Filter in FIFO Pipeline Must Apply to Disposals Only, Post-FIFO
+
+**Principle:** Family G (Data-loss observability)
+
+
+When filtering FIFO pipeline output to the reporting fiscal year, filter *only disposal /
+realization records*, never the acquisition records. Prior-year acquisitions must remain
+in the FIFO pool so cost-basis carry-over is correct; filtering them by year would produce
+incorrect zero-cost gains for multi-year holds.
+
+Correct position: filter `AssetFifoResult.realizations` after the FIFO engine produces
+them, before converting to `CryptoCapitalGainEntry`. Do not pre-filter `acquisitions` or
+`consumptions` inputs to the FIFO engine.
+
+## 84. `TaxJurisdictionConfig` Lives in `domain/jurisdiction.py`
+
+**Principle:** Family F (Layering / dependency direction)
+
+
+`TaxJurisdictionConfig` was moved from `infrastructure/config.py` to `domain/jurisdiction.py`. `config.py` re-exports it for backward compat. All new code should import from `domain.jurisdiction` directly; infrastructure imports are for backward compat only.
+
+## 85. Run-Determining Parameters Belong in the Output Artifact, Not in Logs
+
+**Principle:** Family D (Single source of truth)
+
+
+When a pipeline run produces different results depending on dynamically-discovered inputs (e.g. which assets are loan-affected, which platforms are active, which years are in scope), expose those inputs in the output report itself, as a dedicated worksheet section, a named range, or a metadata tab, rather than relegating them to log lines or ephemeral sidecar files.
+
+Logs are consumed during a run and discarded; a sibling file adds surface area and may not be opened. The workbook is the primary artifact reviewed by the user. Embedding the run scope there lets the reviewer verify assumptions without cross-referencing external files, and makes the report self-documenting for future audits.
+
+Example: `CryptoTaxReport.fifo_rebuild_assets` (which assets were rebuilt from Transaction History) is surfaced in the "FIFO Rebuild Scope" section of the Loan Activity tab, not just logged at INFO.
+
+## 86. All-or-Nothing File Set Validation for External Exports
+
+**Principle:** Family G (Data-loss observability)
+
+
+When a subsystem requires a complete set of N files from an external tool export (e.g. Koinly's capital gains, income, and transaction history), validate with all-or-nothing semantics:
+
+- **None present** → skip gracefully (no-op mode; the external data source is simply not configured for this run).
+- **Partial set present (1 of N or 2 of N)** → raise `FileProcessingError` with an explicit list of missing files and export instructions. Partial presence is worse than none: it silently produces an incomplete report that looks valid (e.g. rewards disappear but no error is raised).
+- **All N present** → proceed normally.
+
+The silent-data-loss case that triggered this lesson: `income_file = None` was handled as `reward_entries = []` with no warning or error, so Wirex EUR lending interest vanished from the Crypto Rewards tab without any indication. The user attributed the disappearance to a code change, but the actual cause was a missing export file. Fail-fast on partial sets eliminates this class of confusion.
+
+**See also (principle cluster G):** playbook lesson "Module and Class Size Limits" (same family, distinct angle: total-failure fail-fast (playbook lesson "Module and Class Size Limits") vs partial-file-set fail-fast (#89)).
+
+## 87. Decision Point Flags Require TaxJurisdictionConfig Field
+
+**Principle:** Family D (Single source of truth)
+
+
+When adding a new boolean decision point flag to `docs/maintenance/tax/decision_points/<year>.toml`,
+you must also add the corresponding field to `TaxJurisdictionConfig` in `src/tax_reporting/domain/jurisdiction.py`.
+
+**Why this is required:** The config validation system auto-discovers known decision point flags
+via `_KNOWN_DECISION_FLAGS` in `config.py` (lines 44-51), which is derived from all bool fields
+in `TaxJurisdictionConfig`. If a flag exists in TOML but has no corresponding field in the dataclass,
+validation fails with "Unknown decision points flag" error and all config-dependent tests break.
+
+**Pattern:**
+1. Add bool field to `TaxJurisdictionConfig` (e.g., `futures_derivatives_taxable: bool = False`)
+2. Add flag to `docs/maintenance/tax/decision_points/<year>.toml` under `[countries.<CC>]` section
+3. Run tests; config validation now recognizes the flag
+
+**Example:** The `futures_derivatives_taxable` flag was added to `2025.toml` but the field was
+missing from `TaxJurisdictionConfig`. This caused all integration tests to fail with config
+validation error until the field was added to the domain model.
+
+**See also:** `config.py` lines 44-51 (`_KNOWN_DECISION_FLAGS` derivation), `jurisdiction.py`
+
+---
+
+**See also (principle cluster D):** playbook lesson "Monkeypatch Module-Level Path Constants in Unit Tests", playbook lesson "Adding Excel Columns Requires Constant Updates", playbook lesson "Reconcile Plan Pseudocode Against Plan Tests and Design Invariants Before GREEN" (same family, distinct angle: multi-authority synchronization; the third is the test-enforced variant of the first's manual grep.).
+
+## 88. Cross-Report Validation for Multi-Report Systems
+
+**Principle:** Family G (Data-loss observability)
+
+
+When investigating systems that process data from multiple source reports (e.g., Koinly Transaction History, Capital Gains Report, Other Gains Report), verify classifications match across ALL reports before concluding correctness:
+
+1. **Identify all source reports:** List every CSV/report the system processes
+2. **Cross-reference classifications:** If one report shows Type="Loss" and another shows Gain/Loss=positive, investigate which report drives the final output
+3. **Verify final output reflects the correct classification:** The Excel/final output must match the economically correct classification, not just the mechanically calculated one
+4. **Document which report is authoritative:** When source reports disagree, state which report's classification is correct and why
+
+**Example:** Koinly's Other Gains Report correctly classified futures liquidations as "Loss" with negative amounts, while the Capital Gains Report calculated positive gains based on collateral proceeds. The system only processes Capital Gains Report, so losses appeared as gains in the final output. Cross-report validation would have caught this discrepancy.
+
+**See also:** Lesson #94 (Authoritative Source Overrides Must Precede Aggregation)
+
+## 89. Cross-Module Function Dependencies Require Complete Imports
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
+
+When adding a function in one module that calls a function from another module, verify the import is complete. Unit tests that don't exercise the full code path (e.g., only test helper functions but not the file-discovery wrapper) can miss import errors that would cause runtime `NameError`.
+
+**Verification:** After adding cross-module function calls, run `uv run python -c "from module import function"` to verify imports resolve at import time, not just at call time.
+
+**Example:** `_find_and_parse_other_gains_file()` in `koinly_parser.py` called `_find_report_path()` from `crypto_reporting.py` without importing it. Unit tests for the helper functions (`_extract_ogr_gain_loss`, `_parse_other_gains_row`) passed because they didn't call the file-discovery function. A full import check would have revealed the missing dependency before runtime.
+
+## 90. Authoritative Source Overrides Must Precede Aggregation
+
+**Principle:** Family D (Single source of truth)
+
+
+When applying overrides from an authoritative source (e.g., OGR) to calculated data (e.g., CG), the override must happen BEFORE aggregation when working with lot-level entries.
+
+**Why this matters:** CG rows are individual FIFO lots that get summed in aggregation. The authoritative source (OGR) contains the correct total gain/loss for the disposal event. Overriding after aggregation would lose the lot-level trail and make reconciliation impossible.
+
+**Pattern:**
+1. Parse calculated source (CG): produces individual lot entries
+2. Parse authoritative source (OGR): produces event-level totals
+3. Match and override lot entries with authoritative values
+4. Aggregate overridden lots: preserves lot-level trail in output
+
+**Example:** In `crypto_reporting.py`, `_apply_ogr_overrides()` is called after `_parse_capital_gains_file` but BEFORE `_aggregate_capital_entries()`. This ensures that when OGR reports an authoritative per-disposal loss, each individual FIFO lot for that disposal is overridden with that authoritative value before being summed. If aggregation happened first, the lot-level detail would be lost and the override could not be traced back to specific lots.
+
+**See also:** playbook lesson "Trace the Fixture When Plan Pseudocode Compares Same-Unit Fields by Name" (Cross-Report Validation), AGENTS.md constraint on OGR override timing
+
+**See also (principle cluster D):** playbook lesson "Trace ALL Branches of a Multi-Branch Conditional When Implementing a Tiered Rule", playbook lesson "Grep Across ALL Test Files for Stale Assertions When a Task Changes Data Flow Semantics" (same family, distinct angle: OGR/CG authority -- override ordering (#94) vs split by aspect (playbook lesson "Trace ALL Branches of a Multi-Branch Conditional When Implementing a Tiered Rule") vs aggregate-then-validate (playbook lesson "Grep Across ALL Test Files for Stale Assertions When a Task Changes Data Flow Semantics")).
+
+## 91. Duplicate Key Handling in Index Building
+
+**Principle:** Family D (Single source of truth)
+
+
+When building an index from source data where multiple entries may share the same key, handle duplicate keys explicitly by summing (or another appropriate aggregation). Never silently overwrite previous entries with new ones.
+
+**Why this matters:** Silent data loss occurs when duplicate keys overwrite previous values. This is especially dangerous when the index is used for authoritative values in calculations.
+
+**Verification:** After building an index, if the sum of all indexed values should equal a known total, verify this invariant holds.
+
+**Pattern:**
+```python
+# Wrong: silent overwrite
+result[key] = value  # Last value wins, previous values lost
+
+# Correct: explicit summation
+result[key] = result.get(key, ZERO) + value  # All values summed
+```
+
+**Example:** In `_find_and_parse_other_gains_file()`, the OGR file contained three entries for the same platform+asset+date key (a funding fee, a futures fee, and a realized P&L). The buggy code `result[key] = gain_loss` stored only the last value. The fix `result[key] = result.get(key, ZERO) + gain_loss` correctly sums all values for the key.
+
+**See also:** playbook lesson "Add a Count-Matched-Items-Per-Event Safety Check When Matching by Non-Unique Keys" (TDD for Bug Fixes), playbook lesson "Trace ALL Branches of a Multi-Branch Conditional When Implementing a Tiered Rule" (OGR Validation vs Replacement Design)
+
+## 92. OGR Directional Authority vs Wholesale Replacement (Completed)
+
+**Principle:** Family D (Single source of truth)
+
+
+**Status:** Completed; see `docs/history/plans/2026-06-10-ogr-validation-design.md`
+
+The OGR (Other Gains Report) feature uses **directional authority semantics**, not wholesale replacement. OGR provides authoritative DIRECTION (gain vs loss) while CG (Capital Gains) provides MAGNITUDE via standard FIFO calculation.
+
+**Directional authority logic:**
+- **Direction conflict (OGR sign != CG sign):** Use OGR direction with CG magnitude
+  - Example: CG=+100 (gain), OGR=-147 (loss) → final = -100 (loss with CG magnitude)
+  - Flag with review_required=True, reason="OGR direction override"
+- **Directions agree (same sign):** Use OGR magnitude (more accurate for derivatives)
+  - Example: CG=-100, OGR=-105 → final = -105 (use OGR magnitude)
+  - Flag with review_required=True only if magnitude diff > 5% AND absolute diff > 1 EUR
+
+**Implementation details:**
+- Applied per-lot before aggregation via `_apply_ogr_direction_override()`
+- Creates `OgrValidationResult` attached to each entry with comparison metadata
+- Absolute threshold (1 EUR) prevents noise on near-zero values for both direction conflicts and magnitude diffs
+- Multiple lots for same disposal each get ogr_validation attached; aggregation combines them
+
+**See also:** Lesson #94 (Authoritative Source Overrides Timing), playbook lesson "Calibrate Exception-Handling Strategy to the Cost of Silent Failure When Reusing a Helper Pattern" (Independent Validation Fields), CRG-017 in crypto_reporting_guidelines.md
+
+**See also (principle cluster D):** playbook lesson "Grep Across ALL Test Files for Stale Assertions When a Task Changes Data Flow Semantics" (same family, distinct angle: OGR/CG authority -- override ordering (#94) vs split by aspect (playbook lesson "Trace ALL Branches of a Multi-Branch Conditional When Implementing a Tiered Rule") vs aggregate-then-validate (playbook lesson "Grep Across ALL Test Files for Stale Assertions When a Task Changes Data Flow Semantics")).
+
+## 93. Probe the Canonical URL Before Assuming an Official Source Is Unavailable
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
+
+When a plan or task assumes an authoritative document (statute amendment, binding ruling, official circular) is "not publicly indexed", "request-specific", or otherwise unreachable, do NOT treat that assumption as ground truth. Probe the issuing authority's canonical URL pattern directly (HTTP HEAD or ranged GET) before falling back to secondary sources or skipping archival.
+
+**Why this matters:** Plans encode assumptions about source availability that may be outdated or simply wrong. The cost of a probe is one HTTP request; the cost of skipping archival is a weakened source corpus where the authoritative document is absent and downstream analysis leans on secondary sources that paraphrase it. Several issuing authorities publish binding rulings and circulars in public indexes even when they are nominally request-specific.
+
+**Required behavior:**
+1. Construct the canonical URL from the issuing authority's documented naming convention (e.g. AT vinculativa rulings follow `info.portaldasfinancas.gov.pt/.../informacoes_vinculativas/.../Documents/PIV_<numero>.pdf`).
+2. Issue a HEAD request (or a small ranged GET) to check status, content-type, and content-length.
+3. On HTTP 200 with the expected media type, download and archive the document to `docs/maintenance/tax/.../official/` and add the provenance entry to `sources.md`.
+4. Only when the probe definitively fails (404, 403, or a login redirect) should you fall back to secondary sources or document the source as unavailable.
+5. Record the probe outcome (success or the specific failure) in the implement log so the assumption-vs-reality gap is visible.
+
+**Anti-pattern:** Reading a plan task that says "the ruling is request-specific, so we will rely on the secondary advisory page" and proceeding straight to secondary-source archival without probing the primary URL.
+
+**Example:** The 2026-06-13 derivatives-separation plan (Task 2) stated AT binding ruling PIV 28298/2025 was expected to be request-specific and not in the public vinculativa index. A HEAD probe of the canonical `Documents/PIV_28298.pdf` URL returned HTTP 200, `application/pdf`, 64,788 bytes. The ruling IS published in the public CIRS vinculativa list and was downloaded directly to `docs/maintenance/tax/laws/pt/crypto-tax/official/at_piv_28298_2025.pdf`, making the secondary-source-only fallback unnecessary. The ruling body also yielded the precise filing targets (Anexo G Quadro 13 code G51 for resident-source derivatives gains; Anexo J Quadro 9.2.B code G30 for non-resident) that no secondary source stated as explicitly.
+
+**See also:** `docs/maintenance/project-guidelines.md` #1 (external source archive provenance and freshness), CLAUDE.md source-archival rules, playbook lesson "Reconcile Plan Pseudocode Against Plan Tests and Design Invariants Before GREEN" (verification for canonical source synchronization).
+
+---
+
+## 94. Trace Each Affected OGR Row to Its Originating TH Type Before Designing a Type-Filtered Scanner
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
+
+When designing a scanner that filters TH rows by Type (e.g., `crypto_withdrawal` only), trace each OGR row on the affected date back to its originating TH source row and confirm which Type that TH row carries. OGR rows on the same date, same asset, same wallet may originate from different TH Types; only the OGR rows sourced from matching TH Types are affected by the scanner.
+
+**Why this happens:** Koinly emits one OGR row per disposal event but the disposal may be sourced from either a `crypto_deposit` (e.g., realized gain paid out) or a `crypto_withdrawal` (e.g., fee deducted). When the plan's narrative groups OGR rows by date, the author may assume all rows on that date share the same behavior change, but the scanner's Type filter means only some rows are actually affected. The unfiltered rows keep their original routing; only the filtered rows reclassify.
+
+**Required behavior:**
+1. When the plan describes a behavior change for "OGR rows on date D," identify each individual OGR row on D and trace it to its source TH row (match by timestamp, asset, wallet, amount).
+2. For each traced OGR row, record the TH Type. Mark the OGR row as affected (Type matches the scanner filter) or unaffected (Type does not match).
+3. Write test expectations that distinguish the two: affected rows reclassify, unaffected rows keep their routing. Do not write a single test name like `test_ogr_routes_to_derivatives` that implies all OGR rows on the date behave the same way.
+4. Update existing tests that assert the OLD routing of now-affected rows; do not just add new tests for the new routing.
+
+**Anti-pattern:** Reading an OGR file that shows "Profit +<PROFIT_EUR>, Loss <-FEE_PROCEEDS_EUR>" on 2025-01-12 and writing a plan that says "the +<PROFIT_EUR> Profit OGR row routes to derivatives_entries after the dedup" when the +<PROFIT_EUR> Profit row is sourced from a `crypto_deposit` (filtered out by the scanner) and is therefore unaffected. The <-FEE_PROCEEDS_EUR> Loss row, sourced from a `crypto_withdrawal` with Label=Futures fee, is the one that actually reclassifies. The plan ships with a misleading test name and a missing assertion; a follow-on plan review round is needed to catch the confusion.
+
+**Example:** The 2026-06-14 derivatives-th-label-cg-dedup plan's Task 6 described Case 1 (2025-01-12) as "the +<PROFIT_EUR> Profit OGR row still routes to derivatives_entries" with test name `test_profit_ogr_routes_to_derivatives`. The r2 plan review caught the confusion: TH line 204 (`crypto_deposit` Realized gain 143.752 USDT) sources the +<PROFIT_EUR> Profit OGR row and is filtered out by the scanner's `crypto_withdrawal` filter; TH line 205 (`crypto_withdrawal` Futures fee <FEE_PROCEEDS_USDT> USDT) sources the <-FEE_PROCEEDS_EUR> Loss OGR row and is the row that actually reclassifies. The revision rewrote Task 6 to distinguish the two rows and added `test_fee_disposal_reclassifies_to_derivatives` for the actual behavior change. See the th-label-cg-dedup plan review r2 (local) Blocker 1.
+
+**See also:** Lesson #93 (data trace verification), playbook lesson "Discriminating Tests: Assert Properties That FAIL Under the Wrong Implementation" (trace fixture when comparing same-unit fields by name), CLAUDE.md §3 Repository Constraints (derivatives separation).
+
+**See also (principle cluster H):** playbook lesson "Verification Guards That Read a Manifest File Must Fail Closed When the Manifest Is Absent" (same family, distinct angle: general plan-claim rule (playbook lesson "Verification Guards That Read a Manifest File Must Fail Closed When the Manifest Is Absent") and its two specific witnesses.).
+
+## 95. Audit for Shared Identifiers Across Reports When Separating a Previously-Merged Tax Category
+
+**Principle:** Family D (Single source of truth)
+
+
+When introducing a separation between two tax categories that previously shared a single pipeline (e.g., splitting a unified crypto-gains flow into spot vs derivatives), audit whether the same disposal event appears in **both** source reports that feed the separated paths. Without an explicit deduplication step removing the now-derivatives-classified items from the spot path, those items are double-counted: once in the new derivatives aggregate, once in the legacy spot aggregate. The trigger for the audit is the **introduction of the separation itself**, not a later data-quality or cross-report validation check.
+
+**Why this happens:** Koinly (and similar exporters) emit one row per disposal event in each report that references it. A derivatives Futures-fee disposal appears both as an OGR `Loss` row (because it has no cost basis, so Koinly routes it to Other Gains) and as a CG lot (because Koinly also records it as a disposal of the fee asset against its acquisition lot). Before the separation, only the CG path was read, so the duplication was invisible. The moment a plan introduces a derivatives path that reads OGR, both paths light up for the same disposal, and the spot CG total silently inflates.
+
+**Required behavior:**
+1. When a plan introduces a new classification path that consumes a previously-unused source report (OGR, rewards, etc.), enumerate every other report the existing pipeline already reads (CG, TH).
+2. For each disposal event in the new report, check whether the same `(date, asset, wallet, amount)` (or whatever identity tuple applies) also appears in the existing reports.
+3. If overlap exists, write an explicit dedup step in the plan that removes the overlapping items from the legacy path. Do not rely on the new path's downstream classifier to "handle" the overlap; the legacy path aggregates independently.
+4. Add a reconciliation test that asserts the union of (spot aggregate, derivatives aggregate) matches the pre-separation total. A drift in this union after the separation is the symptom of a missing dedup step.
+
+**Distinguishing from playbook lesson "Trace the Fixture When Plan Pseudocode Compares Same-Unit Fields by Name" (Cross-Report Validation):** playbook lesson "Trace the Fixture When Plan Pseudocode Compares Same-Unit Fields by Name" catches **data corruption** where one report contradicts another (e.g., OGR says Loss while CG says Gain on the same disposal). This lesson catches **structural double-counting** where both reports agree and are individually correct, but the pipeline reads both without dedup. the failure mode for the playbook lesson above is wrong totals; the failure mode here is inflated totals with no inconsistency between reports.
+
+**Anti-pattern:** A separation plan that says "OGR rows of Type Loss route to `derivatives_entries`; CG rows remain in spot" without checking whether the same disposal is present in both. The spot CG total silently includes the derivatives-classified lots, the derivatives total includes the OGR Loss, and the sum is greater than the pre-separation total. The error surfaces only at tax-filing time when the IRS-ready total is too high.
+
+**Example:** The 2026-06-13 derivatives-separation plan split OGR into derivatives_entries vs spot but did not dedup the corresponding CG lots from the spot table. ByBit USDT Futures-fee and Funding-fee disposals on 2025-01-13 and 2025-01-24 appeared in both: as OGR Loss rows (routed to derivatives) and as CG lots (left in spot). The fix required the entire 2026-06-14 derivatives-th-label-cg-dedup follow-up plan to scan TH for `crypto_withdrawal` events labeled Funding fee / Futures fee / Realized gain, match them against CG lots by `(date, asset, wallet, amount)`, and remove the matched lots from the spot index before the spot/derivatives classifier runs. A 5-minute audit at 2026-06-13 plan time ("does any disposal appear in both OGR and CG?") would have caught the gap and avoided the follow-up plan entirely. See `docs/history/plans/2026-06-14-derivatives-th-label-cg-dedup.md`.
+
+**See also:** Lesson #87 (deduplication key identity), playbook lesson "Trace the Fixture When Plan Pseudocode Compares Same-Unit Fields by Name" (cross-report validation), playbook lesson "Static Guards Must Cover Code Paths Skipped in CI (No Runtime Backstop)" (trace OGR→TH source Type), CLAUDE.md §3 Repository Constraints (derivatives separation), PT-C-034 in `docs/maintenance/crypto_rules.md`.
+
+## 96. Reuse the Parsed Value Inside the Existing Try Block When Extracting a Second Derived Value
+
+**Principle:** Family E (Temporal / ordering invariants)
+
+
+When a plan asks you to compute a second derived value from an input that is already parsed inside a `try ... except ValueError` block (for example, adding a minute-precision `timestamp_str` alongside an existing day-level `date_str`, both derived from the same source date string), reuse the already-parsed object inside the SAME try block. Do NOT re-invoke the parser outside the block to compute the second value.
+
+**Why:** The existing try block exists because the parser (`parse_koinly_datetime`, `parse_koinly_decimal`, etc.) raises `ValueError` on malformed input, and the surrounding code expects that exception to be caught and handled (typically: warn and skip the row, or log an error and continue). Re-invoking the parser outside the block produces an UNCAUGHT `ValueError` that aborts the entire batch, contradicting the row-level error-handling contract (CLAUDE.md §1: catch row-level parse errors per row).
+
+**Required behavior:**
+1. Identify the value already being parsed inside the try block (`parsed_dt = parse_koinly_datetime(date_raw)`).
+2. Compute both derived strings from that one parsed object, inside the same block:
+   ```python
+   parsed_dt = parse_koinly_datetime(date_raw)
+   date_str = format_datetime(parsed_dt)            # existing day-level string
+   timestamp_str = parsed_dt.strftime("%Y-%m-%d %H:%M")  # new minute-precision string
+   ```
+3. Do NOT write `timestamp_str = parse_koinly_datetime(date_raw).strftime(...)` as a separate statement outside the block. A malformed `date_raw` raises `ValueError` that nothing catches.
+
+**General form:** Whenever N derived values must be computed from one fallible parse, parse once inside the error-handling scope and derive all N from the parsed object. This holds for any parser-with-exceptions pattern, not just datetime parsing.
+
+**Distinguishing from playbook lesson "Field Aggregation Strategy Depends on Semantics" (try/finally resource-cleanup scope):** playbook lesson "Field Aggregation Strategy Depends on Semantics" is about ensuring all raising operations are inside a try/finally so cleanup runs. This lesson is about not re-invoking a fallible operation outside a try/except that was set up to catch its first invocation. Both are error-scope guards but address different failure modes: The playbook lesson above prevents leaked resources; this one prevents uncaught exceptions that bypass row-level error handling.
+
+**Example:** Task 3 of the 2026-06-14 derivatives-th-label-cg-dedup plan added `timestamp_str` to `ParsedTxRow` and `disposal_timestamp` to `CryptoCapitalGainEntry`. Both `_classify_rows_for_loan_affected_assets` (parsing.py) and `_parse_capital_gains_file` (crypto_reporting.py) already parsed the date inside a try block to compute `date_str`/`disposal_date`. The implementation captured `parsed_dt`/`disposal_dt` first, then derived both strings from it inside the same block, rather than re-calling `parse_koinly_datetime` outside. See the implementation log (local).
+
+## 97. Internal Placeholder Sentinels From Resolution Functions Must Not Leak to User-Facing Output Fields
+
+**Principle:** Family C (Representation: sentinel vs None vs exception)
+
+
+When a resolution/lookup function (operator-origin resolver, ISIN resolver, country resolver) returns an internal placeholder sentinel as one of its fields (e.g., `operator_entity="UNKNOWN_OPERATOR_REVIEW_REQUIRED"`, indicating "data could not be resolved automatically"), callers must NOT propagate that sentinel value directly into user-facing output fields (Excel cells, report columns, API responses). The sentinel is a programmatic "data missing, review required" marker intended for internal branching and review-flag logic, not for display. Propagating it verbatim produces output like `UNKNOWN_OPERATOR_REVIEW_REQUIRED` in a taxpayer-facing Excel cell, confusing, unactionable, and indistinguishable from a real operator name to a non-technical reviewer.
+
+**Why this matters:** User-facing output must use self-explanatory terminology (see `coding_guidelines.md` #6). Internal sentinels are terse programmatic identifiers designed for code-side `if` checks, not for humans. The two concerns, "signal missing data to the code" and "display something useful to the human", require different values at the same call site. Reusing the internal sentinel for display collapses them into one bad value.
+
+**Distinguishing from user-visible sentinels (`MISSING_ISIN_REQUIRES_ATTENTION`, `UNKNOWN_COUNTRY`):** Those sentinels ARE designed for user display; their terse, ALL_CAPS form is intentional and the project convention is that they should appear in Excel cells with highlighting to draw the reviewer's attention. This lesson addresses the opposite case: a sentinel like `UNKNOWN_OPERATOR_REVIEW_REQUIRED` whose name reads as an instruction to the developer ("review required"), not as a value the user should see. When in doubt, check whether the sentinel's name reads as a value (OK to display) or as an instruction/status (must NOT display).
+
+**Required behavior:**
+1. When consuming a resolution function's result, identify which fields may carry an internal placeholder (typically: the field the resolver returns when it cannot resolve, often paired with `review_required=True`).
+2. For user-facing output, substitute the original raw input value (e.g., `row.wallet`, the raw wallet name the user provided) rather than the resolver's placeholder. The raw input is what the user entered and what they will recognize when reviewing.
+3. Keep the `review_required` flag and a specific actionable `review_reason` (citing the resolver function name) so the missing data is still surfaced for review, just not via leaking the sentinel into a data cell.
+4. Test the unmapped/unknown case explicitly: assert the user-facing field equals the raw input, NOT the internal sentinel.
+
+**General form:** Any time a downstream field is populated from a resolver/lookup result, audit whether that result carries an internal placeholder for the unresolved case. If it does, the user-facing output must use the original input value, not the placeholder. The placeholder is for code logic; the raw input is for display.
+
+**Example:** Task 2 of the 2026-06-15 derivatives-pnl-columns plan populated `operator_entity` on `DerivativesPnLEntry` rows built from OGR data. `resolve_operator_origin()` returns `OperatorOrigin(operator_entity="UNKNOWN_OPERATOR_REVIEW_REQUIRED", review_required=True)` for unmapped platforms. Using `operator_origin.operator_entity` directly would leak `UNKNOWN_OPERATOR_REVIEW_REQUIRED` into the Excel cell. The implementation uses `operator_entity=row.wallet` (the raw wallet name the user provided) and synthesizes an actionable `review_reason` citing `resolve_operator_origin()` instead. See the implementation log (local).
+
+**See also:** `coding_guidelines.md` #6 (user-facing labels use self-explanatory terminology), CRG-016 (review flag conflation), CLAUDE.md "Data Handling" (visible sentinels vs internal placeholders).
+
+**See also (principle cluster C):** playbook lesson "Do Not Explicitly Omit Plan-Prescribed Behavior Without Amending the Plan First", playbook lesson "When Migrating a Test Off a Real Fixture to Synthetic Data, Narrow Assertions to the Behavior Under Test" (same family, distinct angle: sentinel string leak (playbook lesson "A Validation Command That Scans a Shared Parent Directory to Enforce a NEW Convention Will False-Fail on Pre-Existing Legacy Entries") vs `None`-value interpolation (playbook lesson "Do Not Explicitly Omit Plan-Prescribed Behavior Without Amending the Plan First") vs test-expectation `None`/`""` (playbook lesson "When Migrating a Test Off a Real Fixture to Synthetic Data, Narrow Assertions to the Behavior Under Test")).
+
+## 98. Reuse the Production Validator When a Test Asserts Against a Domain-Validity Predicate
+
+**Principle:** Family D (Single source of truth)
+
+
+When a test asserts that an output value satisfies a domain-validity predicate (a fixed enumeration of valid codes, a country list, a regex pattern, or any "is this value one of the allowed values?" check) where the valid set is defined in production code, the test MUST import and reuse the production validator rather than duplicate the valid-set list inline in the test.
+
+**Why this matters:** A duplicated valid-set list in the test silently desyncs from production when the production list changes. Example failure mode: production adds a new country code to its Tabela X list (say, after a CIRS amendment), the test still asserts against the old list, and a row carrying the new valid code fails the test even though the pipeline correctly emits it. The test then appears to "discover" a regression that is actually a stale test, and a maintainer may "fix" the pipeline to match the stale test.
+
+**Pattern to avoid:**
+```python
+VALID_TABELA_X_CODES = {"PT", "US", "AE", "DE", "FR", ...}  # stale copy
+assert country in VALID_TABELA_X_CODES or country == "UNKNOWN"
+```
+
+**Correct pattern: reuse the production validator:**
+```python
+from tax_reporting.application.crypto.classification import _is_valid_tabela_x_country
+assert country == "UNKNOWN" or _is_valid_tabela_x_country(country)
+```
+
+**Qualification gate (when to apply this rule):**
+- The predicate is defined in production code (a function, a module-level constant, or a dataclass field).
+- The valid set is non-trivial (a list of dozens of country codes, a regex, an enum) such that manual duplication is error-prone.
+- The test's intent is to verify the value is "valid per the domain", NOT to verify the production list itself contains a specific entry (in which case the test legitimately pins specific entries).
+
+**When NOT to apply:** Tests that pin the production list's membership ("Tabela X must include Portugal") should NOT delegate to the production validator; that would be tautological. Those tests hold their own inline list as a contract anchor.
+
+**Distinguishing from playbook lesson "Do Not `git stash` for Baseline Comparisons in the docs-branch State" (Structural Identification for Excel Output Tests):** playbook lesson "Do Not `git stash` for Baseline Comparisons in the docs-branch State" is about identifying which cells to inspect via structural properties (column population, font) rather than hardcoded value exclusions; it concerns test data selection, not validity predicates. This lesson concerns the validity check applied to the values once selected: even when a test correctly identifies rows structurally, it may still duplicate a domain list to validate the cell's value, which is the drift risk this rule addresses. The two compose: identify rows structurally (per the playbook lesson above), then validate values by reusing the production predicate (per this lesson).
+
+**General form:** Whenever the test could be written as `value in SOME_SET_DEFINED_IN_PRODUCTION` or `value matches PRODUCTION_REGEX`, replace the inline duplicate with an import of the production function/constant. The test asserts the contract ("value is valid per the domain"), and the production code is the single source of truth for what "valid" means.
+
+**Example:** Task 5 of the 2026-06-15 derivatives-pnl-columns plan added `test_derivatives_rows_operator_country_is_valid_or_unknown`, which asserts every derivatives row's `operator_country` is either a valid Tabela X country code or the literal `"UNKNOWN"` sentinel. The test imports `_is_valid_tabela_x_country` from `tax_reporting.application.crypto.classification`, the same validator the pipeline uses to validate reportable country codes, rather than re-listing the ISO 3166-1 alpha-2 codes inline. A future CIRS amendment that adds a country to the production list propagates to the test automatically. See the implementation log (local) Decision 3.
+
+**See also:** playbook lesson "Do Not `git stash` for Baseline Comparisons in the docs-branch State" (structural identification for test data selection), CLAUDE.md "Code Quality" (no duplicated constants), `coding_guidelines.md` (single source of truth for domain predicates).
+
+## 99. Check Prior Same-Session Commits Before Reporting a Verification-Time Scope Violation
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
+
+When a verification-only task (e.g., a regression sweep, a "diff scope" check, a Phase 2 final validation) asserts that the cumulative diff should contain a specific file but `git diff <base>..HEAD -- <file>` shows the file is NOT in the diff, first check whether a prior same-session commit already applied the planned change to that file before reporting a scope violation.
+
+**Why this matters:** Execute-plan sessions commit after each completed task. When a plan lists a source file as expected-modified and an earlier task's commit already included the edit (because the edit was naturally bundled with that task's primary change), the file will NOT appear in a later task's incremental diff even though the work was done. Reporting this as a "scope violation" or "missing change" is a false positive; the change exists in the cumulative history, just not in the latest task's incremental slice.
+
+**Required behavior:**
+1. When a verification task's "expected files in diff" list does not match `git diff --name-only <base>..HEAD`, run `git log --oneline <base>..HEAD -- <missing-file>` to check whether an earlier commit in the session already touched it.
+2. If yes, confirm the change matches the plan's intent by reading the file at HEAD (`git show HEAD:<file>` or Read tool), then mark the verification item as satisfied; the work landed earlier, just not in the most recent task's commit.
+3. Only report a scope violation when the file is absent from the entire `<base>..HEAD` range AND the planned change is genuinely missing from the working tree.
+
+**Distinguishing from playbook lesson "Verification Guards That Read a Manifest File Must Fail Closed When the Manifest Is Absent" (plan-time claims):** playbook lesson "Verification Guards That Read a Manifest File Must Fail Closed When the Manifest Is Absent" covers verifying claims about production code at plan-authoring time. This lesson covers verifying scope at verification/commit time, when the diff inspection happens after multiple commits. The trigger is a mismatch between an expected-files list and an observed cumulative diff, not a plan-authoring claim.
+
+**General form:** Verification tasks that inspect `git diff <base>..HEAD` must interpret "file X is missing from the diff" as "file X was not touched in this session", which requires checking the per-commit history, not just the aggregate diff stat. A file absent from the cumulative diff is genuinely missing; a file absent from the latest task's incremental commit may simply have landed earlier.
+
+**Example:** Task 6 of the 2026-06-15 derivatives-pnl-columns plan listed `docs/maintenance/crypto_rules.md` as an expected file in the diff scope check. The diff `d2eda71..HEAD` did not show `crypto_rules.md`. Investigation showed the prior same-session commit `6083cf1 docs(crypto): extend PT-C-031 with Anexo G Quadro 13 filing routing for derivatives` had already extended PT-C-031 with the Anexo G Quadro 13 routing the plan depended on, so no further `crypto_rules.md` edit was required by this plan. The verification item was satisfied by the earlier commit, not violated. See the implementation log (local) Decision: crypto_rules.md.
+
+**See also:** playbook lesson "Verification Guards That Read a Manifest File Must Fail Closed When the Manifest Is Absent" (verify plan-time claims about production code), `execute-plan` skill (Phase 2 final validation), CLAUDE.md §4 Agent Workflow Rules.
+
+**See also (principle cluster H):** playbook lesson "Independent Validation Fields vs Entry-Level Review Flags", playbook lesson "Use Type Parameterization (TypeVar) in Shared Generic Primitives to Preserve Subclass Field Visibility Under Static Analysis", playbook lesson "Type Heterogeneous Validated Kwargs Dicts as `dict[str, Any]` to Feed `**`-Unpack Into a Dataclass Constructor Under basedpyright", playbook lesson "A Refactor Plan Clause That Instructs a Net-New Behavior Addition Conflicts With the Same Plan's Byte-Identical Non-Regression Criterion" (same family, distinct angle: the git/docs-state verification cluster.).
+
+## 100. Branch on the Discriminator When Synthesising a Reason for a Multi-Cause Flag
+
+**Principle:** Family A (Equivalence-class coverage)
+
+
+When a downstream consumer observes a boolean flag (e.g., `review_required=True`) that MULTIPLE distinct upstream cases can set, and the consumer synthesises a single human-facing reason/message from that flag, the consumer MUST branch on the discriminator (a sentinel, enum, category field, or secondary attribute) the upstream sets to distinguish which case fired, rather than collapsing all cases into one message.
+
+**Why this matters:** A flag with multiple upstream causes carries no information about WHICH cause fired. Collapsing all causes into one synthesised message produces output that is misleading for the cases that did NOT fire. The reviewer reads "Unknown platform" when the platform IS mapped but the transaction date predates the service window; the reviewer then chases the wrong fix path. The discriminator the upstream sets exists precisely to disambiguate; ignoring it throws away the disambiguation the upstream already paid for.
+
+**Qualification gate (when this rule applies):**
+- The observed flag can be set True by two or more distinct upstream code paths (e.g., unknown-platform default path AND temporal-validity failure path both set `review_required=True`).
+- The consumer synthesises a message FROM the flag (not from the upstream's own reason field).
+- The upstream provides a discriminator (a sentinel value on a sibling field, a distinct enum/category, or a non-empty `review_reason` for at least one case) that lets the consumer tell the cases apart.
+
+**Required behavior:**
+1. Before synthesising a message from a multi-cause flag, enumerate the upstream cases that set the flag True.
+2. For each case, identify what field/value the upstream uses to signal it (sentinel string, enum variant, presence of a specific `reason` text).
+3. Branch on that discriminator in the consumer and emit a case-specific message. Surface the upstream's own `reason` verbatim when it carries specific diagnostic detail (dates, parsed values, identifiers) rather than a generic instruction.
+4. Provide a final fallback string only for the theoretical case where `flag=True` with no discriminator and no reason.
+5. The RED-phase test must exercise EACH distinct upstream case (not just one) and assert the case-specific message appears while the OTHER case's message does NOT.
+
+**Distinguishing from playbook lesson "A Validation Command That Scans a Shared Parent Directory to Enforce a NEW Convention Will False-Fail on Pre-Existing Legacy Entries" (sentinel leak into display fields):** playbook lesson "A Validation Command That Scans a Shared Parent Directory to Enforce a NEW Convention Will False-Fail on Pre-Existing Legacy Entries" is about the VALUE of a field that reaches the display (an internal placeholder must not appear in a user-facing cell). This lesson is about WHICH MESSAGE a consumer synthesises when the same flag has multiple causes; the value is always user-facing by design (a reason string), but the message content must match the actual cause. The playbook lesson above says "do not display the sentinel"; this lesson says "do not collapse multiple causes into one message; branch on the discriminator".
+
+**General form:** Any time a consumer turns a multi-cause boolean into prose, the prose must be selected per-cause using the discriminator the upstream sets. The boolean tells you THAT review is needed; the discriminator tells you WHY; the WHY is what the reviewer needs to read.
+
+**Example:** Finding #1 (Medium) of the 2026-06-16 derivatives-pnl-columns code review r1 found that `_split_ogr_index` in `src/tax_reporting/application/crypto/ogr_handler.py` synthesised an "Unknown platform" message (with wording like `add this platform to resolve_operator_origin() before filing`) whenever `operator_origin.review_required` was True. But `resolve_operator_origin()` sets `review_required=True` for TWO distinct cases: (a) truly-unknown platform (sets `operator_entity="UNKNOWN_OPERATOR_REVIEW_REQUIRED"`), and (b) temporal-validity failure, a known platform whose `service_start_date` postdates the transaction (keeps the real mapped `operator_entity` and sets a specific `review_reason` mentioning the date and service period). The synthesised message misled reviewers for case (b): the platform IS mapped, but the message told them to add it. The fix branches on the `UNKNOWN_OPERATOR_REVIEW_REQUIRED` sentinel: for the truly-unknown case it synthesises the actionable fix-path message; for the temporal-validity case it surfaces `operator_origin.review_reason` verbatim (which carries the specific date and "service period" wording the reviewer needs). The new RED test `test_derivatives_entry_for_known_platform_outside_service_period_carries_temporal_reason` exercises case (b) explicitly and asserts the temporal reason is present while the "Unknown platform" message is absent. See the derivatives-pnl-columns code review r1 (local) Finding #1 and the implementation log (local).
+
+**See also:** playbook lesson "A Validation Command That Scans a Shared Parent Directory to Enforce a NEW Convention Will False-Fail on Pre-Existing Legacy Entries" (internal sentinels must not leak to display fields), playbook lesson "A Mechanical `str.replace`/`sed` Pass Whose Search String Is a Substring of a Larger Token Silently Corrupts at the Wrong Offset" (test names must reflect their coverage scope; the missing temporal-validity test is an instance of that playbook lesson), Lesson #104 (sibling aggregators mirror byte-identical patterns -- distinct sibling-ness unit: aggregators in one module), Lesson #110 (centralized helper across callers with divergent policies -- distinct sibling-ness unit: callers of one helper), CLAUDE.md §1 "Partial or uncertain results must carry an explicit indicator" and "Review flags must include specific actionable explanations, not bare booleans".
+
+## 101. Guard "Take From First Entry" Fields Against Silent Heterogeneity
+
+**Principle:** Family G (Data-loss observability)
+
+
+Lesson #96 documents the "lookup value fields - take from first entry" aggregation strategy, premised on the assumption that all entries in the group share an identical value for the field. That assumption is a design invariant, not a guaranteed runtime property. When the assumption silently fails (e.g., a future code path lets two group members carry different `annex_hint` / `operation_code` / `legal_category` values for the same disposal group), the renderer or aggregator that takes `entries[0]` will silently pick one value and discard the others, with no log or warning to flag the drift. The output looks correct (it has a value) but is wrong (it has the wrong value).
+
+**Required behavior:**
+1. Whenever an aggregator, renderer, or detail-line builder takes `entries[0]` (or `first`) for a field that is ASSUMED constant across the group, add a programmatic heterogeneity guard that emits a `logger.warning` when the assumption is violated.
+2. The guard should build the set of distinct values (or distinct tuples, for multi-field constants like `(annex_hint, operation_code, legal_category)`) and warn when `len(distinct) > 1`. Include the count, the distinct values, and which row was actually rendered so a future maintainer can audit.
+3. Do NOT raise; the first entry's value is still the best available. The warning makes the drift observable so a reviewer can decide whether the assumption needs strengthening or the data needs correcting.
+4. Pair the guard with a RED test that constructs a group with heterogeneous values and asserts the warning fires, plus a negative control asserting no warning fires when values agree.
+
+**Qualification gate (when this rule applies):**
+- The field is read from `entries[0]` / `first` rather than aggregated (summed, OR-ed, joined).
+- The field's correctness depends on all group members sharing the same value (a design invariant, not enforced by upstream).
+- A silent violation would produce user-facing output that looks valid but is wrong.
+
+**Distinguishing from #96 (aggregation strategy per field type):** Lesson #96 catalogs WHICH strategy to use per field type ("lookup value → take first"). This lesson catalogs the GUARD that must accompany the "take first" strategy when the "all members share the value" assumption is a design invariant that could silently fail. #96 says "use this strategy"; this lesson says "when you use the 'take first' strategy for an assumed-constant field, add a heterogeneity guard".
+
+**General form:** Any time production code reads from the first element of a group for a field whose group-wide constancy is an assumption rather than a guarantee, the assumption must be checked at runtime and a warning emitted on violation. Silent assumption drift is worse than a logged warning because the output looks correct.
+
+**Example:** Finding #1 (Medium) of the 2026-06-16 derivatives-pnl-columns code review r1 found that the derivatives-sheet detail-line renderer took `entries[0].annex_hint`, `entries[0].operation_code`, and `entries[0].legal_category` without verifying the other group members agreed. The current fixture set is homogeneous by construction (every group comes from a single disposal event), so the bug is latent. The fix added a guard in `derivatives_sheet.py` that builds `distinct_constant_tuples = {(e.annex_hint, e.operation_code, e.legal_category) for e in entries}` and emits `logger.warning("Derivatives P&L detail-line fields are heterogeneous ...", ...)` when `len(distinct_constant_tuples) > 1`. The RED tests `test_detail_line_warns_when_entries_disagree_on_constant_fields` and `test_detail_line_no_warning_when_entries_agree_on_constant_fields` exercise both branches. See the derivatives-pnl-columns branch review r1 (local) Finding #1 and the implementation log (local) Medium 1.
+
+**See also:** Lesson #96 (field aggregation strategy per field type), playbook lesson "An `lru_cache`-Decorated Function That Reads a Module Global at Call Time Needs an Autouse Fixture That Rewires the Global AND Calls `cache_clear()` in BOTH Setup and Teardown" (branch on discriminator for multi-cause flags), CLAUDE.md §1 "Partial or uncertain results must carry an explicit indicator" and "Data-loss conditions (unmatched items, dropped records) must be logged at warning+".
+
+## 102. Mirror Byte-Identical Aggregation Patterns Across Aggregators in the Same Module
+
+**Principle:** Family A (Equivalence-class coverage)
+
+
+When two aggregation functions in the same module perform the same conceptual operation on different domain types (e.g., `aggregate_capital_entries` and `aggregate_derivatives_entries` both merging per-group narrative text fields), they MUST use byte-identical merge patterns. Diverging patterns (one takes `first.notes`, the other joins unique notes with `"; "`) silently drops data in the diverging aggregator: notes that should have been preserved across group members disappear from the output with no error or warning.
+
+**Why this matters:** Aggregators in the same module are read together by reviewers comparing behavior. A divergence between them is invisible at the diff level (both look like reasonable implementations) but produces inconsistent output for the same kind of operation. The capital-entries aggregator preserves all notes; the derivatives-entries aggregator that takes only `first.notes` discards every other member's notes. The bug surfaces only when a fixture has two group members with distinct notes AND the reviewer notices the discrepancy.
+
+**Required behavior:**
+1. When adding a new aggregator that performs an operation already implemented by a sibling aggregator in the same module (merge narrative fields, OR booleans, sum numerics, take-first for lookup values), copy the sibling's pattern byte-for-byte. Do not paraphrase, simplify, or "improve" it.
+2. If you cannot copy byte-for-byte because the domain types differ, factor the shared pattern into a helper and call it from both aggregators.
+3. The RED test must drive the new aggregator with multiple group members carrying distinct values for the merged field, and assert all values survive (deduped and order-preserved when the pattern dedupes).
+4. Add a negative control asserting empty input produces the pattern's empty sentinel (e.g., `""` for the notes-merge pattern).
+
+**Qualification gate (when this rule applies):**
+- Two or more functions in the same module perform the same conceptual aggregation (join-and-dedupe, sum, OR, take-first, max).
+- The implementations diverge in a way that produces different output for the same input shape.
+- A reviewer would reasonably expect the implementations to agree.
+
+**Pattern (notes merge, byte-identical reference):**
+```python
+merged_notes = "; ".join(dict.fromkeys(e.notes for e in group if e.notes)) or ""
+```
+The `dict.fromkeys(...)` preserves insertion order while deduping; the `if e.notes` filters empty/None; the `or ""` ensures empty input yields an empty string rather than `None`.
+
+**Distinguishing from #96 (aggregation strategy per field type):** Lesson #96 catalogs WHICH strategy to use per field type ("narrative text fields - join unique values with delimiter and deduplicate"). This lesson says: when that strategy is implemented in two aggregators in the same module, the implementations must agree byte-for-byte. #96 says "use the join-dedupe strategy"; this lesson says "use the SAME join-dedupe implementation as the sibling aggregator".
+
+**Distinguishing from #110 (centralized helper across callers with divergent policies):** This lesson and Lesson #110 both govern sibling code, but address different units of sibling-ness with OPPOSITE prescriptions. This lesson is about sibling IMPLEMENTATIONS that should produce the SAME output (two aggregators in one module): they must mirror byte-identical patterns; a divergence silently drops data. #110 is about sibling CALLERS of a centralized seam that have INTENTIONALLY DIVERGENT policies for the same failure kind (one raises, another degrades): each caller's policy arm must be pinned individually; mirroring one caller's policy into another is precisely the bug (it flips a required raise to a silent degrade). This lesson says siblings must be identical; #110 says sibling callers must keep their distinct arms pinned and must NOT be copied wholesale.
+
+**General form:** Sibling aggregators that perform the same operation must use the same implementation. Diverging implementations silently produce inconsistent output. The fix is byte-identical mirroring or extraction to a shared helper.
+
+**Example:** Finding #2 (Medium) of the 2026-06-16 derivatives-pnl-columns code review r1 found that `aggregate_derivatives_entries` in `src/tax_reporting/application/crypto/aggregation.py` set `notes=first.notes` while the sibling `aggregate_capital_entries` (same module, lines 283-287) used the `"; ".join(dict.fromkeys(...)) or ""` pattern. For a group with two members carrying notes "manual annotation A" and "manual annotation B", the derivatives aggregator silently dropped "manual annotation B". The fix replaced `first.notes` with `merged_notes = "; ".join(dict.fromkeys(e.notes for e in group if e.notes)) or ""` (byte-identical to the capital-entries pattern). The RED tests `test_aggregate_derivatives_merges_notes_across_group_members`, `test_aggregate_derivatives_notes_empty_when_no_member_has_notes`, and `test_aggregate_derivatives_notes_deduped_and_order_preserved` exercise the merge, empty-input, and dedupe+ordering cases. See the derivatives-pnl-columns branch review r1 (local) Finding #2 and the implementation log (local) Medium 2.
+
+**See also:** Lesson #96 (field aggregation strategy per field type), Lesson #95 (handle duplicate keys by summing, not silent overwrite), CLAUDE.md §1 "Data-loss conditions must be logged at warning+, never debug".
+
+**See also (principle cluster A):** playbook lesson "An `lru_cache`-Decorated Function That Reads a Module Global at Call Time Needs an Autouse Fixture That Rewires the Global AND Calls `cache_clear()` in BOTH Setup and Teardown" (same family, distinct angle: multi-cause flag within one function (playbook lesson "An `lru_cache`-Decorated Function That Reads a Module Global at Call Time Needs an Autouse Fixture That Rewires the Global AND Calls `cache_clear()` in BOTH Setup and Teardown") vs sibling aggregators mirror patterns (this lesson) vs centralized helper across callers (#110). Each body distinguishes itself.).
+
+## 103. Decision-Point Doc Prose Enumerations Must Match Implemented Code Branches
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
+
+When a decision-point record (or any spec doc) describes a rule as an enumerated list, "N-tier rule", "N-step", or cases (1)-(N), every enumerated item must map to a code branch and every code branch must appear in the enumeration. Count mismatches and missing cases survive code review because each individual bullet reads plausibly in isolation; only a branch-by-branch cross-check catches the drift.
+
+**What happened (2026-06-17):** `DP-013` in `docs/maintenance/tax/decision_points/2025.md` described the zero-basis review gate as a "Three-tier rule" and stated `cost=0 AND proceeds=0` "never flags" unconditionally. But `_build_zero_basis_review_reason` in `src/tax_reporting/application/crypto/fifo_helpers.py` implements four flagging branches, including a `cost=0 AND proceeds < 0` always-flag tier (independent of the threshold), and flags the zero-zero case when the threshold is 0. The fourth tier and the escape-hatch qualifier were both absent from the doc. The omission was found by the documentation review sub-agent, not by the implementer, the plan, or the earlier review rounds.
+
+**Required behavior:**
+1. When adding or changing a conditional branch in a rule that a decision-point doc enumerates, update the doc's enumeration (both the count and the cases) in the same change.
+2. When reviewing such a change, cross-check each doc bullet against a code branch and each code branch against a doc bullet. Do not trust a "three-tier"/"four-tier" heading or a per-bullet read; count the branches.
+3. Apply the same check to test class docstrings that summarize a gated rule (the `TestBuildZeroBasisReviewReason` summary had the same stale "three-tier" wording).
+
+**Why this is distinct from playbook lesson "Early Returns Can Skip Mandatory Sections":** that playbook lesson covers field/flag sync (a TOML boolean needs a dataclass field). This lesson covers prose-enumeration accuracy (the `.md` rule description must list every implemented branch). Both can hold simultaneously: the `.md` and `.toml` sidecars were in sync with the dataclass, yet the `.md` prose was still wrong about the branch count.
+
+**See also:** CLAUDE.md/AGENTS.md decision_points rule, `docs/maintenance/tax/decision_points/2025.md` DP-013.
+
+## 104. Standalone Withdrawals Tagged Cost/Loan Fee Represent Taxable Disposals; Distinguish from Validator/Network Fees Using TxHash Co-occurrence
+
+**Principle:** Family A (Equivalence-class coverage)
+
+
+When implementing filters to exclude transaction/network fees (Koinly tag `Cost` or `Loan fee`) from capital gains reporting, be careful not to filter out standalone withdrawals that represent taxable disposals for service consideration (e.g. card subscriptions or service fee payments). Under jurisdictions like Portugal, while utility network/gas fees are non-taxable due to lack of direct consideration (CIRS Art. 10(1)(k)), spending crypto to purchase card services or subscriptions is a taxable *alienação onerosa* (PT-C-004) and must remain in the capital gains report.
+
+**Required behavior:**
+1. Do not filter out `Cost`/`Loan fee` rows blindly.
+2. Build a frequency count of all non-empty transaction hashes (`TxHash`) from the Transaction History CSV.
+3. A `Cost` or `Loan fee` withdrawal row is only classified as a utility network/gas fee if it has a non-empty `TxHash` that appears **at least twice** in the Transaction History CSV (co-occurring with a parent transaction, such as a trade, deposit, or transfer).
+4. Standalone rows with unique or empty `TxHash` values must be kept as taxable disposals.
+
+**Shape trigger (when to suspect this family):** filtering transaction fees based on cosmetic tags; the data contains both validator gas fees and service payments; some service payments are wrongly filtered out, creating under-reporting of capital gains.
+
+**General form:** Filter logic targeting transaction costs based on broad tags must verify that the fee is a secondary utility charge co-occurring with a primary trade/transfer rather than a standalone payment. Using transaction ID/hash co-occurrence prevents broad tag matches from filtering taxable service purchases.
+
+## 105. Decouple Pipeline Stages to Keep Correction Modules Single-Responsible and Prevent Flag Clobbering
+
+**Principle:** Family A (Equivalence-class coverage)
+
+
+In multi-stage data processing pipelines, run data corrections and value recovery (which can change properties like proceeds from zero to non-zero, making parse-time flags/reasons obsolete) *before* applying manual review or auditing flags. Do not introduce complex reason-merging hacks in early processing modules to preserve flags set upstream. Keep modules focused on their single responsibility and run flagging passes last in the pipeline.
+
+**Why this is required:** If a flagging pass runs before a value-recovery pass, the recovery pass (e.g., resolving zero proceeds to non-zero) will either clobber the flag's review reason, or be forced to join it. Unconditionally joining reasons clobbers the clean output by preserving obsolete parse-time reasons (like "Zero disposal proceeds" on a row whose proceeds have now been corrected to a non-zero value), producing self-contradictory output (e.g., "Zero disposal proceeds; proceeds recovered EUR 5").
+
+**Required behavior:**
+1. Structure the processing pipeline so that all value corrections (such as OGR overrides and payment proceeds corrections) execute first.
+2. Execute auditing, manual-review flagging, and suspect-identification passes last (before aggregation and materiality filtering).
+3. This late-flagging approach guarantees that flags are set on clean, final data, eliminating the need to modify correction modules or construct fragile reason-joining strings.
+4. Keep the correction modules strictly decoupled from upstream flagging concepts, preserving single responsibility.
+
+**Shape trigger (when to suspect this family):** a pipeline correction step clobbers an upstream audit flag; you find yourself writing complex string-joining logic inside a value-correction module to preserve a reason set upstream; the joined reason text ends up stating contradictory facts (such as both zero proceeds and recovered non-zero proceeds).
+
+**Example (2026-06-23 filter-transaction-fees plan, Task 4):** In the fee-filter design, running suspect-flagging early meant that `correct_payment_proceeds` (which resolves proceeds on zero-proceeds lots) would overwrite the review reason. An attempt to join reasons unconditionally preserved obsolete parse-time "Zero disposal proceeds" reasons on corrected rows, creating contradictory output. Splitting the pass so that fee removal is early, and suspect-flagging runs late (after `payment_proceeds`, right before aggregation), kept `payment_proceeds.py` completely decoupled from fee-filtering logic and avoided reason-joining entirely.
+
+**See also:** deduplication of spot vs derivatives, tracing TH rows to OGR.
+
+## 106. Sentinel for `dict.get` Default Must Exclude All Valid Observed Data Values
+
+**Principle:** Family C (Representation: sentinel vs None vs exception)
+
+
+When using `dict.get(key, default)` to detect a missing key before passing the value to a parser, the default sentinel must be a value that **cannot appear as a valid, meaningful data value** in that CSV column. Using a value that the data source legitimately emits (e.g., `"0"` for a numeric column that may carry explicitly zero-priced data) conflates "key absent" with "key present with value zero", causing the guard `if raw == sentinel: continue` to incorrectly skip valid rows.
+
+**Why this matters:** `"0"` as a sentinel for `"Net Value (EUR)"` worked at first glance because `parse_koinly_decimal("")` returns `Decimal("0")`. But an explicit CSV cell containing `"0"` or `"0.00"` (a genuine zero-priced gas fee that IS supposed to be filtered) is also `"0"`. The guard `if not raw_val or raw_val == "0": continue` incorrectly skips that valid row, silently retaining a taxable disposal that should have been removed. The string `"MISSING"` cannot appear in a numeric column, so using it as the default unambiguously identifies "key absent from dict" without masking `"0"`.
+
+**Required pattern:**
+```python
+# WRONG: "0" is a valid observed value
+raw_val = row.get("Net Value (EUR)", "0").strip()
+if not raw_val or raw_val == "0":
+    continue  # BUG: also skips genuine zero-priced fees
+
+# CORRECT: "MISSING" cannot appear in a numeric CSV column
+raw_val = row.get("Net Value (EUR)", "MISSING").strip()
+if not raw_val or raw_val == "MISSING":
+    continue  # only skips truly absent/empty cells
+```
+
+**Corollary to AGENTS.md Rule #4:** Rule #4 says "use a type-safe sentinel (e.g. `"0"` for numeric fields) rather than `""`". That rule applies to *output/domain fields* (e.g., `CryptoReviewEntry.proceeds_eur = "0"` when absent). For `dict.get` guards where you must distinguish "key absent" from "key present with value zero", the sentinel must be a *non-representable* value (e.g., `"MISSING"`), not a valid numeric string.
+
+**Shape trigger:** a CSV parser uses `row.get(col, "0")` as a default and the column may contain a legitimate `"0"` value; a pre-parse guard checks `raw == "0"` to skip rows.
+
+**See also:** type-safe sentinels for absent optional fields, `coding_guidelines.md` #4.
+
+## 107. Outer Row-Level Exception Block Must Not Prevent a Trusted-Branch Operation From Completing
+
+**Principle:** Family B (Fail-safe direction and authority hierarchy)
+
+
+When a row-processing loop uses an outer `try...except` block to catch per-row errors and skip malformed rows, any operation inside that block that is governed by a higher-authority signal (e.g., an explicit user tag that overrides the fiat value) must be wrapped in a **separate nested `try...except`** for its fallible sub-operations. If the trusted operation depends on a non-authoritative field (like a fiat price cell) that may be corrupted, a `ValueError` from that sub-operation will propagate into the outer except and skip the entire row, including the trusted operation that should have executed regardless.
+
+**Required pattern:**
+```python
+for row in rows:
+    try:
+        label = row.get("Label", "")
+        if label in TRUSTED_TAGS:
+            # fiat value is NOT the authority -- use nested except so corruption
+            # does not abort the trusted-branch FeeThEvent emission
+            try:
+                net_eur = parse_koinly_decimal(row.get("Net Value (EUR)", ""))
+            except ValueError:
+                logger.warning("Corrupted fiat on trusted-tag row %s; defaulting to 0", row)
+                net_eur = Decimal("0")
+            emit_fee_event(...)   # always emits, even if fiat was corrupted
+        else:
+            # non-trusted branch: parse fiat normally; ValueError propagates to outer
+            raw_val = row.get("Net Value (EUR)", "MISSING").strip()
+            if not raw_val or raw_val == "MISSING":
+                continue
+            net_eur = parse_koinly_decimal(raw_val)  # ValueError -> outer except -> skip row
+            ...
+    except (ValueError, KeyError, InvalidOperation):
+        logger.warning("Skipping malformed row: %s", row)
+```
+
+**Shape trigger:** an outer row-level `try...except` exists; a branch inside that block has a "trusted" path (e.g., the tag is the authority) that must complete even if a secondary field raises; the plan says "corrupted data must still raise" but also "the trusted branch still emits the event" -- these two requirements are contradictory without a nested except.
+
+**Why this matters:** Without the inner except, a corrupted fiat string on a tagged `Cost` row causes the outer except to skip the whole row, silently retaining a legitimately-tagged gas fee disposal in the capital gains output (silent over-tax error).
+
+**See also:** catch specific exception types, `coding_guidelines.md` #5 (warn-and-skip for row-level errors).
+
+## 108. Use `get_args(hint)` Not `get_origin(hint)` for Precise Generic Type Dispatch in Config Loaders
+
+**Principle:** Family D (Single source of truth / precision)
+
+
+When a config loader needs to discriminate `dict[str, Decimal]` fields from `dict[str, str]` or other dict-typed fields using Python's `typing` reflection, `get_origin(hint) is dict` matches ANY `dict[K, V]` annotation regardless of its type arguments. If a future field of a different dict type (e.g., `dict[str, str]`) is added to the config dataclass, the loader will incorrectly attempt to convert its values to `Decimal`, crashing or silently producing wrong types.
+
+**Use `get_args(hint) == (str, Decimal)` for exact type-argument matching:**
+```python
+from typing import get_args, get_type_hints
+from decimal import Decimal
+
+hints = get_type_hints(TaxJurisdictionConfig)
+_KNOWN_DICT_POINTS = {
+    name for name, hint in hints.items()
+    if get_args(hint) == (str, Decimal)  # precise: only dict[str, Decimal]
+}
+# _KNOWN_BOOL_FLAGS uses: hint is bool
+```
+
+**Corollary:** When the conversion step stores the result back into the dict (which it must -- see playbook lesson "A Review Loop Whose Finding Count Is Non-Monotonic Signals an Over-Engineered Mechanism - Cut It, Do Not Patch Its Edge Cases"), explicitly overwrite with the converted values: `flags[flag_name] = {k: Decimal(str(v)) for k, v in flag_value.items()}`. Merely instantiating Decimals during validation without storing them leaves raw TOML floats in the dict.
+
+**Shape trigger:** a config loader type-dispatches on `get_origin(hint) is dict`; a new `dict[K, V]` field with a different value type is added; the loader silently applies the wrong conversion.
+
+**See also:** decision-point config flag type dispatch, multi-type config loading requires explicit type-dispatching.
+
+## 109. Matching Event Fields Must Mirror the Normalization Applied to Domain Entry Fields
+
+**Principle:** Family D (Single source of truth / consistency)
+
+
+When constructing "event" objects whose fields will be matched against "domain entry" objects via a tuple key (e.g., `(timestamp, asset, wallet, amount)`), every field in the event must use the **same normalization** as the corresponding field in the domain entry. Normalizing one side (e.g., stripping " (Spot)" from the wallet name to produce "ByBit") but not the other (which retains the raw "Bybit (Spot)") causes the exact-match key to never equal, silently failing ALL matching for platforms where the raw name differs from the normalized name.
+
+**Required pattern:**
+```python
+# WRONG: normalize_platform_name strips suffixes the CG lot still carries
+event = FeeThEvent(wallet=normalize_platform_name(row.get("Sending Wallet", "")), ...)
+
+# CORRECT: use the raw string to match the CG lot's raw wallet
+event = FeeThEvent(wallet=row.get("Sending Wallet", "").strip(), ...)
+```
+
+**Verification step:** when introducing a new event-vs-domain matcher, grep for how the domain entry's wallet field is populated; if it stores the raw CSV value, the event must too.
+
+**Shape trigger:** a shared matcher is extracted that uses a tuple key to match events against domain entries; the event scanner applies a normalization function to one field; tests using simple fixture data pass because all wallets are plain strings, but production data (with e.g. Koinly's "(Spot)" suffix) silently fails to match.
+
+**Why this matters:** The failure is silent: no error is raised, no warning is emitted, the CG lot simply remains in the output uncorrected. With a 100% miss rate for affected platforms, the over-tax impact is proportional to the number of fee disposals those platforms have.
+
+**See also:** duplicate key handling in index builders, collision safety checks in matchers.
+
+## 110. Aggregate Fragmented Lots Before Evaluating Ceilings
+
+**Principle:** Family E (Match and aggregate first, calculate second)
+
+
+When evaluating a value ceiling/threshold against an event that has been split into multiple fragmented lots (e.g., FIFO matching), checking the threshold against individual lot proceeds defeats the ceiling. Always group the matched lots by the underlying event and evaluate the sum of their proceeds against the ceiling, rather than evaluating lots independently.
+
+## 111. DTA Suspension and NHR Blacklist Distinctions
+
+**Principle:** Family H (Verify the real thing, not the abstraction)
+
+
+When assessing NHR exemptions for foreign income, strictly rely on Portugal's domestic tax haven blacklist (Portaria n.º 150/2004) rather than international or EU non-cooperative lists.
+
+**Trigger:** A Double Taxation Agreement (DTA) is suspended, or a country is added to an EU/international blacklist, and you need to determine if NHR exemption still applies.
+
+**Rule:** 
+- If a DTA is suspended, the Portuguese AT falls back to domestic law (CIRS Art. 81(5)). Foreign rental income remains exempt under NHR if it may be taxed in the source country under the OECD Model AND the source country is not on the Portuguese blacklist (Portaria n.º 150/2004).
+- Do not assume an EU blacklist addition automatically nullifies Portuguese NHR exemptions; Portugal's domestic Portaria determines the legal status.
+
+**Example (2026-06-25 Russia DTA suspension):** Russia was added to the EU non-cooperative list in 2023, and it suspended most DTA articles with Portugal. However, because Russia was not added to Portugal's domestic Portaria 150/2004 list, the NHR fallback rule (CIRS Art. 81(5)) still legally exempts Russian rental income in Portugal.
+
+---

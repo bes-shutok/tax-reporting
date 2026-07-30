@@ -717,10 +717,10 @@ class TestFifoPlaceholderWhenPoolExhausted:
         assert r.review_reason is not None
         assert "pool exhausted" in r.review_reason.lower()
         # The per-row WARNING was downgraded to DEBUG (pattern F) and grouped into
-        # one aggregate WARNING emitted by _rebuild_fifo_for_loan_affected_assets;
+        # one aggregate INFO emitted by _rebuild_fifo_for_loan_affected_assets;
         # calling compute_fifo_for_asset directly bypasses that aggregate. The
         # review_reason field assertion above is the substantive audit check
-        # (Design Invariant #4). The aggregate WARNING is covered by TestFifoMatching.
+        # (Design Invariant #4). The aggregate INFO is covered by TestFifoMatching.
 
 
 class TestFifoPartialSellPoolExhausted:
@@ -733,7 +733,7 @@ class TestFifoPartialSellPoolExhausted:
           1. Matched portion (5 units): cost = 500, proceeds = 125, gain = −375
           2. Placeholder portion (3 units, pool exhausted): cost = 0, proceeds = 75, gain = 75
         Both must appear in the output. The per-row pool-exhaustion warning was
-        downgraded to DEBUG and grouped into one aggregate WARNING (pattern F);
+        downgraded to DEBUG and grouped into one aggregate INFO (pattern F);
         the review_reason field assertion below is the substantive audit check.
         """
         acquisitions = [_acq(amount="5", cost_basis_eur="100")]  # cost_basis_eur is total (EUR 100)
@@ -1118,7 +1118,7 @@ class TestResolveCrossAssetAggregateSummary:
     ) -> None:
         """Two cross-asset dependency cycles each produce 1 unresolved + 1 zero-carryover
         deferred acquisition; ``_rebuild_fifo_for_loan_affected_assets`` emits exactly ONE
-        WARNING matching ``"N cross-asset deferred acquisition(s) flagged"`` that names all
+        INFO matching ``"N cross-asset deferred acquisition(s) flagged"`` that names all
         present sub-causes (unresolved, zero-carryover) with counts, AND the per-row detail
         stays reachable at DEBUG.
 
@@ -1227,7 +1227,7 @@ class TestResolveCrossAssetAggregateSummary:
         (``_rebuild_fifo_for_loan_affected_assets`` -> ``_process_single_asset_fifo`` ->
         ``resolve_cross_asset_exchanges(flag_counts=cross_asset_flag_counts)`` ->
         ``_resolve_single_acquisition._bump(...)``) and asserts both keys appear in the single
-        aggregate WARNING's per-cause breakdown.
+        aggregate INFO's per-cause breakdown.
 
         Fixture (loan_affected = {LBTC, SUI, ETH}):
         - LBTC buy 1.0 (FIFO pool seeded with 1 LBTC); SUI buy 1.0 (FIFO pool seeded with 1 SUI).
@@ -1365,7 +1365,7 @@ class TestResolveIntraAssetTransfersAggregateSummary:
     ) -> None:
         """Two same-asset cross-platform transfer cycles each produce 1 unresolved +
         1 requires-review transfer_in_deferred acquisition; ``_rebuild_fifo_for_loan_affected_assets``
-        emits exactly ONE WARNING matching ``"N transfer carry-over acquisition(s) flagged"``
+        emits exactly ONE INFO matching ``"N transfer carry-over acquisition(s) flagged"``
         that names all present sub-causes with counts, AND the per-row detail stays
         reachable at DEBUG.
 
@@ -1469,16 +1469,17 @@ class TestResolveIntraAssetTransfersAggregateSummary:
     def test_jk_aggregates_not_emitted_when_no_cross_asset_or_transfer_flags(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Neither the J nor the K aggregate WARNING fires when a loan-affected rebuild
+        """Neither the J nor the K aggregate INFO fires when a loan-affected rebuild
         produces no cross-asset deferred acquisitions and no intra-asset transfer flags
         (r3 R3-3 negative guard).
 
         Both the J and K aggregates share the ``_emit_flagged_summary`` guard
-        (``fifo_helpers.py:244`` ``if not counts: return``). The positive tests above
-        cover the non-empty path for each; this test pins the empty path for BOTH in a
-        single rebuild-driven call. Without it, removing the ``if not counts: return``
-        guard leaves all 100 crypto_fifo tests green (verified by mutation in the r3
-        review), silently emitting noisy ``0 ... flagged ()`` WARNINGs on every run.
+        (``if not counts: return`` inside ``_emit_flagged_summary`` in
+        ``crypto/fifo_helpers.py``). The positive tests above cover the non-empty path
+        for each; this test pins the empty path for BOTH in a single rebuild-driven
+        call. Without it, removing the ``if not counts: return`` guard leaves all 100
+        crypto_fifo tests green (verified by mutation in the r3 review), silently
+        emitting noisy ``0 ... flagged ()`` INFOs on every run.
 
         Fixture: a single loan-affected asset (WBTC) bought then sold on one platform
         (Kraken). No cross-asset exchange row and no cross-platform transfer row means
@@ -2076,21 +2077,26 @@ class TestCryptoFifoParsing:
 
     The per-row WARNINGs in ``_dedup_by_tx_key`` (``parsing.py:303`` acquisitions
     and ``:324`` consumptions) are downgraded to DEBUG and grouped into ONE
-    aggregate WARNING summary at the end of ``_dedup_by_tx_key``. Design
-    Invariant #3 (per-row detail preserved at DEBUG in the file) and #4
+    aggregate summary at the end of ``_dedup_by_tx_key``. Plan 2026-07-25 Task 3
+    (W2) demoted that aggregate from WARNING to INFO and added per-row
+    ``CryptoReviewEntry`` rows to the extract (governing principle: data issues
+    live in the user-facing sheet, not the console). Design Invariant #3
+    (per-row detail preserved at DEBUG in the file) and #4
     (``parse_failures_by_asset`` content unchanged) must hold.
     """
 
     def test_duplicate_tx_key_emits_single_summary(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-        """Three acquisition rows sharing the same tx_key/source_type emit ONE aggregate WARNING + 3 DEBUG.
+        """Three acquisition rows sharing the same tx_key/source_type emit ONE aggregate INFO + 3 DEBUG.
 
         Given 3 buy rows for WBTC all sharing TxHash ``"dup_acq"`` (same
         source_type ``"buy"``), ``_dedup_by_tx_key`` keeps the first and drops
         the next two. The per-row drop emissions must be at DEBUG (3 records);
-        exactly ONE aggregate WARNING matching
+        exactly ONE aggregate INFO matching
         ``"Dropped %d duplicate-tx_key acquisition(s) and %d consumption(s)"``
-        must be emitted. ``parse_failures_by_asset`` still records BOTH dropped
-        row indices for WBTC (Design Invariant #4 unchanged).
+        must be emitted (Plan 2026-07-25 Task 3 demoted WARNING → INFO; Lesson
+        #69: caplog uses DEBUG level so INFO records are captured).
+        ``parse_failures_by_asset`` still records BOTH dropped row indices for
+        WBTC (Design Invariant #4 unchanged).
         """
         # 3 buy rows for WBTC all sharing TxHash "dup_acq"; rows 2 and 3 are dropped.
         dup_buy = (
@@ -2116,25 +2122,36 @@ class TestCryptoFifoParsing:
 
         # The parsing module's logger name is the fully-qualified module path.
         parsing_logger = "tax_reporting.application.crypto_fifo.parsing"
+        info_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.INFO and rec.name == parsing_logger
+        ]
+
+        # Exactly ONE aggregate INFO matching the prescribed summary substring.
+        aggregate_infos = [
+            m for m in info_messages
+            if "Dropped" in m and "duplicate-tx_key acquisition(s)" in m and "consumption(s)" in m
+        ]
+        assert len(aggregate_infos) == 1, (
+            f"Expected exactly ONE aggregate duplicate-tx_key INFO, got {aggregate_infos}"
+        )
+        # The summary names the count of dropped acquisitions (2).
+        assert "Dropped 2 duplicate-tx_key acquisition(s)" in aggregate_infos[0]
+        # And zero consumptions (only acquisitions duplicated in this fixture).
+        assert "0 consumption(s)" in aggregate_infos[0]
+
+        # The duplicate-tx_key aggregate must NOT appear at WARNING (demoted to INFO by Task 3).
         warning_messages = [
             rec.getMessage()
             for rec in caplog.records
             if rec.levelno == logging.WARNING and rec.name == parsing_logger
         ]
-
-        # Exactly ONE aggregate WARNING matching the prescribed summary substring.
-        aggregate_warnings = [
-            m for m in warning_messages
-            if "Dropped" in m and "duplicate-tx_key acquisition(s)" in m and "consumption(s)" in m
-        ]
-        assert len(aggregate_warnings) == 1, (
-            f"Expected exactly ONE aggregate duplicate-tx_key WARNING, got {aggregate_warnings}"
+        aggregate_warnings = [m for m in warning_messages if "duplicate-tx_key" in m]
+        assert aggregate_warnings == [], (
+            f"duplicate-tx_key aggregate must NOT appear at WARNING (demoted to INFO); "
+            f"got {aggregate_warnings}"
         )
-        # The summary names the count of dropped acquisitions (2).
-        assert "Dropped 2 duplicate-tx_key acquisition(s)" in aggregate_warnings[0]
-        # And zero consumptions (only acquisitions duplicated in this fixture).
-        assert "0 consumption(s)" in aggregate_warnings[0]
-
         # The legacy per-row WARNING substrings must NOT appear at WARNING level.
         legacy_warnings = [m for m in warning_messages if "Duplicate tx_key" in m]
         assert legacy_warnings == [], (
@@ -2153,19 +2170,20 @@ class TestCryptoFifoParsing:
         )
 
     def test_zero_net_value_deposit_summary(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-        """Three zero-Net-Value crypto_deposit rows across 2 assets emit ONE aggregate WARNING + 3 DEBUG.
+        """Three zero-Net-Value crypto_deposit rows across 2 assets emit ONE aggregate INFO + 3 DEBUG.
 
-        Plan 2026-07-21 Task 8 / Pattern E: the per-row WARNING in
+        Plan 2026-07-25 Task 4 / W3: the per-row WARNING in
         ``_classify_deposit_row`` (``parsing.py`` zero Net Value branch) is
-        downgraded to DEBUG and grouped into ONE aggregate WARNING summary
-        emitted at the end of ``_classify_rows_for_loan_affected_assets``.
-        Design Invariant #3 (per-row detail preserved at DEBUG in the file) and
-        #4 (the ``deposit_review_reason`` field on the acquisition is UNCHANGED)
-        must hold.
+        downgraded to DEBUG and grouped into ONE aggregate INFO summary
+        emitted at the end of ``_classify_rows_for_loan_affected_assets``
+        (the console aggregate was demoted WARNING -> INFO; per-row detail is
+        ALSO surfaced as ``CryptoReviewEntry`` rows). Design Invariant #3
+        (per-row detail preserved at DEBUG in the file) and #4 (the
+        ``deposit_review_reason`` field on the acquisition is UNCHANGED) hold.
 
         Given 3 crypto_deposit rows with zero Net Value (2 WBTC + 1 SUI), the
         per-row emissions must be at DEBUG (3 records); exactly ONE aggregate
-        WARNING matching ``"Flagged %d zero-Net-Value crypto_deposit(s) for
+        INFO matching ``"Flagged %d zero-Net-Value crypto_deposit(s) for
         review"`` must be emitted.
         """
         # crypto_deposit row template with zero Net Value (EUR) at field index 14.
@@ -2212,32 +2230,45 @@ class TestCryptoFifoParsing:
 
         # The parsing module's logger name is the fully-qualified module path.
         parsing_logger = "tax_reporting.application.crypto_fifo.parsing"
+        info_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.INFO and rec.name == parsing_logger
+        ]
+
+        # Exactly ONE aggregate INFO matching the prescribed summary substring
+        # (demoted from WARNING to INFO in Plan 2026-07-25 Task 4 / W3; Lesson
+        # #69: caplog uses DEBUG level so INFO records are captured).
+        aggregate_infos = [
+            m for m in info_messages
+            if "Flagged" in m and "zero-Net-Value crypto_deposit(s) for review" in m
+        ]
+        assert len(aggregate_infos) == 1, (
+            f"Expected exactly ONE aggregate zero-Net-Value INFO, got {aggregate_infos}"
+        )
+        # The summary names the total count of flagged deposits (3 across WBTC+SUI).
+        assert "Flagged 3 zero-Net-Value crypto_deposit(s) for review" in aggregate_infos[0], (
+            f"Aggregate INFO must name 3 flagged deposits; got {aggregate_infos[0]}"
+        )
+        # The summary names the per-asset breakdown (SUI: 1, WBTC: 2 sorted alphabetically).
+        assert "SUI: 1" in aggregate_infos[0], (
+            f"Aggregate INFO must name SUI: 1; got {aggregate_infos[0]}"
+        )
+        assert "WBTC: 2" in aggregate_infos[0], (
+            f"Aggregate INFO must name WBTC: 2; got {aggregate_infos[0]}"
+        )
+
+        # The zero-Net-Value aggregate must NOT appear at WARNING (demoted to INFO by Task 4).
         warning_messages = [
             rec.getMessage()
             for rec in caplog.records
             if rec.levelno == logging.WARNING and rec.name == parsing_logger
         ]
-
-        # Exactly ONE aggregate WARNING matching the prescribed summary substring.
-        aggregate_warnings = [
-            m for m in warning_messages
-            if "Flagged" in m and "zero-Net-Value crypto_deposit(s) for review" in m
-        ]
-        assert len(aggregate_warnings) == 1, (
-            f"Expected exactly ONE aggregate zero-Net-Value WARNING, got {aggregate_warnings}"
+        aggregate_warnings = [m for m in warning_messages if "zero-Net-Value" in m]
+        assert aggregate_warnings == [], (
+            f"zero-Net-Value aggregate must NOT appear at WARNING (demoted to INFO); "
+            f"got {aggregate_warnings}"
         )
-        # The summary names the total count of flagged deposits (3 across WBTC+SUI).
-        assert "Flagged 3 zero-Net-Value crypto_deposit(s) for review" in aggregate_warnings[0], (
-            f"Aggregate WARNING must name 3 flagged deposits; got {aggregate_warnings[0]}"
-        )
-        # The summary names the per-asset breakdown (SUI: 1, WBTC: 2 sorted alphabetically).
-        assert "SUI: 1" in aggregate_warnings[0], (
-            f"Aggregate WARNING must name SUI: 1; got {aggregate_warnings[0]}"
-        )
-        assert "WBTC: 2" in aggregate_warnings[0], (
-            f"Aggregate WARNING must name WBTC: 2; got {aggregate_warnings[0]}"
-        )
-
         # The legacy per-row WARNING substrings must NOT appear at WARNING level.
         legacy_warnings = [m for m in warning_messages if "zero Net Value" in m and "cost basis may be missing" in m]
         assert legacy_warnings == [], (
@@ -2766,7 +2797,7 @@ class TestConsumeAgainstPoolInplace:
         """Taxable consumption with empty pool yields a zero-cost placeholder flagged for review.
 
         The per-row pool-exhaustion warning was downgraded to DEBUG and grouped into
-        one aggregate WARNING emitted by ``_rebuild_fifo_for_loan_affected_assets``
+        one aggregate INFO emitted by ``_rebuild_fifo_for_loan_affected_assets``
         (pattern F); calling ``_consume_against_pool_inplace`` directly bypasses that
         aggregate. The placeholder realization assertions below (zero cost,
         review_required, populated review_reason) are the substantive audit checks
@@ -2793,7 +2824,7 @@ class TestConsumeAgainstPoolInplace:
         """Sell 8 when pool has only 5: 5-lot realization + 3-lot zero-cost placeholder, both in output.
 
         The per-row pool-exhaustion warning was downgraded to DEBUG and grouped into
-        one aggregate WARNING (pattern F); calling ``_consume_against_pool_inplace``
+        one aggregate INFO (pattern F); calling ``_consume_against_pool_inplace``
         directly bypasses that aggregate. The matched/placeholder realization
         assertions below are the substantive checks (Design Invariant #4).
         """
@@ -2852,13 +2883,13 @@ class TestConsumeAgainstPoolInplace:
         """Non-taxable consumption that exhausts the pool marks the tx_key as partial.
 
         The per-row emission was downgraded to DEBUG (pattern G) and grouped into a
-        per-asset aggregate WARNING emitted by ``compute_fifo_for_asset``. Calling
+        per-asset aggregate INFO emitted by ``compute_fifo_for_asset``. Calling
         ``_consume_against_pool_inplace`` directly bypasses that aggregate, so the
         only substantive assertion left here is the ``partial_tx_keys`` membership
         check (Design Invariant #4: the audit signal is preserved via the review
         list flag, not the per-row log line). See the companion
         ``test_non_taxable_pool_exhausted_emits_aggregate_via_compute_fifo`` for the
-        aggregate WARNING assertion through the public entry point.
+        aggregate INFO assertion through the public entry point.
         """
         from tax_reporting.application.crypto_fifo.matching import _consume_against_pool_inplace
 
@@ -3003,7 +3034,7 @@ class TestFifoMatching:
     ``_consume_against_pool_inplace`` is reached by TWO taxable sub-branches
     (pool-truly-exhausted AND no-acquisition-at-date). Pattern F covers both:
     the shared emission is split into two independent ``logger.debug(...)`` calls
-    (one per branch), and the audit signal is preserved via ONE aggregate WARNING
+    (one per branch), and the audit signal is preserved via ONE aggregate INFO
     emitted by ``_rebuild_fifo_for_loan_affected_assets`` plus the unchanged
     ``CryptoFifoRealization(review_required=True)`` + ``review_reason`` field.
     """
@@ -3012,11 +3043,11 @@ class TestFifoMatching:
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Two (asset, platform) pairs each producing 1 unmatched taxable disposal
-        emit ONE aggregate WARNING plus 2 per-row DEBUG records.
+        emit ONE aggregate INFO plus 2 per-row DEBUG records.
 
         Given WBTC sold on Kraken with no acquisition and SUI sold on ByBit with
         no acquisition, ``_rebuild_fifo_for_loan_affected_assets`` sums the
-        per-result ``unmatched_taxable_count`` and emits exactly ONE WARNING
+        per-result ``unmatched_taxable_count`` and emits exactly ONE INFO record
         matching ``"%d taxable disposal(s) had no acquisition at or before the
         disposal date"``. Each per-row detail emission is at DEBUG (2 records,
         one per branch). Each ``CryptoFifoRealization(review_required=True)``
@@ -3076,16 +3107,18 @@ class TestFifoMatching:
         # The matching module emits the per-row DEBUG records.
         matching_logger = "tax_reporting.application.crypto_fifo.matching"
 
-        # Exactly ONE aggregate WARNING matching the prescribed summary substring.
+        # Exactly ONE aggregate INFO matching the prescribed summary substring
+        # (W4 demotion: this aggregate was demoted from WARNING to INFO; the per-row
+        # ``CryptoFifoRealization(review_required=True)`` surface is unchanged).
         aggregate_warnings = [
             rec.getMessage()
             for rec in caplog.records
-            if rec.levelno == logging.WARNING
+            if rec.levelno == logging.INFO
             and rec.name == helpers_logger
             and "taxable disposal(s) had no acquisition at or before the disposal date" in rec.getMessage()
         ]
         assert len(aggregate_warnings) == 1, (
-            f"Expected exactly ONE aggregate WARNING, got {aggregate_warnings}"
+            f"Expected exactly ONE aggregate INFO, got {aggregate_warnings}"
         )
         # The summary names the total count of unmatched taxable disposals (2).
         assert "2 taxable disposal(s) had no acquisition at or before the disposal date" in aggregate_warnings[0]
@@ -3118,7 +3151,7 @@ class TestFifoMatching:
         sell) so ``pool`` is non-empty but ``(acq.date, row_index) > (con.date, row_index)``
         breaks the FIFO loop at ``matching.py:255`` with ``remaining > ZERO``, taking the
         ``else`` branch at ``matching.py:299`` ("No acquisition available at or before
-        disposal date"). The shared counter increment and the aggregate WARNING still fire
+        disposal date"). The shared counter increment and the aggregate INFO still fire
         (Design Invariant #8: both sub-branches feed ONE aggregate).
         """
         from tax_reporting.application.crypto.fifo_helpers import _rebuild_fifo_for_loan_affected_assets
@@ -3168,19 +3201,20 @@ class TestFifoMatching:
             f"Expected else-branch review_reason; got {entry.review_reason}"
         )
 
-        # The fifo_helpers aggregate WARNING still fires for the else-branch sub-total.
+        # The fifo_helpers aggregate INFO still fires for the else-branch sub-total
+        # (W4 demotion: WARNING -> INFO; the per-row review surface is unchanged).
         helpers_logger = "tax_reporting.application.crypto.fifo_helpers"
         matching_logger = "tax_reporting.application.crypto_fifo.matching"
 
         aggregate_warnings = [
             rec.getMessage()
             for rec in caplog.records
-            if rec.levelno == logging.WARNING
+            if rec.levelno == logging.INFO
             and rec.name == helpers_logger
             and "taxable disposal(s) had no acquisition at or before the disposal date" in rec.getMessage()
         ]
         assert len(aggregate_warnings) == 1, (
-            f"Expected exactly ONE aggregate WARNING, got {aggregate_warnings}"
+            f"Expected exactly ONE aggregate INFO, got {aggregate_warnings}"
         )
         assert "1 taxable disposal(s) had no acquisition at or before the disposal date" in aggregate_warnings[0]
 
@@ -3209,6 +3243,105 @@ class TestFifoMatching:
             f"{[r.getMessage() for r in pool_exhausted_debug]}"
         )
 
+    def test_taxable_pool_exhausted_emits_info_not_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """W4 demotion characterization: a taxable disposal whose FIFO pool is fully
+        exhausted (no acquisition at or before the disposal date) emits exactly ONE
+        aggregate log record at INFO level (NOT WARNING) containing the substring
+        "taxable disposal(s) had no acquisition", and ZERO records at WARNING level
+        matching that substring.
+
+        Reuses the same WBTC loan-then-sell fixture as the sibling aggregate tests
+        so the only behavioral assertion exercised here is the log LEVEL, not the
+        FIFO math.
+        """
+        from tax_reporting.application.crypto.fifo_helpers import _rebuild_fifo_for_loan_affected_assets
+        from tax_reporting.application.crypto.treatment_resolver import TreatmentConfig
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        wbtc_loan = ",".join([
+            "2025-01-01 09:00:00 UTC", "exchange", "loan", "", "", "", "",
+            "Kraken", "0.01", "WBTC", "400", "", "", "", "400", "", "", "", "tx_wbtc_loan", "",
+        ])
+        wbtc_sell = ",".join([
+            "2025-06-15 10:00:00 UTC", "sell", "", "Kraken", "1.0", "WBTC", "",
+            "", "", "", "", "", "", "", "1500", "", "", "", "tx_wbtc_sell", "",
+        ])
+        rows = [wbtc_loan, wbtc_sell]
+        th_path = _write_th_csv(tmp_path, rows)
+        loan_affected = frozenset({"WBTC"})
+        resolver = TokenOriginResolver(th_path, transactions=[], config=TreatmentConfig())
+
+        with caplog.at_level(logging.INFO):
+            _ = _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        helpers_logger = "tax_reporting.application.crypto.fifo_helpers"
+        aggregate_info = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.INFO
+            and rec.name == helpers_logger
+            and "taxable disposal(s) had no acquisition" in rec.getMessage()
+        ]
+        aggregate_warning = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and rec.name == helpers_logger
+            and "taxable disposal(s) had no acquisition" in rec.getMessage()
+        ]
+        assert len(aggregate_info) == 1, (
+            f"Expected exactly ONE aggregate INFO record, got {aggregate_info}"
+        )
+        assert len(aggregate_warning) == 0, (
+            f"Expected ZERO aggregate WARNING records after W4 demotion, got {aggregate_warning}"
+        )
+
+    def test_taxable_pool_exhausted_still_creates_review_realization(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """W4 characterization: the per-row review surface is unchanged by the level
+        demotion. A taxable disposal with an exhausted FIFO pool still produces a
+        ``CryptoFifoRealization`` with ``review_required=True`` and a
+        ``review_reason`` naming pool exhaustion. The pool-truly-exhausted variant
+        emits "FIFO pool exhausted: ... zero cost basis" (matching.py:368-369); the
+        earliest-future-lot variant emits "No acquisition available at or before
+        disposal date ..." (matching.py:381-385). Both set ``review_required=True``.
+        This test seeds the pool-truly-exhausted branch.
+        """
+        from tax_reporting.application.crypto.fifo_helpers import _rebuild_fifo_for_loan_affected_assets
+        from tax_reporting.application.crypto.treatment_resolver import TreatmentConfig
+        from tax_reporting.application.token_origin import TokenOriginResolver
+
+        wbtc_loan = ",".join([
+            "2025-01-01 09:00:00 UTC", "exchange", "loan", "", "", "", "",
+            "Kraken", "0.01", "WBTC", "400", "", "", "", "400", "", "", "", "tx_wbtc_loan", "",
+        ])
+        wbtc_sell = ",".join([
+            "2025-06-15 10:00:00 UTC", "sell", "", "Kraken", "1.0", "WBTC", "",
+            "", "", "", "", "", "", "", "1500", "", "", "", "tx_wbtc_sell", "",
+        ])
+        rows = [wbtc_loan, wbtc_sell]
+        th_path = _write_th_csv(tmp_path, rows)
+        loan_affected = frozenset({"WBTC"})
+        resolver = TokenOriginResolver(th_path, transactions=[], config=TreatmentConfig())
+
+        with caplog.at_level(logging.INFO):
+            entries, _ = _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
+
+        assert len(entries) == 1, (
+            f"Expected 1 placeholder realization, got {len(entries)}"
+        )
+        entry = entries[0]
+        assert entry.review_required is True, (
+            f"review_required must remain True after W4 demotion; got {entry.review_required}"
+        )
+        assert entry.review_reason is not None
+        assert "FIFO pool exhausted" in entry.review_reason, (
+            f"Expected 'FIFO pool exhausted' in review_reason; got {entry.review_reason}"
+        )
+
 
 class TestFifoRebuildCallerFlush:
     """Pattern B caller-level flush wiring for the FIFO-rebuild call site (r3 review F1).
@@ -3232,14 +3365,15 @@ class TestFifoRebuildCallerFlush:
 
         Given a resolver whose ``_disagreements`` Counter already holds one
         disagreement key, running ``_rebuild_fifo_for_loan_affected_assets`` flushes
-        it: exactly ONE WARNING matching ``"TokenOriginResolver (FIFO rebuild)"``
+        it: exactly ONE INFO matching ``"TokenOriginResolver (FIFO rebuild)"``
         fires at the caller (emitted by ``log_and_reset_disagreements`` via
         ``logging.getLogger(__name__)`` in ``token_origin.py``), and
-        ``resolver._disagreements`` is empty after the call.
+        ``resolver._disagreements`` is empty after the call. The flush was demoted
+        from WARNING to INFO by Plan 2026-07-25 Task 8 (W1/W5 relocation).
 
         Mutation pin (r3 F1): deleting the
         ``origin_resolver.log_and_reset_disagreements(scope="FIFO rebuild")`` call at
-        ``fifo_helpers.py:405`` leaves this test RED (no caller-level WARNING,
+        ``fifo_helpers.py:405`` leaves this test RED (no caller-level INFO,
         Counter still non-empty).
         """
         from collections import Counter
@@ -3272,7 +3406,8 @@ class TestFifoRebuildCallerFlush:
 
         # caplog on the token_origin module logger (the flush emitter). Lesson #68:
         # filter rec.name on the emitting module's fully-qualified __name__.
-        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.token_origin"):
+        # Plan 2026-07-25 Task 8 demoted the flush WARNING -> INFO; caplog at INFO.
+        with caplog.at_level(logging.INFO, logger="tax_reporting.application.token_origin"):
             entries, _ = _rebuild_fifo_for_loan_affected_assets(th_path, resolver, loan_affected)
 
         # The realization-conversion loop ran (one unmatched taxable disposal).
@@ -3280,16 +3415,16 @@ class TestFifoRebuildCallerFlush:
             f"Expected 1 placeholder realization, got {len(entries)}"
         )
 
-        # (a) Exactly ONE WARNING matching the FIFO-rebuild caller scope fires.
+        # (a) Exactly ONE INFO matching the FIFO-rebuild caller scope fires.
         caller_flush_warnings = [
             rec.getMessage()
             for rec in caplog.records
-            if rec.levelno == logging.WARNING
+            if rec.levelno == logging.INFO
             and rec.name == "tax_reporting.application.token_origin"
             and "TokenOriginResolver (FIFO rebuild)" in rec.getMessage()
         ]
         assert len(caller_flush_warnings) == 1, (
-            f"Expected exactly ONE caller-flush WARNING, got {caller_flush_warnings}"
+            f"Expected exactly ONE caller-flush INFO, got {caller_flush_warnings}"
         )
         assert "1 origin-resolution disagreement(s) across 1 distinct" in caller_flush_warnings[0]
 
@@ -3307,14 +3442,15 @@ class TestFifoRebuildCallerFlush:
         accumulates disagreements inside the realization-conversion loop, and
         ``CryptoCapitalGainEntry``'s ``__post_init__`` validators can raise
         ``ValueError`` mid-loop. Without the ``finally``, an exception propagates
-        before the flush, silently dropping the FIFO-rebuild-stage aggregate WARNING
+        before the flush, silently dropping the FIFO-rebuild-stage aggregate INFO
         and leaving the shared Counter with unflushed state. Forcing a mid-loop
         exception (patching ``CryptoCapitalGainEntry`` to raise) must still emit the
-        caller flush WARNING.
+        caller flush INFO.
 
         Mutation pin (r3 F1 / r2 F6): reverting the ``finally`` to a plain trailing
-        call (or deleting the flush) leaves this test RED (no caller-level WARNING,
-        Counter still non-empty).
+        call (or deleting the flush) leaves this test RED (no caller-level INFO,
+        Counter still non-empty). The flush was demoted from WARNING to INFO by
+        Plan 2026-07-25 Task 8 (W1/W5 relocation).
         """
         from collections import Counter
         from unittest.mock import patch
@@ -3344,7 +3480,7 @@ class TestFifoRebuildCallerFlush:
         # simulating a __post_init__ validation failure during the realization-conversion
         # loop. The function's ``finally`` block must still flush the resolver.
         with (
-            caplog.at_level(logging.WARNING, logger="tax_reporting.application.token_origin"),
+            caplog.at_level(logging.INFO, logger="tax_reporting.application.token_origin"),
             patch.object(
                 fifo_helpers_module,
                 "CryptoCapitalGainEntry",
@@ -3358,12 +3494,12 @@ class TestFifoRebuildCallerFlush:
         caller_flush_warnings = [
             rec.getMessage()
             for rec in caplog.records
-            if rec.levelno == logging.WARNING
+            if rec.levelno == logging.INFO
             and rec.name == "tax_reporting.application.token_origin"
             and "TokenOriginResolver (FIFO rebuild)" in rec.getMessage()
         ]
         assert len(caller_flush_warnings) == 1, (
-            f"Expected caller-flush WARNING to fire in the finally block, got {caller_flush_warnings}"
+            f"Expected caller-flush INFO to fire in the finally block, got {caller_flush_warnings}"
         )
 
         # The Counter is still cleared (the finally flush ran).

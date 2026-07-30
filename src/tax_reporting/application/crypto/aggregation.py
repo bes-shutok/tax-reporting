@@ -45,8 +45,9 @@ _OGR_MAGNITUDE_DIFF_THRESHOLD: Final = 5
 # are non-zero and material. Matched via ``startswith`` against the split parts
 # so minor upstream-prose edits (e.g. rewording the trailing "likely Koinly
 # tracking entry or data error" tail) do not silently break the strip set.
-# Per-lot signals stay in ``context.review_entries`` and the WARNING log; this
-# filter only re-derives the user-visible aggregated row's flag.
+# Per-lot signals stay in ``context.review_entries`` and the per-row DEBUG /
+# aggregate INFO log (Bucket-C silent-data-loss aggregates stay at WARNING);
+# this filter only re-derives the user-visible aggregated row's flag.
 #
 # The cost/proceeds prefixes include the trailing ": " so the more-severe
 # "_ZERO_COST_NEGATIVE_PROCEEDS_REASON" ("Zero acquisition cost with negative
@@ -344,8 +345,8 @@ def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[Cr
     # aggregate live directly here -- the predecessor's "EASY" pattern-A shape. The
     # audit signal stays on the data: the aggregated entry inherits the lot's
     # review_required/review_reason set by predecessor pattern F, which surfaces in the
-    # Crypto Gains "YES:" cell. The aggregate just collapses N identical WARNINGs into
-    # one naming the affected assets.
+    # Crypto Gains "YES:" cell. The aggregate just collapses N identical per-row DEBUG
+    # lines into one aggregate INFO naming the affected assets.
     no_date_entries: Counter[str] = Counter()
     epoch_entries: Counter[str] = Counter()
     for group in groups.values():
@@ -412,7 +413,7 @@ def _aggregate_capital_entries(entries: list[CryptoCapitalGainEntry]) -> list[Cr
             replace(aggregated_entry, review_required=review_required, review_reason=review_reason)
         )
     result.sort(key=lambda e: (e.disposal_date, e.asset, e.platform, e.holding_period))
-    # Pattern L: emit ONE aggregate WARNING when any aggregated entry had a missing or
+    # Pattern L: emit ONE aggregate INFO when any aggregated entry had a missing or
     # epoch-sentinel acquisition date from a pool-exhausted placeholder lot. The per-row
     # detail (asset + disposal date + cause) is reachable at DEBUG above; the Excel Crypto
     # Gains "YES:" review column carries the inherited pool-exhausted review_reason. The

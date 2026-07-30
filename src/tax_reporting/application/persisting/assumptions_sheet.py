@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 import openpyxl
 
 if TYPE_CHECKING:
+    from tax_reporting.application.crypto.entities import CryptoDecisionCounts
     from tax_reporting.application.crypto.wallet_kind import (
         RegistrySnapshot,
         WalletClassification,
@@ -139,12 +140,13 @@ def _collect_platform_summaries(
     return list(summaries.values())
 
 
-def write_assumptions_and_methodology_sheet(
+def write_assumptions_and_methodology_sheet(  # noqa: PLR0912, PLR0913, PLR0915
     workbook: openpyxl.Workbook,
     capital_entries: list[CryptoCapitalGainEntry] | None = None,
     reward_entries: list[CryptoRewardIncomeEntry] | None = None,
     th_rows: Iterable[TransactionHistoryRow] | None = None,
     registry: RegistrySnapshot | None = None,
+    decision_counts: CryptoDecisionCounts | None = None,
 ) -> None:
     """Create and populate an 'Assumptions & Methodology' worksheet.
 
@@ -169,6 +171,11 @@ def write_assumptions_and_methodology_sheet(
             Phase D Task 1 constructs a ``ProductionWalletKindRegistry`` backed
             by ``operator_origin`` so each platform's kind is sourced from the
             operator-entity classification (closing the 540-row Binance gap).
+        decision_counts: Optional ``CryptoDecisionCounts`` carrying per-run
+            crypto-pipeline decision counts. When supplied, the PT-C-028
+            "Materiality Threshold" item renders a ``[This run: filtered N
+            entries, M retained.]`` suffix. ``None`` for IB-only runs (no
+            crypto) - the static description renders with no suffix.
     """
     summaries = _collect_platform_summaries(capital_entries, reward_entries, th_rows, registry)
 
@@ -537,6 +544,22 @@ def write_assumptions_and_methodology_sheet(
                     ),
                 ),
                 (
+                    "OGR-vs-CG and Fee Lot Dedup",
+                    "DP-015, PT-C-034, PT-C-036",
+                    (
+                        "Capital-gains (CG) FIFO lots matched against OGR/derivatives disposal events "
+                        "(PT-C-034) and against standalone transaction/network fee events (DP-015 / "
+                        "PT-C-036) are removed from the Crypto Gains tab to avoid double-counting the "
+                        "same disposal. OGR-routed derivatives gains are reported once on the "
+                        "Derivatives P&L tab; Koinly-realized fee-token disposals are non-taxable "
+                        "utility costs under CIRS art. 10(1)(k) and are filtered out. The removed lots "
+                        "are surfaced as Crypto Supplementary review rows (per-row DEBUG audit trail "
+                        "preserved in the file log). "
+                        "Source: Implementation decision (PT-C-034 OGR routing; DP-015/PT-C-036 fee "
+                        "filtering)."
+                    ),
+                ),
+                (
                     "Data Sources",
                     "",
                     (
@@ -571,6 +594,41 @@ def write_assumptions_and_methodology_sheet(
             ],
         ),
     ]
+
+    # PT-C-028 run-count suffix: append the per-run materiality-filter counts to
+    # the "Materiality Threshold" item when ``decision_counts`` is supplied
+    # (crypto runs). IB-only runs pass None and the static text renders as-is.
+    if decision_counts is not None:
+        materiality_suffix = (
+            f" [This run: filtered {decision_counts.sub_1_eur_filtered} entries, "
+            f"{decision_counts.sub_1_eur_retained} retained.]"
+        )
+        for section_idx, (_section_title, items) in enumerate(methodology_items):
+            for item_idx, (label, _rule_ids, description) in enumerate(items):
+                if label == "Materiality Threshold":
+                    methodology_items[section_idx][1][item_idx] = (
+                        label,
+                        _rule_ids,
+                        description + materiality_suffix,
+                    )
+
+    # Dedup run-count suffix: append the per-run OGR-vs-CG / fee lot dedup
+    # removal counts to the "OGR-vs-CG and Fee Lot Dedup" item when
+    # ``decision_counts`` is supplied (crypto runs). IB-only runs pass None and
+    # the static text renders as-is (backward compat).
+    if decision_counts is not None:
+        dedup_suffix = (
+            f" [This run: derivatives removed {decision_counts.derivatives_dedup_removed}; "
+            f"fee removed {decision_counts.fee_dedup_removed}.]"
+        )
+        for section_idx, (_section_title, items) in enumerate(methodology_items):
+            for item_idx, (label, _rule_ids, description) in enumerate(items):
+                if label == "OGR-vs-CG and Fee Lot Dedup":
+                    methodology_items[section_idx][1][item_idx] = (
+                        label,
+                        _rule_ids,
+                        description + dedup_suffix,
+                    )
 
     # Render grouped methodology sections
     for section_title, items in methodology_items:

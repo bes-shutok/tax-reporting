@@ -82,7 +82,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - The Platform Assumptions tab is a complete manifest. Do not filter; use `platform_review_required=True` to highlight.
 - Tests verifying "YES:"/"NO" rendering must set `review_required`/`review_reason` on the fixture entry; do not delegate to `origin.review_required`.
 - When a downstream consumer synthesises a `review_reason` from a flag multiple upstream cases set, branch on the discriminator (sentinel/enum) the upstream sets; RED tests must exercise each cause. See UL #91.
-- When migrating real fixtures to synthetic data, keep assertions scoped to the target behavior and use e2e-realizable analogs when literal inputs cannot reach the full pipeline. See UL #114, #193.
+- When migrating real fixtures to synthetic data, keep assertions scoped to the target behavior and use e2e-realizable analogs when literal inputs cannot reach the full pipeline. See UL #114, #86.
 - Crypto capital gains statistics must be computed via `CryptoCapitalGainStats.from_entries()` and rendered as "1b. CAPITAL GAINS STATISTICS"; grand totals come from the full entries list, not per-period subtotals.
 - Token origin resolution uses `TokenOriginResolver` with implicit `(date, asset, wallet)` correlation; unmatched rows return `unknown` (see `crypto_implementation_guidelines.md`). Do not reintroduce same-day disposal-context matching.
 - `token_swap_history` aggregation via `_aggregate_origin_field()`: all lots same origin -> use it; else join unique non-empty origins with '; '; append "N lot(s) unresolved" when some are unknown.

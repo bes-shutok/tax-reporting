@@ -154,7 +154,7 @@ def _resolve_single_acquisition(
     ``_rebuild_fifo_for_loan_affected_assets`` so each per-row WARNING branch below can be
     downgraded to DEBUG (message text unchanged) while incrementing the matching cause key
     (``unresolved`` / ``multi_sender`` / ``zero_carryover`` / ``partial``). The caller emits
-    ONE aggregate WARNING from the per-asset loop. ``None`` (default) preserves backward-
+    ONE aggregate INFO from the per-asset loop. ``None`` (default) preserves backward-
     compat with direct callers (e.g. unit tests via the in-test wrapper) that bypass the
     aggregate: those callers see only the DEBUG per-row emission and do not accumulate causes.
 
@@ -175,7 +175,7 @@ def _resolve_single_acquisition(
     if not matched:
         # Pattern J: per-row emission downgraded WARNING -> DEBUG (message text unchanged);
         # the audit signal is preserved via review_required/review_reason (Design Invariant
-        # #3) plus ONE aggregate WARNING emitted by the per-asset loop driver.
+        # #3) plus ONE aggregate INFO emitted by the per-asset loop driver.
         logger.debug(
             "Unresolved deferred acquisition for %s tx_key=%s: cost remains zero: "
             "the sending asset's FIFO produced no carry-over entry for this tx_key. "
@@ -275,7 +275,7 @@ def resolve_cross_asset_exchanges(
     """Resolve deferred cross-asset acquisitions from carry-over costs.
 
     ``flag_counts`` (pattern J) is threaded to ``_resolve_single_acquisition`` so each per-row
-    DEBUG branch can increment its cause key. The aggregate WARNING is NOT emitted here (would
+    DEBUG branch can increment its cause key. The aggregate INFO is NOT emitted here (would
     fire once per asset-set); the caller (``_rebuild_fifo_for_loan_affected_assets``'s
     per-asset loop) owns the single aggregate emission.
     """

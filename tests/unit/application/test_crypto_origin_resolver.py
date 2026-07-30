@@ -765,7 +765,7 @@ class TestTokenOriginResolverDisagreementCounter:
     from BOTH caller loops (``_parse_capital_gains_file`` and
     ``_rebuild_fifo_for_loan_affected_assets``). Each caller invokes
     ``log_and_reset_disagreements(scope)`` after its loop, emitting ONE
-    aggregate WARNING and clearing the Counter.
+    aggregate INFO and clearing the Counter.
     """
 
     def test_disagreement_counter_accumulates(self, tmp_path, caplog: pytest.LogCaptureFixture) -> None:
@@ -819,7 +819,7 @@ class TestTokenOriginResolverDisagreementCounter:
     def test_log_and_reset_disagreements_emits_summary_and_clears(
         self, tmp_path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """With accumulated disagreements, ONE WARNING is emitted then the Counter clears."""
+        """With accumulated disagreements, ONE INFO is emitted then the Counter clears."""
         path = _write_th(
             tmp_path,
             "2025-03-10 08:00:00 UTC,exchange,,Kraken,100,BTC,5000,"
@@ -841,13 +841,13 @@ class TestTokenOriginResolverDisagreementCounter:
         resolver.resolve("2025-05-10", "ETH", "Binance")
         assert len(resolver._disagreements) == 3
 
-        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.token_origin"):
+        with caplog.at_level(logging.INFO, logger="tax_reporting.application.token_origin"):
             resolver.log_and_reset_disagreements(scope="capital gains parse")
 
         summary_records = [
             r
             for r in caplog.records
-            if r.levelno == logging.WARNING
+            if r.levelno == logging.INFO
             and "TokenOriginResolver (capital gains parse)" in r.message
             and "origin-resolution disagreement(s)" in r.message
             and "distinct" in r.message
@@ -859,19 +859,112 @@ class TestTokenOriginResolverDisagreementCounter:
         # Counter cleared AFTER the emit (Design Invariant #10).
         assert len(resolver._disagreements) == 0
 
+    def test_disagreements_emit_info_and_one_review_row_per_key(
+        self, tmp_path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """W1/W5 relocation: disagreements emit INFO + one CryptoReviewEntry per key.
+
+        Given 3 distinct ``(asset, wallet, date)`` keys disagreeing across 5
+        total records, calling ``log_and_reset_disagreements`` for each of the
+        two shared-emitter scopes ("capital gains parse" = W1, "FIFO rebuild" =
+        W5) emits ONE INFO record PER SCOPE containing
+        "N origin-resolution disagreement(s) across M distinct", ZERO WARNING
+        records, and appends one ``CryptoReviewEntry`` per key with
+        ``source_section="transaction_history"`` whose reason names the scope
+        and the per-key conflicting-record count.
+        """
+        from tax_reporting.application.crypto.entities import CryptoReviewEntry
+
+        path = _write_th(tmp_path, "")
+        resolver = _build_resolver(path)
+        review_entries: list[CryptoReviewEntry] = []
+        resolver.review_entries = review_entries  # type: ignore[attr-defined]
+
+        # 3 distinct (asset, wallet, date) keys summing to 5 conflicting records.
+        keys = [
+            ("SOL", "Kraken", "2025-03-10"),
+            ("ETH", "Kraken", "2025-04-10"),
+            ("ETH", "Binance", "2025-05-10"),
+        ]
+        resolver._disagreements[(keys[0][0], keys[0][1], keys[0][2])] = 1
+        resolver._disagreements[(keys[1][0], keys[1][1], keys[1][2])] = 2
+        resolver._disagreements[(keys[2][0], keys[2][1], keys[2][2])] = 2
+        assert sum(resolver._disagreements.values()) == 5
+        assert len(resolver._disagreements) == 3
+
+        with caplog.at_level(logging.INFO, logger="tax_reporting.application.token_origin"):
+            resolver.log_and_reset_disagreements(scope="capital gains parse")
+
+        info_records_cg = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.INFO
+            and "TokenOriginResolver (capital gains parse)" in r.message
+            and "origin-resolution disagreement(s)" in r.message
+            and "distinct" in r.message
+        ]
+        assert len(info_records_cg) == 1
+        assert "5 origin-resolution disagreement(s) across 3 distinct" in info_records_cg[0].message
+        # ZERO WARNING records.
+        assert all(r.levelno < logging.WARNING for r in caplog.records)
+
+        # 3 review rows from the W1 scope, one per key.
+        cg_rows = [e for e in review_entries if "capital gains parse" in e.review_reason]
+        assert len(cg_rows) == 3
+        for asset, wallet, date in keys:
+            matches = [
+                e
+                for e in cg_rows
+                if e.source_section == "transaction_history"
+                and e.asset == asset
+                and e.platform == wallet
+                and e.date == date
+                and "capital gains parse" in e.review_reason
+                and "conflicting record(s)" in e.review_reason
+                and "returned unknown" in e.review_reason
+            ]
+            assert len(matches) == 1, f"missing review row for {(asset, wallet, date)}"
+
+        # Counter cleared after the emit.
+        assert len(resolver._disagreements) == 0
+
+        # W5: repopulate the same 3 keys and flush under the FIFO-rebuild scope.
+        for asset, wallet, date in keys:
+            resolver._disagreements[(asset, wallet, date)] += 1
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="tax_reporting.application.token_origin"):
+            resolver.log_and_reset_disagreements(scope="FIFO rebuild")
+
+        info_records_fifo = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.INFO
+            and "TokenOriginResolver (FIFO rebuild)" in r.message
+            and "origin-resolution disagreement(s)" in r.message
+            and "distinct" in r.message
+        ]
+        assert len(info_records_fifo) == 1
+        assert all(r.levelno < logging.WARNING for r in caplog.records)
+
+        # W5 contributes another 3 rows naming the FIFO-rebuild scope.
+        fifo_rows = [e for e in review_entries if "FIFO rebuild" in e.review_reason]
+        assert len(fifo_rows) == 3
+        assert all(e.source_section == "transaction_history" for e in fifo_rows)
+        assert len(resolver._disagreements) == 0
+
     def test_log_and_reset_disagreements_noop_when_empty(self, tmp_path, caplog: pytest.LogCaptureFixture) -> None:
         """When no disagreements accumulated, ``log_and_reset_disagreements`` emits nothing."""
         path = _write_th(tmp_path, "")
         resolver = _build_resolver(path)
         assert len(resolver._disagreements) == 0
 
-        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.token_origin"):
+        with caplog.at_level(logging.INFO, logger="tax_reporting.application.token_origin"):
             resolver.log_and_reset_disagreements(scope="FIFO rebuild")
 
         summary_records = [
             r
             for r in caplog.records
-            if r.levelno == logging.WARNING
+            if r.levelno == logging.INFO
             and "TokenOriginResolver" in r.message
             and "disagreement" in r.message.lower()
         ]

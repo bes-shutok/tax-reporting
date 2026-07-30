@@ -21,15 +21,18 @@ import pytest
 
 from tax_reporting.application.crypto.entities import (
     CryptoCapitalGainEntry,
+    CryptoDecisionCounts,
     CryptoReviewEntry,
 )
 from tax_reporting.application.crypto.fee_filter import (
     FeeThEvent,
     SuspectThEvent,
+    _log_fee_removals,
     flag_fee_suspects,
     remove_transaction_fees,
 )
 from tax_reporting.application.crypto.operator_origin import OperatorOrigin
+from tax_reporting.application.crypto.th_lot_matcher import IndexedLot
 from tax_reporting.domain.jurisdiction import TaxJurisdictionConfig
 
 # Default per-token ceiling map (the user-confirmed values for FY2025 PT).
@@ -851,26 +854,30 @@ class TestMalformedRows:
         assert remaining == []
 
 
-class TestUntaggedWhitelistedWarning:
-    """Pattern I: untagged-whitelisted removals group-collapse to ONE aggregate WARNING.
+class TestUntaggedWhitelistedInfoContract:
+    """Pattern I: untagged-whitelisted removals group-collapse to ONE aggregate INFO.
 
     The per-tx_hash detail moves to DEBUG (audit trail preserved at DEBUG in the
-    file handler); exactly ONE aggregate WARNING carries the count + per-asset
-    breakdown. Stays WARNING because there is no Excel review surface for these
-    removals - the WARNING is the audit trail (distinct from J/K/L downgrades).
+    file handler); exactly ONE aggregate INFO carries the count + per-asset
+    breakdown. Demoted to INFO in Task 5 / r2 Finding 2: the untagged-whitelisted
+    subset is strictly contained in ``filtered_metadata`` (the W7 iterate), so
+    the per-row "verify network fee" signal is carried by W7's branch-aware
+    reason (Task 7) on the single review row the lot already gets from W7 - W8
+    owns NO review surface, so the aggregate no longer needs to be a WARNING.
     """
 
-    def test_untagged_whitelisted_per_row_at_debug_and_one_aggregate_warning(
+    def test_untagged_whitelisted_per_row_at_debug_and_one_aggregate_info(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Untagged-whitelisted SOL removal -> per-tx_hash detail at DEBUG + ONE aggregate WARNING.
+        """Untagged-whitelisted SOL removal -> per-tx_hash detail at DEBUG + ONE aggregate INFO.
 
-        Pattern I (group-collapse, NOT downgrade): the per-tx_hash detail
+        Pattern I (group-collapse, now INFO): the per-tx_hash detail
         (asset=SOL, Net Value=0.3, tx_hash=0xAAA) is captured at DEBUG, and
-        exactly ONE WARNING-level record carries the new aggregate leading-phrase
+        exactly ONE INFO-level record carries the new aggregate leading-phrase
         (a count followed by the pluralizable ``"disposal(s)"`` tail that
         distinguishes it from the per-row singular ``"disposal for"``). The
-        aggregate carries the count and a per-asset breakdown.
+        aggregate carries the count and a per-asset breakdown. (Demoted from
+        WARNING to INFO in Task 5.)
         """
         th = tmp_path / "th.csv"
         _write_th_csv(
@@ -917,20 +924,21 @@ class TestUntaggedWhitelistedWarning:
         assert "0.3" in per_row_msg
         assert "0xAAA" in per_row_msg
 
-        # Exactly ONE WARNING-level aggregate record matching the new aggregate
+        # Exactly ONE INFO-level aggregate record matching the new aggregate
         # leading-phrase; it carries the count and per-asset breakdown. The
-        # aggregate wording uses the pluralizable "disposal(s)" tail.
-        aggregate_warnings = [
+        # aggregate wording uses the pluralizable "disposal(s)" tail. (Demoted
+        # from WARNING to INFO in Task 5; caplog is at DEBUG so INFO is captured.)
+        aggregate_infos = [
             r
             for r in caplog.records
-            if r.levelno == logging.WARNING
+            if r.levelno == logging.INFO
             and "untagged-whitelisted fee disposal(s) (" in r.getMessage()
         ]
-        assert len(aggregate_warnings) == 1, (
-            "expected exactly ONE aggregate WARNING for the untagged-whitelisted removals, "
-            f"got {len(aggregate_warnings)}"
+        assert len(aggregate_infos) == 1, (
+            "expected exactly ONE aggregate INFO for the untagged-whitelisted removals, "
+            f"got {len(aggregate_infos)}"
         )
-        aggregate_msg = aggregate_warnings[0].getMessage()
+        aggregate_msg = aggregate_infos[0].getMessage()
         assert aggregate_msg.startswith("Removed 1 untagged-whitelisted fee disposal"), (
             f"aggregate must start with count + leading-phrase; got {aggregate_msg!r}"
         )
@@ -1009,6 +1017,97 @@ class TestUntaggedWhitelistedWarning:
             for r in caplog.records
         ), "tagged removal must NOT emit the untagged-whitelisted per-row DEBUG record"
 
+    def test_untagged_whitelisted_removal_emits_info(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """W8 pure INFO demotion: 2 untagged-whitelisted removals collapse to ONE INFO aggregate.
+
+        Calls ``_log_fee_removals`` directly with two untagged-whitelisted
+        fee events (``tagged=False``, ``is_embedded=False``). Per Task 5
+        (r2 Finding 2), the untagged-whitelisted subset is STRICTLY CONTAINED
+        in ``filtered_metadata`` (the W7 iterate), so W8 is a PURE console
+        demotion: the per-row "verify network fee" signal is carried by W7's
+        branch-aware reason (Task 7), NOT by a W8 review row. Therefore this
+        call must emit exactly ONE INFO aggregate, ZERO WARNING records, and
+        append ZERO ``CryptoReviewEntry`` rows (not asserted here -- W8 emits
+        no ``CryptoReviewEntry`` of its own by construction; its signal is
+        surfaced in Crypto Supplementary only via the merged W7 row). The
+        per-row ``logger.debug`` audit trail is preserved at DEBUG.
+        """
+        lot_a = IndexedLot(
+            index=0,
+            entry=_make_cg_lot(
+                disposal_timestamp="2025-03-30 12:00",
+                asset="SOL",
+                amount=Decimal("0.00100000"),
+            ),
+        )
+        lot_b = IndexedLot(
+            index=1,
+            entry=_make_cg_lot(
+                disposal_timestamp="2025-03-30 13:00",
+                asset="ETH",
+                amount=Decimal("0.00050000"),
+            ),
+        )
+        event_a = FeeThEvent(
+            timestamp="2025-03-30 12:00",
+            asset="SOL",
+            wallet="MetaMask",
+            amount=Decimal("0.00100000"),
+            tagged=False,
+            tx_hash="0xAAA",
+            net_value_eur=Decimal("0.3"),
+        )
+        event_b = FeeThEvent(
+            timestamp="2025-03-30 13:00",
+            asset="ETH",
+            wallet="MetaMask",
+            amount=Decimal("0.00050000"),
+            tagged=False,
+            tx_hash="0xBBB",
+            net_value_eur=Decimal("0.4"),
+        )
+
+        # caplog at INFO: the W8 aggregate now demotes to INFO (Lesson #69).
+        with caplog.at_level(logging.INFO, logger=_FEE_LOGGER):
+            _log_fee_removals(
+                [
+                    (lot_a, "exact", event_a),
+                    (lot_b, "exact", event_b),
+                ]
+            )
+
+        # Exactly ONE INFO-level aggregate record matching the leading-phrase.
+        info_aggregates = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.INFO
+            and "untagged-whitelisted fee disposal(s) (" in r.getMessage()
+        ]
+        assert len(info_aggregates) == 1, (
+            "expected exactly ONE INFO aggregate for the untagged-whitelisted "
+            f"removals, got {len(info_aggregates)}"
+        )
+        assert info_aggregates[0].getMessage().startswith(
+            "Removed 2 untagged-whitelisted fee disposal"
+        ), (
+            "INFO aggregate must report count=2 + leading-phrase; "
+            f"got {info_aggregates[0].getMessage()!r}"
+        )
+
+        # ZERO WARNING records: the W8 aggregate is a pure INFO demotion.
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert warnings == [], (
+            f"W8 must emit ZERO WARNING records (pure INFO demotion); got {warnings!r}"
+        )
+
+        # W8 owns no review surface by design: ``_log_fee_removals`` has no
+        # ``review_entries`` threading, and W7's branch-aware reason (Task 7)
+        # carries the per-row signal. There is nothing to assert here - a
+        # ``CryptoReviewEntry`` count assertion would require a parameter the
+        # helper intentionally does not take, so no tautological block is kept.
+
 
 class TestSuspects:
     """Unlisted-asset suspects are surfaced (flagged), not removed."""
@@ -1021,7 +1120,7 @@ class TestSuspects:
         appended.
 
         Per-row detail is captured at DEBUG (pattern D conversion: the in-loop
-        emission was downgraded to ``logger.debug``); exactly one aggregate WARNING
+        emission was downgraded to ``logger.debug``); exactly one aggregate INFO
         summary ("Surfaced N suspect untagged network fees") is emitted. The
         aggregate uses distinct "Surfaced" wording that must NOT collide with the
         per-row "Possible untagged fee for unlisted asset" substring (see the
@@ -1616,7 +1715,7 @@ class TestEmptyDictAndCollisions:
             amount=Decimal("0.00100000"),
         )
 
-        with caplog.at_level(logging.WARNING, logger=_FEE_LOGGER):
+        with caplog.at_level(logging.INFO, logger=_FEE_LOGGER):
             remaining, _suspects = remove_transaction_fees(
                 capital_entries=[lot_a, lot_b],
                 transaction_history_file=th,
@@ -1625,18 +1724,21 @@ class TestEmptyDictAndCollisions:
 
         # One lot removed, one surplus retained.
         assert len(remaining) == 1
-        # The summary WARNING fired naming surplus lots.
+        # The summary INFO fired naming surplus lots (demoted from WARNING in
+        # Task 7; Lesson #69: caplog must capture at INFO).
         assert any(
             "Fee CG dedup summary" in r.getMessage() and "surplus" in r.getMessage()
             for r in caplog.records
         )
 
-    def test_summary_warning_is_logged(
+    def test_fee_dedup_summary_emits_info_once(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Exactly one aggregate warning summary for the fee pass carrying the "Fee"
+        """Exactly one aggregate INFO summary for the fee pass carrying the "Fee"
         domain label and the fee module's logger name; the suspect pass (match_lots)
-        emits NO summary."""
+        emits NO summary. (W7 was demoted WARNING -> INFO per rule #7
+        EXTRACT_SURFACED; per-row detail now surfaces as CryptoReviewEntry
+        rows + an A&M count cell.)"""
         th = tmp_path / "th.csv"
         _write_th_csv(
             th,
@@ -1657,7 +1759,7 @@ class TestEmptyDictAndCollisions:
             amount=Decimal("0.00100000"),
         )
 
-        with caplog.at_level(logging.WARNING, logger=_FEE_LOGGER):
+        with caplog.at_level(logging.INFO, logger=_FEE_LOGGER):
             remove_transaction_fees(
                 capital_entries=[lot],
                 transaction_history_file=th,
@@ -1667,8 +1769,10 @@ class TestEmptyDictAndCollisions:
         summary_records = [
             r for r in caplog.records if "Fee CG dedup summary" in r.getMessage()
         ]
-        assert len(summary_records) == 1, "exactly one aggregate fee summary WARNING"
+        assert len(summary_records) == 1, "exactly one aggregate fee summary INFO"
         assert summary_records[0].name == _FEE_LOGGER
+        # Lesson #69: the W7 summary was demoted WARNING -> INFO in Task 7.
+        assert all(r.levelno == logging.INFO for r in summary_records)
 
 
 class TestNoOpGates:
@@ -1920,3 +2024,332 @@ class TestEmbeddedFees:
         )
 
         assert remaining == [lot1, lot2]
+
+
+class TestFeeDedupReviewRows:
+    """Task 7: W7 fee dedup emits INFO + CryptoReviewEntry rows + sets decision count.
+
+    The W7 emit path is distinct from W6: ``remove_transaction_fees`` calls
+    ``match_lots`` (match-only, no summary) then builds the summary INLINE and
+    emits it. It also appends branch-aware review rows and sets
+    ``decision_counts.fee_dedup_removed`` ONCE (NOT in ``_log_fee_removals``).
+    """
+
+    def test_fee_dedup_summary_emits_info(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Any non-empty fee dedup run emits exactly ONE INFO "Fee CG dedup summary"
+        record and ZERO WARNING records (demoted in Task 7)."""
+        th = tmp_path / "th.csv"
+        _write_th_csv(
+            th,
+            [
+                _transfer_row(tx_hash="0xAAA"),
+                _withdrawal_row(
+                    tag="Cost",
+                    sent_amount="0.00100000",
+                    sent_currency="ETH",
+                    net_value_eur="3.00",
+                    tx_hash="0xAAA",
+                ),
+            ],
+        )
+        lot = _make_cg_lot(
+            disposal_timestamp="2025-03-30 12:00",
+            asset="ETH",
+            amount=Decimal("0.00100000"),
+        )
+
+        with caplog.at_level(logging.INFO, logger=_FEE_LOGGER):
+            remove_transaction_fees(
+                capital_entries=[lot],
+                transaction_history_file=th,
+                jurisdiction=_make_jurisdiction(),
+            )
+
+        info_summaries = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.INFO and "Fee CG dedup summary" in r.getMessage()
+        ]
+        assert len(info_summaries) == 1, "exactly one INFO 'Fee CG dedup summary'"
+        warning_summaries = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "Fee CG dedup summary" in r.getMessage()
+        ]
+        assert warning_summaries == [], "zero WARNING 'Fee CG dedup summary' records"
+
+    def test_fee_dedup_removed_lots_become_review_rows(
+        self, tmp_path: Path
+    ) -> None:
+        """Two matched fee lots (one tagged, one untagged-whitelisted) -> two
+        CryptoReviewEntry rows with reasons prefixed 'Fee CG dedup: removed lot'.
+        The untagged-whitelisted subset additionally carries the W8 'verify
+        network fee' suffix and is_suspicious=True (merges W8 onto the W7 row,
+        avoiding the r2 double-count). Tagged lots get is_suspicious=False."""
+        th = tmp_path / "th.csv"
+        _write_th_csv(
+            th,
+            [
+                # tagged fee (Cost) shares tx_hash with a transfer for co-occurrence
+                _transfer_row(tx_hash="0xTAG"),
+                _withdrawal_row(
+                    tag="Cost",
+                    sent_amount="0.00100000",
+                    sent_currency="ETH",
+                    net_value_eur="3.00",
+                    tx_hash="0xTAG",
+                ),
+                # untagged-whitelisted ETH fee (ETH is a _PT_PER_ASSET key)
+                _transfer_row(tx_hash="0xUNT", date="2025-03-31 12:00:00 UTC"),
+                _withdrawal_row(
+                    sent_amount="0.00200000",
+                    sent_currency="ETH",
+                    net_value_eur="0.50",
+                    tx_hash="0xUNT",
+                    date="2025-03-31 12:00:00 UTC",
+                ),
+            ],
+        )
+        tagged_lot = _make_cg_lot(
+            disposal_timestamp="2025-03-30 12:00",
+            asset="ETH",
+            amount=Decimal("0.00100000"),
+            wallet="MetaMask",
+        )
+        untagged_lot = _make_cg_lot(
+            disposal_timestamp="2025-03-31 12:00",
+            asset="ETH",
+            amount=Decimal("0.00200000"),
+            wallet="MetaMask",
+        )
+        review_entries: list[CryptoReviewEntry] = []
+
+        remaining, _suspects = remove_transaction_fees(
+            capital_entries=[tagged_lot, untagged_lot],
+            transaction_history_file=th,
+            jurisdiction=_make_jurisdiction(),
+            review_entries=review_entries,
+        )
+
+        # Both lots removed (the only two CG lots, each matched by one fee event).
+        assert remaining == []
+
+        removed_rows = [
+            r for r in review_entries if r.review_reason.startswith("Fee CG dedup: removed")
+        ]
+        assert len(removed_rows) == 2, (
+            f"expected 2 removed-lot review rows, got {len(removed_rows)}: "
+            f"{[r.review_reason for r in review_entries]}"
+        )
+
+        # The tagged row carries the tagged discriminator + is_suspicious=False.
+        tagged_row = next(
+            r for r in removed_rows if "tagged" in r.review_reason
+        )
+        assert tagged_row.is_suspicious is False
+        assert "tagged True" in tagged_row.review_reason
+        assert tagged_row.asset == "ETH"
+        assert tagged_row.source_section == "capital_gains"
+
+        # The untagged-whitelisted row carries the W8 'verify network fee'
+        # suffix (merged signal, avoids r2 double-count) + is_suspicious=True.
+        untagged_row = next(
+            r
+            for r in removed_rows
+            if "untagged-whitelisted" in r.review_reason
+        )
+        assert untagged_row.is_suspicious is True
+        assert "verify network fee, not real disposal" in untagged_row.review_reason
+        assert "Net Value" in untagged_row.review_reason
+        assert "tx_hash=" in untagged_row.review_reason
+
+    def test_fee_dedup_tagged_and_embedded_reasons(
+        self, tmp_path: Path
+    ) -> None:
+        """A tagged fee lot and an embedded fee lot each get a review row whose
+        reason carries the tagged/embedded discriminator and is_suspicious=False
+        (verifies the branch-aware reason logic on the FeeThEvent)."""
+        th = tmp_path / "th.csv"
+        _write_th_csv(
+            th,
+            [
+                # tagged Cost withdrawal (shares tx_hash with a transfer)
+                _transfer_row(tx_hash="0xTAG"),
+                _withdrawal_row(
+                    tag="Cost",
+                    sent_amount="0.00100000",
+                    sent_currency="ETH",
+                    net_value_eur="3.00",
+                    tx_hash="0xTAG",
+                ),
+                # exchange row with an embedded BNB fee (BNB is a _PT_PER_ASSET key)
+                {
+                    "Date": "2025-03-31 12:00:00 UTC",
+                    "Type": "exchange",
+                    "Tag": "",
+                    "Sending Wallet": "MetaMask",
+                    "Sent Amount": "1.00000000",
+                    "Sent Currency": "BTC",
+                    "Receiving Wallet": "MetaMask",
+                    "Received Amount": "20.00000000",
+                    "Received Currency": "ETH",
+                    "Fee Amount": "0.00100000",
+                    "Fee Currency": "BNB",
+                    "Net Value (EUR)": "5000.00",
+                    "TxHash": "0xEMB",
+                },
+            ],
+        )
+        tagged_lot = _make_cg_lot(
+            disposal_timestamp="2025-03-30 12:00",
+            asset="ETH",
+            amount=Decimal("0.00100000"),
+            wallet="MetaMask",
+        )
+        embedded_lot = _make_cg_lot(
+            disposal_timestamp="2025-03-31 12:00",
+            asset="BNB",
+            wallet="MetaMask",
+            amount=Decimal("0.00100000"),
+            proceeds_eur=Decimal("0.40"),
+            gain_loss_eur=Decimal("0.40"),
+            cost_eur=Decimal("0.00"),
+        )
+        review_entries: list[CryptoReviewEntry] = []
+
+        remaining, _suspects = remove_transaction_fees(
+            capital_entries=[tagged_lot, embedded_lot],
+            transaction_history_file=th,
+            jurisdiction=_make_jurisdiction(),
+            review_entries=review_entries,
+        )
+
+        assert remaining == []
+        removed_rows = [
+            r for r in review_entries if r.review_reason.startswith("Fee CG dedup: removed")
+        ]
+        assert len(removed_rows) == 2, (
+            f"expected 2 removed rows (tagged + embedded), got "
+            f"{[r.review_reason for r in review_entries]}"
+        )
+
+        tagged_row = next(
+            r for r in removed_rows if "tagged" in r.review_reason
+        )
+        assert tagged_row.is_suspicious is False
+        assert "tagged True" in tagged_row.review_reason
+
+        embedded_row = next(
+            r for r in removed_rows if "embedded fee" in r.review_reason
+        )
+        assert embedded_row.is_suspicious is False
+        assert "embedded fee" in embedded_row.review_reason
+
+    def test_fee_dedup_surplus_and_malformed_become_suspicious_review_rows(
+        self, tmp_path: Path
+    ) -> None:
+        """Surplus and malformed-input lots become is_suspicious=True review rows
+        carrying the 'Fee CG dedup' prefix and the Task 6 reason bodies."""
+        th = tmp_path / "th.csv"
+        _write_th_csv(
+            th,
+            [
+                _transfer_row(tx_hash="0xAAA"),
+                _withdrawal_row(
+                    tag="Cost",
+                    sent_amount="0.00100000",
+                    sent_currency="ETH",
+                    net_value_eur="3.00",
+                    tx_hash="0xAAA",
+                ),
+            ],
+        )
+        # Two identical lots, one fee event -> one removed, one SURPLUS.
+        lot_a = _make_cg_lot(
+            disposal_timestamp="2025-03-30 12:00",
+            asset="ETH",
+            amount=Decimal("0.00100000"),
+        )
+        lot_b = _make_cg_lot(
+            disposal_timestamp="2025-03-30 12:00",
+            asset="ETH",
+            amount=Decimal("0.00100000"),
+        )
+        # A third lot with non-positive amount -> MALFORMED-input.
+        malformed_lot = _make_cg_lot(
+            disposal_timestamp="2025-03-30 12:00",
+            asset="ETH",
+            amount=Decimal("0"),
+        )
+        review_entries: list[CryptoReviewEntry] = []
+
+        remaining, _suspects = remove_transaction_fees(
+            capital_entries=[lot_a, lot_b, malformed_lot],
+            transaction_history_file=th,
+            jurisdiction=_make_jurisdiction(),
+            review_entries=review_entries,
+        )
+
+        surplus_rows = [
+            r for r in review_entries if "Surplus lot" in r.review_reason
+        ]
+        assert surplus_rows, (
+            f"expected a surplus review row, got {[r.review_reason for r in review_entries]}"
+        )
+        assert all(r.review_reason.startswith("Fee CG dedup:") for r in surplus_rows)
+        assert all(r.is_suspicious is True for r in surplus_rows)
+        assert all("missed FIFO split" in r.review_reason for r in surplus_rows)
+
+        malformed_rows = [
+            r for r in review_entries if "Malformed-input" in r.review_reason
+        ]
+        assert malformed_rows, (
+            f"expected a malformed-input review row, got {[r.review_reason for r in review_entries]}"
+        )
+        assert all(r.review_reason.startswith("Fee CG dedup:") for r in malformed_rows)
+        assert all(r.is_suspicious is True for r in malformed_rows)
+        assert all("investigate the source export" in r.review_reason for r in malformed_rows)
+
+    def test_fee_dedup_removed_count_set_on_decision_counts(
+        self, tmp_path: Path
+    ) -> None:
+        """filtered_metadata with matched fee lots -> decision_counts.fee_dedup_removed
+        is set to the matched count. Set ONCE in remove_transaction_fees (NOT in
+        _log_fee_removals).
+
+        Per the prior-attempt lesson learned, the untagged matcher can be
+        fragile; this fixture uses ONE tagged Cost withdrawal that reliably
+        matches a single CG lot, so the assertion is == 1."""
+        th = tmp_path / "th.csv"
+        _write_th_csv(
+            th,
+            [
+                _transfer_row(tx_hash="0xAAA"),
+                _withdrawal_row(
+                    tag="Cost",
+                    sent_amount="0.00100000",
+                    sent_currency="ETH",
+                    net_value_eur="3.00",
+                    tx_hash="0xAAA",
+                ),
+            ],
+        )
+        lot = _make_cg_lot(
+            disposal_timestamp="2025-03-30 12:00",
+            asset="ETH",
+            amount=Decimal("0.00100000"),
+        )
+        decision_counts = CryptoDecisionCounts()
+
+        remove_transaction_fees(
+            capital_entries=[lot],
+            transaction_history_file=th,
+            jurisdiction=_make_jurisdiction(),
+            decision_counts=decision_counts,
+        )
+
+        assert decision_counts.fee_dedup_removed == 1, (
+            f"expected fee_dedup_removed == 1, got {decision_counts.fee_dedup_removed}"
+        )

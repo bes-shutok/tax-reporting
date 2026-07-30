@@ -30,6 +30,7 @@ from ..infrastructure.koinly_parser import (
 # Local import (not top-level) would be acceptable to avoid a load cycle,
 # but ``crypto.treatment_resolver`` imports only from ``domain/`` so there
 # is no cycle. Top-level import keeps ruff PLC0415 clean.
+from .crypto.entities import CryptoReviewEntry
 from .crypto.treatment_resolver import TreatmentConfig, resolve_treatment  # noqa: E402
 
 _MAX_TXHASH_LENGTH: Final = 128
@@ -73,6 +74,7 @@ class TokenOriginResolver:
         *,
         transactions: list[Transaction] | None = None,
         config: TreatmentConfig | None = None,
+        review_entries: list[CryptoReviewEntry] | None = None,
     ) -> None:
         """Build the acquisition-event lookup from the transaction history CSV.
 
@@ -89,11 +91,26 @@ class TokenOriginResolver:
                 each ``Transaction.row.row_index`` correlates to the raw
                 row dict at the same enumeration position.
             config: ``TreatmentConfig`` for ``resolve_treatment``.
+            review_entries: Optional shared ``CryptoReviewEntry`` list threaded
+                from ``load_koinly_crypto_report``. When set, the shared emitter
+                ``log_and_reset_disagreements`` appends ONE review row per
+                disagreeing ``(asset, wallet, date)`` key (with
+                ``source_section="transaction_history"``) so the W1/W5
+                token_origin disagreements surface as actionable review rows
+                in addition to the (now-INFO) aggregate. Defaults to ``None``
+                (INV-3 backward compat: no review rows emitted).
         """
         self._lookup: dict[tuple[str, str, str], list[_AcquisitionRecord]] = {}
         self._withdrawal_by_txhash: dict[str, list[_WithdrawalRecord]] = {}
         self._treatment_by_row_index: dict[int, Treatment] = {}
         self._skipped_no_treatment = 0
+        # INV-3 backward compat: defaults to ``None``; appends are guarded by
+        # ``if self.review_entries is not None:``. The SAME list reference is
+        # threaded from ``load_koinly_crypto_report`` (created next to
+        # ``decision_counts``), so BOTH shared-emitter call scopes (W1 = capital
+        # gains parse, W5 = FIFO rebuild) append into the one report-level list
+        # without each call site re-threading it.
+        self.review_entries: list[CryptoReviewEntry] | None = review_entries
         # Pattern B: instance-state disagreement Counter accumulated by ``resolve()``
         # when records disagree and flushed by callers via
         # ``log_and_reset_disagreements(scope)``. The shared resolver instance is
@@ -440,7 +457,7 @@ class TokenOriginResolver:
                         )
                     # Pattern B: downgrade per-row WARNING to DEBUG and accumulate the
                     # disagreement key into the resolver Counter; the caller flushes
-                    # ONE aggregate WARNING via ``log_and_reset_disagreements(scope)``
+                    # ONE aggregate INFO via ``log_and_reset_disagreements(scope)``
                     # after its loop (Design Invariant #3/#5/#10).
                     logger.debug(
                         "Origin records disagree for %s at %s on %s; returning unknown",
@@ -462,26 +479,51 @@ class TokenOriginResolver:
         )
 
     def log_and_reset_disagreements(self, scope: str) -> None:
-        """Emit ONE aggregate WARNING summarizing accumulated origin disagreements, then clear.
+        """Emit ONE aggregate INFO summarizing accumulated origin disagreements, then clear.
 
         The shared ``TokenOriginResolver`` instance is mutated by ``resolve()``
         from BOTH caller loops (``_parse_capital_gains_file`` runs first, then
         ``_rebuild_fifo_for_loan_affected_assets``); each caller invokes this
         method after its loop with a distinct ``scope`` label so the aggregate
-        WARNING identifies which stage produced the disagreements.
+        INFO identifies which stage produced the disagreements.
 
-        Emit happens BEFORE clear (Design Invariant #10): a logging-handling
-        failure cannot lose the accumulated state. The clear is unconditional
-        on both the empty and non-empty paths (defensive: an unflushed non-empty
-        Counter is a bug, so we always reset).
+        Emit happens BEFORE clear (Design Invariant #10 / INV-4b): the review-row
+        appends and the INFO emit both run BEFORE ``self._disagreements.clear()``
+        so a logging-handling failure cannot lose the accumulated state. The
+        clear is unconditional on both the empty and non-empty paths (defensive:
+        an unflushed non-empty Counter is a bug, so we always reset).
+
+        When ``self.review_entries`` is set (INV-3: defaults to ``None``), one
+        ``CryptoReviewEntry(source_section="transaction_history", ...)`` row is
+        appended per disagreeing ``(asset, wallet, date)`` key BEFORE the clear,
+        carrying the per-key conflicting-record count and the stage scope in its
+        ``review_reason``. The conflicting ``_AcquisitionRecord`` detail is not
+        retained today (out of scope); the key + count is the actionable signal.
 
         Args:
-            scope: Caller label interpolated into the aggregate WARNING message
+            scope: Caller label interpolated into the aggregate INFO message
                 (e.g. ``"capital gains parse"`` or ``"FIFO rebuild"``).
         """
         logger = logging.getLogger(__name__)
         if self._disagreements:
-            logger.warning(
+            # INV-4b (clear-AFTER-emit ordering): the review-row appends MUST
+            # occur BEFORE ``self._disagreements.clear()``; the clear stays
+            # AFTER emit. Do not reorder the clear before the append.
+            if self.review_entries is not None:
+                for (asset, wallet, date), count in self._disagreements.items():
+                    self.review_entries.append(
+                        CryptoReviewEntry(
+                            source_section="transaction_history",
+                            date=date,
+                            asset=asset,
+                            platform=wallet,
+                            review_reason=(
+                                f"Token origin resolution disagreement ({scope}); "
+                                f"{count} conflicting record(s); returned unknown"
+                            ),
+                        )
+                    )
+            logger.info(
                 "TokenOriginResolver (%s): %d origin-resolution disagreement(s) across %d distinct "
                 "(asset, wallet, date) keys; returning unknown; see DEBUG log for details",
                 scope,

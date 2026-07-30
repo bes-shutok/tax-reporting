@@ -1311,9 +1311,12 @@ class TestRemoveDerivativesFlaggedLots:
 
         assert count == 2
         assert filtered == []
-        # Exactly one summary WARNING, and its "surplus lots" section is empty.
+        # Exactly one summary INFO (demoted from WARNING), and its "surplus
+        # lots" section is empty.
         summary_records = [
-            r for r in caplog.records if r.levelno == logging.WARNING
+            r
+            for r in caplog.records
+            if r.levelno == logging.INFO and "dedup summary" in r.getMessage()
         ]
         assert len(summary_records) == 1
         summary_message = summary_records[0].getMessage()
@@ -1422,12 +1425,14 @@ class TestRemoveDerivativesFlaggedLots:
         assert count == 1
         assert len(filtered) == 2
 
-        # Exactly one WARNING (the summary); no per-lot WARNING lines.
-        warning_records = [
-            r for r in caplog.records if r.levelno == logging.WARNING
+        # Exactly one summary INFO (demoted from WARNING); no per-lot WARNING lines.
+        summary_records = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.INFO and "dedup summary" in r.getMessage()
         ]
-        assert len(warning_records) == 1
-        summary_message = warning_records[0].getMessage()
+        assert len(summary_records) == 1
+        summary_message = summary_records[0].getMessage()
         # Surplus section reports count=2 and total amount=1.0.
         assert "2 surplus" in summary_message
         assert "1.0" in summary_message or "1,0" in summary_message
@@ -1477,13 +1482,14 @@ class TestRemoveDerivativesFlaggedLots:
         assert "ByBit" in info_text
         assert "2025-01-24 20:00" in info_text
 
-    def test_summary_logged_at_warning_once(
+    def test_summary_logged_at_info_once(
         self, caplog: pytest.LogCaptureFixture
     ):
         """Given a removal scenario removing N lots, expects exactly one
-        WARNING log summarizing removals (total count, exact count, range
-        count, aggregate proceeds, aggregate gain removed); surplus lots;
-        and malformed-input lots. The summary is the ONLY WARNING emitted.
+        INFO summary log (demoted from WARNING) summarizing removals (total
+        count, exact count, range count, aggregate proceeds, aggregate gain
+        removed); surplus lots; and malformed-input lots. The summary is the
+        ONLY dedup-summary record emitted (per-lot removal INFOs are separate).
         """
         from tax_reporting.application.crypto.derivatives_filter import (
             DerivativesThEvent,
@@ -1511,11 +1517,13 @@ class TestRemoveDerivativesFlaggedLots:
         with caplog.at_level(logging.INFO, logger=self._LOGGER_NAME):
             remove_derivatives_flagged_lots(lots, events)
 
-        warning_records = [
-            r for r in caplog.records if r.levelno == logging.WARNING
+        summary_records = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.INFO and "dedup summary" in r.getMessage()
         ]
-        assert len(warning_records) == 1
-        summary = warning_records[0].getMessage()
+        assert len(summary_records) == 1
+        summary = summary_records[0].getMessage()
         # Removal counts: 1 total, 1 exact, 0 range.
         assert "1" in summary  # at least the total count
         # Sections present.
@@ -1561,11 +1569,13 @@ class TestRemoveDerivativesFlaggedLots:
         assert count == 0
         assert len(filtered) == 2
 
-        warning_records = [
-            r for r in caplog.records if r.levelno == logging.WARNING
+        summary_records = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.INFO and "dedup summary" in r.getMessage()
         ]
-        assert len(warning_records) == 1
-        summary = warning_records[0].getMessage()
+        assert len(summary_records) == 1
+        summary = summary_records[0].getMessage()
         assert "2 malformed" in summary
 
     def test_range_match_does_not_trigger_collision_warning(
@@ -1606,11 +1616,13 @@ class TestRemoveDerivativesFlaggedLots:
         with caplog.at_level(logging.INFO, logger=self._LOGGER_NAME):
             remove_derivatives_flagged_lots(lots, events)
 
-        warning_records = [
-            r for r in caplog.records if r.levelno == logging.WARNING
+        summary_records = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.INFO and "dedup summary" in r.getMessage()
         ]
-        assert len(warning_records) == 1
-        summary = warning_records[0].getMessage()
+        assert len(summary_records) == 1
+        summary = summary_records[0].getMessage()
         assert "0 surplus" in summary
 
     def test_empty_derivatives_events_returns_input_unchanged(
@@ -1910,5 +1922,67 @@ class TestDerivativesFilter:
             "Derivatives tags empty" in r.getMessage() for r in warning_records
         ), (
             f"expected empty-tags WARNING; got messages={[r.getMessage() for r in warning_records]}"
+        )
+
+    def test_derivatives_dedup_removed_count_set_on_decision_counts(
+        self, tmp_path: Path
+    ) -> None:
+        """Given 3 removed lots threaded through ``apply_derivatives_dedup``
+        with a ``CryptoDecisionCounts`` instance, expects
+        ``decision_counts.derivatives_dedup_removed == 3`` (set once, not
+        incremented).
+        """
+        from tax_reporting.application.crypto.derivatives_filter import (
+            apply_derivatives_dedup,
+        )
+        from tax_reporting.application.crypto.entities import CryptoDecisionCounts
+        from tax_reporting.application.crypto.treatment_resolver import (
+            TreatmentConfig,
+        )
+        from tax_reporting.application.crypto_reporting import build_transactions_from_th
+
+        # 3 CG lots each exactly matching one derivatives event.
+        lots = [
+            _make_cg_lot(
+                disposal_timestamp=f"2025-01-24 0{i}:00",
+                amount=Decimal("0.5"),
+            )
+            for i in range(3)
+        ]
+
+        # 3 crypto_withdrawal TH rows tagged "Realized gain" at the matching
+        # (timestamp, asset, wallet, amount) keys -> 3 derivatives events.
+        th_csv = tmp_path / "th.csv"
+        th_csv.write_text(
+            "Transaction report 2025\n\n"
+            "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,"
+            "Receiving Wallet,Received Amount,Received Currency,Net Value (EUR)\n"
+            + "\n".join(
+                f"2025-01-24 0{i}:00:00 UTC,crypto_withdrawal,Realized gain,"
+                f"ByBit,\"0,5\",USDT,,,\"5,00\""
+                for i in range(3)
+            ),
+            encoding="utf-8",
+        )
+        transactions = build_transactions_from_th(th_csv)
+        assert len(transactions) == 3, (
+            f"expected 3 TH rows parsed; got {len(transactions)}"
+        )
+
+        decision_counts = CryptoDecisionCounts()
+
+        apply_derivatives_dedup(
+            capital_entries=lots,
+            jurisdiction=_make_derivatives_jurisdiction(),
+            transaction_history_file=th_csv,
+            transactions=transactions,
+            config=TreatmentConfig(derivatives_tags=frozenset({"Realized gain"})),
+            review_entries=None,
+            decision_counts=decision_counts,
+        )
+
+        assert decision_counts.derivatives_dedup_removed == 3, (
+            f"expected derivatives_dedup_removed == 3; "
+            f"got {decision_counts.derivatives_dedup_removed}"
         )
 

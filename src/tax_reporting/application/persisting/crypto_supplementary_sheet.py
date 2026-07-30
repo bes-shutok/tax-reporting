@@ -66,6 +66,18 @@ _DUST_SUMMARY_HEADERS = [
     "Category",
 ]
 
+# Exhaustive label map keyed by ``CryptoReviewEntry.source_section``. Adding a
+# new Literal value to the dataclass requires an entry here: the explicit
+# ``else``/KeyError raise in ``_write_review_rows`` (replacing the silent
+# ``.get(entry.source_section, "Income")`` fallback) makes a future new Literal
+# value FAIL LOUDLY instead of silently rendering as "Income".
+_SOURCE_LABELS = {
+    "capital_gains": "Capital Gains",
+    "income": "Income",
+    "transaction_history": "Transaction History",
+    "derivatives": "Derivatives",
+}
+
 
 def _write_reward_detail_rows(
     worksheet: openpyxl.worksheet.worksheet.Worksheet,
@@ -128,16 +140,23 @@ def _write_review_rows(
         worksheet.cell(row_no, 1, "No review items")
         return row_no + 1
 
+    # Exhaustive label map keyed by ``CryptoReviewEntry.source_section`` lives
+    # at module scope (``_SOURCE_LABELS``); adding a new Literal value to the
+    # dataclass requires an entry there.
+
     for entry in review_entries:
-        source_label = {
-            "capital_gains": "Capital Gains",
-            "transaction_history": "Transaction History",
-        }.get(entry.source_section, "Income")
+        try:
+            source_label = _SOURCE_LABELS[entry.source_section]
+        except KeyError as exc:
+            raise AssertionError(
+                f"Unknown CryptoReviewEntry.source_section={entry.source_section!r}; "
+                "add it to the _SOURCE_LABELS map in crypto_supplementary_sheet.py"
+            ) from exc
         worksheet.cell(row_no, 1, source_label)
         worksheet.cell(row_no, 2, entry.date)
         asset_cell = worksheet.cell(row_no, 3, safe_cell_value(entry.asset))
         worksheet.cell(row_no, 4, safe_cell_value(entry.platform))
-        worksheet.cell(row_no, 5, entry.review_reason)
+        worksheet.cell(row_no, 5, safe_cell_value(entry.review_reason))
         if entry.is_suspicious:
             asset_cell.font = Font(color="FF0000", bold=True)
         row_no += 1

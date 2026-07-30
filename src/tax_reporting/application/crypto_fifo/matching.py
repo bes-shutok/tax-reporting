@@ -357,7 +357,7 @@ def _consume_against_pool_inplace(  # noqa: PLR0912, PLR0913, PLR0915
             if pool_truly_exhausted:
                 # Pattern F (pool-exhausted sub-branch): per-row emission is DEBUG;
                 # the audit signal is preserved via the placeholder realization's
-                # review_reason + ONE aggregate WARNING emitted by
+                # review_reason + ONE aggregate INFO emitted by
                 # _rebuild_fifo_for_loan_affected_assets (sums unmatched_taxable_count).
                 logger.debug(
                     "FIFO pool exhausted for %s on %s: %.8f units with no matching acquisition",

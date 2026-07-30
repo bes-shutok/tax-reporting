@@ -24,6 +24,7 @@ from ...infrastructure.koinly_parser import (
     parse_koinly_decimal,
     read_koinly_rows,
 )
+from ..crypto.entities import CryptoReviewEntry
 
 # Family F layering: ``_normalize_tag`` lives in ``application/crypto/`` but is
 # imported here as a pure helper (no crypto-fifo -> crypto reverse wiring for
@@ -118,6 +119,7 @@ def parse_th_for_loan_affected_assets(
     loan_affected_assets: frozenset[str] = frozenset(),
     *,
     empty_cost_basis_counter: list[int] | None = None,
+    review_entries: list[CryptoReviewEntry] | None = None,
 ) -> tuple[
     dict[str, list[AcquisitionContext]],
     dict[str, list[ConsumptionContext]],
@@ -140,6 +142,11 @@ def parse_th_for_loan_affected_assets(
             (``_rebuild_fifo_for_loan_affected_assets``) emits ONE aggregate INFO from
             the total. ``None`` (the default) is tolerated for callers that do not need
             the count.
+        review_entries: Optional threaded Crypto Supplementary review list (mutated in
+            place by ``_dedup_by_tx_key``). When provided, one ``CryptoReviewEntry`` is
+            appended per dropped duplicate-tx_key acquisition/consumption (Plan
+            2026-07-25 Task 3 / W2). ``None`` (the default) preserves the ~78 existing
+            test callers that omit the param (INV-3 backward compat).
 
     Returns:
         Tuple of (acquisitions_by_asset, consumptions_by_asset, phantom_sending_transfers,
@@ -150,7 +157,9 @@ def parse_th_for_loan_affected_assets(
     """
     rows = read_koinly_rows(transaction_history_path)
     return _classify_rows_for_loan_affected_assets(
-        rows, loan_affected_assets, empty_cost_basis_counter=empty_cost_basis_counter
+        rows, loan_affected_assets,
+        empty_cost_basis_counter=empty_cost_basis_counter,
+        review_entries=review_entries,
     )
 
 
@@ -159,6 +168,7 @@ def _classify_rows_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
     loan_affected_assets: frozenset[str] = frozenset(),
     *,
     empty_cost_basis_counter: list[int] | None = None,
+    review_entries: list[CryptoReviewEntry] | None = None,
 ) -> tuple[
     dict[str, list[AcquisitionContext]],
     dict[str, list[ConsumptionContext]],
@@ -178,6 +188,9 @@ def _classify_rows_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
             incremented once per received-only exchange with an empty Sent Cost Basis
             (Bucket B); threaded down to ``_emit_received_only_exchange``. ``None`` is
             tolerated for callers that do not need the count.
+        review_entries: Optional threaded Crypto Supplementary review list forwarded to
+            ``_dedup_by_tx_key`` (Plan 2026-07-25 Task 3 / W2). ``None`` (the default)
+            preserves the ~78 existing test callers that omit the param (INV-3).
 
     Returns:
         Same tuple structure as parse_th_for_loan_affected_assets.
@@ -187,9 +200,11 @@ def _classify_rows_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
     phantom_sending_transfers: set[tuple[str, str, str]] = set()
     parse_failures_by_asset: dict[str, list[int]] = {}
     # Pattern E: per-asset tally of zero-Net-Value crypto_deposit rows, grouped
-    # into a single aggregate WARNING summary at the end of this function so
-    # the WARNING-level audit signal stays on the console while the per-row
-    # detail is preserved at DEBUG in the file (Design Invariant #3).
+    # into a single aggregate INFO summary at the end of this function so
+    # the audit signal stays on the console while the per-row
+    # detail is preserved at DEBUG in the file (Design Invariant #3). The per-row
+    # data issue is also surfaced in the user-facing extract via a
+    # ``CryptoReviewEntry`` row (W3 / EXTRACT_SURFACED).
     zero_net_deposits: Counter[str] = Counter()
 
     for row_index, row in enumerate(rows, start=1):
@@ -295,16 +310,21 @@ def _classify_rows_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
             phantom_sending_transfers=phantom_sending_transfers,
             zero_net_deposits=zero_net_deposits,
             empty_cost_basis_counter=empty_cost_basis_counter,
+            review_entries=review_entries,
         )
 
-    _dedup_by_tx_key(acquisitions, consumptions, parse_failures_by_asset)
-    # Pattern E: emit ONE aggregate WARNING for all zero-Net-Value crypto_deposit
+    _dedup_by_tx_key(acquisitions, consumptions, parse_failures_by_asset, review_entries)
+    # Pattern E: emit ONE aggregate summary for all zero-Net-Value crypto_deposit
     # rows seen this run. The per-row detail is preserved at DEBUG in
     # ``_classify_deposit_row`` so the file audit trail keeps full asset/row
-    # context; this single summary preserves the WARNING-level audit signal on
-    # the console without N redundant per-row WARNING lines.
+    # context, and one ``CryptoReviewEntry(source_section="transaction_history")``
+    # is appended per flagged deposit (Task 4 / W3) so the user-facing Crypto
+    # Supplementary sheet surfaces the data issue. The aggregate drops from
+    # WARNING to INFO because the per-row detail now lives in the extract review
+    # rows, not just the file log (governing principle: data issues live in the
+    # extract, not the console WARNING).
     if zero_net_deposits:
-        logger.warning(
+        logger.info(
             "Flagged %d zero-Net-Value crypto_deposit(s) for review (%s); "
             "see DEBUG log and review_reason field for details",
             sum(zero_net_deposits.values()),
@@ -317,8 +337,9 @@ def _dedup_by_tx_key(
     acquisitions: MutableMapping[str, list[AcquisitionContext]],
     consumptions: MutableMapping[str, list[ConsumptionContext]],
     parse_failures_by_asset: dict[str, list[int]],
+    review_entries: list[CryptoReviewEntry] | None = None,
 ) -> None:
-    """Remove duplicate tx_key entries per asset per direction, logging a warning for each skip.
+    """Remove duplicate tx_key entries per asset per direction, logging an INFO summary.
 
     Koinly's wrapped-asset repair workflow can produce TH rows with duplicate TxHash values.
     A duplicated acquisition would double the FIFO pool quantity; a duplicated consumption
@@ -326,7 +347,15 @@ def _dedup_by_tx_key(
     keeps the first occurrence and discards subsequent rows with the same tx_key.
 
     The parse_failures_by_asset dict is updated for any row that is dropped so that the
-    resulting FIFO realizations are flagged for manual review.
+    resulting FIFO realizations are flagged for manual review. When ``review_entries`` is
+    provided (INV-3: defaults to ``None`` for backward compat with the ~78 test callers that
+    omit it), one ``CryptoReviewEntry(source_section="capital_gains")`` is appended per
+    dropped row so the user-facing Crypto Supplementary sheet surfaces the data issue
+    (governing principle: data issues live in the extract, not the console WARNING).
+
+    The per-row ``logger.debug`` audit trail (asset/row context) is preserved unchanged.
+    The aggregate is emitted at INFO (was WARNING; demoted by Plan 2026-07-25 Task 3 / W2)
+    because the per-row detail now lives in the extract review rows, not just the file log.
     """
     dropped_acqs = 0
     dropped_cons = 0
@@ -350,6 +379,21 @@ def _dedup_by_tx_key(
                 parse_failures_by_asset.setdefault(asset, []).append(acq.source_row_index)
                 dropped_acqs += 1
                 affected_assets.add(asset)
+                # INV-3: guard so existing test callers that omit review_entries do not
+                # hit AttributeError. One review row per dropped acquisition (W2).
+                if review_entries is not None:
+                    review_entries.append(
+                        CryptoReviewEntry(
+                            source_section="capital_gains",
+                            date=acq.acq.date,
+                            asset=acq.acq.asset,
+                            platform=acq.acq.platform,
+                            review_reason=(
+                                f"Duplicate tx_key dropped to prevent doubled FIFO pool "
+                                f"(acquisition; tx_key={acq.tx_key})"
+                            ),
+                        )
+                    )
             else:
                 seen_acqs.add(dedup_key)
                 kept.append(acq)
@@ -373,17 +417,32 @@ def _dedup_by_tx_key(
                 parse_failures_by_asset.setdefault(asset, []).append(con.source_row_index)
                 dropped_cons += 1
                 affected_assets.add(asset)
+                # INV-3: guard so existing test callers that omit review_entries do not
+                # hit AttributeError. One review row per dropped consumption (W2).
+                if review_entries is not None:
+                    review_entries.append(
+                        CryptoReviewEntry(
+                            source_section="capital_gains",
+                            date=con.con.date,
+                            asset=con.con.asset,
+                            platform=con.con.platform,
+                            review_reason=(
+                                f"Duplicate tx_key dropped to prevent doubled FIFO pool "
+                                f"(consumption; tx_key={con.tx_key})"
+                            ),
+                        )
+                    )
             else:
                 seen_cons.add(dedup_key)
                 kept_cons.append(con)
         consumptions[asset] = kept_cons
 
-    # Aggregate WARNING: the per-row drop detail is preserved at DEBUG above (one
-    # record per dropped row) so the file audit trail keeps full asset/row context;
-    # this single summary preserves the WARNING-level audit signal on the console
-    # without N redundant per-row WARNING lines (Pattern C grouping).
+    # Aggregate INFO (was WARNING; demoted by Plan 2026-07-25 Task 3 / W2): the per-row
+    # drop detail is preserved at DEBUG above (one record per dropped row) AND surfaced
+    # in the extract via CryptoReviewEntry rows (source_section="capital_gains"), so the
+    # console WARNING is no longer needed - the data issue lives in the user-facing sheet.
     if dropped_acqs > 0 or dropped_cons > 0:
-        logger.warning(
+        logger.info(
             "Dropped %d duplicate-tx_key acquisition(s) and %d consumption(s) across %d asset(s) "
             "to prevent doubled FIFO pool; see DEBUG log for per-row detail",
             dropped_acqs,
@@ -401,6 +460,7 @@ def _classify_th_row(  # noqa: PLR0913
     phantom_sending_transfers: set[tuple[str, str, str]],
     zero_net_deposits: Counter[str],
     empty_cost_basis_counter: list[int] | None = None,
+    review_entries: list[CryptoReviewEntry] | None = None,
 ) -> None:
     """Classify a single parsed TH row into acquisitions/consumptions for loan-affected assets."""
     match (parsed_row.row_type, parsed_row.sent_affected, parsed_row.received_affected):
@@ -444,6 +504,7 @@ def _classify_th_row(  # noqa: PLR0913
                 consumptions=consumptions,
                 parse_failures_by_asset=parse_failures_by_asset,
                 zero_net_deposits=zero_net_deposits,
+                review_entries=review_entries,
             )
         case (_, True, _) | (_, _, True):
             _classify_unhandled_principal_row(
@@ -664,13 +725,14 @@ def _classify_buy_row(
 
 
 
-def _classify_deposit_row(
+def _classify_deposit_row(  # noqa: PLR0913
     parsed_row: ParsedTxRow,
     *,
     acquisitions: MutableMapping[str, list[AcquisitionContext]],
     consumptions: MutableMapping[str, list[ConsumptionContext]],
     parse_failures_by_asset: dict[str, list[int]],
     zero_net_deposits: Counter[str],
+    review_entries: list[CryptoReviewEntry] | None = None,
 ) -> None:
     if parsed_row.sent_affected:
         logger.warning(
@@ -686,9 +748,9 @@ def _classify_deposit_row(
     deposit_review_reason: str | None = None
     if parsed_row.net_value == ZERO:
         # Pattern E: per-row detail is preserved at DEBUG in the file for the
-        # audit trail; the WARNING-level signal is grouped into ONE aggregate
+        # audit trail; the signal is grouped into ONE aggregate INFO
         # summary emitted by ``_classify_rows_for_loan_affected_assets`` so the
-        # console is not flooded with N redundant per-row WARNING lines. The
+        # console is not flooded with N redundant per-row DEBUG lines. The
         # ``deposit_review_reason`` field on the acquisition is UNCHANGED
         # (Design Invariant #4: Excel review list content unchanged).
         logger.debug(
@@ -704,6 +766,26 @@ def _classify_deposit_row(
             f"(row {parsed_row.row_index}) has zero Net Value; "
             "cost basis may be missing in Koinly: verify and correct manually"
         )
+        # INV-3: guard so existing test callers that omit review_entries do not
+        # hit AttributeError. One review row per zero-NV crypto_deposit (W3).
+        # source_section="transaction_history": the deposit lives in the TH
+        # export, not the CG side; the deposit may never be realized (held to
+        # year-end), so the per-row surface cannot depend on later realization
+        # (Plan 2026-07-25 Task 4 / W3; governing principle: data issues live
+        # in the extract, not the console WARNING).
+        if review_entries is not None:
+            review_entries.append(
+                CryptoReviewEntry(
+                    source_section="transaction_history",
+                    date=parsed_row.date_str,
+                    asset=parsed_row.received_currency,
+                    platform=normalize_platform_name(parsed_row.row.get("Receiving Wallet", "")),
+                    review_reason=(
+                        "Zero-Net-Value crypto_deposit flagged for review "
+                        "(possible missing cost basis)"
+                    ),
+                )
+            )
     _acq = AcquisitionContext(
             acq=CryptoAcquisition(
                 date=parsed_row.date_str,

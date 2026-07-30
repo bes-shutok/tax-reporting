@@ -46,7 +46,7 @@ from ...domain.treatment import Treatment
 from ...infrastructure.json_loader import DEGRADED, load_guarded_json
 from ...infrastructure.koinly_parser import normalize_asset_ticker
 from .classification import _REPOSITORY_ROOT
-from .entities import CryptoCapitalGainEntry
+from .entities import CryptoCapitalGainEntry, CryptoDecisionCounts, CryptoReviewEntry
 from .th_lot_matcher import IndexedLot, remove_matched_lots
 from .treatment_resolver import TreatmentConfig, resolve_treatment
 
@@ -219,9 +219,10 @@ def _log_removals_and_surplus(
     """Per-lot INFO logs for removals and surplus lots (derivatives-owned).
 
     Each per-lot removal names the matching TH ``th_label`` so the log record
-    is byte-identical to the pre-extraction output. The summary WARNING
-    itself is emitted by :func:`th_lot_matcher.remove_matched_lots`; this
-    helper only logs the per-lot INFO records.
+    is byte-identical to the pre-extraction output. The summary INFO (demoted
+    from WARNING in the relocate-crypto-warnings plan) itself is emitted by
+    :func:`th_lot_matcher.remove_matched_lots`; this helper only logs the
+    per-lot INFO records.
     """
     for lot, match_type, event in matched_metadata:
         logger.info(
@@ -250,26 +251,31 @@ def _log_removals_and_surplus(
 def remove_derivatives_flagged_lots(
     capital_entries: list[CryptoCapitalGainEntry],
     derivatives_events: list[DerivativesThEvent],
+    *,
+    review_entries: list[CryptoReviewEntry] | None = None,
+    decision_counts: CryptoDecisionCounts | None = None,
 ) -> tuple[list[CryptoCapitalGainEntry], int]:
     """Remove derivatives-flagged CG lots via the shared two-phase matcher.
 
     Delegates to :func:`th_lot_matcher.remove_matched_lots`
     (``domain_label="derivatives"``), which runs phase 1 (exact match) and
-    phase 2 (contiguous-range fallback) and emits exactly one WARNING summary
-    whose title reproduces ``"Derivatives CG dedup summary"`` from this
-    module's logger. This caller then runs :func:`_log_removals_and_surplus`
-    over the returned ``matched_metadata``/``surplus_lots`` to emit the
-    per-lot INFO records (each naming the matched ``th_label``). Unmatched
-    events are returned by the matcher but, matching the historical
-    behaviour, this caller does NOT warn for them: a derivatives event
-    without a CG lot is the expected OGR-only outcome (the disposal lives in
-    the Other Gains Report, not Capital Gains).
+    phase 2 (contiguous-range fallback) and emits exactly one INFO summary
+    (demoted from WARNING in the relocate-crypto-warnings plan) whose title
+    reproduces ``"Derivatives CG dedup summary"`` from this module's logger.
+    This caller then runs :func:`_log_removals_and_surplus` over the returned
+    ``matched_metadata``/``surplus_lots`` to emit the per-lot INFO records
+    (each naming the matched ``th_label``). Unmatched events are returned by
+    the matcher but, matching the historical behaviour, this caller does NOT
+    warn for them: a derivatives event without a CG lot is the expected
+    OGR-only outcome (the disposal lives in the Other Gains Report, not
+    Capital Gains).
 
-    Behavior is byte-identical to the pre-extraction implementation: the
-    per-lot INFO records AND the summary WARNING both still emit from the
-    ``tax_reporting.application.crypto.derivatives_filter`` logger with the
-    exact ``"Removed derivatives-flagged CG lot"`` /
-    ``"Derivatives CG dedup summary"`` text.
+    ``review_entries`` and ``decision_counts`` are forwarded to
+    :func:`remove_matched_lots` so the per-row detail (removed/surplus/
+    malformed lots) surfaces as :class:`CryptoReviewEntry` rows in the
+    user-facing extract and the removed count lands in A&M. Both default to
+    ``None`` (INV-3) so the ~15 existing test callers that omit them stay
+    green.
 
     Args:
         capital_entries: Capital-gains entries (FIFO lots). Entries without a
@@ -277,6 +283,11 @@ def remove_derivatives_flagged_lots(
             from matching.
         derivatives_events: Derivatives events from the TH scanner. Empty list
             short-circuits and returns the input unchanged.
+        review_entries: Optional list to receive one :class:`CryptoReviewEntry`
+            per removed/surplus/malformed lot (INV-3 default ``None``).
+        decision_counts: Optional mutable accumulator whose
+            ``derivatives_dedup_removed`` field is set to the removed count
+            (INV-4a default ``None``).
 
     Returns:
         Tuple of (filtered list of entries, removed count). The filtered
@@ -290,6 +301,8 @@ def remove_derivatives_flagged_lots(
         derivatives_events,
         domain_label="derivatives",
         logger=logger,
+        review_entries=review_entries,
+        decision_counts=decision_counts,
     )
 
     _log_removals_and_surplus(result.matched_metadata, result.surplus_lots)
@@ -377,6 +390,8 @@ def apply_derivatives_dedup(  # noqa: PLR0913
     transaction_history_file: Path | None,
     transactions: list[Transaction],
     config: TreatmentConfig,
+    review_entries: list[CryptoReviewEntry] | None = None,
+    decision_counts: CryptoDecisionCounts | None = None,
 ) -> list[CryptoCapitalGainEntry]:
     """Pipeline entry point for the derivatives TH-label CG dedup.
 
@@ -433,6 +448,15 @@ def apply_derivatives_dedup(  # noqa: PLR0913
             ``derivatives_tags`` frozenset (populated upstream by
             :func:`_load_derivatives_labels_config`) is the source of the
             empty-tags WARNING gate.
+        review_entries: Optional shared ``CryptoReviewEntry`` list (INV-3:
+            defaults to ``None``). When set, forwarded into the matcher so each
+            removed/surplus/malformed lot appends one review row (the W6
+            EXTRACT_SURFACED per-row surface); when ``None`` no rows are
+            appended (backward-compat with the ~15 existing test callers).
+        decision_counts: Optional ``CryptoDecisionCounts`` accumulator (INV-3:
+            defaults to ``None``). When set, the matcher writes
+            ``derivatives_dedup_removed`` exactly once (set-not-increment);
+            when ``None`` the count is not recorded.
 
     Returns:
         The filtered list (input unchanged if any gate failed or no
@@ -460,6 +484,9 @@ def apply_derivatives_dedup(  # noqa: PLR0913
         return capital_entries
 
     filtered, _removed_count = remove_derivatives_flagged_lots(
-        capital_entries, derivatives_events
+        capital_entries,
+        derivatives_events,
+        review_entries=review_entries,
+        decision_counts=decision_counts,
     )
     return filtered

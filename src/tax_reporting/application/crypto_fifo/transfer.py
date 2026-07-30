@@ -68,7 +68,7 @@ def _resolve_intra_asset_transfers(  # noqa: PLR0912
         flag_counts: Pattern K shared mutable dict keyed by transfer carry-over cause
             (``requires_review`` / ``unresolved``). When provided, each per-row WARNING
             branch (downgraded to DEBUG) increments its cause key so the caller emits ONE
-            aggregate WARNING after the per-asset / per-platform loop. ``None`` keeps the
+            aggregate INFO after the per-asset / per-platform loop. ``None`` keeps the
             per-row DEBUG emission without counting (backward-compat for direct callers).
             The ``review_required``/``review_reason``/``cost_basis_eur`` assignments are
             UNCHANGED in every branch (Design Invariant #3).
@@ -127,7 +127,7 @@ def _resolve_intra_asset_transfers(  # noqa: PLR0912
             if review_required:
                 # Pattern K: per-row emission downgraded to DEBUG (message text unchanged).
                 # When ``flag_counts`` is threaded, increment ``requires_review`` so the
-                # caller emits ONE aggregate WARNING; the audit signal stays on the
+                # caller emits ONE aggregate INFO; the audit signal stays on the
                 # ``review_required``/``review_reason`` fields (Design Invariant #3).
                 logger.debug(
                     "Transfer carry-over for %s tx_key=%s requires review: %s",
@@ -151,7 +151,7 @@ def _resolve_intra_asset_transfers(  # noqa: PLR0912
             )
             # Pattern K: per-row emission downgraded to DEBUG (message text unchanged).
             # When ``flag_counts`` is threaded, increment ``unresolved`` so the caller
-            # emits ONE aggregate WARNING; the audit signal stays on the
+            # emits ONE aggregate INFO; the audit signal stays on the
             # ``review_required=True``/``review_reason`` fields (Design Invariant #3).
             logger.debug(
                 "Could not resolve transfer_in_deferred for %s tx_key=%s: "

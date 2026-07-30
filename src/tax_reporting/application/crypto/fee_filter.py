@@ -13,11 +13,11 @@ This module owns ONLY:
   guard);
 - the unlisted-asset *suspect* surfacing (a ``review_required`` flag on the
   correlated CG lot, a ``CryptoReviewEntry`` row in the Crypto Supplementary
-  sheet, and a log WARNING) - suspects are NEVER removed (over-taxing on
-  uncertainty is the safe direction);
+  sheet, and a log INFO aggregate carrying the suspect count) - suspects are
+  NEVER removed (over-taxing on uncertainty is the safe direction);
 - per-caller per-lot INFO/WARNING logging.
 
-The two-phase matching + removal + the single aggregate summary WARNING are
+The two-phase matching + removal + the single aggregate summary INFO are
 reused from :mod:`th_lot_matcher` (repo rule #119: this module and
 ``derivatives_filter`` are sibling TH-event->CG-lot matchers performing the
 same conceptual operation). Do NOT reimplement two-phase matching here.
@@ -47,7 +47,7 @@ from ...infrastructure.koinly_parser import (
     parse_koinly_decimal,
     read_koinly_rows,
 )
-from .entities import CryptoCapitalGainEntry, CryptoReviewEntry
+from .entities import CryptoCapitalGainEntry, CryptoDecisionCounts, CryptoReviewEntry
 from .th_lot_matcher import (
     IndexedLot,
     _format_summary_warning,
@@ -112,8 +112,9 @@ class FeeThEvent:
         amount: ``Sent Amount`` parsed via ``parse_koinly_decimal``.
         tagged: True for the trusted ``Cost``/``Loan fee`` path; False for the
             untagged-whitelisted path. Drives the per-lot log LEVEL
-            (INFO for trusted tagged removals, WARNING for untagged-whitelisted
-            removals which can be genuine dust disposals).
+            (INFO for trusted tagged removals, DEBUG for untagged-whitelisted
+            removals which can be genuine dust disposals; the untagged-whitelisted
+            aggregate is INFO).
         tx_hash: The TH ``TxHash`` value (carried for the per-lot log so a
             cross-transaction wrong-lot match is visible during the release-gate
             spot-check; Design Invariant 7).
@@ -142,8 +143,10 @@ class SuspectThEvent:
     is ``<= max(per_asset.values())``, gated by the TxHash co-occurrence guard.
     The suspect stays taxable: it is surfaced via a ``review_required`` flag on
     its correlated CG lot (when one exists), a ``CryptoReviewEntry`` row, and a
-    log WARNING so a legitimate gas token missing from the config can be
-    discovered and added without under-tax risk.
+    log INFO aggregate (the per-suspect ``logger.debug`` plus one
+    ``Surfaced %d suspect untagged network fees`` INFO summary) so a legitimate
+    gas token missing from the config can be discovered and added without
+    under-tax risk.
 
     Satisfies the :class:`ThEvent` protocol via the four read-only fields.
 
@@ -378,24 +381,26 @@ def _identify_fee_and_suspect_events(
 def _log_fee_removals(
     matched_metadata: list[tuple[IndexedLot[CryptoCapitalGainEntry], str, FeeThEvent]],
 ) -> None:
-    """Per-lot INFO/DEBUG logs for fee-matched CG lot removals + ONE aggregate WARNING.
+    """Per-lot INFO/DEBUG logs for fee-matched CG lot removals + ONE aggregate INFO.
 
     Trusted tagged-fee removals log at INFO. Embedded-fee removals log at INFO.
     Untagged-whitelisted removals log the per-tx_hash detail at DEBUG (asset +
-    ``Net Value (EUR)`` + TxHash), then ONE aggregate WARNING collapses them into
-    a count + per-asset breakdown. The aggregate stays WARNING because there is
-    NO Excel review surface for these removals (the removal returns
-    ``capital_entries`` minus the lot; nothing is appended to ``review_entries``) -
-    the WARNING is the only audit trail, so only the per-tx_hash detail moves to
-    DEBUG. This is a group-collapse (pattern I), DISTINCT from the J/K/L
-    downgrade: the single aggregate stays loud while the per-row lines quiet.
+    ``Net Value (EUR)`` + TxHash), then ONE aggregate INFO collapses them into
+    a count + per-asset breakdown. The aggregate is a PURE INFO demotion (Task
+    5 / r2 Finding 2): the untagged-whitelisted subset is STRICTLY CONTAINED in
+    ``filtered_metadata`` (the W7 iterate), so the per-row "verify network fee"
+    signal is carried by W7's branch-aware reason (Task 7) on the single review
+    row the lot already gets from W7 - W8 owns NO review surface. The per-tx_hash
+    detail moves to DEBUG; the single aggregate moves to INFO. This is a
+    group-collapse (pattern I), DISTINCT from the J/K/L downgrade: the single
+    aggregate now sits at INFO while the per-row lines stay at DEBUG.
 
     Reads lot fields THROUGH ``lot.entry`` (r8 M1): ``lot`` is the
     :class:`IndexedLot` wrapper, not the bare entry; the date field is
     ``disposal_timestamp``, not ``date``.
 
     Called once per run from :func:`remove_transaction_fees` after the existing
-    dedup-summary WARNING; the new aggregate is a second WARNING from this call.
+    dedup-summary INFO (W7); this aggregate is an INFO emit from this call (W8).
     The dedup summary covers ALL removals; this aggregate covers only the
     untagged-whitelisted subset that needs per-row verification.
     """
@@ -431,7 +436,7 @@ def _log_fee_removals(
 
     if untagged_whitelisted_by_asset:
         total = sum(untagged_whitelisted_by_asset.values())
-        logger.warning(
+        logger.info(
             "Removed %d untagged-whitelisted fee disposal(s) (%s); "
             "per-tx_hash detail at DEBUG; verify each is a network fee, not a "
             "real disposal",
@@ -443,11 +448,13 @@ def _log_fee_removals(
         )
 
 
-def remove_transaction_fees(
+def remove_transaction_fees(  # noqa: PLR0912, PLR0915
     *,
     capital_entries: list[CryptoCapitalGainEntry],
     transaction_history_file: Path | None,
     jurisdiction: TaxJurisdictionConfig | None,
+    review_entries: list[CryptoReviewEntry] | None = None,
+    decision_counts: CryptoDecisionCounts | None = None,
 ) -> tuple[list[CryptoCapitalGainEntry], list[SuspectThEvent]]:
     """Remove tagged/untagged-whitelist fee-matched CG lots (early pass).
 
@@ -469,6 +476,17 @@ def remove_transaction_fees(
             or ``None``.
         jurisdiction: Tax jurisdiction config supplying the gating flag and the
             per-token ceiling map.
+        review_entries: Optional list to receive one :class:`CryptoReviewEntry`
+            per removed/surplus/malformed lot (INV-3 default ``None`` so the ~30
+            existing test callers stay green). The removed-lot reason is
+            BRANCH-AWARE on the matched :class:`FeeThEvent` (tagged/embedded/
+            untagged-whitelisted); the untagged-whitelisted branch carries the
+            W8 "verify network fee" suffix (r2 Finding 2: the W8 signal is merged
+            onto the single W7 row, avoiding the double-count).
+        decision_counts: Optional mutable accumulator whose
+            ``fee_dedup_removed`` field is SET (not incremented) to
+            ``len(filtered_metadata)`` once per call (INV-4a: each field is
+            owned by exactly one pass; NEVER set in :func:`_log_fee_removals`).
 
     Returns:
         Tuple of ``(remaining_entries, suspect_events)``. ``remaining_entries``
@@ -551,7 +569,82 @@ def remove_transaction_fees(
         surplus_total_amount=surplus_total,
         malformed_input_lots=result.malformed_input_lots,
     )
-    logger.warning(summary)
+    # Demoted from WARNING -> INFO (Task 7): the per-row detail now surfaces in
+    # the user-facing extract via the threaded ``review_entries`` list (INV-1 no
+    # signal loss). The per-row DEBUG audit trail is preserved in
+    # :func:`_log_fee_removals`.
+    logger.info(summary)
+
+    # Surface the per-row detail in the user-facing extract (INV-1 no signal
+    # loss). INV-3: guarded so the ~30 existing test callers that omit
+    # ``review_entries`` stay green. Removed-lot reasons are BRANCH-AWARE on the
+    # matched ``FeeThEvent`` (tagged -> embedded -> untagged-whitelisted, in that
+    # order). The untagged-whitelisted branch carries the W8 "verify network
+    # fee" suffix and sets ``is_suspicious=True`` (r2 Finding 2: the W8 signal is
+    # merged onto the single W7 row the lot already gets, avoiding the
+    # double-count; the untagged-whitelisted subset is STRICTLY CONTAINED in
+    # ``filtered_metadata``).
+    if review_entries is not None:
+        for lot, _match_type, event in filtered_metadata:
+            if event.tagged:
+                removed_reason = (
+                    f"Fee CG dedup: removed lot (tagged {event.tagged})"
+                )
+                removed_suspicious = False
+            elif event.is_embedded:
+                removed_reason = "Fee CG dedup: removed lot (embedded fee)"
+                removed_suspicious = False
+            else:
+                removed_reason = (
+                    f"Fee CG dedup: removed untagged-whitelisted fee disposal "
+                    f"(Net Value {event.net_value_eur} EUR, tx_hash={event.tx_hash}) "
+                    f"- verify network fee, not real disposal"
+                )
+                removed_suspicious = True
+            review_entries.append(
+                CryptoReviewEntry(
+                    source_section="capital_gains",
+                    date=lot.entry.disposal_timestamp or lot.entry.disposal_date,
+                    asset=lot.entry.asset,
+                    platform=lot.entry.wallet,
+                    review_reason=removed_reason,
+                    is_suspicious=removed_suspicious,
+                )
+            )
+        for lot in result.surplus_lots:
+            review_entries.append(
+                CryptoReviewEntry(
+                    source_section="capital_gains",
+                    date=lot.entry.disposal_timestamp or lot.entry.disposal_date,
+                    asset=lot.entry.asset,
+                    platform=lot.entry.wallet,
+                    review_reason=(
+                        "Fee CG dedup: Surplus lot - may indicate a missed FIFO "
+                        "split; review the listed key"
+                    ),
+                    is_suspicious=True,
+                )
+            )
+        for entry in result.malformed_input_lots:
+            review_entries.append(
+                CryptoReviewEntry(
+                    source_section="capital_gains",
+                    date=entry.disposal_timestamp or entry.disposal_date,
+                    asset=entry.asset,
+                    platform=entry.wallet,
+                    review_reason=(
+                        f"Fee CG dedup: Malformed-input lot (non-positive amount "
+                        f"{entry.amount}); investigate the source export"
+                    ),
+                    is_suspicious=True,
+                )
+            )
+
+    # INV-4a: set-not-increment; this pass owns fee_dedup_removed. NEVER set in
+    # :func:`_log_fee_removals` (W8 is a pure INFO demotion that owns NO review
+    # surface and NO count).
+    if decision_counts is not None:
+        decision_counts.fee_dedup_removed = len(filtered_metadata)
 
     _log_fee_removals(filtered_metadata)
 
@@ -581,7 +674,7 @@ def _surface_suspects(
       already shown in the Excel review list).
 
     Suspects are NOT removed (Design Invariant 3). A separate aggregate
-    suspect WARNING is emitted to satisfy the plan.
+    suspect INFO is emitted to satisfy the plan.
 
     Args:
         capital_entries: Capital-gains entries AFTER payment-proceeds (the late

@@ -1771,7 +1771,7 @@ class TestAggregateCapitalEntries:
         """Aggregated entries built from pool-exhausted placeholder lots with either an empty
         acquisition date (``if not acquisition_date:`` branch) or an epoch-sentinel
         ``"1970-..."`` date (``elif acquisition_date.startswith("1970-")`` branch) produce
-        exactly ONE WARNING matching ``"N aggregated capital-gains entry(ies) with"`` that
+        exactly ONE INFO matching ``"N aggregated capital-gains entry(ies) with"`` that
         names the affected assets with counts, AND both per-row DEBUG branches are exercised.
 
         Fixture: three distinct assets, two of which hit the no-date branch (SEI, ATOM) and
@@ -2289,7 +2289,10 @@ def test_parse_capital_gains_file_filters_sub_1_eur_after_aggregation(tmp_path, 
     _write_minimal_income_report(koinly_dir)
     _write_minimal_transaction_history(koinly_dir)
 
-    report = load_koinly_crypto_report(koinly_dir)
+    # Lesson #69: the sub-1-EUR aggregate was demoted WARNING -> INFO (Task 2),
+    # so caplog must capture at INFO to observe it.
+    with caplog.at_level(logging.INFO, logger="tax_reporting.application.crypto_reporting"):
+        report = load_koinly_crypto_report(koinly_dir)
 
     assert report is not None
     # Sub-threshold USDT sale event (0.90 EUR) is dropped; BTC row (5.00 EUR) is kept
@@ -10079,12 +10082,14 @@ class TestOgrSplit:
         assert spot_index == {("2025-01-12", "USDT", "ByBit"): Decimal("136.01")}
 
     def test_no_cg_no_th_tag_safety_net(self, caplog):
-        """Given a Profit OGR row with no CG counterpart, expects ONE aggregate WARNING + one DEBUG per-row.
+        """Given a Profit OGR row with no CG counterpart, expects ONE aggregate INFO + one DEBUG per-row.
 
-        Pattern H: the per-row WARNING at ``ogr_handler.py:346`` ("OGR row at (...)
-        routed to derivatives by row type; no CG counterpart...") is downgraded
-        to DEBUG and grouped into ONE aggregate WARNING summary after the loop.
-        Design Invariant #3 (per-row detail preserved at DEBUG) and #4 (Excel
+        Pattern H (W9 demotion): the per-row WARNING was downgraded to DEBUG and
+        grouped into ONE aggregate summary after the loop; this plan further
+        demotes that aggregate from WARNING to INFO (console WARNINGs are
+        reserved for project/processing problems; per-row data issues live in
+        the user-facing extract via ``CryptoReviewEntry``). Design Invariant #3
+        (per-row detail preserved at DEBUG) and #4 (Excel
         review list unchanged: ``DerivativesPnLEntry`` still appended) must hold.
         """
         from tax_reporting.application.crypto.ogr_handler import (
@@ -10121,20 +10126,30 @@ class TestOgrSplit:
             if rec.name == "tax_reporting.application.crypto.ogr_handler"
         ]
 
-        # ONE aggregate WARNING matching "routed to derivatives by row type".
+        # ONE aggregate INFO matching "routed to derivatives by row type" (W9 demotion).
+        info_messages = [
+            rec.getMessage()
+            for rec in ogr_handler_records
+            if rec.levelno == logging.INFO
+        ]
+        aggregate_infos = [
+            m for m in info_messages if "routed to derivatives by row type" in m
+        ]
+        assert len(aggregate_infos) == 1, (
+            f"Expected exactly ONE aggregate INFO, got {aggregate_infos}"
+        )
+        # The summary names the total count of flagged rows.
+        assert "1 OGR row(s) routed to derivatives by row type" in aggregate_infos[0]
+
+        # ZERO WARNING records at all from ogr_handler (demoted to INFO).
         warning_messages = [
             rec.getMessage()
             for rec in ogr_handler_records
             if rec.levelno == logging.WARNING
         ]
-        aggregate_warnings = [
-            m for m in warning_messages if "routed to derivatives by row type" in m
-        ]
-        assert len(aggregate_warnings) == 1, (
-            f"Expected exactly ONE aggregate WARNING, got {aggregate_warnings}"
+        assert warning_messages == [], (
+            f"Expected ZERO WARNING records after W9 demotion, got {warning_messages}"
         )
-        # The summary names the total count of flagged rows.
-        assert "1 OGR row(s) routed to derivatives by row type" in aggregate_warnings[0]
 
         # The legacy per-row substring must NOT appear at WARNING level (downgraded).
         # The unique per-row discriminator is "OGR row at (" (the aggregate uses
@@ -10160,6 +10175,71 @@ class TestOgrSplit:
         assert len(per_row_debug) == 1, (
             f"Expected 1 per-row DEBUG record capturing 'ByBit', got {per_row_debug}"
         )
+
+    def test_no_cg_counterpart_emits_info_and_review_rows(self, caplog):
+        """W9: a derivatives-classified OGR row with zero CG matches emits ONE INFO aggregate, ZERO WARNINGs,
+        and a ``CryptoReviewEntry(source_section="derivatives")`` whose reason names the spot-vs-derivatives
+        ambiguity.
+        """
+        from tax_reporting.application.crypto.ogr_handler import (
+            _split_ogr_index,
+        )
+        from tax_reporting.application.crypto.entities import CryptoReviewEntry
+
+        rows = [
+            ParsedOgrRow(
+                date="2025-01-12",
+                asset="USDT",
+                gain_loss=Decimal("140.18"),
+                row_type="Profit",
+                wallet="ByBit",
+            ),
+        ]
+        capital_entries: list[CryptoCapitalGainEntry] = []
+        review_entries: list[CryptoReviewEntry] = []
+
+        with caplog.at_level(
+            logging.INFO, logger="tax_reporting.application.crypto.ogr_handler"
+        ):
+            spot_index, derivatives_entries = _split_ogr_index(
+                rows,
+                capital_entries,
+                _ogr_split_jurisdiction(separate=True),
+                review_entries=review_entries,
+            )
+
+        # ONE INFO aggregate matching the W9 signature substring.
+        info_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.name == "tax_reporting.application.crypto.ogr_handler"
+            and rec.levelno == logging.INFO
+        ]
+        aggregate_infos = [
+            m for m in info_messages if "routed to derivatives by row type" in m
+        ]
+        assert len(aggregate_infos) == 1, aggregate_infos
+        assert "no CG counterpart" in aggregate_infos[0]
+        assert "1 OGR row(s) routed to derivatives by row type" in aggregate_infos[0]
+
+        # ZERO WARNING records.
+        warning_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.name == "tax_reporting.application.crypto.ogr_handler"
+            and rec.levelno == logging.WARNING
+        ]
+        assert warning_messages == [], warning_messages
+
+        # ONE review row, source_section="derivatives", naming the spot-vs-derivatives ambiguity.
+        assert len(review_entries) == 1, review_entries
+        entry = review_entries[0]
+        assert entry.source_section == "derivatives"
+        assert entry.date == "2025-01-12"
+        assert entry.asset == "USDT"
+        assert entry.platform == "ByBit"
+        assert "spot vs derivatives" in entry.review_reason
+        assert "no CG counterpart" in entry.review_reason
 
     def test_derivatives_entry_carries_operator_entity_and_country(self):
         """Given an OGR row for ByBit routed to derivatives, expects operator_entity and operator_country from
@@ -13517,17 +13597,17 @@ def _write_cg_with_rows(koinly_dir: Path, rows: list[str]) -> Path:
 class TestParseCapitalGainsFile:
     """All-zero CG row warning grouping (Plan 2026-07-21 Task 3 / Pattern A).
 
-    The per-row WARNING at ``crypto_reporting.py:802`` ("Capital gains row N for
+    The per-row WARNING inside ``_parse_capital_gains_file`` ("Capital gains row N for
     X has all-zero values...") is downgraded to DEBUG and grouped into ONE
-    aggregate WARNING summary after the loop. Design Invariant #3 (per-row
+    aggregate INFO summary after the loop. Design Invariant #3 (per-row
     detail preserved at DEBUG in the file) and #4 (Excel review list
     unchanged) must hold.
     """
 
     def test_all_zero_rows_grouped_into_single_summary(self, tmp_path, caplog):
-        """Three known-token all-zero CG rows emit ONE aggregate WARNING + 3 DEBUG.
+        """Three known-token all-zero CG rows emit ONE aggregate INFO + 3 DEBUG.
 
-        The aggregate WARNING must match ``"Flagged %d all-zero capital gains row"``
+        The aggregate INFO must match ``"Flagged %d all-zero capital gains row"``
         and the 3 per-row DEBUG records must still be emitted. The 3
         ``CryptoReviewEntry`` rows continue to be appended to
         ``context.review_entries`` (Design Invariant #4: Excel review list
@@ -13655,15 +13735,16 @@ class TestParseCapitalGainsFileCallerFlush:
 
         Given a resolver whose ``_disagreements`` Counter already holds one
         disagreement key, running ``_parse_capital_gains_file`` flushes it: exactly
-        ONE WARNING matching ``"TokenOriginResolver (capital gains parse)"`` fires
+        ONE INFO matching ``"TokenOriginResolver (capital gains parse)"`` fires
         at the caller (emitted by ``log_and_reset_disagreements`` via
         ``logging.getLogger(__name__)`` in ``token_origin.py``), and
-        ``resolver._disagreements`` is empty after the call.
+        ``resolver._disagreements`` is empty after the call. The flush was demoted
+        from WARNING to INFO by Plan 2026-07-25 Task 8 (W1/W5 relocation).
 
         Mutation pin (r3 F1): deleting the
         ``context.origin_resolver.log_and_reset_disagreements(scope="capital
         gains parse")`` call at ``crypto_reporting.py:917`` leaves this test RED
-        (no caller-level WARNING, Counter still non-empty).
+        (no caller-level INFO, Counter still non-empty).
         """
         from collections import Counter
 
@@ -13725,19 +13806,20 @@ class TestParseCapitalGainsFileCallerFlush:
 
         # caplog on the token_origin module logger (the flush emitter). Lesson #68:
         # filter rec.name on the emitting module's fully-qualified __name__.
-        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.token_origin"):
+        # Plan 2026-07-25 Task 8 demoted the flush WARNING -> INFO; caplog at INFO.
+        with caplog.at_level(logging.INFO, logger="tax_reporting.application.token_origin"):
             _parse_capital_gains_file(capital_csv, context)
 
-        # (a) Exactly ONE WARNING matching the CG-parse caller scope fires.
+        # (a) Exactly ONE INFO matching the CG-parse caller scope fires.
         caller_flush_warnings = [
             rec.getMessage()
             for rec in caplog.records
-            if rec.levelno == logging.WARNING
+            if rec.levelno == logging.INFO
             and rec.name == "tax_reporting.application.token_origin"
             and "TokenOriginResolver (capital gains parse)" in rec.getMessage()
         ]
         assert len(caller_flush_warnings) == 1, (
-            f"Expected exactly ONE caller-flush WARNING, got {caller_flush_warnings}"
+            f"Expected exactly ONE caller-flush INFO, got {caller_flush_warnings}"
         )
         # The summary names the scope and the disagreement count (1 across 1 distinct key).
         assert "1 origin-resolution disagreement(s) across 1 distinct" in caller_flush_warnings[0]
@@ -13837,8 +13919,9 @@ class TestParseCapitalGainsFileCallerFlush:
         # The function's ``finally`` block must still flush the resolver.
         # caplog on the token_origin module logger (the flush emitter). Lesson #68:
         # filter rec.name on the emitting module's fully-qualified __name__.
+        # Plan 2026-07-25 Task 8 demoted the flush WARNING -> INFO; caplog at INFO.
         with (
-            caplog.at_level(logging.WARNING, logger="tax_reporting.application.token_origin"),
+            caplog.at_level(logging.INFO, logger="tax_reporting.application.token_origin"),
             patch.object(
                 crypto_reporting_module,
                 "CryptoCapitalGainEntry",
@@ -13848,16 +13931,16 @@ class TestParseCapitalGainsFileCallerFlush:
         ):
             _parse_capital_gains_file(capital_csv, context)
 
-        # Exactly ONE WARNING matching the CG-parse caller scope fired in the finally.
+        # Exactly ONE INFO matching the CG-parse caller scope fired in the finally.
         caller_flush_warnings = [
             rec.getMessage()
             for rec in caplog.records
-            if rec.levelno == logging.WARNING
+            if rec.levelno == logging.INFO
             and rec.name == "tax_reporting.application.token_origin"
             and "TokenOriginResolver (capital gains parse)" in rec.getMessage()
         ]
         assert len(caller_flush_warnings) == 1, (
-            f"Expected caller-flush WARNING to fire in the finally block, got {caller_flush_warnings}"
+            f"Expected caller-flush INFO to fire in the finally block, got {caller_flush_warnings}"
         )
 
         # The Counter is still cleared (the finally flush ran).
@@ -14691,3 +14774,260 @@ class TestCryptoReporting:
         assert "Skipped 1 capital gains row" in parse_error_warnings[0]
 
 
+@pytest.mark.unit
+class TestCryptoDecisionCounts:
+    """CryptoDecisionCounts is a NON-frozen mutable accumulator (INV-4a)."""
+
+    def test_defaults_to_zero(self) -> None:
+        from tax_reporting.application.crypto.entities import CryptoDecisionCounts
+
+        counts = CryptoDecisionCounts()
+        assert counts.sub_1_eur_filtered == 0
+        assert counts.sub_1_eur_retained == 0
+        assert counts.derivatives_dedup_removed == 0
+        assert counts.fee_dedup_removed == 0
+
+    def test_fields_are_mutable(self) -> None:
+        """Passes set fields in-pass (NOT frozen: INV-4a)."""
+        from tax_reporting.application.crypto.entities import CryptoDecisionCounts
+
+        decision_counts = CryptoDecisionCounts()
+        decision_counts.derivatives_dedup_removed = 5
+        assert decision_counts.derivatives_dedup_removed == 5
+
+
+@pytest.mark.unit
+class TestSubOneEurFilter:
+    """W10 sub-1-EUR capital gain aggregate emits INFO (not WARNING) with counts."""
+
+    def test_aggregate_emits_info_with_counts(self, tmp_path, monkeypatch, caplog) -> None:
+        """Given pre_filter_count=175 and post-filter len=2 (173 dropped), the
+        aggregate emits ONE INFO record carrying both counts and ZERO WARNING
+        records with that substring."""
+        import tax_reporting.application.crypto_reporting as cr_module
+
+        # Build a minimal koinly dir with one material CG row so load_koinly_crypto_report
+        # reaches the W10 site; the actual counts are controlled via monkeypatch.
+        koinly_dir = tmp_path / "koinly2025"
+        koinly_dir.mkdir()
+        _write_minimal_capital_gains_report(koinly_dir)
+        _write_minimal_income_report(koinly_dir)
+        _write_minimal_transaction_history(koinly_dir)
+
+        # Control the pre/post filter counts deterministically (175 -> 2, 173 dropped).
+        # We need real CryptoCapitalGainEntry-shaped objects so downstream code does not break.
+        def _aggregator(_entries):  # noqa: ANN001
+            # Return exactly 175 entries regardless of input so the W10 math is fixed.
+            return [_entry_placeholder()] * 175
+
+        def _filter(_entries):  # noqa: ANN001
+            return list(_entries)[:2]
+
+        monkeypatch.setattr(cr_module, "_aggregate_capital_entries", _aggregator)
+        monkeypatch.setattr(cr_module, "_filter_immaterial_entries", _filter)
+
+        with caplog.at_level(logging.INFO, logger="tax_reporting.application.crypto_reporting"):
+            report = load_koinly_crypto_report(koinly_dir)
+
+        assert report is not None
+
+        info_records = [
+            r for r in caplog.records
+            if r.levelno == logging.INFO
+            and "sub-1-EUR capital gain entries" in r.getMessage()
+            and r.name == "tax_reporting.application.crypto_reporting"
+        ]
+        warning_records = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING
+            and "sub-1-EUR capital gain entries" in r.getMessage()
+            and r.name == "tax_reporting.application.crypto_reporting"
+        ]
+        assert len(info_records) == 1, (
+            f"Expected exactly 1 INFO record for sub-1-EUR filter, got {len(info_records)}: "
+            f"{[r.getMessage() for r in info_records]}"
+        )
+        assert warning_records == [], (
+            f"Expected ZERO WARNING records for sub-1-EUR filter, got {warning_records}"
+        )
+        assert (
+            "Filtered 173 sub-1-EUR capital gain entries (PT-C-028); 2 entries retained"
+            in info_records[0].getMessage()
+        )
+        # The accumulator must carry the counts end-to-end.
+        assert report.decision_counts.sub_1_eur_filtered == 173
+        assert report.decision_counts.sub_1_eur_retained == 2
+
+    def test_no_drop_sets_retained_unconditionally(self, tmp_path, monkeypatch) -> None:
+        """The no-drop path (``dropped == 0``) still sets ``sub_1_eur_retained`` to the
+        full capital-entries length (INV-4a: unconditional set, not gated on
+        ``dropped > 0``). A regression reverting to ``if dropped > 0:`` would leave
+        ``sub_1_eur_retained`` at 0 even when entries are retained, silently
+        mis-stating the A&M PT-C-028 count cell.
+
+        Fixture: monkeypatch ``_filter_immaterial_entries`` to a no-op returning
+        the full list (so ``dropped == 0``) over a non-empty list (so
+        ``len(capital_entries) > 0``). Note: production gates the W10 INFO emit
+        on ``dropped > 0``, so on this fixture no INFO record fires; this test
+        does NOT assert on the INFO record. AND the accumulator carries the
+        correct retained count.
+        """
+        import tax_reporting.application.crypto_reporting as cr_module
+
+        koinly_dir = tmp_path / "koinly2025"
+        koinly_dir.mkdir()
+        _write_minimal_capital_gains_report(koinly_dir)
+        _write_minimal_income_report(koinly_dir)
+        _write_minimal_transaction_history(koinly_dir)
+
+        retained_count = 4
+
+        def _aggregator(_entries):  # noqa: ANN001
+            return [_entry_placeholder()] * retained_count
+
+        def _filter(_entries):  # noqa: ANN001
+            # No-op filter: nothing dropped. ``dropped == 0`` at the W10 site.
+            return list(_entries)
+
+        monkeypatch.setattr(cr_module, "_aggregate_capital_entries", _aggregator)
+        monkeypatch.setattr(cr_module, "_filter_immaterial_entries", _filter)
+
+        report = load_koinly_crypto_report(koinly_dir)
+
+        assert report is not None
+        # The set must be unconditional: ``sub_1_eur_retained`` equals the full
+        # entries length even though ``sub_1_eur_filtered`` is 0.
+        assert report.decision_counts.sub_1_eur_filtered == 0
+        assert report.decision_counts.sub_1_eur_retained == retained_count
+
+
+def _entry_placeholder() -> CryptoCapitalGainEntry:
+    """A minimal CryptoCapitalGainEntry placeholder for count control in tests."""
+    from tests.conftest import make_operator_origin
+
+    return CryptoCapitalGainEntry(
+        disposal_date="2025-06-15",
+        acquisition_date="2025-01-10",
+        asset="BTC",
+        amount=Decimal("0.5"),
+        cost_eur=Decimal("20000"),
+        proceeds_eur=Decimal("25000"),
+        gain_loss_eur=Decimal("5000"),
+        holding_period="Short-term",
+        wallet="kraken-wallet",
+        platform="Kraken",
+        chain="Ethereum",
+        operator_origin=make_operator_origin(platform="Kraken"),
+        annex_hint="J",
+        review_required=False,
+        notes="",
+    )
+
+
+
+
+class TestW2W3FifoRebuildGateInactive:
+    """W2/W3 negative-path gate tests (Plan 2026-07-25 Task 3).
+
+    The W2 (duplicate-tx_key) and W3 (zero-Net-Value) emit sites live INSIDE
+    the FIFO rebuild path gated by ``fifo_rebuild_active and loan_affected_assets``
+    (``crypto_reporting.py``). When that gate is False (non-PT jurisdiction or no
+    loan-affected assets), the emit sites are UNREACHABLE: ZERO INFO records
+    matching those substrings, ZERO new CryptoReviewEntry rows from those sites.
+
+    This test drives end-to-end through ``load_koinly_crypto_report`` (the gate
+    lives in the orchestrator, not the leaf): calling ``_dedup_by_tx_key``
+    directly would bypass the gate and make the negative assertion meaningless.
+    """
+
+    def test_w2_w3_skipped_when_fifo_rebuild_inactive(self, tmp_path, caplog):
+        """Non-PT jurisdiction (``fifo_rebuild_active=False``) → W2/W3 unreachable."""
+        from tax_reporting.infrastructure.config import (
+            DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD,
+            TaxJurisdictionConfig,
+        )
+
+        koinly_dir = tmp_path / "koinly2025"
+        koinly_dir.mkdir()
+
+        # CG + income minimal reports so load_koinly_crypto_report returns a report.
+        (koinly_dir / "koinly_2025_capital_gains_report.csv").write_text(
+            "\n".join(["Capital gains report 2025", "", _CG_HEADER]),
+            encoding="utf-8",
+        )
+        (koinly_dir / "koinly_2025_income_report.csv").write_text(
+            "\n".join(["Income report 2025", "", _INCOME_HEADER]),
+            encoding="utf-8",
+        )
+        # TH containing rows that WOULD trigger W2 (duplicate-tx_key acquisition)
+        # and W3 (zero-Net-Value deposit) IF the rebuild ran. Two identical buy
+        # rows share TxHash "dup_w2"; one zero-NV deposit carries TxHash "znv_w3".
+        dup_w2 = (
+            '2025-01-15 10:00:00 UTC,buy,"","","","","",'
+            'Kraken,"0,00200000",WBTC,"120,00",,,,"120,00",,,,dup_w2,""""'
+        )
+        zero_nv = (
+            '2025-03-15 10:00:00 UTC,crypto_deposit,"",Kraken,0,,,'
+            'Kraken Main,"0,5",WBTC,0,0,,0,0,0,src,dst,znv_w3,""""'
+        )
+        th_content = "\n".join(
+            ["Transaction report 2025", "", _TH_HEADER, dup_w2, dup_w2, zero_nv]
+        )
+        (koinly_dir / "koinly_2025_transaction_history.csv").write_text(
+            th_content, encoding="utf-8"
+        )
+
+        # Non-PT jurisdiction: ``exclude_loan_repayment_gains=False`` →
+        # ``fifo_rebuild_active`` is False at ``crypto_reporting.py:316``,
+        # so the ``fifo_rebuild_active and loan_affected_assets`` gate at
+        # ``:363`` is False and ``_rebuild_fifo_for_loan_affected_assets``
+        # (which calls parse_th → _dedup_by_tx_key) is never invoked.
+        non_pt_jurisdiction = TaxJurisdictionConfig(
+            country="US",
+            fiscal_year=2025,
+            exclude_loan_repayment_gains=False,
+            zero_basis_review_threshold=DEFAULT_ZERO_BASIS_REVIEW_THRESHOLD,
+            timezone=ZoneInfo("America/New_York"),
+        )
+
+        with caplog.at_level(logging.INFO):
+            report = load_koinly_crypto_report(
+                koinly_dir, jurisdiction=non_pt_jurisdiction
+            )
+
+        assert report is not None
+
+        # ZERO INFO records matching "duplicate-tx_key" or "zero-Net-Value".
+        info_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.INFO
+        ]
+        duplicate_txkey_infos = [m for m in info_messages if "duplicate-tx_key" in m]
+        zero_nv_infos = [m for m in info_messages if "zero-Net-Value" in m]
+        assert duplicate_txkey_infos == [], (
+            "W2 duplicate-tx_key INFO must NOT fire when fifo_rebuild is inactive; "
+            f"got {duplicate_txkey_infos}"
+        )
+        assert zero_nv_infos == [], (
+            "W3 zero-Net-Value INFO must NOT fire when fifo_rebuild is inactive; "
+            f"got {zero_nv_infos}"
+        )
+
+        # ZERO new CryptoReviewEntry rows naming the W2 tx_key or the W3 reason.
+        w2_rows = [
+            r for r in report.review_entries
+            if "dup_w2" in r.review_reason or "duplicate" in r.review_reason.lower()
+        ]
+        w3_rows = [
+            r for r in report.review_entries
+            if "zero-net-value" in r.review_reason.lower()
+        ]
+        assert w2_rows == [], (
+            "W2 review rows must NOT be appended when fifo_rebuild is inactive; "
+            f"got {w2_rows}"
+        )
+        assert w3_rows == [], (
+            "W3 review rows must NOT be appended when fifo_rebuild is inactive; "
+            f"got {w3_rows}"
+        )

@@ -19,7 +19,7 @@ from ..crypto_fifo.transfer import _order_platforms_for_transfers, _resolve_intr
 from ..token_origin import TokenOriginResolver
 from .chain_derivation import _derive_chain
 from .constants import ZERO
-from .entities import CryptoCapitalGainEntry
+from .entities import CryptoCapitalGainEntry, CryptoReviewEntry
 from .operator_origin import resolve_operator_origin
 
 _ZERO_COST_REASON: str = (
@@ -146,43 +146,48 @@ def _process_single_asset_fifo(  # noqa: PLR0913
         total_unmatched_taxable: Single-cell mutable counter (``[int]``) accumulating
             the number of taxable disposals with no matching acquisition at or before
             the disposal date (pattern F) across all (asset, platform) results. Summed
-            by the caller to emit ONE aggregate WARNING.
+            by the caller to emit ONE aggregate INFO.
         cross_asset_flag_counts: Shared mutable dict (pattern J) keyed by cross-asset
             deferred-acquisition cause (``unresolved`` / ``multi_sender`` /
             ``zero_carryover`` / ``partial``), threaded into ``resolve_cross_asset_exchanges``
             so each per-row DEBUG branch increments its cause. The caller sums the values
-            to emit ONE aggregate WARNING after the per-asset loop.
+            to emit ONE aggregate INFO after the per-asset loop (HAS_EXCEL_SURFACE:
+            per-row sets ``review_required=True`` on a realized entry).
         transfer_flag_counts: Shared mutable dict (pattern K) keyed by transfer carry-over
             cause (``requires_review`` / ``unresolved``), threaded into
             ``_resolve_intra_asset_transfers`` (the per-platform transfer-resolution loop
             below) so each per-row DEBUG branch increments its cause. The caller sums the
-            values to emit ONE aggregate WARNING after the per-asset loop.
+            values to emit ONE aggregate INFO after the per-asset loop (HAS_EXCEL_SURFACE:
+            per-row sets ``review_required=True`` on a realized entry).
         non_positive_acq_counts: Shared mutable dict (Bucket C) keyed by asset ticker,
             accumulating the count of acquisitions with ``amount <= 0`` skipped during
-            FIFO pool construction (``matching.py:58``) across all (asset, platform)
-            results. Populated from ``AssetFifoResult.non_positive_acq_count`` below and
+            FIFO pool construction (``compute_fifo_for_asset`` in ``crypto_fifo/matching.py``,
+            the ``Skipping non-positive acquisition`` DEBUG branch) across all (asset,
+            platform) results. Populated from ``AssetFifoResult.non_positive_acq_count`` below and
             emitted as ONE aggregate WARNING by the caller. ``None`` is tolerated for
             callers that do not need the count.
         negative_consumption_counts: Shared mutable dict (Bucket C) keyed by asset
             ticker, accumulating the count of negative-amount consumption events
             skipped by the ``remaining < ZERO`` early-return guard in
-            ``_consume_against_pool_inplace`` (``matching.py:250``) across all
+            ``_consume_against_pool_inplace`` (in ``crypto_fifo/matching.py``) across all
             (asset, platform) results. Populated from
             ``AssetFifoResult.negative_consumption_count`` below and emitted as ONE
             aggregate WARNING by the caller. ``None`` is tolerated for callers that do
             not need the count.
         epoch_date_counts: Shared mutable dict (Bucket B) keyed by asset ticker,
             accumulating the count of taxable realizations whose acquisition and/or
-            disposal date carried an epoch sentinel (``matching.py:149-150``) across
-            all (asset, platform) results. Populated from
+            disposal date carried an epoch sentinel (``_build_taxable_realization`` in
+            ``crypto_fifo/matching.py``, the ``is_epoch_acq`` / ``is_epoch_con`` branches)
+            across all (asset, platform) results. Populated from
             ``AssetFifoResult.epoch_date_count`` below and emitted as ONE aggregate
             INFO by the caller. ``None`` is tolerated for callers that do not need
             the count.
         deferred_consumed_counts: Shared mutable dict (Bucket B) keyed by asset
             ticker, accumulating the count of taxable realizations that consumed an
-            UNRESOLVED deferred acquisition (``matching.py:175`` -- realization-time
-            consequence, distinct from Pattern J's resolution-time cause) across all
-            (asset, platform) results. Populated from
+            UNRESOLVED deferred acquisition (``_build_taxable_realization`` in
+            ``crypto_fifo/matching.py``, the ``is_deferred_acq`` branch --
+            realization-time consequence, distinct from Pattern J's resolution-time cause)
+            across all (asset, platform) results. Populated from
             ``AssetFifoResult.deferred_consumed_count`` below and emitted as ONE
             aggregate INFO by the caller. ``None`` is tolerated for callers that do
             not need the count.
@@ -322,13 +327,14 @@ def _emit_flagged_summary(
     )
 
 
-def _rebuild_fifo_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
+def _rebuild_fifo_for_loan_affected_assets(  # noqa: PLR0912, PLR0913, PLR0915
     transaction_history_file: Path,
     origin_resolver: TokenOriginResolver,
     loan_affected_assets: frozenset[str],
     *,
     fiscal_year: int | None = None,
     zero_basis_review_min_proceeds: Decimal = ZERO,
+    review_entries: list[CryptoReviewEntry] | None = None,
 ) -> tuple[list[CryptoCapitalGainEntry], frozenset[str]]:
     """Rebuild FIFO for loan-affected assets from Transaction History.
 
@@ -348,6 +354,11 @@ def _rebuild_fifo_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
             the output. Pass ``None`` to include all years (useful in testing).
         zero_basis_review_min_proceeds: Minimum proceeds (EUR) required to flag a
             zero-cost entry for review. Defaults to ZERO (preserve prior behavior).
+        review_entries: Optional threaded Crypto Supplementary review list forwarded
+            to ``parse_th_for_loan_affected_assets`` so ``_dedup_by_tx_key`` can
+            append one ``CryptoReviewEntry`` per dropped duplicate-tx_key row (Plan
+            2026-07-25 Task 3 / W2). ``None`` (the default) preserves existing test
+            callers that omit the param (INV-3 backward compat).
 
     Returns:
         Tuple of (fifo_entries, th_assets) where th_assets is the set of
@@ -365,6 +376,7 @@ def _rebuild_fifo_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
         transaction_history_file,
         loan_affected_assets=loan_affected_assets,
         empty_cost_basis_counter=empty_cost_basis_counter,
+        review_entries=review_entries,
     )
 
     # th_assets tracks only assets with taxable consumption events:
@@ -412,7 +424,7 @@ def _rebuild_fifo_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
 
     # Pattern F: single-cell mutable counter accumulating the number of taxable
     # disposals with no matching acquisition at or before the disposal date across
-    # all (asset, platform) results. Emitted as ONE aggregate WARNING after the
+    # all (asset, platform) results. Emitted as ONE aggregate INFO after the
     # per-asset loop so the console shows a single summary while per-row detail
     # stays at DEBUG (Design Invariant #3) and the review_reason field carries the
     # actionable per-row context (Design Invariant #4).
@@ -422,49 +434,54 @@ def _rebuild_fifo_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
     # Threaded into ``_process_single_asset_fifo`` -> ``resolve_cross_asset_exchanges``
     # -> ``_resolve_single_acquisition``, where each per-row WARNING branch was
     # downgraded to DEBUG (message text unchanged) and increments its cause key. Emitted
-    # as ONE aggregate WARNING after the per-asset loop (Design Invariant #5: per-cause
+    # as ONE aggregate INFO after the per-asset loop (Design Invariant #5: per-cause
     # breakdown preserved). ``review_required``/``review_reason`` on each resolved
-    # acquisition are the UNCHANGED audit signal (Design Invariant #3).
+    # acquisition are the UNCHANGED audit signal (Design Invariant #3); the per-row
+    # entry's rendered "YES:" cell is the canonical audit surface (rule #7
+    # HAS_EXCEL_SURFACE), so the aggregate demotes to INFO.
     cross_asset_flag_counts: dict[str, int] = {}
     # Pattern K: shared mutable dict accumulating transfer carry-over causes
     # (requires_review / unresolved) across all (asset, platform) transfer resolutions.
     # Threaded into ``_process_single_asset_fifo`` (per-platform loop) ->
     # ``_resolve_intra_asset_transfers``, where each per-row WARNING branch was
     # downgraded to DEBUG (message text unchanged) and increments its cause key. Emitted
-    # as ONE aggregate WARNING after the per-asset loop. ``review_required`` /
+    # as ONE aggregate INFO after the per-asset loop (same HAS_EXCEL_SURFACE rule as
+    # Pattern J: the per-row "YES:" cell is the audit surface). ``review_required`` /
     # ``review_reason`` / ``cost_basis_eur`` on each resolved acquisition are the
     # UNCHANGED audit signal (Design Invariant #3).
     transfer_flag_counts: dict[str, int] = {}
-    # Bucket C (non-positive acquisition, matching.py:58): shared mutable dict keyed by
-    # asset ticker accumulating the count of acquisitions with amount <= 0 skipped during
-    # FIFO pool construction across all (asset, platform) results. Populated from
-    # AssetFifoResult.non_positive_acq_count via _process_single_asset_fifo and emitted
-    # as ONE aggregate WARNING after the per-asset loop. STAYS WARNING (silent data loss,
-    # no Excel surface). Per-row detail is at DEBUG in matching.py.
+    # Bucket C (non-positive acquisition): shared mutable dict keyed by asset ticker
+    # accumulating the count of acquisitions with amount <= 0 skipped during FIFO pool
+    # construction (compute_fifo_for_asset in crypto_fifo/matching.py, the ``Skipping
+    # non-positive acquisition`` DEBUG branch) across all (asset, platform) results.
+    # Populated from AssetFifoResult.non_positive_acq_count via _process_single_asset_fifo
+    # and emitted as ONE aggregate WARNING after the per-asset loop. STAYS WARNING
+    # (silent data loss, no Excel surface). Per-row detail is at DEBUG in matching.py.
     non_positive_acq_counts: dict[str, int] = {}
-    # Bucket C (negative consumption, matching.py:250): shared mutable dict keyed by asset
-    # ticker accumulating the count of negative-amount consumption events skipped by the
-    # ``remaining < ZERO`` early-return guard in ``_consume_against_pool_inplace`` across
-    # all (asset, platform) results. Populated from
+    # Bucket C (negative consumption): shared mutable dict keyed by asset ticker
+    # accumulating the count of negative-amount consumption events skipped by the
+    # ``remaining < ZERO`` early-return guard in ``_consume_against_pool_inplace``
+    # (crypto_fifo/matching.py) across all (asset, platform) results. Populated from
     # AssetFifoResult.negative_consumption_count via _process_single_asset_fifo and emitted
     # as ONE aggregate WARNING after the per-asset loop. STAYS WARNING (silent data loss,
     # no Excel surface). Per-row detail is at DEBUG in matching.py.
     negative_consumption_counts: dict[str, int] = {}
-    # Bucket B (epoch dates, matching.py:149-150): shared mutable dict keyed by asset
-    # ticker accumulating the count of taxable realizations whose acquisition and/or
-    # disposal date carried an epoch sentinel across all (asset, platform) results.
+    # Bucket B (epoch dates): shared mutable dict keyed by asset ticker accumulating
+    # the count of taxable realizations whose acquisition and/or disposal date carried
+    # an epoch sentinel (``_build_taxable_realization`` in crypto_fifo/matching.py, the
+    # ``is_epoch_acq`` / ``is_epoch_con`` branches) across all (asset, platform) results.
     # Populated from AssetFifoResult.epoch_date_count via _process_single_asset_fifo
     # and emitted as ONE aggregate INFO after the per-asset loop. The realization's
     # review_required (set via ``or is_epoch_acq``/``or is_epoch_con``) is the
     # canonical Excel audit surface; the aggregate INFO is a console nicety.
     epoch_date_counts: dict[str, int] = {}
-    # Bucket B (deferred-acquisition consumed, matching.py:175): shared mutable dict
-    # keyed by asset ticker accumulating the count of taxable realizations that
-    # consumed an UNRESOLVED deferred acquisition across all (asset, platform) results.
-    # Populated from AssetFifoResult.deferred_consumed_count via
-    # _process_single_asset_fifo and emitted as ONE aggregate INFO after the per-asset
-    # loop with wording DISTINCT from Pattern J (Invariant #2: realization-time
-    # consequence vs resolution-time cause).
+    # Bucket B (deferred-acquisition consumed): shared mutable dict keyed by asset
+    # ticker accumulating the count of taxable realizations that consumed an UNRESOLVED
+    # deferred acquisition (``_build_taxable_realization`` in crypto_fifo/matching.py,
+    # the ``is_deferred_acq`` branch) across all (asset, platform) results. Populated
+    # from AssetFifoResult.deferred_consumed_count via _process_single_asset_fifo and
+    # emitted as ONE aggregate INFO after the per-asset loop with wording DISTINCT from
+    # Pattern J (Invariant #2: realization-time consequence vs resolution-time cause).
     deferred_consumed_counts: dict[str, int] = {}
 
     for asset in processing_order:
@@ -488,11 +505,11 @@ def _rebuild_fifo_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
             )
         )
 
-    # Pattern F aggregate WARNING: emitted BEFORE the fiscal_year filter.
+    # Pattern F aggregate INFO: emitted BEFORE the fiscal_year filter.
     # ``total_unmatched_taxable[0]`` counts every unmatched-taxable disposal seen
     # during FIFO computation across ALL processed years (not just ``fiscal_year``).
     # The fiscal_year filter below then drops out-of-year realizations from
-    # ``all_realizations`` (the report list), but this WARNING honestly reports the
+    # ``all_realizations`` (the report list), but this INFO honestly reports the
     # FIFO-computation total across all processed years. The accumulator is
     # structurally correct -- it is incremented only inside ``matching.py``'s
     # actual unmatched-taxable branches (via ``unmatched_taxable_counter``), so it
@@ -500,7 +517,7 @@ def _rebuild_fifo_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
     # "pool exhausted" review_reason (that reason would be a substring-collision
     # false positive if the count were re-derived from review_reason text).
     if total_unmatched_taxable[0] > 0:
-        logger.warning(
+        logger.info(
             "%d taxable disposal(s) had no acquisition at or before the disposal date "
             "(pool exhausted) across all processed years; flagged for review with zero "
             "cost basis; see DEBUG log and realization review_reason for details",
@@ -508,10 +525,11 @@ def _rebuild_fifo_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
         )
 
     # Bucket C aggregate WARNING (non-positive acquisition): per-row emissions in
-    # ``compute_fifo_for_asset`` (matching.py:58) were downgraded to DEBUG; this single
-    # summary preserves the WARNING-level audit signal with a per-asset breakdown so the
-    # console is not flooded. STAYS WARNING (silent data loss, no Excel surface). The
-    # acquisition is still dropped from the FIFO pool (the ``continue`` is unchanged).
+    # ``compute_fifo_for_asset`` (the ``Skipping non-positive acquisition`` DEBUG branch)
+    # were downgraded to DEBUG; this single summary preserves the WARNING-level audit
+    # signal with a per-asset breakdown so the console is not flooded. STAYS WARNING
+    # (silent data loss, no Excel surface). The acquisition is still dropped from the
+    # FIFO pool (the ``continue`` is unchanged).
     if non_positive_acq_counts:
         total_skipped = sum(non_positive_acq_counts.values())
         logger.warning(
@@ -521,10 +539,11 @@ def _rebuild_fifo_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
         )
 
     # Bucket C aggregate WARNING (negative consumption): per-row emissions in
-    # ``_consume_against_pool_inplace`` (matching.py:250) were downgraded to DEBUG; this
-    # single summary preserves the WARNING-level audit signal with a per-asset breakdown so
-    # the console is not flooded. STAYS WARNING (silent data loss, no Excel surface). The
-    # consumption is still dropped (the early ``return`` is unchanged).
+    # ``_consume_against_pool_inplace`` (the ``remaining < ZERO`` early-return guard)
+    # were downgraded to DEBUG; this single summary preserves the WARNING-level audit
+    # signal with a per-asset breakdown so the console is not flooded. STAYS WARNING
+    # (silent data loss, no Excel surface). The consumption is still dropped
+    # (the early ``return`` is unchanged).
     if negative_consumption_counts:
         total_neg = sum(negative_consumption_counts.values())
         logger.warning(
@@ -534,10 +553,10 @@ def _rebuild_fifo_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
         )
 
     # Bucket B aggregate INFO (epoch dates): per-row emissions in
-    # ``_build_taxable_realization`` (matching.py:149-150) were downgraded to DEBUG;
-    # this single summary preserves an INFO-level console signal without N per-row
-    # WARNING lines. The realization's ``review_required`` (set via
-    # ``or is_epoch_acq``/``or is_epoch_con``) is the canonical Excel audit surface
+    # ``_build_taxable_realization`` (the ``is_epoch_acq`` / ``is_epoch_con`` branches)
+    # were downgraded to DEBUG; this single summary preserves an INFO-level console
+    # signal without N per-row WARNING lines. The realization's ``review_required`` (set
+    # via ``or is_epoch_acq``/``or is_epoch_con``) is the canonical Excel audit surface
     # (Invariant #3); this INFO is a console nicety reachable at LOG_LEVEL=INFO.
     if epoch_date_counts:
         total_epoch = sum(epoch_date_counts.values())
@@ -548,9 +567,9 @@ def _rebuild_fifo_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
         )
 
     # Bucket B aggregate INFO (deferred-acquisition consumed): per-row emission at
-    # ``_build_taxable_realization`` (matching.py:175) was downgraded to DEBUG; this
-    # single summary preserves the INFO-level console signal. The wording is DISTINCT
-    # from Pattern J's "cross-asset deferred acquisition(s) flagged" (Invariant #2:
+    # ``_build_taxable_realization`` (the ``is_deferred_acq`` branch) was downgraded to
+    # DEBUG; this single summary preserves the INFO-level console signal. The wording is
+    # DISTINCT from Pattern J's "cross-asset deferred acquisition(s) flagged" (Invariant #2:
     # this names the realization-time consequence -- a deferred lot consumed with zero
     # cost basis -- while Pattern J names resolution-time causes at acquisition time).
     if deferred_consumed_counts:
@@ -667,7 +686,7 @@ def _rebuild_fifo_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
                 )
             )
     finally:
-        # Pattern B flush: emit ONE aggregate WARNING for any token_origin
+        # Pattern B flush: emit ONE aggregate INFO for any token_origin
         # disagreements accumulated during this FIFO-rebuild pass, then clear the
         # shared resolver Counter. The CG-parse flush already ran upstream inside
         # ``_parse_capital_gains_file`` (call site ordering: ``crypto_reporting.py:337``
@@ -678,7 +697,7 @@ def _rebuild_fifo_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
         # accumulates disagreements inside the loop, and ``CryptoCapitalGainEntry``'s
         # ``__post_init__`` validators can raise ``ValueError`` mid-loop. Without the
         # finally, an exception propagates before the flush, silently dropping the
-        # FIFO-rebuild-stage aggregate WARNING and leaving the shared Counter with
+        # FIFO-rebuild-stage aggregate INFO and leaving the shared Counter with
         # unflushed state (Design Invariant #10's named load-bearing condition).
         # The flush is also needed on the success path, which ``finally`` guarantees.
         origin_resolver.log_and_reset_disagreements(scope="FIFO rebuild")

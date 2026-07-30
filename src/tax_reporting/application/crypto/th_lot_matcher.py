@@ -10,11 +10,13 @@ a fee event carries extra ``.tagged``/``.tx_hash``/``.net_value_eur`` -
 neither is read here).
 
 Logging asymmetry (Design Invariant 2):
-:func:`remove_matched_lots` logs the single removal summary WARNING because
-it owns the removal semantic and the caller-passed ``logger`` carries the
-caller's module name. :func:`match_lots` emits no logging: a match is not
-intrinsically a removal (a caller may flag instead of remove), so each
-caller owns its own summary and per-lot logging.
+:func:`remove_matched_lots` logs the single removal summary INFO (demoted
+from WARNING in the relocate-crypto-warnings plan) because it owns the
+removal semantic and the caller-passed ``logger`` carries the caller's
+module name. The per-row detail now surfaces in the user-facing extract via
+the caller-passed ``review_entries`` list. :func:`match_lots` emits no
+logging: a match is not intrinsically a removal (a caller may flag instead
+of remove), so each caller owns its own summary and per-lot logging.
 
 Design notes
 ------------
@@ -39,7 +41,7 @@ from collections.abc import Sequence
 from decimal import Decimal
 from typing import Generic, Protocol, TypeVar
 
-from .entities import CryptoCapitalGainEntry
+from .entities import CryptoCapitalGainEntry, CryptoDecisionCounts, CryptoReviewEntry
 
 # Per-lot rounding for the exact-match phase: both CG and TH amounts are
 # quantized to 6 decimals before equality check, absorbing Koinly rounding
@@ -51,7 +53,7 @@ _EXACT_AMOUNT_QUANTUM = Decimal("0.000001")
 _RANGE_TOLERANCE_SCALE = Decimal("0.00001")
 
 # Maximum sample size for the (timestamp, asset, wallet, amount) and
-# (timestamp, asset, amount) tuples printed in the summary WARNING. Keeps
+# (timestamp, asset, amount) tuples printed in the summary INFO. Keeps
 # the warning readable while still surfacing the offending keys.
 _SUMMARY_SAMPLE_SIZE = 3
 
@@ -171,7 +173,7 @@ def _build_candidates(
     Entries without ``disposal_timestamp`` are silently skipped (they predate
     the timestamp-field introduction or come from non-FIFO sources). Entries
     with non-positive ``amount`` are collected into the malformed-input list
-    for inclusion in the summary WARNING. Surviving candidates are sorted by
+    for inclusion in the summary INFO. Surviving candidates are sorted by
     ``(timestamp, asset, wallet, acquisition_date, index)`` for determinism.
     """
     candidates: list[IndexedLot] = []
@@ -306,7 +308,7 @@ class MatcherResult(Generic[E]):
         surplus_lots: Lots left at an exact-match key after all events were
             consumed (a count-mismatch / collision signal).
         malformed_input_lots: CG entries skipped for having a non-positive
-            amount (surfaced in the removal summary WARNING).
+            amount (surfaced in the removal summary INFO).
         unmatched_events: Events that found no CG lot. ``remove_matched_lots``
             does NOT warn for these; the caller owns that decision (fees may
             legitimately be unmatched).
@@ -435,21 +437,45 @@ def _format_summary_warning(  # noqa: PLR0913
     return ". ".join(parts)
 
 
-def remove_matched_lots(
+def remove_matched_lots(  # noqa: PLR0913
     capital_entries: Sequence[CryptoCapitalGainEntry],
     events: Sequence[E],
     *,
     domain_label: str,
     logger: logging.Logger,
+    review_entries: list[CryptoReviewEntry] | None = None,
+    decision_counts: CryptoDecisionCounts | None = None,
 ) -> MatcherResult[E]:
-    """Match events to CG lots, remove the matched lots, emit one summary WARNING.
+    """Match events to CG lots, remove the matched lots, emit one summary INFO.
 
     Built on :func:`match_lots`. Removes the matched lots from
     ``remaining_entries`` (original order preserved) and emits exactly ONE
-    summary WARNING via the caller-passed ``logger`` (so the record's
+    summary INFO via the caller-passed ``logger`` (so the record's
     ``r.name`` is the caller's module logger, not this module's). The summary
     title is parameterized by ``domain_label`` (``f"{domain_label.title()} CG
     dedup summary"``).
+
+    The summary was previously a WARNING; it was demoted to INFO because the
+    per-row detail now surfaces in the user-facing extract. When
+    ``review_entries`` is provided (INV-3: defaults to ``None`` so the ~10
+    existing test callers that omit it stay green), one :class:`CryptoReviewEntry`
+    is appended per row of the three local lists:
+
+      - matched (removed) lots → ``source_section="capital_gains"``,
+        ``is_suspicious=False``, reason ``"Derivatives CG dedup: removed lot
+        matched to OGR disposal"`` (``remove_matched_lots`` is called ONLY by
+        the derivatives filter; the fee filter uses :func:`match_lots` and
+        builds its summary inline, so the ``"Derivatives CG dedup"`` prefix
+        is unambiguous here).
+      - surplus lots → ``is_suspicious=True``, reason ``"Surplus lot - may
+        indicate a missed FIFO split; review the listed key"``.
+      - malformed-input lots → ``is_suspicious=True``, reason ``"Malformed-
+        input lot (non-positive amount {amount}); investigate the source
+        export"``.
+
+    When ``decision_counts`` is provided, ``decision_counts.derivatives_dedup_removed``
+    is SET (not incremented) to ``len(matched_metadata)`` once per call
+    (INV-4a: each field is owned by exactly one pass).
 
     Does NOT warn for unmatched events: the caller owns that decision (fees
     may legitimately be unmatched; derivatives always warn). The matcher
@@ -458,11 +484,16 @@ def remove_matched_lots(
     Args:
         capital_entries: Capital-gains entries (FIFO lots).
         events: Transaction-history events. Empty list returns the input
-            unchanged with NO summary WARNING.
+            unchanged with NO summary INFO.
         domain_label: Lower-case domain identifier (e.g. ``"derivatives"``,
             ``"fee"``) parameterizing the summary title.
-        logger: The CALLER's module logger; the summary WARNING record carries
+        logger: The CALLER's module logger; the summary INFO record carries
             ``logger.name`` so the caller's logger-name assertions hold.
+        review_entries: Optional list to receive one :class:`CryptoReviewEntry`
+            per removed/surplus/malformed lot (INV-3 default ``None``).
+        decision_counts: Optional mutable accumulator whose
+            ``derivatives_dedup_removed`` field is set to the removed count
+            (INV-4a default ``None``).
 
     Returns:
         A :class:`MatcherResult` with matched lots removed from
@@ -507,7 +538,57 @@ def remove_matched_lots(
         surplus_total_amount=surplus_total,
         malformed_input_lots=malformed_input_lots,
     )
-    logger.warning(summary)
+    logger.info(summary)
+
+    # Surface the per-row detail in the user-facing extract (INV-1 no signal
+    # loss). INV-3: guarded so the ~10 existing test callers that omit
+    # ``review_entries`` stay green.
+    if review_entries is not None:
+        for lot, _match_type, _event in matched_metadata:
+            review_entries.append(
+                CryptoReviewEntry(
+                    source_section="capital_gains",
+                    date=lot.entry.disposal_timestamp or lot.entry.disposal_date,
+                    asset=lot.entry.asset,
+                    platform=lot.entry.wallet,
+                    review_reason=(
+                        "Derivatives CG dedup: removed lot matched to OGR disposal"
+                    ),
+                    is_suspicious=False,
+                )
+            )
+        for lot in surplus_lots:
+            review_entries.append(
+                CryptoReviewEntry(
+                    source_section="capital_gains",
+                    date=lot.entry.disposal_timestamp or lot.entry.disposal_date,
+                    asset=lot.entry.asset,
+                    platform=lot.entry.wallet,
+                    review_reason=(
+                        "Surplus lot - may indicate a missed FIFO split; "
+                        "review the listed key"
+                    ),
+                    is_suspicious=True,
+                )
+            )
+        for entry in malformed_input_lots:
+            review_entries.append(
+                CryptoReviewEntry(
+                    source_section="capital_gains",
+                    date=entry.disposal_timestamp or entry.disposal_date,
+                    asset=entry.asset,
+                    platform=entry.wallet,
+                    review_reason=(
+                        f"Malformed-input lot (non-positive amount {entry.amount}); "
+                        "investigate the source export"
+                    ),
+                    is_suspicious=True,
+                )
+            )
+
+    # INV-4a: set-not-increment; this pass owns derivatives_dedup_removed.
+    if decision_counts is not None:
+        decision_counts.derivatives_dedup_removed = len(matched_metadata)
 
     filtered = [
         entry

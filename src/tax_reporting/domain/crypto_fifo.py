@@ -106,31 +106,37 @@ class AssetFifoResult:
     # Count of taxable disposals that had no matching acquisition at or before the
     # disposal date (pool exhausted OR earliest available lot is after disposal).
     # Pattern F: summed across all (asset, platform) results in
-    # ``_rebuild_fifo_for_loan_affected_assets`` to emit ONE aggregate WARNING.
+    # ``_rebuild_fifo_for_loan_affected_assets`` to emit ONE aggregate INFO.
     unmatched_taxable_count: int = 0
     # Count of acquisitions with amount <= 0 skipped during FIFO pool construction
-    # (matching.py:58, Bucket C). Pattern F count-only shape: summed across all
-    # (asset, platform) results in ``_rebuild_fifo_for_loan_affected_assets`` to emit
-    # ONE aggregate WARNING. STAYS WARNING (silent data loss, no Excel surface).
+    # (``compute_fifo_for_asset`` pool-construction branch, per-row DEBUG
+    # ``"Skipping non-positive acquisition for"``; Bucket C). Pattern F
+    # count-only shape: summed across all (asset, platform) results in
+    # ``_rebuild_fifo_for_loan_affected_assets`` to emit ONE aggregate WARNING.
+    # STAYS WARNING (silent data loss, no Excel surface).
     non_positive_acq_count: int = 0
     # Count of negative-amount consumption events skipped by the ``remaining < ZERO``
-    # early-return guard in ``_consume_against_pool_inplace`` (matching.py:250,
-    # Bucket C). Same Pattern F shape: threaded via ``negative_consumption_counter``
-    # alongside ``unmatched_taxable_counter``, summed across all (asset, platform)
-    # results and emitted as ONE aggregate WARNING. STAYS WARNING (silent data loss).
+    # early-return guard in ``_consume_against_pool_inplace`` (per-row DEBUG
+    # ``"Negative consumption amount"``; Bucket C). Same Pattern F shape: threaded
+    # via ``negative_consumption_counter`` alongside ``unmatched_taxable_counter``,
+    # summed across all (asset, platform) results and emitted as ONE aggregate
+    # WARNING. STAYS WARNING (silent data loss).
     negative_consumption_count: int = 0
     # Count of taxable realizations whose acquisition and/or disposal date carried an
     # epoch sentinel (empty or ``1970-`` date) at ``_build_taxable_realization``
-    # (matching.py:149-150, Bucket B). Threaded via ``epoch_counter`` through the
-    # leaf -> ``_consume_against_pool_inplace`` -> here, summed across all
-    # (asset, platform) results and emitted as ONE aggregate INFO. The realization's
+    # (the ``is_epoch_acq``/``is_epoch_con`` detection, per-row DEBUG
+    # ``"Empty or epoch acquisition date"`` / ``"Empty or epoch disposal date"``;
+    # Bucket B). Threaded via ``epoch_counter`` through the leaf ->
+    # ``_consume_against_pool_inplace`` -> here, summed across all (asset, platform)
+    # results and emitted as ONE aggregate INFO. The realization's
     # ``review_required`` (set via ``or is_epoch_acq``/``or is_epoch_con``) is the
     # canonical Excel audit surface; the aggregate INFO is a console nicety.
     epoch_date_count: int = 0
     # Count of taxable realizations that consumed an UNRESOLVED deferred acquisition
     # (``source_type="exchange_in_deferred"`` retained via the unresolved branch of
     # ``cross_asset._resolve_single_acquisition``) at ``_build_taxable_realization``
-    # (matching.py:175, Bucket B -- realization-time consequence, NOT a double-count of
+    # (the ``is_deferred_acq`` branch, per-row DEBUG ``"uses unresolved deferred
+    # acquisition"``; Bucket B -- realization-time consequence, NOT a double-count of
     # Pattern J which names resolution-time causes). Threaded via
     # ``deferred_consumed_counter`` alongside ``epoch_counter``, summed across all
     # (asset, platform) results and emitted as ONE aggregate INFO with wording DISTINCT

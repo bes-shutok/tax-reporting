@@ -382,13 +382,13 @@ class TestByBitCase2Trace:
         orig_remove = dd_mod.remove_derivatives_flagged_lots
         removed_count = {"value": 0}
 
-        def spy_remove(entries, events):  # type: ignore[no-untyped-def]
+        def spy_remove(entries, events, *args, **kwargs):  # type: ignore[no-untyped-def]
             case2_in = [
                 e
                 for e in entries
                 if e.disposal_date == _CASE2_DATE and e.asset == _ASSET and e.platform == _PLATFORM
             ]
-            out = orig_remove(entries, events)
+            out = orig_remove(entries, events, *args, **kwargs)
             filtered = out[0] if isinstance(out, tuple) else out
             case2_out = [
                 e
@@ -635,25 +635,26 @@ class TestByBitCase3Trace:
             )
 
     def test_removal_logged(self, caplog: pytest.LogCaptureFixture) -> None:
-        """Each removed CG lot logs at INFO; exactly one summary WARNING covers the aggregate.
+        """Each removed CG lot logs at INFO; exactly one summary INFO covers the aggregate.
 
         Per Design Invariant 15 of
         ``docs/history/plans/2026-06-14-derivatives-th-label-cg-dedup.md`` and
         CLAUDE.md's "Every WARNING must be actionable and non-noisy at scale"
         rule, the dedup does NOT emit per-lot WARNINGs. Each removal logs at
         INFO (audit-traceable: timestamp, asset, wallet, amount, match type,
-        matching TH Tag), and exactly one aggregate WARNING per pipeline
-        run carries the total count, breakdown by match type, and aggregate
+        matching TH Tag), and exactly one aggregate INFO summary (demoted
+        from WARNING in the relocate-crypto-warnings plan) per pipeline run
+        carries the total count, breakdown by match type, and aggregate
         proceeds and gain removed.
 
         Expected caplog contents against the synthetic fixture:
           - 3 INFO records from ``derivatives_filter`` for the Case C lots
             (Funding fee 0.08838575 USDT at 20:00, Futures fee 0.41424953
             USDT at 23:40, Realized gain 40.75540000 USDT at 23:40).
-          - 1 WARNING record from ``derivatives_filter`` with the summary
-            text including the word ``removed`` and a count greater than
-            or equal to 3 (the summary covers ALL removals for the year,
-            not just Case C).
+          - 1 INFO summary record from ``derivatives_filter`` with the
+            summary text including the word ``removed`` and a count greater
+            than or equal to 3 (the summary covers ALL removals for the
+            year, not just Case C).
         """
         _assert_csv_contains_value(_th_path(), "Funding fee")
         _assert_csv_contains_value(_th_path(), "Futures fee")
@@ -693,23 +694,24 @@ class TestByBitCase3Trace:
                 f"got INFO records: {[r.getMessage() for r in info_records]}"
             )
 
-        # Exactly one summary WARNING from derivatives_filter covering the aggregate.
-        warning_records = [
+        # Exactly one summary INFO from derivatives_filter covering the aggregate.
+        summary_records = [
             r
             for r in caplog.records
-            if r.levelno >= logging.WARNING
+            if r.levelno == logging.INFO
             and r.name == "tax_reporting.application.crypto.derivatives_filter"
+            and "dedup summary" in r.getMessage()
         ]
-        assert len(warning_records) == 1, (
-            "Expected exactly one derivatives_filter summary WARNING per pipeline run; "
-            f"got {len(warning_records)}: {[r.getMessage() for r in warning_records]}"
+        assert len(summary_records) == 1, (
+            "Expected exactly one derivatives_filter summary INFO per pipeline run; "
+            f"got {len(summary_records)}: {[r.getMessage() for r in summary_records]}"
         )
-        warning_text = warning_records[0].getMessage()
-        assert "removed" in warning_text, (
-            "Summary WARNING should mention 'removed'; got: " f"{warning_text}"
+        summary_text = summary_records[0].getMessage()
+        assert "removed" in summary_text, (
+            "Summary INFO should mention 'removed'; got: " f"{summary_text}"
         )
-        assert "lots" in warning_text, (
-            "Summary WARNING should mention 'lots'; got: " f"{warning_text}"
+        assert "lots" in summary_text, (
+            "Summary INFO should mention 'lots'; got: " f"{summary_text}"
         )
 
 
@@ -752,9 +754,9 @@ class TestPipelineIntegration:
             call_order.append("dedup")
             return original_dedup(**kwargs)
 
-        def spy_split(ogr_rows, capital_entries, jurisdiction):  # type: ignore[no-untyped-def]
+        def spy_split(ogr_rows, capital_entries, jurisdiction, **kwargs):  # type: ignore[no-untyped-def]
             call_order.append("split")
-            return original_split(ogr_rows, capital_entries, jurisdiction)
+            return original_split(ogr_rows, capital_entries, jurisdiction, **kwargs)
 
         monkeypatch.setattr(cr_mod, "_validate_capital_entries_have_valid_countries", spy_validate)
         monkeypatch.setattr(cr_mod, "apply_derivatives_dedup", spy_dedup)
@@ -802,9 +804,9 @@ class TestPipelineIntegration:
         invoked: list[bool] = []
         original = dd_mod.remove_derivatives_flagged_lots
 
-        def spy_remove(entries, events):  # type: ignore[no-untyped-def]
+        def spy_remove(entries, events, *args, **kwargs):  # type: ignore[no-untyped-def]
             invoked.append(True)
-            return original(entries, events)
+            return original(entries, events, *args, **kwargs)
 
         monkeypatch.setattr(dd_mod, "remove_derivatives_flagged_lots", spy_remove)
         _load_with_separation(separate_derivatives=False)

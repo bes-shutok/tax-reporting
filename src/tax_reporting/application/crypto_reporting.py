@@ -54,6 +54,7 @@ from .crypto.entities import (
     CryptoCapitalGainEntry,
     CryptoCapitalGainStats,
     CryptoCompletePdfSummary,  # noqa: F401
+    CryptoDecisionCounts,  # noqa: F401
     CryptoReconciliationSummary,
     CryptoReviewEntry,
     CryptoRewardIncomeEntry,
@@ -239,6 +240,11 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
     zone = jurisdiction.timezone if jurisdiction else None
     skipped_assets: dict[tuple[str, str], dict] = {}
     review_entries: list[CryptoReviewEntry] = []
+    # INV-4a: NON-frozen mutable accumulator. Created once here; the dedup passes
+    # (Tasks 6/7) and the W10 sub-1-EUR filter below set their own field in-pass
+    # (set-not-increment) BEFORE the CryptoTaxReport is constructed. Attached to
+    # the report alongside review_entries so the A&M writer can render run-counts.
+    decision_counts = CryptoDecisionCounts()
 
     # ---- Phase D: SINGLE production Transaction-construction site (post-Phase D).
     # r8 Medium #1: ``load_koinly_crypto_report`` is the ONLY production caller of
@@ -299,6 +305,7 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
         transaction_history_file,
         transactions=transactions,
         config=treatment_config,
+        review_entries=review_entries,
     )
 
     # Collect known asset tickers from both files BEFORE parsing
@@ -365,6 +372,7 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
                     if jurisdiction
                     else DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS
                 ),
+                review_entries=review_entries,
             )
             capital_entries.extend(fifo_entries)
             assets_with_fifo = {e.asset for e in fifo_entries}
@@ -428,6 +436,8 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
         transaction_history_file=transaction_history_file,
         transactions=transactions,
         config=treatment_config,
+        review_entries=review_entries,
+        decision_counts=decision_counts,
     )
 
     # DP-015 fee removal runs EARLY, after derivatives dedup and BEFORE the
@@ -442,6 +452,8 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
         capital_entries=capital_entries,
         transaction_history_file=transaction_history_file,
         jurisdiction=jurisdiction,
+        review_entries=review_entries,
+        decision_counts=decision_counts,
     )
 
     # CRITICAL: OGR split + override must happen BEFORE _aggregate_capital_entries
@@ -462,7 +474,7 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
         )
         if ogr_rows:
             spot_index, derivatives_entries = _split_ogr_index(
-                ogr_rows, capital_entries, jurisdiction
+                ogr_rows, capital_entries, jurisdiction, review_entries=review_entries
             )
             if spot_index:
                 logging.getLogger(__name__).info(
@@ -563,8 +575,16 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
     pre_filter_count = len(capital_entries)
     capital_entries = _filter_immaterial_entries(capital_entries)
     dropped = pre_filter_count - len(capital_entries)
+    # INV-4a: set-not-increment. The counts are surfaced as a run-count suffix
+    # on the PT-C-028 Materiality Threshold methodology item (A&M). ``retained``
+    # is set unconditionally so a run that drops NOTHING still renders
+    # "filtered 0 entries, N retained." instead of the misleading
+    # "filtered 0 entries, 0 retained." (the A&M suffix renders whenever
+    # ``decision_counts is not None``, i.e. every crypto run).
+    decision_counts.sub_1_eur_filtered = dropped
+    decision_counts.sub_1_eur_retained = len(capital_entries)
     if dropped > 0:
-        logging.getLogger(__name__).warning(
+        logging.getLogger(__name__).info(
             "Filtered %d sub-1-EUR capital gain entries (PT-C-028); %d entries retained",
             dropped,
             len(capital_entries),
@@ -660,6 +680,7 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
         reward_entries=reward_entries,
         reconciliation=reconciliation,
         capital_gain_stats=capital_gain_stats,
+        decision_counts=decision_counts,
         skipped_zero_value_tokens=skipped_zero_value_tokens,
         skipped_zero_value_deferred_rewards=skipped_zero_value_deferred_rewards,
         loan_activity=loan_activity,
@@ -925,7 +946,7 @@ def _parse_capital_gains_file(  # noqa: PLR0912, PLR0915
                 ", ".join(f"{a}: {n}" for a, n in sorted(skipped_all_zero.items())),
             )
     finally:
-        # Pattern B flush: emit ONE aggregate WARNING for any token_origin
+        # Pattern B flush: emit ONE aggregate INFO for any token_origin
         # disagreements accumulated during this CG-parse pass, then clear the
         # shared resolver Counter. The same resolver instance is reused by
         # ``_rebuild_fifo_for_loan_affected_assets`` downstream (Design Invariant

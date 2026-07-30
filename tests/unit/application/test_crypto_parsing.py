@@ -2,16 +2,33 @@
 
 from __future__ import annotations
 
+import logging
+from collections import Counter, defaultdict
 from decimal import Decimal
 from pathlib import Path
 
-from tax_reporting.application.crypto.entities import ParsedOgrRow
+import pytest
+
+from tax_reporting.application.crypto.entities import (
+    CryptoReviewEntry,
+    ParsedOgrRow,
+)
 from tax_reporting.application.crypto.ogr_handler import _build_ogr_index
 from tax_reporting.application.crypto.parsing import (
     _MAX_PDF_BYTES,
     _decode_pdf_hex_token,
     _extract_tax_year,
 )
+from tax_reporting.application.crypto_fifo.contexts import (
+    AcquisitionContext,
+    ConsumptionContext,
+    ParsedTxRow,
+)
+from tax_reporting.application.crypto_fifo.parsing import (
+    _classify_deposit_row,
+    _dedup_by_tx_key,
+)
+from tax_reporting.domain.crypto_fifo import CryptoAcquisition, CryptoConsumption
 from tax_reporting.infrastructure.koinly_parser import (
     _find_and_parse_other_gains_file,
 )
@@ -377,3 +394,277 @@ class TestBuildOgrIndex:
         assert isinstance(index, dict)
         # Old behavior summed the two rows: -4.17 + 140.18 = 136.01
         assert index[("2025-01-13", "USDT", "ByBit")] == Decimal("136.01")
+
+
+def _make_acq_context(
+    *, tx_key: str, source_row_index: int, asset: str = "WBTC",
+    date: str = "2025-01-15", source_type: str = "buy",
+) -> AcquisitionContext:
+    """Build a minimal AcquisitionContext for direct _dedup_by_tx_key tests."""
+    return AcquisitionContext(
+        acq=CryptoAcquisition(
+            date=date,
+            asset=asset,
+            amount=Decimal("1"),
+            cost_basis_eur=Decimal("100"),
+            fee_eur=Decimal("0"),
+            source_type=source_type,
+            wallet="Kraken",
+            platform="Kraken",
+            review_required=False,
+        ),
+        tx_key=tx_key,
+        source_row_index=source_row_index,
+    )
+
+
+def _make_con_context(
+    *, tx_key: str, source_row_index: int, asset: str = "WBTC",
+    date: str = "2025-02-15", event_type: str = "exchange_out",
+) -> ConsumptionContext:
+    """Build a minimal ConsumptionContext for direct _dedup_by_tx_key tests."""
+    return ConsumptionContext(
+        con=CryptoConsumption(
+            date=date,
+            asset=asset,
+            amount=Decimal("1"),
+            proceeds_eur=Decimal("0"),
+            event_type=event_type,
+            taxable=False,
+            wallet="Kraken",
+            platform="Kraken",
+            notes="",
+            review_required=False,
+        ),
+        tx_key=tx_key,
+        source_row_index=source_row_index,
+    )
+
+
+class TestCryptoParsing:
+    """Duplicate-tx_key drops now emit INFO + CryptoReviewEntry rows (Plan
+    2026-07-25 Task 3 / W2).
+
+    Governing principle: console WARNINGs reserved for project/processing
+    problems; data issues live in the user-facing extract (Crypto Supplementary
+    review rows). The W2 aggregate ("Dropped N duplicate-tx_key ...") drops to
+    INFO, and one ``CryptoReviewEntry(source_section="capital_gains")`` is
+    appended per dropped acquisition/consumption (INV-1 no signal loss).
+    """
+
+    def test_duplicate_txkey_drops_emit_info_and_review_rows(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Given 2 acquisitions sharing a tx_key + 1 duplicate consumption,
+        expects ONE INFO summary, ZERO WARNING records, and N+M review rows."""
+        # Two acquisitions sharing tx_key "dup_acq" (same source_type "buy"):
+        # first kept, second dropped. Plus two consumptions sharing tx_key
+        # "dup_con" (same event_type "exchange_out"): first kept, second dropped.
+        acquisitions = {
+            "WBTC": [
+                _make_acq_context(tx_key="dup_acq", source_row_index=1),
+                _make_acq_context(tx_key="dup_acq", source_row_index=2),
+            ]
+        }
+        consumptions = {
+            "WBTC": [
+                _make_con_context(tx_key="dup_con", source_row_index=10),
+                _make_con_context(tx_key="dup_con", source_row_index=11),
+            ]
+        }
+        review_entries: list[CryptoReviewEntry] = []
+        parse_failures: dict[str, list[int]] = {}
+
+        parsing_logger = "tax_reporting.application.crypto_fifo.parsing"
+        with caplog.at_level(logging.INFO, logger="tax_reporting.application.crypto_fifo"):
+            _dedup_by_tx_key(
+                acquisitions, consumptions, parse_failures,
+                review_entries=review_entries,
+            )
+
+        # ONE INFO summary, ZERO WARNING records.
+        info_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.INFO and rec.name == parsing_logger
+        ]
+        aggregate_info = [
+            m for m in info_messages
+            if "Dropped" in m and "duplicate-tx_key acquisition(s)" in m
+            and "consumption(s)" in m
+        ]
+        assert len(aggregate_info) == 1, (
+            f"Expected exactly ONE aggregate INFO summary, got {aggregate_info}"
+        )
+        assert "Dropped 1 duplicate-tx_key acquisition(s)" in aggregate_info[0]
+        assert "1 consumption(s)" in aggregate_info[0]
+
+        warning_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING and rec.name == parsing_logger
+        ]
+        duplicate_warnings = [m for m in warning_messages if "duplicate-tx_key" in m]
+        assert duplicate_warnings == [], (
+            f"Expected ZERO WARNING records for duplicate-tx_key, got {duplicate_warnings}"
+        )
+
+        # N + M review rows (1 dropped acquisition + 1 dropped consumption = 2).
+        assert len(review_entries) == 2, (
+            f"Expected 2 CryptoReviewEntry rows (1 acq + 1 con), got {len(review_entries)}"
+        )
+        # All rows are capital_gains-sourced (W2 source_section per Task 3).
+        assert all(r.source_section == "capital_gains" for r in review_entries), (
+            f"All W2 review rows must be source_section='capital_gains'; got {review_entries}"
+        )
+
+        # Exactly one acquisition-distinguishing row + one consumption-distinguishing row,
+        # each naming its tx_key.
+        acq_rows = [r for r in review_entries if "acquisition" in r.review_reason]
+        con_rows = [r for r in review_entries if "consumption" in r.review_reason]
+        assert len(acq_rows) == 1, (
+            f"Expected ONE acquisition review row, got {acq_rows}"
+        )
+        assert len(con_rows) == 1, (
+            f"Expected ONE consumption review row, got {con_rows}"
+        )
+        assert "dup_acq" in acq_rows[0].review_reason, (
+            f"Acquisition review reason must name the tx_key; got {acq_rows[0].review_reason}"
+        )
+        assert "dup_con" in con_rows[0].review_reason, (
+            f"Consumption review reason must name the tx_key; got {con_rows[0].review_reason}"
+        )
+        # Row carries asset/date/platform context for the user.
+        assert acq_rows[0].asset == "WBTC"
+        assert con_rows[0].asset == "WBTC"
+        assert acq_rows[0].platform == "Kraken"
+        assert con_rows[0].platform == "Kraken"
+
+        # INV-3 backward compat: omitting review_entries must NOT raise (existing
+        # ~78 test callers do this). Demotion side-effect: nothing appended.
+        acquisitions2 = {
+            "WBTC": [
+                _make_acq_context(tx_key="dup_acq2", source_row_index=1),
+                _make_acq_context(tx_key="dup_acq2", source_row_index=2),
+            ]
+        }
+        consumptions2: dict[str, list] = {"WBTC": []}
+        # Should not raise AttributeError.
+        _dedup_by_tx_key(acquisitions2, consumptions2, {})
+
+    def test_zero_nv_deposit_emits_info_and_review_row(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Given a crypto_deposit TH row with Net Value == 0, expects ONE INFO
+        aggregate, ZERO WARNING records, and a CryptoReviewEntry(source_section=
+        'transaction_history') whose reason names the missing-cost-basis concern.
+
+        Unit test at the ``_classify_deposit_row`` layer (the per-row classifier
+        that the main parse loop calls inside ``_classify_rows_for_loan_affected_assets``),
+        with a threaded ``review_entries`` list. Plan 2026-07-25 Task 4 / W3.
+        """
+        # Build a crypto_deposit ParsedTxRow with Net Value == 0 (the zero-NV branch).
+        zero = Decimal("0")
+        parsed_row = ParsedTxRow(
+            row={
+                "Date": "2025-03-15 10:00:00 UTC",
+                "Type": "crypto_deposit",
+                "Sending Wallet": "",
+                "Receiving Wallet": "Kraken Main",
+                "Sent Amount": "",
+                "Sent Currency": "",
+                "Received Amount": "0,5",
+                "Received Currency": "WBTC",
+                "Net Value (EUR)": "0",
+                "TxHash": "znv_w3",
+            },
+            row_index=42,
+            date_str="2025-03-15",
+            tx_key="znv_w3",
+            row_type="crypto_deposit",
+            sent_currency="",
+            received_currency="WBTC",
+            fee_currency="",
+            sent_amount=zero,
+            received_amount=Decimal("0.5"),
+            sent_cost_basis=zero,
+            net_value=zero,
+            fee_amount=zero,
+            fee_value=zero,
+            sent_affected=False,
+            received_affected=True,
+            fee_affected=False,
+            loan_affected_assets=frozenset({"WBTC"}),
+        )
+
+        acquisitions: defaultdict[str, list[AcquisitionContext]] = defaultdict(list)
+        consumptions: dict[str, list] = {}
+        parse_failures: dict[str, list[int]] = {}
+        zero_net_deposits: Counter[str] = Counter()
+        review_entries: list[CryptoReviewEntry] = []
+
+        parsing_logger = "tax_reporting.application.crypto_fifo.parsing"
+        with caplog.at_level(logging.INFO, logger="tax_reporting.application.crypto_fifo"):
+            _classify_deposit_row(
+                parsed_row,
+                acquisitions=acquisitions,
+                consumptions=consumptions,
+                parse_failures_by_asset=parse_failures,
+                zero_net_deposits=zero_net_deposits,
+                review_entries=review_entries,
+            )
+
+        # The per-row classifier must append the missing-cost-basis review row at
+        # the zero-NV branch so the aggregate INFO at the orchestrator layer can
+        # count it. ONE review row, source_section="transaction_history".
+        assert len(review_entries) == 1, (
+            f"Expected 1 CryptoReviewEntry for the zero-NV deposit, got {review_entries}"
+        )
+        row = review_entries[0]
+        assert row.source_section == "transaction_history", (
+            f"W3 review row source_section must be 'transaction_history'; got {row.source_section}"
+        )
+        assert row.asset == "WBTC"
+        assert row.date == "2025-03-15"
+        # Platform comes from the Receiving Wallet column.
+        assert row.platform == "Kraken Main"
+        # The reason must name the missing-cost-basis concern so the user knows
+        # what to investigate in the source export.
+        reason_lower = row.review_reason.lower()
+        assert "zero-net-value" in reason_lower, (
+            f"W3 review_reason must name the zero-Net-Value concern; got {row.review_reason}"
+        )
+        assert "cost basis" in reason_lower, (
+            f"W3 review_reason must name the missing-cost-basis concern; got {row.review_reason}"
+        )
+
+        # The per-row classifier itself emits only DEBUG (the aggregate INFO is
+        # emitted by the orchestrator at the end of the run). So ZERO WARNING
+        # and ZERO INFO records naming the W3 substring at THIS layer.
+        warning_messages = [
+            rec.getMessage()
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING and rec.name == parsing_logger
+        ]
+        zero_nv_warnings = [m for m in warning_messages if "zero-Net-Value" in m]
+        assert zero_nv_warnings == [], (
+            f"Expected ZERO WARNING records for zero-Net-Value, got {zero_nv_warnings}"
+        )
+
+        # The per-row classifier registered the deposit in the Counter so the
+        # orchestrator's aggregate INFO ("Flagged N zero-Net-Value ...") can
+        # summarize it. We assert the counter was bumped (the orchestrator emit
+        # is demoted to INFO and tested end-to-end via the W2/W3 gate test).
+        assert zero_net_deposits["WBTC"] == 1
+
+        # INV-3 backward compat: omitting review_entries must NOT raise.
+        review_entries_none: list[CryptoReviewEntry] | None = None
+        parse_failures2: dict[str, list[int]] = {}
+        _classify_deposit_row(
+            parsed_row,
+            acquisitions=defaultdict(list),
+            consumptions={},
+            parse_failures_by_asset=parse_failures2,
+            zero_net_deposits=Counter(),
+            review_entries=review_entries_none,
+        )

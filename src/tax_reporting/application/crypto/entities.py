@@ -291,6 +291,34 @@ class CapitalGainPeriodStats:
         )
 
 
+@dataclass
+class CryptoDecisionCounts:
+    """Mutable accumulator of run-specific crypto-pipeline decision counts.
+
+    Carries per-run counts of methodology decisions (sub-1-EUR materiality
+    filter drops; derivatives/fee dedup removals) from the pipeline passes to
+    the Assumptions & Methodology sheet writer. Created once at the top of
+    ``load_koinly_crypto_report`` (INV-4a: NON-frozen so the dedup passes can
+    set their own field in-pass before the ``CryptoTaxReport`` is constructed).
+    Each field is set by EXACTLY ONE pass (set-not-increment; auditable).
+
+    Fields:
+        sub_1_eur_filtered: Capital-gain lines dropped by the PT-C-028 sub-1-EUR
+            materiality filter (set by ``load_koinly_crypto_report`` at the W10 site).
+        sub_1_eur_retained: Capital-gain lines retained after the sub-1-EUR filter
+            (set alongside ``sub_1_eur_filtered`` at the W10 site).
+        derivatives_dedup_removed: Lots removed by the derivatives CG dedup pass
+            (set by ``th_lot_matcher.remove_matched_lots`` via W6; Task 6).
+        fee_dedup_removed: Lots removed by the fee CG dedup pass
+            (set by ``fee_filter.remove_transaction_fees`` via W7; Task 7).
+    """
+
+    sub_1_eur_filtered: int = 0
+    sub_1_eur_retained: int = 0
+    derivatives_dedup_removed: int = 0
+    fee_dedup_removed: int = 0
+
+
 @dataclass(frozen=True)
 class CryptoCapitalGainStats:
     """Aggregate capital gain statistics across all holding periods.
@@ -536,7 +564,9 @@ class CryptoReviewEntry:
             scam detection and triggers alarming red/bold formatting.
     """
 
-    source_section: Literal["capital_gains", "income", "transaction_history"]
+    source_section: Literal[
+        "capital_gains", "income", "transaction_history", "derivatives"
+    ]
     date: str
     asset: str
     platform: str
@@ -553,6 +583,7 @@ class CryptoTaxReport:
     reward_entries: list[CryptoRewardIncomeEntry]
     reconciliation: CryptoReconciliationSummary
     capital_gain_stats: CryptoCapitalGainStats
+    decision_counts: CryptoDecisionCounts = field(default_factory=CryptoDecisionCounts)
     skipped_zero_value_tokens: list[CryptoSkippedZeroValueToken] = field(default_factory=list)
     # Authoritative audit trail of zero-value DEFERRED_BY_LAW reward rows removed from
     # ``reward_entries`` at parse time (CRG-022). Full ``CryptoRewardIncomeEntry`` objects

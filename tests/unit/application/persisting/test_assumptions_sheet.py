@@ -601,6 +601,7 @@ class TestMethodologyAssumptionsSection:
             "DP-010",  # Futures/Derivatives Losses
             "DP-011",  # OGR Usage for Derivatives
             "DP-012",  # Separate Derivatives Reporting
+            "DP-015",  # OGR-vs-CG and Fee Lot Dedup (fee filtering)
         }
 
         # Collect all decision point references from methodology descriptions

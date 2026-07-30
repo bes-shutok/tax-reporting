@@ -16,6 +16,7 @@ from .aggregation import _is_valid_tabela_x_country
 from .classification import classify_derivatives_event
 from .entities import (
     CryptoCapitalGainEntry,
+    CryptoReviewEntry,
     DerivativesEventType,
     DerivativesPnLEntry,
     ParsedOgrRow,
@@ -208,6 +209,7 @@ def _split_ogr_index(
     ogr_rows: list[ParsedOgrRow],
     capital_entries: list[CryptoCapitalGainEntry],
     jurisdiction: TaxJurisdictionConfig,
+    review_entries: list[CryptoReviewEntry] | None = None,
 ) -> tuple[dict[tuple[str, str, str], Decimal], list[DerivativesPnLEntry]]:
     """Split OGR rows into a spot index and a derivatives P&L entry list.
 
@@ -234,7 +236,7 @@ def _split_ogr_index(
     Safety net (r1 Medium #7): when ``separate_derivatives_reporting=True`` and
     classification returns ``Derivatives`` while ``len(cg_matches) == 0``, a
     per-row ``logger.debug`` is emitted (with the (date, asset, wallet) detail)
-    and one aggregate ``logger.warning`` summarizing the total count is emitted
+    and one aggregate ``logger.info`` summarizing the total count is emitted
     after the loop, so ambiguous platform cases (no CG counterpart to confirm
     spot vs derivatives classification) are surfaced. The per-row detail stays
     reachable at DEBUG (Design Invariant #3). The row is still routed to
@@ -248,6 +250,12 @@ def _split_ogr_index(
             counterparts via the ``(date, asset, wallet)`` key.
         jurisdiction: Tax jurisdiction config. The
             ``separate_derivatives_reporting`` flag toggles the split.
+        review_entries: Optional accumulator list. When provided, each OGR row
+            classified ``derivatives`` with no CG counterpart appends a
+            ``CryptoReviewEntry(source_section="derivatives")`` so the data
+            issue is surfaced in the user-facing Crypto Supplementary extract
+            (W9). Defaults to ``None`` to preserve backward compatibility
+            (INV-3): existing callers that omit it must not ``TypeError``.
 
     Returns:
         Tuple ``(spot_index, derivatives_entries)``. When
@@ -261,9 +269,11 @@ def _split_ogr_index(
 
     spot_index: dict[tuple[str, str, str], Decimal] = {}
     derivatives_entries: list[DerivativesPnLEntry] = []
-    # Pattern H (warning grouping): count no-CG-counterpart rows so ONE aggregate
-    # WARNING can be emitted after the loop, while the per-row detail stays at
-    # DEBUG (Design Invariant #3). Mirrors the summary at ogr_handler.py:130-136.
+    # Pattern W9 (warning grouping, EXTRACT_SURFACED): count no-CG-counterpart rows
+    # so ONE aggregate INFO can be emitted after the loop, while the per-row detail
+    # stays at DEBUG (Design Invariant #3). The per-row data issue is surfaced in the
+    # user-facing extract via a SEPARATE ``CryptoReviewEntry`` row appended to
+    # ``review_entries`` (the EXTRACT_SURFACED shape, not the entry's own schema).
     no_cg_counter: int = 0
 
     for row in ogr_rows:
@@ -357,9 +367,25 @@ def _split_ogr_index(
                 row.wallet,
             )
             no_cg_counter += 1
+            # INV-3 guard: append only when the accumulator was threaded in
+            # (defaults to None). Surfaces the per-row data issue in the
+            # user-facing Crypto Supplementary extract (W9).
+            if review_entries is not None:
+                review_entries.append(
+                    CryptoReviewEntry(
+                        source_section="derivatives",
+                        date=row.date,
+                        asset=row.asset,
+                        platform=row.wallet,
+                        review_reason=(
+                            "OGR row routed to derivatives by row type; no CG "
+                            "counterpart to confirm spot vs derivatives classification"
+                        ),
+                    )
+                )
 
     if no_cg_counter > 0:
-        logger.warning(
+        logger.info(
             "%d OGR row(s) routed to derivatives by row type with no CG counterpart to "
             "confirm spot vs derivatives; see DEBUG log for per-row detail",
             no_cg_counter,

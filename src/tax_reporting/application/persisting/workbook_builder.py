@@ -172,6 +172,7 @@ def generate_tax_report(  # noqa: PLR0912, PLR0915
                     capital_entries=crypto_tax_report.capital_entries,
                     reward_entries=crypto_tax_report.reward_entries,
                     registry=ProductionWalletKindRegistry(),
+                    decision_counts=crypto_tax_report.decision_counts,
                 )
                 crypto_sheet_created = True
             except Exception as e:

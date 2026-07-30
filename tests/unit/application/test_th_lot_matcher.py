@@ -20,6 +20,8 @@ import pytest
 
 from tax_reporting.application.crypto.entities import (
     CryptoCapitalGainEntry,
+    CryptoDecisionCounts,
+    CryptoReviewEntry,
     OperatorOrigin,
 )
 from tax_reporting.application.crypto.th_lot_matcher import (
@@ -228,7 +230,7 @@ class TestUnmatchedEvents:
         lots = [_make_cg_lot(disposal_timestamp="2025-01-24 23:40", amount=Decimal("0.5"))]
         events = [_evt(amount=Decimal("9.9"))]
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.INFO):
             remove_matched_lots(
                 lots,
                 events,
@@ -236,7 +238,7 @@ class TestUnmatchedEvents:
                 logger=logging.getLogger("tax_reporting.application.crypto.derivatives_filter"),
             )
 
-        # Exactly one summary WARNING (the removal summary), no unmatched-event warning.
+        # Exactly one summary INFO (the removal summary), no unmatched-event warning.
         assert len(caplog.records) == 1
         assert "dedup summary" in caplog.records[0].getMessage()
 
@@ -258,7 +260,7 @@ class TestMalformedInput:
         assert len(result.matched_metadata) == 1
 
 
-class TestSummaryWarningContract:
+class TestSummaryLevelContract:
     def test_remove_matched_lots_emits_exactly_one_summary(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -268,7 +270,7 @@ class TestSummaryWarningContract:
         ]
         events = [_evt(amount=Decimal("0.5")), _evt(amount=Decimal("0.5"))]
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.INFO):
             remove_matched_lots(
                 lots,
                 events,
@@ -276,7 +278,7 @@ class TestSummaryWarningContract:
                 logger=logging.getLogger("tax_reporting.application.crypto.derivatives_filter"),
             )
 
-        assert len(caplog.records) == 1, "remove_matched_lots must emit exactly one summary WARNING"
+        assert len(caplog.records) == 1, "remove_matched_lots must emit exactly one summary INFO"
 
     def test_match_lots_emits_no_summary(self, caplog: pytest.LogCaptureFixture) -> None:
         lots = [_make_cg_lot(disposal_timestamp="2025-01-24 23:40", amount=Decimal("0.5"))]
@@ -318,7 +320,7 @@ class TestSummaryWarningContract:
         lots = [_make_cg_lot(disposal_timestamp="2025-01-24 23:40", amount=Decimal("0.5"))]
         events = [_evt(amount=Decimal("0.5"))]
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.INFO):
             remove_matched_lots(
                 lots,
                 events,
@@ -332,11 +334,13 @@ class TestSummaryWarningContract:
 
 
 class TestLoggerName:
-    """The summary WARNING must carry the CALLER's logger.name, not th_lot_matcher's.
+    """The summary INFO must carry the CALLER's logger.name, not th_lot_matcher's.
 
     Guards against a regression that re-homes logging under the th_lot_matcher
     logger (which would break the derivatives e2e logger-name assertions and
-    misattribute fee-filter warnings).
+    misattribute fee-filter logs). (W6 was demoted WARNING -> INFO per rule #7
+    EXTRACT_SURFACED; per-row detail now surfaces as CryptoReviewEntry rows +
+    an A&M count cell.)
     """
 
     @pytest.mark.parametrize(
@@ -355,7 +359,7 @@ class TestLoggerName:
         lots = [_make_cg_lot(disposal_timestamp="2025-01-24 23:40", amount=Decimal("0.5"))]
         events = [_evt(amount=Decimal("0.5"))]
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.INFO):
             remove_matched_lots(
                 lots,
                 events,
@@ -365,7 +369,7 @@ class TestLoggerName:
 
         assert len(caplog.records) == 1
         assert caplog.records[0].name == caller_logger_name, (
-            f"summary WARNING must carry the caller's logger.name "
+            f"summary INFO must carry the caller's logger.name "
             f"({caller_logger_name!r}), got {caplog.records[0].name!r}"
         )
 
@@ -375,7 +379,7 @@ class TestLoggerName:
         lots = [_make_cg_lot(disposal_timestamp="2025-01-24 23:40", amount=Decimal("0.5"))]
         events = [_evt(amount=Decimal("0.5"))]
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.INFO):
             remove_matched_lots(
                 lots,
                 events,
@@ -402,3 +406,174 @@ class TestPassThroughIdentity:
 
         _lot, _mt, returned_event = result.matched_metadata[0]
         assert returned_event is event
+
+
+class TestDerivativesDedupReviewRowsAndInfo:
+    """Task 6: W6 derivatives dedup → INFO + review rows (3 sub-lists) + A&M count.
+
+    Drives ``remove_matched_lots`` directly with ``domain_label="derivatives"``
+    (the only caller of ``remove_matched_lots``: fee_filter uses ``match_lots``
+    the match-only variant, and builds its summary inline at
+    ``remove_transaction_fees``). So the "Derivatives CG dedup" reason prefix
+    is unambiguous here.
+    """
+
+    _CALLER_LOGGER_NAME = "tax_reporting.application.crypto.derivatives_filter"
+
+    def test_derivatives_dedup_removed_lots_become_review_rows(self) -> None:
+        """Given 3 matched lots, expects 3 CryptoReviewEntry rows with
+        source_section="capital_gains" and reasons prefixed
+        "Derivatives CG dedup: removed lot matched to OGR disposal".
+        """
+        lots = [
+            _make_cg_lot(
+                disposal_timestamp="2025-01-24 23:40",
+                amount=Decimal("0.5"),
+                acquisition_date=f"2025-01-{day:02d}",
+            )
+            for day in (10, 11, 12)
+        ]
+        events = [_evt(amount=Decimal("0.5")) for _ in range(3)]
+        review_entries: list[CryptoReviewEntry] = []
+
+        remove_matched_lots(
+            lots,
+            events,
+            domain_label="derivatives",
+            logger=logging.getLogger(self._CALLER_LOGGER_NAME),
+            review_entries=review_entries,
+        )
+
+        assert len(review_entries) == 3, (
+            f"expected 3 review rows; got {len(review_entries)}"
+        )
+        for entry in review_entries:
+            assert entry.source_section == "capital_gains"
+            assert entry.is_suspicious is False, (
+                "removed (matched) lots are not suspicious"
+            )
+            assert entry.review_reason.startswith(
+                "Derivatives CG dedup: removed lot matched to OGR disposal"
+            ), f"unexpected reason: {entry.review_reason!r}"
+
+    def test_derivatives_dedup_surplus_lots_become_suspicious_review_rows(self) -> None:
+        """Given surplus lots, expects CryptoReviewEntry rows with
+        is_suspicious=True and reason "Surplus lot - may indicate a missed
+        FIFO split; review the listed key".
+        """
+        # 2 lots at the same exact-match key, 1 event consumes the first ->
+        # the second becomes surplus.
+        lots = [
+            _make_cg_lot(
+                disposal_timestamp="2025-01-24 23:40",
+                amount=Decimal("0.5"),
+                acquisition_date="2025-01-10",
+            ),
+            _make_cg_lot(
+                disposal_timestamp="2025-01-24 23:40",
+                amount=Decimal("0.5"),
+                acquisition_date="2025-01-12",
+            ),
+        ]
+        events = [_evt(amount=Decimal("0.5"))]
+        review_entries: list[CryptoReviewEntry] = []
+
+        remove_matched_lots(
+            lots,
+            events,
+            domain_label="derivatives",
+            logger=logging.getLogger(self._CALLER_LOGGER_NAME),
+            review_entries=review_entries,
+        )
+
+        surplus_rows = [
+            e for e in review_entries if e.review_reason.startswith("Surplus lot")
+        ]
+        assert len(surplus_rows) == 1, (
+            f"expected 1 surplus review row; got {len(surplus_rows)} "
+            f"in {[e.review_reason for e in review_entries]}"
+        )
+        row = surplus_rows[0]
+        assert row.is_suspicious is True, "surplus lots are suspicious"
+        assert row.review_reason == (
+            "Surplus lot - may indicate a missed FIFO split; review the listed key"
+        ), f"unexpected surplus reason: {row.review_reason!r}"
+
+    def test_derivatives_dedup_malformed_lots_become_suspicious_review_rows(self) -> None:
+        """Given lots with non-positive amount, expects CryptoReviewEntry rows
+        with is_suspicious=True and reason "Malformed-input lot (non-positive
+        amount {amount}); investigate the source export".
+        """
+        lots = [
+            _make_cg_lot(
+                disposal_timestamp="2025-01-24 08:00", amount=Decimal("0")
+            ),
+            _make_cg_lot(
+                disposal_timestamp="2025-01-24 09:00", amount=Decimal("-0.5")
+            ),
+            _make_cg_lot(
+                disposal_timestamp="2025-01-24 10:00", amount=Decimal("0.5")
+            ),
+        ]
+        events = [_evt(timestamp="2025-01-24 10:00", amount=Decimal("0.5"))]
+        review_entries: list[CryptoReviewEntry] = []
+
+        remove_matched_lots(
+            lots,
+            events,
+            domain_label="derivatives",
+            logger=logging.getLogger(self._CALLER_LOGGER_NAME),
+            review_entries=review_entries,
+        )
+
+        malformed_rows = [
+            e for e in review_entries if e.review_reason.startswith("Malformed-input")
+        ]
+        assert len(malformed_rows) == 2, (
+            f"expected 2 malformed review rows; got {len(malformed_rows)} "
+            f"in {[e.review_reason for e in review_entries]}"
+        )
+        for row in malformed_rows:
+            assert row.is_suspicious is True, "malformed lots are suspicious"
+            assert row.review_reason.startswith(
+                "Malformed-input lot (non-positive amount"
+            ), f"unexpected malformed reason: {row.review_reason!r}"
+            assert "investigate the source export" in row.review_reason
+
+    def test_derivatives_dedup_summary_emits_info(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Given any non-empty derivatives dedup, expects ONE INFO record
+        containing "Derivatives CG dedup summary" and ZERO WARNING records.
+        """
+        lots = [_make_cg_lot(disposal_timestamp="2025-01-24 23:40", amount=Decimal("0.5"))]
+        events = [_evt(amount=Decimal("0.5"))]
+
+        with caplog.at_level(logging.INFO, logger=self._CALLER_LOGGER_NAME):
+            remove_matched_lots(
+                lots,
+                events,
+                domain_label="derivatives",
+                logger=logging.getLogger(self._CALLER_LOGGER_NAME),
+            )
+
+        summary_records = [
+            r
+            for r in caplog.records
+            if "Derivatives CG dedup summary" in r.getMessage()
+        ]
+        assert len(summary_records) == 1, (
+            f"expected ONE summary record; got {len(summary_records)}: "
+            f"{[r.getMessage() for r in summary_records]}"
+        )
+        assert summary_records[0].levelno == logging.INFO, (
+            f"summary must be INFO; got level {summary_records[0].levelno}"
+        )
+        warning_records = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "Derivatives CG dedup summary" in r.getMessage()
+        ]
+        assert warning_records == [], (
+            "summary must NOT emit at WARNING; demoted to INFO"
+        )
