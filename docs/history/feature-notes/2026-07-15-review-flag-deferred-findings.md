@@ -1,6 +1,21 @@
 # Deferred findings: review-flag aggregation-boundary investigation
 
-Companion to `docs/history/plans/2026-07-15-review-flag-aggregation-boundary.md`. Captures findings surfaced during the investigation that are explicitly **out of scope** for the active plan but warrant follow-up. Each entry has a recommended trigger condition for re-opening.
+Companion to `docs/history/plans/completed/2026-07-15-review-flag-aggregation-boundary.md`. Captures findings surfaced during the investigation that are explicitly **out of scope** for the active plan but warrant follow-up. Each entry has a recommended trigger condition for re-opening.
+
+## Resolution map
+
+All eight items are resolved or dismissed. This table is the single place to answer "is item N done?"; the per-item sections below retain their Status lines and (for #1-#6, #8) their original prose. Item #7's design synthesis was relocated to the resolving plan's Design Provenance appendix.
+
+| # | Finding | Status | Resolved by / dismissed reason |
+|---|---------|--------|--------------------------------|
+| 1 | FEE-token tracking entries pollute the per-lot review list | Resolved | Plan `2026-07-18-crypto-dust-partition-fee-skip` (Tasks 1-2) |
+| 2 | Reward-FMV-not-carried-into-basis detection | Dismissed | Trigger not fired on 2025 export (investigated 2026-07-21) |
+| 3 | Homoglyph-scam token silently aggregated | Dismissed | Trigger not fired (re-checked 2026-07-21) |
+| 4 | Loan "no-EUR-price" classification is a downstream symptom | Dismissed | Trigger not fired; LBTC immaterial (re-checked 2026-07-21) |
+| 5 | `Crypto Reconciliation` sheet review-flag rendering | Dismissed | Sheet never reads `review_reason` (investigated 2026-07-18) |
+| 6 | Cross-cutting "aggregated review flag" ADR | Resolved | PD-008 in `docs/maintenance/project-decisions.md` (commit `43dc59b`) |
+| 7 | Reward dust summary on popular-asset zero-value rewards | Resolved | Plan `2026-07-18-crypto-dust-partition-fee-skip` (Tasks 3-7); design synthesis in its Design Provenance appendix |
+| 8 | Deferred-side zero-value reward noise | Resolved | Plan `2026-07-19-deferred-reward-dust-skip` (CRG-022) |
 
 ## 1. FEE-token tracking entries pollute the per-lot review list
 
@@ -106,114 +121,7 @@ Two of three criteria are clearly met; the "hard to reverse" criterion is weak. 
 
 **Status: Resolved by plan 2026-07-18-crypto-dust-partition-fee-skip (Tasks 3-7), original r8 design reused, r9 discriminator correction applied.**
 
-**Status.** Originally Task 2 of the active plan. Removed wholesale at r9 review on 2026-07-16 after the panel surfaced a design-level defect (popular-token-set membership is the wrong discriminator for the dust-vs-detail split) and the author clarified the popular-token set's actual purpose. This entry preserves the full original design, the discovery, and the proposed alternative so a future focused plan can pick it up without re-deriving the context.
-
-### 7.1 Original design (as it stood at r8)
-
-**Problem.** Koinly's 2-decimal `Value (EUR)` export rounds sub-cent reward values to `0,00`. For rewards on popular assets (BTC, ETH, BNB, USDT, ...) a zero value is almost certainly a rounding artifact, not a missing price feed. The original Task 2 collapsed such rows into a per-`(asset, wallet)` dust summary on the Crypto Supplementary tab, suppressing them from the Section 2 detail table while keeping niche tokens' zero-value rows on per-row `YES` flag.
-
-**Planned implementation.** In `src/tax_reporting/application/persisting/crypto_supplementary_sheet.py:write_crypto_supplementary_sheet`:
-
-```python
-from ..crypto.classification import _contains_popular_token, _get_popular_crypto_tokens
-
-# Function-local partition (both Section 2 and Section 4 reference it)
-dust_rows = [r for r in taxable_now_entries
-             if r.value_eur == 0
-             and (r.asset in _get_popular_crypto_tokens()
-                  or _contains_popular_token(r.asset))]
-real_rows = [r for r in taxable_now_entries
-             if not (r.value_eur == 0
-                     and (r.asset in _get_popular_crypto_tokens()
-                          or _contains_popular_token(r.asset)))]
-
-# Empty-label conditional at call site
-if not real_rows and dust_rows:
-    empty_label = "All taxable-now rows classified as dust - see summary below"
-elif not real_rows and not dust_rows:
-    empty_label = "No taxable-now rewards"
-else:
-    empty_label = None  # unused
-
-# Render real_rows via existing _write_reward_detail_rows helper (signature unchanged).
-# When dust_rows is non-empty, append a bold "Dust summary:" header at row_no,
-# then one row per (asset, wallet) group sorted by (asset, wallet):
-#   f"{safe_cell_value(asset)} dust ({safe_cell_value(wallet)}): {count} rows, "
-#   f"summed Value EUR = {summed:.2f} (Koinly 2-decimal export). "
-#   f"Re-export with higher precision to verify."
-# When dust_rows is empty, skip the summary block entirely.
-```
-
-**Planned Section 4 reconciliation split.** Replace `("Taxable-now rows (immediately taxable)", len(taxable_now_entries))` with two rows:
-- `("Taxable-now detail rows", len(real_rows))`
-- `("Taxable-now dust rows (suppressed from detail)", len(dust_rows))`
-
-Plus the invariant `detail_count + dust_count == len(taxable_now_entries)` to guard against silent data loss in the upstream classifier.
-
-**Planned tests.** See r8 staging doc `docs/history/reviews/2026-07-16-plan-review-review-flag-aggregation-boundary-r8.md` Task 2 prescriptions: `TestCryptoSupplementarySheetDustSummary` (six methods), `TestCryptoSupplementarySheetReconciliation.test_section4_splits_detail_and_dust_counts`, plus re-scopes for `test_reconciliation_key_value_pairs` and `test_reconciliation_empty_rewards`. The OSBGT-based `test_niche_asset_zero_value_keeps_per_row_yes_flag` is the one that broke (see 7.2).
-
-**Planned docs.** `docs/maintenance/crypto_implementation_guidelines.md:413-419` (aggregation paragraph) and `:1605-1610` (zero-value popular-token paragraph); `docs/maintenance/crypto_reporting_guidelines.md` (new CRG rule for aggregation-boundary re-evaluation); glossary entries for "Reward dust".
-
-### 7.2 Why the design broke (r9 finding)
-
-The discriminator `r.asset in _get_popular_crypto_tokens() or _contains_popular_token(r.asset)` was treated as equivalent to "Koinly can price this asset; a zero is a sub-cent rounding artifact". It is not. The popular-token set has a different purpose: it is an explicit allowlist of tokens whose zero-value rewards should be **flagged for review (per-row YES)**, not silently dropped as spam. The set was built by the author specifically to **prevent** tokens like OSBGT/PBERA/SWBERA/STBGT/BGT from being ignored. From `docs/maintenance/tax/popular_crypto_tokens.json`:
-
-> "If a reward for one of these tokens has zero value, it's likely a Koinly data error (missing price data, export issue) and should be flagged for review instead of skipped."
-
-The author's actual mental model (confirmed verbally 2026-07-16): these berachain-ecosystem and exchange-platform tokens are **illiquid wrappers that Koinly often cannot price**. They were added to the popular set so zero-value rewards in them would surface for manual review, NOT because Koinly was expected to price them. BGT is the exception (acquired via staking, redeemable 1:1 for BERA); the rest (OSBGT, IBGT, LBGT, STBGT, IBERA, SWBERA, PBERA) are genuinely illiquid.
-
-Verification at r9:
-
-```
-OSBGT        in_set=True  contains=True    (explicitly listed in exchange_platform_tokens)
-XFATBERA     in_set=False contains=True    (substring "BERA" match)
-EWBERA-4     in_set=False contains=True    (substring "BERA" match)
-PBERA        in_set=True  contains=True    (explicitly listed in berachain_ecosystem)
-SWBERA       in_set=True  contains=True    (explicitly listed in exchange_platform_tokens)
-BGT          in_set=True  contains=True    (explicitly listed in berachain_ecosystem)
-STBGT        in_set=True  contains=True    (explicitly listed in exchange_platform_tokens)
-```
-
-Under the original Task 2 logic, all eight tokens route to `dust_rows` and get summarized with the misleading hint "Re-export with higher precision to verify." For OSBGT/PBERA/SWBERA/STBGT re-exporting does nothing because Koinly has no price feed. The headline test `test_niche_asset_zero_value_keeps_per_row_yes_flag` used OSBGT as its fixture and could not pass.
-
-### 7.3 Popular-token set is consumed in three places; pruning is wrong
-
-The set has three existing call sites in `src/tax_reporting/application/crypto_reporting.py:730, 955, 1012`. All three flag zero-value rewards for popular assets. **Pruning the berachain/exchange tokens from the JSON to fix the dust discriminator would defeat the author's original purpose at all three call sites**: those tokens would go back to being silently dropped. The JSON is not the defect; the dust discriminator's use of it is.
-
-### 7.4 Proposed alternative discriminator for a future plan
-
-**Has-any-priced-row.** Dust-vs-detail should split on whether Koinly demonstrably has a price for the asset in this export, not on popular-set membership:
-
-- **Dust case**: the asset has at least one non-zero priced row somewhere in this export; this row's zero is a sub-cent rounding artifact. Summarize with the re-export hint.
-- **Genuinely-unpriced case**: the asset has zero non-zero rows in this export (every row for this asset is `value_eur == 0`). Koinly has no price feed. Keep the per-row `YES` flag so the author sees each row and can manually price it.
-
-Implementation sketch:
-
-```python
-priced_assets_in_export = {r.asset for r in all_reward_entries if r.value_eur > 0}
-
-dust_rows = [r for r in taxable_now_entries
-             if r.value_eur == 0
-             and r.asset in priced_assets_in_export]
-# real_rows = taxable_now_entries with dust_rows removed
-# Zero-value rows on assets NOT in priced_assets_in_export stay on per-row YES.
-```
-
-This matches the author's intent: BTC/ETH/USDT sub-cent rewards become dust; OSBGT/PBERA/SWBERA/STBGT (genuinely unpriced) keep per-row YES.
-
-### 7.5 What to re-open
-
-**Trigger.** The active plan lands Task 1 (aggregated review flag re-evaluation) and Task 3 (five-sentinel loan classification). After running the next real export, inspect the Crypto Supplementary tab. If zero-value reward rows for popular-but-illiquid tokens (OSBGT, PBERA, SWBERA, STBGT, etc.) are noisy enough to warrant grouping, open a focused plan using the discriminator in 7.4.
-
-**Carry-forward from the r1-r9 review corpus.** The full test prescription, reconciliation-split design, and docs updates from the original Task 2 are captured above and in the r8 staging doc. The r7 architecture concern (sheet writer as classification site, r7 #2) and the r8 architecture concerns (fill duplication r8 #9, prefix-tuple duplication r8 #10, three sheet-test methods r8 #11) all transferred with Task 2; do NOT carry them as open items for the active plan after the removal.
-
-### 7.6 Pointers
-
-- r8 staging doc: `docs/history/reviews/2026-07-16-plan-review-review-flag-aggregation-boundary-r8.md` (Task 2 prescriptions at full detail).
-- r9 staging doc: `docs/history/reviews/2026-07-16-plan-review-review-flag-aggregation-boundary-r9.md` (finding #1, the OSBGT discovery; finding #4 missing imports for loan_activity_sheet / test files are unaffected by Task 2 removal and stay open against Task 3).
-- Popular-token JSON: `docs/maintenance/tax/popular_crypto_tokens.json` (do not prune without re-reading 7.3 above).
-- Production helpers: `src/tax_reporting/application/crypto/classification.py:344-370` (`_get_popular_crypto_tokens`, `_contains_popular_token`).
-- Production consumers: `src/tax_reporting/application/crypto_reporting.py:730, 955, 1012`.
+The design synthesis (original r8 discriminator and why it was wrong, the three-call-sites rule that rules out pruning the popular-token JSON, and the has-any-priced-row alternative the resolving plan implements) has been relocated to the resolving plan's **Design Provenance** appendix: `docs/history/plans/completed/2026-07-18-crypto-dust-partition-fee-skip.md` (sections DP-1 through DP-4). Verbatim r8 test prescriptions and the r9 OSBGT discovery remain in the r8/r9 review staging docs under `docs/history/reviews/` (gitignored, retained locally for traceability). Originally Task 2 of the active plan; removed wholesale at r9 on 2026-07-16 after the panel surfaced the popular-token-set discriminator defect.
 
 ---
 
