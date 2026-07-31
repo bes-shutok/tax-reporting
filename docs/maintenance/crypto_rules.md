@@ -478,7 +478,7 @@ and no new `TaxJurisdictionConfig` field (no `decision_points/` edit). The
 full TH-anchored Transaction view (TxHash / minute-precision identity, raw-row
 threading) remains deferred.
 
-> Source: RFC feature-note `docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md`;
+> Source: RFC feature-note `docs/history/feature-notes/completed/2026-06-20-th-anchored-transaction-state-machine.md`;
 > implementation plan `docs/history/plans/2026-07-04-ogr-event-level-application.md`.
 > Cross-reference: PT-C-035 (OGR as authoritative realization source), PT-C-030
 > (review-flag specificity), PT-C-011 (short-vs-long holding-period taxable split).
@@ -519,7 +519,7 @@ helper. The pre-Phase-E flag-mechanic behavior is preserved in
 history). Cross-reference: DP-019 (removed); Phase D plan
 `docs/history/plans/completed/2026-07-08-th-tx-view-phase-d.md`.
 
-> Source: RFC feature-note `docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md`;
+> Source: RFC feature-note `docs/history/feature-notes/completed/2026-06-20-th-anchored-transaction-state-machine.md`;
 > implementation plan `docs/history/plans/completed/2026-07-10-th-tx-view-phase-e.md` (Phase E).
 > Cross-reference: PT-C-035 (payment-proceeds correction), PT-C-037 (OGR
 > event-level application), CRG-019 (post-Phase-E identification notes).

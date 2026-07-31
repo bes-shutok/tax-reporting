@@ -90,7 +90,7 @@ Repayment-only asset (`received_amount == 0`): `Balance Status = LOAN_STATUS_OVE
 **Out of scope; reject unless plan-related:**
 - `src/tax_reporting/application/crypto/fifo_helpers.py` - `_apply_phantom_lot_flags` and `_build_zero_basis_review_reason` logic is unchanged; only its caller in `_aggregate_capital_entries` is changed.
 - `src/tax_reporting/application/crypto_reporting.py:681-799` (`_parse_capital_gains_file` body) - lot-level parsing unchanged.
-- FEE-token-lot filtering at the lot parser - deferred; see `docs/history/feature-notes/2026-07-15-review-flag-deferred-findings.md`.
+- FEE-token-lot filtering at the lot parser - deferred; see `docs/history/feature-notes/completed/2026-07-15-review-flag-deferred-findings.md`.
 - Reward-FMV-not-carried-into-basis detection - deferred; same note.
 
 ## Design Invariants (CR Guard)
@@ -224,7 +224,7 @@ Files:
 
 ## Monitor
 
-- **Reward-FMV-not-carried-into-basis detection.** Owner: deferred-findings note at `docs/history/feature-notes/2026-07-15-review-flag-deferred-findings.md`. After Task 1 lands, re-inspect the user's 2025 export for any aggregated disposal row that still shows a zero-basis reason *because every lot in the group is zero-basis*. If such rows exist and correlate with reward-origin lots, that is evidence Koinly did not carry reward FMV into basis; open a dedicated plan.
+- **Reward-FMV-not-carried-into-basis detection.** Owner: deferred-findings note at `docs/history/feature-notes/completed/2026-07-15-review-flag-deferred-findings.md`. After Task 1 lands, re-inspect the user's 2025 export for any aggregated disposal row that still shows a zero-basis reason *because every lot in the group is zero-basis*. If such rows exist and correlate with reward-origin lots, that is evidence Koinly did not carry reward FMV into basis; open a dedicated plan.
 - **FEE-token-lot filtering at the lot parser.** Owner: same note. 99 Koinly-tracking rows in the 2025 CG export pass through `_parse_capital_gains_file` and reach the per-lot review list. After Task 1 they no longer poison aggregated rows, but they still add noise to `context.review_entries`. Decide later whether to filter them at parse time.
 - **`LoanBalanceStatus` enum promotion.** Owner: deferred-findings note. r7 architecture finding #10: `balance_status` remains typed as `str` despite the closed five-element sentinel set; the type system cannot enforce the sentinel boundary that Invariant 6 polices by convention. The project already has the sealed-class pattern (e.g. `DerivativesClassification` in `application/crypto/entities.py`). When the codebase next touches `LoanActivityEntry` for an unrelated change, consider promoting `balance_status` to a `LoanBalanceStatus` enum and updating the fill mapping to match on enum members; add mypy enforcement so a future fixture passing a literal string fails at type check.
 - **`_NO_EUR_PRICE_FILL` / `_YELLOW_FILL` duplication.** Owner: deferred-findings note. r8 simplification+architecture finding #9: Task 2 mandates a new module-level `_NO_EUR_PRICE_FILL = PatternFill(start_color="FFFFFF00", ...)` in `loan_activity_sheet.py` that is byte-identical to the existing `_YELLOW_FILL` at `crypto_gains_sheet.py:21`. The r7 #13 fold institutionalised the duplication by mandating both fills side-by-side. When a shared fills module is next convenient (e.g. adding a third yellow consumer), hoist `_YELLOW_FILL` to `excel_utils.py` (or a new `persisting/_fills.py`) and have both sheets import it; until then the two byte-identical literals stay in their respective modules.

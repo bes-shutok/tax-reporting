@@ -1,6 +1,6 @@
 # Plan: TH-anchored Transaction view - Phase C (synthetic corpus + one-shot shadow)
 
-RFC: [docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md](../context/2026-06-20-th-anchored-transaction-state-machine.md#rollout-plan-2026-07-05) (un-shelved 2026-07-05; this is Phase C of the five-phase rollout recorded there).
+RFC: [docs/history/feature-notes/completed/2026-06-20-th-anchored-transaction-state-machine.md](../../feature-notes/completed/2026-06-20-th-anchored-transaction-state-machine.md#rollout-plan-2026-07-05) (un-shelved 2026-07-05; this is Phase C of the five-phase rollout recorded there).
 
 Phase A plan: [2026-07-05-th-tx-view-phase-a.md](completed/2026-07-05-th-tx-view-phase-a.md) (landed at `bb46bdd`).
 Phase B plan: [2026-07-06-th-tx-view-phase-b.md](completed/2026-07-06-th-tx-view-phase-b.md) (landed at `cdb10bf`).
@@ -503,7 +503,7 @@ config key, no CLI flag.
 - `docs/maintenance/crypto_reporting_guidelines.md` - no change.
 - `docs/maintenance/crypto_implementation_guidelines.md` - no change.
 - `README.md` - no change.
-- `docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md`
+- `docs/history/feature-notes/completed/2026-06-20-th-anchored-transaction-state-machine.md`
   - status update only (Phase C plan reference, "landed at <commit>" line
   populated when Phase C lands).
 

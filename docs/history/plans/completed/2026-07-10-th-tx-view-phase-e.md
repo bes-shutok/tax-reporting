@@ -1,6 +1,6 @@
 # Plan: TH-anchored Transaction view - Phase E (drop legacy)
 
-RFC: [docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md](../context/2026-06-20-th-anchored-transaction-state-machine.md#rollout-plan-2026-07-05) (Phase E, final phase of the five-phase rollout; Phases A-D all landed on `master`).
+RFC: [docs/history/feature-notes/completed/2026-06-20-th-anchored-transaction-state-machine.md](../../feature-notes/completed/2026-06-20-th-anchored-transaction-state-machine.md#rollout-plan-2026-07-05) (Phase E, final phase of the five-phase rollout; Phases A-D all landed on `master`).
 
 Prior phases (all on `master`):
 - Phase A at `bb46bdd` - typed `Transaction` + `TxCorrelationKey` + `WalletKind`. Plan: [completed/2026-07-05-th-tx-view-phase-a.md](completed/2026-07-05-th-tx-view-phase-a.md).
@@ -248,7 +248,7 @@ and fix if valid):
 - `tests/end_to_end/test_crypto_derivatives_separation.py` *(via_resolver param removal; PLUS `derivatives_dedup` logger/module references at lines ~382, 426, 432, 601-602, 695, 698 must update to `derivatives_filter`; PLUS a stale `find_derivatives_th_events` docstring reference must update to `find_derivatives_th_events_from_transactions`)*
 
 **Documentation / config:**
-- `docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md` *(Status + Rollout table: mark Phase E landed)*
+- `docs/history/feature-notes/completed/2026-06-20-th-anchored-transaction-state-machine.md` *(Status + Rollout table: mark Phase E landed)*
 - `docs/maintenance/tax/decision_points/2025.toml` *(remove six flag lines from both sections)*
 - `docs/maintenance/tax/decision_points/2025.md` *(remove DP-019 documentation)*
 - `CLAUDE.md` *(if any rule references the six flags; verify and update)*
@@ -549,7 +549,7 @@ Files:
 ### Task 10: Update feature-note Status + Rollout table; CLAUDE.md audit
 
 Files:
-- `docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md`
+- `docs/history/feature-notes/completed/2026-06-20-th-anchored-transaction-state-machine.md`
 - `CLAUDE.md` *(audit only; update only if a rule references the six flags)*
 - `docs/maintenance/tax/decision_points/README.md` *(audit only)*
 

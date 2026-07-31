@@ -40,7 +40,7 @@ inline string literals and were deleted by Task 5; the replicas stay
 inlined here.
 
 Plan: ``docs/history/plans/2026-07-07-th-tx-view-phase-c.md`` (Task 7).
-RFC: ``docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md``.
+RFC: ``docs/history/feature-notes/completed/2026-06-20-th-anchored-transaction-state-machine.md``.
 """
 
 from __future__ import annotations

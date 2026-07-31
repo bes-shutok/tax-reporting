@@ -5,7 +5,7 @@ Closed six-value ``Treatment`` enum that classifies what a Transaction History
 source of truth for treatment identification in the live crypto pipeline.
 
 Plan: ``docs/history/plans/2026-07-06-th-tx-view-phase-b.md`` (Task 1).
-RFC: ``docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md``
+RFC: ``docs/history/feature-notes/completed/2026-06-20-th-anchored-transaction-state-machine.md``
 (un-shelved 2026-07-05; Phase B of the five-phase rollout recorded there).
 
 Member-to-rule mapping (cited per Invariant 1 of the plan):

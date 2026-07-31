@@ -1,7 +1,7 @@
 # Plan: OGR Event-Level Application (Agree-Branch Multi-Lot Over-Count Fix)
 
 Fixes the over-counting bug in the OGR direction override that the RFC
-`docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md` was un-shelved
+`docs/history/feature-notes/completed/2026-06-20-th-anchored-transaction-state-machine.md` was un-shelved
 to address. This is a **surgical fix**, not the RFC's full TH-anchored Transaction view. The
 Transaction view (TH anchors, minute-precision identity, TxHash correlation) is deferred: prior
 review rounds on the fuller scope showed its mechanisms (minute-precision keys across two
@@ -315,7 +315,7 @@ re-exported with `# noqa: F401` only and exercised solely by tests at
 Files:
 - `docs/maintenance/crypto_rules.md`
 - `docs/maintenance/crypto_implementation_guidelines.md`
-- `docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md`
+- `docs/history/feature-notes/completed/2026-06-20-th-anchored-transaction-state-machine.md`
 
 - [x] Add rule **PT-C-037** `[IMPLEMENTATION DECISION | 2026-07-04]` to `crypto_rules.md`
   Section 10 (Implementation Decisions): OGR spot P&L is applied at the disposal-event level;

@@ -1,6 +1,6 @@
 # Plan: TH-anchored Transaction view - Phase B (treatment resolver)
 
-RFC: [docs/history/context/2026-06-20-th-anchored-transaction-state-machine.md](../context/2026-06-20-th-anchored-transaction-state-machine.md#rollout-plan-2026-07-05) (un-shelved 2026-07-05; this is Phase B of the five-phase rollout recorded there).
+RFC: [docs/history/feature-notes/completed/2026-06-20-th-anchored-transaction-state-machine.md](../../feature-notes/completed/2026-06-20-th-anchored-transaction-state-machine.md#rollout-plan-2026-07-05) (un-shelved 2026-07-05; this is Phase B of the five-phase rollout recorded there).
 
 Phase A plan: [2026-07-05-th-tx-view-phase-a.md](completed/2026-07-05-th-tx-view-phase-a.md) (landed on master at commit `bb46bdd`).
 
