@@ -140,6 +140,38 @@ def _collect_platform_summaries(
     return list(summaries.values())
 
 
+def _append_run_suffix(
+    methodology_items: list[tuple[str, list[tuple[str, str, str]]]],
+    label: str,
+    suffix: str,
+) -> bool:
+    """Append a per-run ``suffix`` to the description of ALL methodology items
+    whose label matches ``label``.
+
+    The methodology structure is ``list[(section_title, list[(label, rule_ids,
+    description)])]``; tuples are immutable so each matching inner-list slot is
+    reassigned to ``(label, rule_ids, description + suffix)`` in place. This
+    preserves the original inline-loop behavior, which updated every matching
+    item rather than stopping at the first.
+
+    Returns ``True`` if at least one matching item was found and updated,
+    ``False`` otherwise. Matching the original inline behavior, a missing
+    label is a silent no-op (the calling tests assert the rendered cell text
+    directly rather than a raise here).
+    """
+    found = False
+    for section_idx, (_section_title, items) in enumerate(methodology_items):
+        for item_idx, (item_label, rule_ids, description) in enumerate(items):
+            if item_label == label:
+                methodology_items[section_idx][1][item_idx] = (
+                    item_label,
+                    rule_ids,
+                    description + suffix,
+                )
+                found = True
+    return found
+
+
 def write_assumptions_and_methodology_sheet(  # noqa: PLR0912, PLR0913, PLR0915
     workbook: openpyxl.Workbook,
     capital_entries: list[CryptoCapitalGainEntry] | None = None,
@@ -598,37 +630,22 @@ def write_assumptions_and_methodology_sheet(  # noqa: PLR0912, PLR0913, PLR0915
     # PT-C-028 run-count suffix: append the per-run materiality-filter counts to
     # the "Materiality Threshold" item when ``decision_counts`` is supplied
     # (crypto runs). IB-only runs pass None and the static text renders as-is.
+    # Dedup run-count suffix: append the per-run OGR-vs-CG / fee lot dedup
+    # removal counts to the "OGR-vs-CG and Fee Lot Dedup" item under the same
+    # ``decision_counts`` guard (IB-only runs keep the static text).
     if decision_counts is not None:
         materiality_suffix = (
             f" [This run: filtered {decision_counts.sub_1_eur_filtered} entries, "
             f"{decision_counts.sub_1_eur_retained} retained.]"
         )
-        for section_idx, (_section_title, items) in enumerate(methodology_items):
-            for item_idx, (label, _rule_ids, description) in enumerate(items):
-                if label == "Materiality Threshold":
-                    methodology_items[section_idx][1][item_idx] = (
-                        label,
-                        _rule_ids,
-                        description + materiality_suffix,
-                    )
-
-    # Dedup run-count suffix: append the per-run OGR-vs-CG / fee lot dedup
-    # removal counts to the "OGR-vs-CG and Fee Lot Dedup" item when
-    # ``decision_counts`` is supplied (crypto runs). IB-only runs pass None and
-    # the static text renders as-is (backward compat).
-    if decision_counts is not None:
         dedup_suffix = (
             f" [This run: derivatives removed {decision_counts.derivatives_dedup_removed}; "
             f"fee removed {decision_counts.fee_dedup_removed}.]"
         )
-        for section_idx, (_section_title, items) in enumerate(methodology_items):
-            for item_idx, (label, _rule_ids, description) in enumerate(items):
-                if label == "OGR-vs-CG and Fee Lot Dedup":
-                    methodology_items[section_idx][1][item_idx] = (
-                        label,
-                        _rule_ids,
-                        description + dedup_suffix,
-                    )
+        _append_run_suffix(methodology_items, "Materiality Threshold", materiality_suffix)
+        _append_run_suffix(
+            methodology_items, "OGR-vs-CG and Fee Lot Dedup", dedup_suffix
+        )
 
     # Render grouped methodology sections
     for section_title, items in methodology_items:

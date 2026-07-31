@@ -13,10 +13,12 @@ Logging asymmetry (Design Invariant 2):
 :func:`remove_matched_lots` logs the single removal summary INFO (demoted
 from WARNING in the relocate-crypto-warnings plan) because it owns the
 removal semantic and the caller-passed ``logger`` carries the caller's
-module name. The per-row detail now surfaces in the user-facing extract via
-the caller-passed ``review_entries`` list. :func:`match_lots` emits no
-logging: a match is not intrinsically a removal (a caller may flag instead
-of remove), so each caller owns its own summary and per-lot logging.
+module name. The per-row detail (removed/surplus/malformed) surfaces in the
+user-facing extract via review rows the CALLER builds from the returned
+:class:`MatcherResult` (M4: the matcher is domain-neutral and owns neither
+review rows nor counts). :func:`match_lots` emits no logging: a match is
+not intrinsically a removal (a caller may flag instead of remove), so each
+caller owns its own summary and per-lot logging.
 
 Design notes
 ------------
@@ -39,9 +41,12 @@ import logging
 from collections import deque
 from collections.abc import Sequence
 from decimal import Decimal
-from typing import Generic, Protocol, TypeVar
+from typing import TYPE_CHECKING, Generic, Protocol, TypeVar
 
-from .entities import CryptoCapitalGainEntry, CryptoDecisionCounts, CryptoReviewEntry
+from .entities import CryptoCapitalGainEntry, CryptoDecisionCounts
+
+if TYPE_CHECKING:
+    from .entities import CryptoReviewEntry
 
 # Per-lot rounding for the exact-match phase: both CG and TH amounts are
 # quantized to 6 decimals before equality check, absorbing Koinly rounding
@@ -395,7 +400,7 @@ def _format_summary_warning(  # noqa: PLR0913
 
     ``domain_label`` parameterizes the title: ``f"{domain_label.title()} CG
     dedup summary"`` so ``domain_label="derivatives"`` reproduces the exact
-    historical ``"Derivatives CG dedup summary"`` literal and
+    historical title literal and
     ``domain_label="fee"`` yields ``"Fee CG dedup summary"``.
     """
     parts: list[str] = [
@@ -448,6 +453,16 @@ def remove_matched_lots(  # noqa: PLR0913
 ) -> MatcherResult[E]:
     """Match events to CG lots, remove the matched lots, emit one summary INFO.
 
+    Domain-neutral (M4): the matcher owns ONLY the match + the single summary
+    INFO emit. It does NOT append review-entry rows and does NOT write any
+    ``decision_counts.*dedup`` field - those are caller-owned. Each
+    caller owns its own review rows and count (mirroring how
+    ``fee_filter.remove_transaction_fees`` owns the fee rows + the
+    ``fee_dedup_removed`` count): the derivatives caller
+    (:func:`derivatives_filter.remove_derivatives_flagged_lots`) appends the
+    removed/surplus/malformed review rows and sets its dedup-removed count
+    from the returned ``MatcherResult``.
+
     Built on :func:`match_lots`. Removes the matched lots from
     ``remaining_entries`` (original order preserved) and emits exactly ONE
     summary INFO via the caller-passed ``logger`` (so the record's
@@ -456,26 +471,8 @@ def remove_matched_lots(  # noqa: PLR0913
     dedup summary"``).
 
     The summary was previously a WARNING; it was demoted to INFO because the
-    per-row detail now surfaces in the user-facing extract. When
-    ``review_entries`` is provided (INV-3: defaults to ``None`` so the ~10
-    existing test callers that omit it stay green), one :class:`CryptoReviewEntry`
-    is appended per row of the three local lists:
-
-      - matched (removed) lots → ``source_section="capital_gains"``,
-        ``is_suspicious=False``, reason ``"Derivatives CG dedup: removed lot
-        matched to OGR disposal"`` (``remove_matched_lots`` is called ONLY by
-        the derivatives filter; the fee filter uses :func:`match_lots` and
-        builds its summary inline, so the ``"Derivatives CG dedup"`` prefix
-        is unambiguous here).
-      - surplus lots → ``is_suspicious=True``, reason ``"Surplus lot - may
-        indicate a missed FIFO split; review the listed key"``.
-      - malformed-input lots → ``is_suspicious=True``, reason ``"Malformed-
-        input lot (non-positive amount {amount}); investigate the source
-        export"``.
-
-    When ``decision_counts`` is provided, ``decision_counts.derivatives_dedup_removed``
-    is SET (not incremented) to ``len(matched_metadata)`` once per call
-    (INV-4a: each field is owned by exactly one pass).
+    per-row detail now surfaces in the user-facing extract (via the caller's
+    review rows).
 
     Does NOT warn for unmatched events: the caller owns that decision (fees
     may legitimately be unmatched; derivatives always warn). The matcher
@@ -489,15 +486,16 @@ def remove_matched_lots(  # noqa: PLR0913
             ``"fee"``) parameterizing the summary title.
         logger: The CALLER's module logger; the summary INFO record carries
             ``logger.name`` so the caller's logger-name assertions hold.
-        review_entries: Optional list to receive one :class:`CryptoReviewEntry`
-            per removed/surplus/malformed lot (INV-3 default ``None``).
-        decision_counts: Optional mutable accumulator whose
-            ``derivatives_dedup_removed`` field is set to the removed count
-            (INV-4a default ``None``).
+        review_entries: Backward-compat no-op (INV-3 default ``None``). The
+            matcher appends nothing; callers own their review rows.
+        decision_counts: Backward-compat no-op (INV-3 default ``None``). The
+            matcher writes no count field; callers own their counts.
 
     Returns:
         A :class:`MatcherResult` with matched lots removed from
-        ``remaining_entries``.
+        ``remaining_entries`` and carrying the ``matched_metadata`` /
+        ``surplus_lots`` / ``malformed_input_lots`` lists the caller uses to
+        build its own review rows + count.
     """
     result = match_lots(capital_entries, events)
 
@@ -539,56 +537,6 @@ def remove_matched_lots(  # noqa: PLR0913
         malformed_input_lots=malformed_input_lots,
     )
     logger.info(summary)
-
-    # Surface the per-row detail in the user-facing extract (INV-1 no signal
-    # loss). INV-3: guarded so the ~10 existing test callers that omit
-    # ``review_entries`` stay green.
-    if review_entries is not None:
-        for lot, _match_type, _event in matched_metadata:
-            review_entries.append(
-                CryptoReviewEntry(
-                    source_section="capital_gains",
-                    date=lot.entry.disposal_timestamp or lot.entry.disposal_date,
-                    asset=lot.entry.asset,
-                    platform=lot.entry.wallet,
-                    review_reason=(
-                        "Derivatives CG dedup: removed lot matched to OGR disposal"
-                    ),
-                    is_suspicious=False,
-                )
-            )
-        for lot in surplus_lots:
-            review_entries.append(
-                CryptoReviewEntry(
-                    source_section="capital_gains",
-                    date=lot.entry.disposal_timestamp or lot.entry.disposal_date,
-                    asset=lot.entry.asset,
-                    platform=lot.entry.wallet,
-                    review_reason=(
-                        "Surplus lot - may indicate a missed FIFO split; "
-                        "review the listed key"
-                    ),
-                    is_suspicious=True,
-                )
-            )
-        for entry in malformed_input_lots:
-            review_entries.append(
-                CryptoReviewEntry(
-                    source_section="capital_gains",
-                    date=entry.disposal_timestamp or entry.disposal_date,
-                    asset=entry.asset,
-                    platform=entry.wallet,
-                    review_reason=(
-                        f"Malformed-input lot (non-positive amount {entry.amount}); "
-                        "investigate the source export"
-                    ),
-                    is_suspicious=True,
-                )
-            )
-
-    # INV-4a: set-not-increment; this pass owns derivatives_dedup_removed.
-    if decision_counts is not None:
-        decision_counts.derivatives_dedup_removed = len(matched_metadata)
 
     filtered = [
         entry

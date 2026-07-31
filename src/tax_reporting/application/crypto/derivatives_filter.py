@@ -47,6 +47,7 @@ from ...infrastructure.json_loader import DEGRADED, load_guarded_json
 from ...infrastructure.koinly_parser import normalize_asset_ticker
 from .classification import _REPOSITORY_ROOT
 from .entities import CryptoCapitalGainEntry, CryptoDecisionCounts, CryptoReviewEntry
+from .review_rows import _append_surplus_and_malformed_review_rows
 from .th_lot_matcher import IndexedLot, remove_matched_lots
 from .treatment_resolver import TreatmentConfig, resolve_treatment
 
@@ -270,12 +271,13 @@ def remove_derivatives_flagged_lots(
     OGR-only outcome (the disposal lives in the Other Gains Report, not
     Capital Gains).
 
-    ``review_entries`` and ``decision_counts`` are forwarded to
-    :func:`remove_matched_lots` so the per-row detail (removed/surplus/
-    malformed lots) surfaces as :class:`CryptoReviewEntry` rows in the
-    user-facing extract and the removed count lands in A&M. Both default to
-    ``None`` (INV-3) so the ~15 existing test callers that omit them stay
-    green.
+    ``review_entries`` and ``decision_counts`` are owned by this caller (M4:
+    the matcher is domain-neutral). After the matcher returns its
+    :class:`MatcherResult`, this caller appends one :class:`CryptoReviewEntry`
+    per removed/surplus/malformed lot to ``review_entries`` (INV-1 no signal
+    loss) and SETs ``decision_counts.derivatives_dedup_removed`` to the removed
+    count (INV-4a). Both default to ``None`` (INV-3) so the ~15 existing test
+    callers that omit them stay green.
 
     Args:
         capital_entries: Capital-gains entries (FIFO lots). Entries without a
@@ -301,9 +303,40 @@ def remove_derivatives_flagged_lots(
         derivatives_events,
         domain_label="derivatives",
         logger=logger,
-        review_entries=review_entries,
-        decision_counts=decision_counts,
     )
+
+    # M4 (INV-1 no signal loss): the matcher is domain-neutral and owns neither
+    # review rows nor counts, so this caller builds the per-row detail from the
+    # returned ``MatcherResult`` and owns the ``derivatives_dedup_removed``
+    # count. INV-3: guarded so the ~15 existing test callers that omit
+    # ``review_entries`` stay green. INV-text: reason text frozen byte-identical
+    # to the pre-M4 matcher output (r1 F1 prefix asymmetry: only the removed-lot
+    # row carries the "Derivatives CG dedup: " prefix).
+    if review_entries is not None:
+        for lot, _match_type, _event in result.matched_metadata:
+            review_entries.append(
+                CryptoReviewEntry(
+                    source_section="capital_gains",
+                    date=lot.entry.disposal_timestamp or lot.entry.disposal_date,
+                    asset=lot.entry.asset,
+                    platform=lot.entry.wallet,
+                    review_reason=(
+                        "Derivatives CG dedup: removed lot matched to OGR disposal"
+                    ),
+                    is_suspicious=False,
+                )
+            )
+        _append_surplus_and_malformed_review_rows(
+            review_entries,
+            result.surplus_lots,
+            result.malformed_input_lots,
+            surplus_prefix="",
+            malformed_prefix="",
+        )
+
+    # INV-4a: set-not-increment; the derivatives pass owns this field.
+    if decision_counts is not None:
+        decision_counts.derivatives_dedup_removed = len(result.matched_metadata)
 
     _log_removals_and_surplus(result.matched_metadata, result.surplus_lots)
 

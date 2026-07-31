@@ -1,4 +1,4 @@
-# Plan: Crypto dedup/refactor — collapse duplicated review-row + A&M-suffix construction
+# Plan: Crypto dedup/refactor: collapse duplicated review-row + A&M-suffix construction
 
 Three independent refactors surfaced as deferred optional-debt findings across the
 `2026-07-25-relocate-crypto-warnings-to-extract` plan's 8-round review + a standalone
@@ -240,16 +240,16 @@ Files:
 - `tests/unit/application/test_th_lot_matcher.py` (move the derivatives review-row tests to the caller layer; the matcher tests verify match-only behavior)
 - `tests/unit/application/test_derivatives_filter.py` (the derivatives review-row + count assertions move here)
 
-- [ ] `TestRemoveMatchedLots#matcher_emits_summary_info_but_no_review_rows`; given a `remove_matched_lots` call with matched/surplus/malformed lots, expects ONE summary INFO record but ZERO `CryptoReviewEntry` appends (the matcher is now match-only; review rows are the caller's responsibility). NOTE: this is a characterization change — the existing tests that assert review rows ARE appended via `remove_matched_lots` must move to the derivatives_filter test module.
-- [ ] `TestDerivativesFilter#removed_lots_become_review_rows_at_caller`; given 3 matched lots through `remove_derivatives_flagged_lots`, expects 3 `CryptoReviewEntry` rows with `source_section="capital_gains"`, reasons prefixed "Derivatives CG dedup: removed lot matched to OGR disposal" (moved from the matcher to the caller; text byte-identical)
-- [ ] `TestDerivativesFilter#surplus_and_malformed_become_suspicious_review_rows_at_caller`; given surplus + malformed lots, expects `is_suspicious=True` rows with the same reason bodies (moved from the matcher)
-- [ ] `TestDerivativesFilter#test_derivatives_dedup_removed_count_set_on_decision_counts` (EXISTING test at `test_derivatives_filter.py:1927`; r2 F7: this test already drives the count end-to-end through `apply_derivatives_dedup` and asserts the observable count, so it stays GREEN after the matcher→caller move and already covers INV-4a — confirm it stays GREEN, do NOT write a redundant new test)
-- [ ] Run → expect RED: `uv run pytest tests/unit/application/test_th_lot_matcher.py tests/unit/application/test_derivatives_filter.py`
-- [ ] In `th_lot_matcher.remove_matched_lots`: remove the three review-row append blocks (removed/surplus/malformed) and the `decision_counts.derivatives_dedup_removed = len(matched_metadata)` set. Keep the summary INFO emit + the per-row DEBUG. Update the docstring to reflect the match-only contract (remove "called ONLY by the derivatives filter"; state the matcher is domain-neutral and emits the summary INFO only; callers own review rows + counts). KEEP both `review_entries`/`decision_counts` params as `= None` no-op defaults (INV-3 backward compat; r1 F4 decision: the "future fee migration" rationale is speculative but the no-op default is harmless and avoids re-threading `apply_derivatives_dedup` call sites). Add a validation grep asserting the matcher body contains zero writes to `decision_counts.*dedup` and zero `CryptoReviewEntry` appends (see Validation Commands).
-- [ ] In `derivatives_filter.remove_derivatives_flagged_lots`: after the `remove_matched_lots` call, append the derivatives review rows for the three lists (`result.matched_metadata`, `result.surplus_lots`, `result.malformed_input_lots` — the matcher's `MatcherResult` return value carries all three; verified at `derivatives_filter.py:308-310`) with the exact reason text + `is_suspicious` flags; set `decision_counts.derivatives_dedup_removed = len(result.matched_metadata)` (INV-4a: the derivatives pass owns this field). The appends and the count-set MUST sit after the existing `if not derivatives_events: return capital_entries, 0` early-return guard at `derivatives_filter.py:296-297` (r1 F2: this matches the matcher's current `if not events: return result` short-circuit so the byte-identical contract holds for the empty-events path; placing them unconditionally before the result check would double-emit).
-- [ ] Run → expect GREEN: `uv run pytest tests/unit/application/test_th_lot_matcher.py tests/unit/application/test_derivatives_filter.py`
-- [ ] Run the full suite to confirm no regression: `uv run pytest`
-- [ ] Commit: `refactor(crypto): make remove_matched_lots domain-neutral (M4 — derivatives reasons + count move to caller)`
+- [x] `TestRemoveMatchedLots#matcher_emits_summary_info_but_no_review_rows`; given a `remove_matched_lots` call with matched/surplus/malformed lots, expects ONE summary INFO record but ZERO `CryptoReviewEntry` appends (the matcher is now match-only; review rows are the caller's responsibility). NOTE: this is a characterization change — the existing tests that assert review rows ARE appended via `remove_matched_lots` must move to the derivatives_filter test module.
+- [x] `TestDerivativesFilter#removed_lots_become_review_rows_at_caller`; given 3 matched lots through `remove_derivatives_flagged_lots`, expects 3 `CryptoReviewEntry` rows with `source_section="capital_gains"`, reasons prefixed "Derivatives CG dedup: removed lot matched to OGR disposal" (moved from the matcher to the caller; text byte-identical)
+- [x] `TestDerivativesFilter#surplus_and_malformed_become_suspicious_review_rows_at_caller`; given surplus + malformed lots, expects `is_suspicious=True` rows with the same reason bodies (moved from the matcher)
+- [x] `TestDerivativesFilter#test_derivatives_dedup_removed_count_set_on_decision_counts` (EXISTING test at `test_derivatives_filter.py:1927`; r2 F7: this test already drives the count end-to-end through `apply_derivatives_dedup` and asserts the observable count, so it stays GREEN after the matcher→caller move and already covers INV-4a — confirm it stays GREEN, do NOT write a redundant new test)
+- [x] Run → expect RED: `uv run pytest tests/unit/application/test_th_lot_matcher.py tests/unit/application/test_derivatives_filter.py`
+- [x] In `th_lot_matcher.remove_matched_lots`: remove the three review-row append blocks (removed/surplus/malformed) and the `decision_counts.derivatives_dedup_removed = len(matched_metadata)` set. Keep the summary INFO emit + the per-row DEBUG. Update the docstring to reflect the match-only contract (remove "called ONLY by the derivatives filter"; state the matcher is domain-neutral and emits the summary INFO only; callers own review rows + counts). KEEP both `review_entries`/`decision_counts` params as `= None` no-op defaults (INV-3 backward compat; r1 F4 decision: the "future fee migration" rationale is speculative but the no-op default is harmless and avoids re-threading `apply_derivatives_dedup` call sites). Add a validation grep asserting the matcher body contains zero writes to `decision_counts.*dedup` and zero `CryptoReviewEntry` appends (see Validation Commands).
+- [x] In `derivatives_filter.remove_derivatives_flagged_lots`: after the `remove_matched_lots` call, append the derivatives review rows for the three lists (`result.matched_metadata`, `result.surplus_lots`, `result.malformed_input_lots` — the matcher's `MatcherResult` return value carries all three; verified at `derivatives_filter.py:308-310`) with the exact reason text + `is_suspicious` flags; set `decision_counts.derivatives_dedup_removed = len(result.matched_metadata)` (INV-4a: the derivatives pass owns this field). The appends and the count-set MUST sit after the existing `if not derivatives_events: return capital_entries, 0` early-return guard at `derivatives_filter.py:296-297` (r1 F2: this matches the matcher's current `if not events: return result` short-circuit so the byte-identical contract holds for the empty-events path; placing them unconditionally before the result check would double-emit).
+- [x] Run → expect GREEN: `uv run pytest tests/unit/application/test_th_lot_matcher.py tests/unit/application/test_derivatives_filter.py`
+- [x] Run the full suite to confirm no regression: `uv run pytest`
+- [x] Commit: `refactor(crypto): make remove_matched_lots domain-neutral (M4 — derivatives reasons + count move to caller)`
 
 ### Task 2: A&M suffix dedup — extract `_append_run_suffix` helper
 
@@ -258,16 +258,16 @@ Files:
 - `tests/unit/application/persisting/test_assumptions_sheet_materiality_count.py`
 - `tests/unit/application/persisting/test_assumptions_sheet_dedup_count.py`
 
-- [ ] Run → expect GREEN (characterization): `uv run pytest tests/unit/application/persisting/test_assumptions_sheet_materiality_count.py tests/unit/application/persisting/test_assumptions_sheet_dedup_count.py` (captures existing suffix-rendering behavior before refactor; these tests must stay GREEN after)
-- [ ] Extract `_append_run_suffix(methodology_items, label, suffix) -> bool` (returns whether the label was found; raises or warns if not — match the existing behavior). The two call sites become:
+- [x] Run → expect GREEN (characterization): `uv run pytest tests/unit/application/persisting/test_assumptions_sheet_materiality_count.py tests/unit/application/persisting/test_assumptions_sheet_dedup_count.py` (captures existing suffix-rendering behavior before refactor; these tests must stay GREEN after)
+- [x] Extract `_append_run_suffix(methodology_items, label, suffix) -> bool` (returns whether the label was found; raises or warns if not — match the existing behavior). The two call sites become:
   ```python
   if decision_counts is not None:
       _append_run_suffix(methodology_items, "Materiality Threshold", materiality_suffix)
       _append_run_suffix(methodology_items, "OGR-vs-CG and Fee Lot Dedup", dedup_suffix)
   ```
-- [ ] Run → expect GREEN (characterization tests unchanged): `uv run pytest tests/unit/application/persisting/test_assumptions_sheet_materiality_count.py tests/unit/application/persisting/test_assumptions_sheet_dedup_count.py`
-- [ ] Run the full suite: `uv run pytest`
-- [ ] Commit: `refactor(crypto): extract _append_run_suffix helper (A&M suffix dedup)`
+- [x] Run → expect GREEN (characterization tests unchanged): `uv run pytest tests/unit/application/persisting/test_assumptions_sheet_materiality_count.py tests/unit/application/persisting/test_assumptions_sheet_dedup_count.py`
+- [x] Run the full suite: `uv run pytest`
+- [x] Commit: `refactor(crypto): extract _append_run_suffix helper (A&M suffix dedup)`
 
 ### Task 3: W6/W7 surplus-malformed dedup — extract shared review-row helper
 
@@ -278,23 +278,23 @@ Files:
 - `tests/unit/application/test_fee_filter.py`
 - `tests/unit/application/test_derivatives_filter.py`
 
-- [ ] `TestReviewRowHelper#surplus_rows_built_with_prefix`; given a surplus lot list + a `"Fee CG dedup: "` prefix, expects `CryptoReviewEntry` rows with reason `"Fee CG dedup: Surplus lot - may indicate a missed FIFO split; review the listed key"` and `is_suspicious=True` (byte-identical to the current inline fee text). Also given a `""` prefix (the derivatives case), expects the bare reason `"Surplus lot - may indicate a missed FIFO split; review the listed key"` (byte-identical to the current inline derivatives text — r1 F1: derivatives has NO prefix on surplus).
-- [ ] `TestReviewRowHelper#malformed_rows_built_with_prefix`; given a malformed lot list + a `"Fee CG dedup: "` prefix, expects rows with reason `"Fee CG dedup: Malformed-input lot (non-positive amount {amount}); investigate the source export"` and `is_suspicious=True`. Also given a `""` prefix (the derivatives case), expects the bare reason `"Malformed-input lot (non-positive amount {amount}); investigate the source export"` (byte-identical to the current derivatives text — r1 F1: derivatives has NO prefix on malformed).
-- [ ] Run → expect RED: `uv run pytest tests/unit/application/test_fee_filter.py tests/unit/application/test_derivatives_filter.py -k "surplus_rows_built_with_prefix or malformed_rows_built_with_prefix"`
-- [ ] Extract the helper: `_append_surplus_and_malformed_review_rows(review_entries, surplus_lots, malformed_lots, *, surplus_prefix: str, malformed_prefix: str)` (module-private; lives in a new `src/tax_reporting/application/crypto/review_rows.py` — chosen over `entities.py` because `entities.py` is the frozen-dataclass domain-entities module and a mutable-list helper does not belong there). The helper builds the surplus rows as `f"{surplus_prefix}Surplus lot - may indicate a missed FIFO split; review the listed key"` and the malformed rows as `f"{malformed_prefix}Malformed-input lot (non-positive amount {entry.amount}); investigate the source export"`, both with `is_suspicious=True`. The derivatives caller passes `surplus_prefix=""`, `malformed_prefix=""`; the fee caller passes `surplus_prefix="Fee CG dedup: "`, `malformed_prefix="Fee CG dedup: "` (INV-text prefix asymmetry, r1 F1). The removed-lot blocks stay inline (they genuinely diverge — derivatives "removed lot matched to OGR disposal" vs fee's branch-aware tagged/embedded/untagged-whitelisted logic; NOT dedupable per INV-text).
-- [ ] Replace the inline surplus + malformed append blocks in both `derivatives_filter` (post-Task-1) and `fee_filter.remove_transaction_fees` with calls to the helper.
-- [ ] Run → expect GREEN: `uv run pytest tests/unit/application/test_fee_filter.py tests/unit/application/test_derivatives_filter.py`
-- [ ] Run the full suite: `uv run pytest`
-- [ ] Commit: `refactor(crypto): extract surplus/malformed review-row helper (W6/W7 dedup)`
+- [x] `TestReviewRowHelper#surplus_rows_built_with_prefix`; given a surplus lot list + a `"Fee CG dedup: "` prefix, expects `CryptoReviewEntry` rows with reason `"Fee CG dedup: Surplus lot - may indicate a missed FIFO split; review the listed key"` and `is_suspicious=True` (byte-identical to the current inline fee text). Also given a `""` prefix (the derivatives case), expects the bare reason `"Surplus lot - may indicate a missed FIFO split; review the listed key"` (byte-identical to the current inline derivatives text — r1 F1: derivatives has NO prefix on surplus).
+- [x] `TestReviewRowHelper#malformed_rows_built_with_prefix`; given a malformed lot list + a `"Fee CG dedup: "` prefix, expects rows with reason `"Fee CG dedup: Malformed-input lot (non-positive amount {amount}); investigate the source export"` and `is_suspicious=True`. Also given a `""` prefix (the derivatives case), expects the bare reason `"Malformed-input lot (non-positive amount {amount}); investigate the source export"` (byte-identical to the current derivatives text — r1 F1: derivatives has NO prefix on malformed).
+- [x] Run → expect RED: `uv run pytest tests/unit/application/test_fee_filter.py tests/unit/application/test_derivatives_filter.py -k "surplus_rows_built_with_prefix or malformed_rows_built_with_prefix"`
+- [x] Extract the helper: `_append_surplus_and_malformed_review_rows(review_entries, surplus_lots, malformed_lots, *, surplus_prefix: str, malformed_prefix: str)` (module-private; lives in a new `src/tax_reporting/application/crypto/review_rows.py` — chosen over `entities.py` because `entities.py` is the frozen-dataclass domain-entities module and a mutable-list helper does not belong there). The helper builds the surplus rows as `f"{surplus_prefix}Surplus lot - may indicate a missed FIFO split; review the listed key"` and the malformed rows as `f"{malformed_prefix}Malformed-input lot (non-positive amount {entry.amount}); investigate the source export"`, both with `is_suspicious=True`. The derivatives caller passes `surplus_prefix=""`, `malformed_prefix=""`; the fee caller passes `surplus_prefix="Fee CG dedup: "`, `malformed_prefix="Fee CG dedup: "` (INV-text prefix asymmetry, r1 F1). The removed-lot blocks stay inline (they genuinely diverge — derivatives "removed lot matched to OGR disposal" vs fee's branch-aware tagged/embedded/untagged-whitelisted logic; NOT dedupable per INV-text).
+- [x] Replace the inline surplus + malformed append blocks in both `derivatives_filter` (post-Task-1) and `fee_filter.remove_transaction_fees` with calls to the helper.
+- [x] Run → expect GREEN: `uv run pytest tests/unit/application/test_fee_filter.py tests/unit/application/test_derivatives_filter.py`
+- [x] Run the full suite: `uv run pytest`
+- [x] Commit: `refactor(crypto): extract surplus/malformed review-row helper (W6/W7 dedup)`
 
 ### Task 4: Verification
 
 Files: (none: verification only)
 
-- [ ] `uv run pytest`: full suite green (1881+ existing)
-- [ ] Run the Validation Commands block: M4 grep confirms matcher has 0 derivatives-specific text; derivatives_filter owns the count; A&M helper exists; 10 substrings still 0 warning-sites; ruff clean
-- [ ] Confirm no report-number regression: the Excel output is byte-identical (the refactors are mechanical; characterization tests + the two-emission guards confirm)
-- [ ] Commit (if any fixups): `test: verification pass for crypto-dedup-refactors`
+- [x] `uv run pytest`: full suite green (1881+ existing)
+- [x] Run the Validation Commands block: M4 grep confirms matcher has 0 derivatives-specific text; derivatives_filter owns the count; A&M helper exists; 10 substrings still 0 warning-sites; ruff clean
+- [x] Confirm no report-number regression: the Excel output is byte-identical (the refactors are mechanical; characterization tests + the two-emission guards confirm)
+- [x] Commit (if any fixups): `test: verification pass for crypto-dedup-refactors`
 
 ## Sequencing notes
 

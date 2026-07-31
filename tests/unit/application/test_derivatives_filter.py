@@ -1748,6 +1748,130 @@ class TestRemoveDerivativesFlaggedLots:
         assert count == 0
         assert elapsed < 0.5, f"Expected <0.5s, took {elapsed:.3f}s"
 
+    def test_removed_lots_become_review_rows_at_caller(self) -> None:
+        """M4: 3 matched lots through ``remove_derivatives_flagged_lots``
+        expect 3 ``CryptoReviewEntry`` rows with
+        ``source_section="capital_gains"`` and reason ``"Derivatives CG dedup:
+        removed lot matched to OGR disposal"`` (byte-identical text moved from
+        the matcher to the caller).
+        """
+        from tax_reporting.application.crypto.derivatives_filter import (
+            DerivativesThEvent,
+            remove_derivatives_flagged_lots,
+        )
+        from tax_reporting.application.crypto.entities import CryptoReviewEntry
+
+        lots = [
+            _make_cg_lot(
+                disposal_timestamp="2025-01-24 23:40",
+                amount=Decimal("0.5"),
+                acquisition_date=f"2025-01-{day:02d}",
+            )
+            for day in (10, 11, 12)
+        ]
+        events = [
+            DerivativesThEvent(
+                timestamp="2025-01-24 23:40",
+                asset="USDT",
+                wallet="ByBit",
+                amount=Decimal("0.5"),
+                label="Realized gain",
+            )
+            for _ in range(3)
+        ]
+        review_entries: list[CryptoReviewEntry] = []
+
+        remove_derivatives_flagged_lots(
+            lots,
+            events,
+            review_entries=review_entries,
+        )
+
+        assert len(review_entries) == 3, (
+            f"expected 3 review rows at caller; got {len(review_entries)}"
+        )
+        for entry in review_entries:
+            assert entry.source_section == "capital_gains"
+            assert entry.is_suspicious is False, (
+                "removed (matched) lots are not suspicious"
+            )
+            assert entry.review_reason == (
+                "Derivatives CG dedup: removed lot matched to OGR disposal"
+            ), f"unexpected reason: {entry.review_reason!r}"
+
+    def test_surplus_and_malformed_become_suspicious_review_rows_at_caller(self) -> None:
+        """M4: surplus + malformed lots through
+        ``remove_derivatives_flagged_lots`` expect ``is_suspicious=True`` rows
+        with the same reason bodies (moved byte-identical from the matcher).
+        """
+        from tax_reporting.application.crypto.derivatives_filter import (
+            DerivativesThEvent,
+            remove_derivatives_flagged_lots,
+        )
+        from tax_reporting.application.crypto.entities import CryptoReviewEntry
+
+        lots = [
+            _make_cg_lot(
+                disposal_timestamp="2025-01-24 08:00", amount=Decimal("0")
+            ),
+            _make_cg_lot(
+                disposal_timestamp="2025-01-24 09:00", amount=Decimal("-0.5")
+            ),
+            _make_cg_lot(
+                disposal_timestamp="2025-01-24 23:40",
+                amount=Decimal("0.5"),
+                acquisition_date="2025-01-10",
+            ),
+            _make_cg_lot(
+                disposal_timestamp="2025-01-24 23:40",
+                amount=Decimal("0.5"),
+                acquisition_date="2025-01-12",
+            ),
+        ]
+        events = [
+            DerivativesThEvent(
+                timestamp="2025-01-24 23:40",
+                asset="USDT",
+                wallet="ByBit",
+                amount=Decimal("0.5"),
+                label="Realized gain",
+            )
+        ]
+        review_entries: list[CryptoReviewEntry] = []
+
+        remove_derivatives_flagged_lots(
+            lots,
+            events,
+            review_entries=review_entries,
+        )
+
+        surplus_rows = [
+            e for e in review_entries if e.review_reason.startswith("Surplus lot")
+        ]
+        assert len(surplus_rows) == 1, (
+            f"expected 1 surplus review row; got {len(surplus_rows)} "
+            f"in {[e.review_reason for e in review_entries]}"
+        )
+        surplus = surplus_rows[0]
+        assert surplus.is_suspicious is True, "surplus lots are suspicious"
+        assert surplus.review_reason == (
+            "Surplus lot - may indicate a missed FIFO split; review the listed key"
+        ), f"unexpected surplus reason: {surplus.review_reason!r}"
+
+        malformed_rows = [
+            e for e in review_entries if e.review_reason.startswith("Malformed-input")
+        ]
+        assert len(malformed_rows) == 2, (
+            f"expected 2 malformed review rows; got {len(malformed_rows)} "
+            f"in {[e.review_reason for e in review_entries]}"
+        )
+        for row in malformed_rows:
+            assert row.is_suspicious is True, "malformed lots are suspicious"
+            assert row.review_reason.startswith(
+                "Malformed-input lot (non-positive amount"
+            ), f"unexpected malformed reason: {row.review_reason!r}"
+            assert "investigate the source export" in row.review_reason
+
 
 _DERIVATIVES_CLOSE_DIR = Path(
     "resources/source/example/2025/koinly/derivatives_close"

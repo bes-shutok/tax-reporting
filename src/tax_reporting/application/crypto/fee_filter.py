@@ -48,6 +48,7 @@ from ...infrastructure.koinly_parser import (
     read_koinly_rows,
 )
 from .entities import CryptoCapitalGainEntry, CryptoDecisionCounts, CryptoReviewEntry
+from .review_rows import _append_surplus_and_malformed_review_rows
 from .th_lot_matcher import (
     IndexedLot,
     _format_summary_warning,
@@ -611,34 +612,13 @@ def remove_transaction_fees(  # noqa: PLR0912, PLR0915
                     is_suspicious=removed_suspicious,
                 )
             )
-        for lot in result.surplus_lots:
-            review_entries.append(
-                CryptoReviewEntry(
-                    source_section="capital_gains",
-                    date=lot.entry.disposal_timestamp or lot.entry.disposal_date,
-                    asset=lot.entry.asset,
-                    platform=lot.entry.wallet,
-                    review_reason=(
-                        "Fee CG dedup: Surplus lot - may indicate a missed FIFO "
-                        "split; review the listed key"
-                    ),
-                    is_suspicious=True,
-                )
-            )
-        for entry in result.malformed_input_lots:
-            review_entries.append(
-                CryptoReviewEntry(
-                    source_section="capital_gains",
-                    date=entry.disposal_timestamp or entry.disposal_date,
-                    asset=entry.asset,
-                    platform=entry.wallet,
-                    review_reason=(
-                        f"Fee CG dedup: Malformed-input lot (non-positive amount "
-                        f"{entry.amount}); investigate the source export"
-                    ),
-                    is_suspicious=True,
-                )
-            )
+        _append_surplus_and_malformed_review_rows(
+            review_entries,
+            result.surplus_lots,
+            result.malformed_input_lots,
+            surplus_prefix="Fee CG dedup: ",
+            malformed_prefix="Fee CG dedup: ",
+        )
 
     # INV-4a: set-not-increment; this pass owns fee_dedup_removed. NEVER set in
     # :func:`_log_fee_removals` (W8 is a pure INFO demotion that owns NO review

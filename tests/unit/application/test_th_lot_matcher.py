@@ -408,22 +408,73 @@ class TestPassThroughIdentity:
         assert returned_event is event
 
 
-class TestDerivativesDedupReviewRowsAndInfo:
-    """Task 6: W6 derivatives dedup → INFO + review rows (3 sub-lists) + A&M count.
+class TestRemoveMatchedLots:
+    """M4: ``remove_matched_lots`` is domain-neutral.
 
-    Drives ``remove_matched_lots`` directly with ``domain_label="derivatives"``
-    (the only caller of ``remove_matched_lots``: fee_filter uses ``match_lots``
-    the match-only variant, and builds its summary inline at
-    ``remove_transaction_fees``). So the "Derivatives CG dedup" reason prefix
-    is unambiguous here.
+    The matcher owns ONLY the match + the single summary INFO emit. It does NOT
+    append :class:`CryptoReviewEntry` rows and does NOT write any
+    ``decision_counts.*dedup`` field: those are caller-owned (the derivatives
+    caller owns the review rows + ``derivatives_dedup_removed``; see
+    ``test_derivatives_filter.py``). The ``review_entries`` / ``decision_counts``
+    params stay as ``= None`` no-op defaults (INV-3 backward compat) so the
+    ~10 existing test callers that omit them stay green, but their presence
+    triggers nothing.
     """
 
     _CALLER_LOGGER_NAME = "tax_reporting.application.crypto.derivatives_filter"
 
-    def test_derivatives_dedup_removed_lots_become_review_rows(self) -> None:
-        """Given 3 matched lots, expects 3 CryptoReviewEntry rows with
-        source_section="capital_gains" and reasons prefixed
-        "Derivatives CG dedup: removed lot matched to OGR disposal".
+    def test_matcher_emits_summary_info_but_no_review_rows(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Given matched/surplus/malformed lots, expects ONE summary INFO record
+        but ZERO ``CryptoReviewEntry`` appends (the matcher is domain-neutral;
+        callers own review rows).
+        """
+        lots = [
+            _make_cg_lot(
+                disposal_timestamp="2025-01-24 08:00", amount=Decimal("0")
+            ),
+            _make_cg_lot(
+                disposal_timestamp="2025-01-24 09:00", amount=Decimal("-0.5")
+            ),
+            _make_cg_lot(
+                disposal_timestamp="2025-01-24 10:00", amount=Decimal("0.5")
+            ),
+            _make_cg_lot(
+                disposal_timestamp="2025-01-24 23:40",
+                amount=Decimal("0.5"),
+                acquisition_date="2025-01-12",
+            ),
+        ]
+        events = [_evt(timestamp="2025-01-24 10:00", amount=Decimal("0.5"))]
+        review_entries: list[CryptoReviewEntry] = []
+
+        with caplog.at_level(logging.INFO, logger=self._CALLER_LOGGER_NAME):
+            remove_matched_lots(
+                lots,
+                events,
+                domain_label="derivatives",
+                logger=logging.getLogger(self._CALLER_LOGGER_NAME),
+                review_entries=review_entries,
+            )
+
+        summary_records = [
+            r for r in caplog.records if "summary" in r.getMessage()
+        ]
+        assert len(summary_records) >= 1, (
+            "matcher must still emit its single summary INFO"
+        )
+        assert review_entries == [], (
+            f"matcher must append ZERO review rows (domain-neutral); "
+            f"got {len(review_entries)}: "
+            f"{[e.review_reason for e in review_entries]}"
+        )
+
+    def test_matcher_appends_zero_review_rows_for_matched_lots(self) -> None:
+        """Given 3 matched lots, expects ZERO ``CryptoReviewEntry`` appends.
+
+        The removed-lot review rows now live at the caller
+        (``remove_derivatives_flagged_lots``); the matcher is match-only.
         """
         lots = [
             _make_cg_lot(
@@ -444,26 +495,24 @@ class TestDerivativesDedupReviewRowsAndInfo:
             review_entries=review_entries,
         )
 
-        assert len(review_entries) == 3, (
-            f"expected 3 review rows; got {len(review_entries)}"
+        assert review_entries == [], (
+            f"matcher must append ZERO review rows; got {len(review_entries)}: "
+            f"{[e.review_reason for e in review_entries]}"
         )
-        for entry in review_entries:
-            assert entry.source_section == "capital_gains"
-            assert entry.is_suspicious is False, (
-                "removed (matched) lots are not suspicious"
-            )
-            assert entry.review_reason.startswith(
-                "Derivatives CG dedup: removed lot matched to OGR disposal"
-            ), f"unexpected reason: {entry.review_reason!r}"
 
-    def test_derivatives_dedup_surplus_lots_become_suspicious_review_rows(self) -> None:
-        """Given surplus lots, expects CryptoReviewEntry rows with
-        is_suspicious=True and reason "Surplus lot - may indicate a missed
-        FIFO split; review the listed key".
+    def test_matcher_appends_zero_review_rows_for_surplus_and_malformed_lots(
+        self,
+    ) -> None:
+        """Given surplus + malformed lots, expects ZERO ``CryptoReviewEntry``
+        appends. The surplus/malformed review rows now live at the caller.
         """
-        # 2 lots at the same exact-match key, 1 event consumes the first ->
-        # the second becomes surplus.
         lots = [
+            _make_cg_lot(
+                disposal_timestamp="2025-01-24 08:00", amount=Decimal("0")
+            ),
+            _make_cg_lot(
+                disposal_timestamp="2025-01-24 09:00", amount=Decimal("-0.5")
+            ),
             _make_cg_lot(
                 disposal_timestamp="2025-01-24 23:40",
                 amount=Decimal("0.5"),
@@ -486,59 +535,35 @@ class TestDerivativesDedupReviewRowsAndInfo:
             review_entries=review_entries,
         )
 
-        surplus_rows = [
-            e for e in review_entries if e.review_reason.startswith("Surplus lot")
-        ]
-        assert len(surplus_rows) == 1, (
-            f"expected 1 surplus review row; got {len(surplus_rows)} "
-            f"in {[e.review_reason for e in review_entries]}"
+        assert review_entries == [], (
+            f"matcher must append ZERO review rows; got {len(review_entries)}: "
+            f"{[e.review_reason for e in review_entries]}"
         )
-        row = surplus_rows[0]
-        assert row.is_suspicious is True, "surplus lots are suspicious"
-        assert row.review_reason == (
-            "Surplus lot - may indicate a missed FIFO split; review the listed key"
-        ), f"unexpected surplus reason: {row.review_reason!r}"
 
-    def test_derivatives_dedup_malformed_lots_become_suspicious_review_rows(self) -> None:
-        """Given lots with non-positive amount, expects CryptoReviewEntry rows
-        with is_suspicious=True and reason "Malformed-input lot (non-positive
-        amount {amount}); investigate the source export".
-        """
+    def test_matcher_does_not_set_decision_counts_dedup_field(self) -> None:
+        """Given a non-empty match, the matcher must NOT write any
+        ``decision_counts.*dedup`` field (caller-owned; INV-4a)."""
         lots = [
             _make_cg_lot(
-                disposal_timestamp="2025-01-24 08:00", amount=Decimal("0")
-            ),
-            _make_cg_lot(
-                disposal_timestamp="2025-01-24 09:00", amount=Decimal("-0.5")
-            ),
-            _make_cg_lot(
-                disposal_timestamp="2025-01-24 10:00", amount=Decimal("0.5")
-            ),
+                disposal_timestamp="2025-01-24 23:40", amount=Decimal("0.5")
+            )
         ]
-        events = [_evt(timestamp="2025-01-24 10:00", amount=Decimal("0.5"))]
-        review_entries: list[CryptoReviewEntry] = []
+        events = [_evt(amount=Decimal("0.5"))]
+        counts = CryptoDecisionCounts()
+        before = counts.derivatives_dedup_removed
 
         remove_matched_lots(
             lots,
             events,
             domain_label="derivatives",
             logger=logging.getLogger(self._CALLER_LOGGER_NAME),
-            review_entries=review_entries,
+            decision_counts=counts,
         )
 
-        malformed_rows = [
-            e for e in review_entries if e.review_reason.startswith("Malformed-input")
-        ]
-        assert len(malformed_rows) == 2, (
-            f"expected 2 malformed review rows; got {len(malformed_rows)} "
-            f"in {[e.review_reason for e in review_entries]}"
+        assert counts.derivatives_dedup_removed == before, (
+            "matcher must not touch derivatives_dedup_removed; got "
+            f"{counts.derivatives_dedup_removed}"
         )
-        for row in malformed_rows:
-            assert row.is_suspicious is True, "malformed lots are suspicious"
-            assert row.review_reason.startswith(
-                "Malformed-input lot (non-positive amount"
-            ), f"unexpected malformed reason: {row.review_reason!r}"
-            assert "investigate the source export" in row.review_reason
 
     def test_derivatives_dedup_summary_emits_info(
         self, caplog: pytest.LogCaptureFixture
