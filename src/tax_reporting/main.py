@@ -9,12 +9,14 @@ from __future__ import annotations
 import argparse
 import configparser
 import logging
+import os
 import re
 import sys
 from pathlib import Path
 
 from .application.crypto_reporting import CryptoTaxReport, load_koinly_crypto_report
 from .application.extraction import parse_ib_export_all
+from .application.on_chain_fetcher import run_on_chain_fetch
 from .application.persisting import export_rollover_file, generate_tax_report
 from .application.transformation import calculate_fifo_gains
 from .domain.collections import (
@@ -262,6 +264,37 @@ def _main(  # noqa: PLR0912, PLR0915
         if not dividend_income_per_company:
             final_report_type = "capital gains + crypto" if crypto_sheet_created else "capital gains"
         logger.info("Generated %s report: %s", final_report_type, extract_path)
+
+        # --- Optional, non-blocking on-chain transaction fetch (Task 6) ---
+        # This is a parallel, year-scoped collection step that is INDEPENDENT of
+        # the Koinly-based crypto pipeline above. It must NEVER abort the IB/Koinly
+        # report: the env-var gate lives here in main.py (DI-3), the year is
+        # resolved defensively so a None jurisdiction cannot raise AttributeError
+        # (DI-9), and the catch is the broad ``except Exception`` mirroring the
+        # optional-Koinly degrade template at the helper below (DI-1/r1 F1).
+        on_chain_year = tax_jurisdiction.fiscal_year if tax_jurisdiction is not None else tax_year_hint
+        if on_chain_year is None:
+            logger.warning(
+                "No tax year resolved for on-chain fetch; continuing without on-chain transaction data."
+            )
+        else:
+            on_chain_api_key = os.getenv("BERA_CHAIN_API_KEY")
+            if not on_chain_api_key:
+                logger.warning(
+                    "BERA_CHAIN_API_KEY not set; continuing without on-chain transaction data."
+                )
+            else:
+                try:
+                    run_on_chain_fetch(
+                        year=on_chain_year,
+                        output_dir=validated_output_dir,
+                        api_key=on_chain_api_key,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "On-chain fetch failed: %s. Continuing without on-chain transaction data.",
+                        exc,
+                    )
     except ConfigurationError:
         # A config problem (e.g. crypto data present but the jurisdiction timezone
         # cannot be resolved) must surface as a ConfigurationError, not be wrapped

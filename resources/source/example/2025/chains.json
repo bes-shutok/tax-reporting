@@ -1,0 +1,9 @@
+{
+  "wallets": [
+    {
+      "chain": "Berachain",
+      "label": "Example Wallet (BERA)",
+      "address": "0x0000000000000000000000000000000000001111"
+    }
+  ]
+}

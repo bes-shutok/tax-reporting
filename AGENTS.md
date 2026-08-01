@@ -20,7 +20,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Use f-strings in exception constructors; never pass multiple positional args.
 - Catch row-level parse errors per row (warn and skip); do not let one bad row discard the whole dataset.
 - Inside a row-level `try...except`, reuse the parsed object for any second derived value; wrap a fallible secondary parse in a nested `try...except` when a trusted-path branch must not be skipped. See UL #80, #125.
-- When an optional field from external input is absent, use a type-safe sentinel (e.g. `"0"` for numeric, `"MISSING"` when `"0"` is itself valid), not `""`. See `coding_guidelines.md` #4.
+- Absent optional fields use a type-safe sentinel (e.g. `"0"` for numeric, `"MISSING"` when `"0"` is valid), not `""`; a classifier `else` fallback must use a non-valid sentinel + WARNING. See `coding_guidelines.md` #4, `development_lessons.md` #106, #115.
 - Data-loss conditions (unmatched items, dropped records) must never be silently discarded: apply an explicit fallback and log at warning+, never debug. See `coding_guidelines.md` #5.
 - All-or-nothing validation for required file sets: none present -> skip; partial set -> raise `FileProcessingError` listing missing files; all present -> proceed.
 - Verification/hygiene guards must fail closed when the manifest is absent; `grep -f <missing>` exits non-zero, so `cmd && echo BAD || echo GOOD` false-passes.
@@ -61,7 +61,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Wallet labels are discovery hints only; final chain/country mappings come from archived operator origin documents, not asset symbols. Use `Unknown` when labels don't allow chain derivation.
 - Test-side per-row platform attribution must mirror `wallet_kind._row_platform` (skip empty OR case-insensitive `"unknown"`); bare `tr.sending_wallet or tr.receiving_wallet` misattributes. See `development_lessons.md` #44.
 - Throwaway shadow/verification scripts re-parsing an external-report CSV must call the production reader, not `csv.DictReader` (preamble/header handling diverges). See `development_lessons.md` #45.
-- Doc-drift grep backstops must scan `docs/maintenance/`, `docs/architecture/`, `README.md` prose; when a constant is added, sweep the NEW value at every rendered-text site, not only the deleted literal. See `development_lessons.md` #55, #58, #70.
+- Doc-drift grep backstops scan `docs/maintenance/`, `docs/architecture/`, `README.md` prose; sweep NEW value at each rendered-text site. See `development_lessons.md` #55, #58, #70.
 - Operator mapping temporal validity: `service_start_date` (matching) vs `valid_from` (audit-only); set `service_start_date <= valid_from`, leave `valid_from` null when unknown.
 - Module size: when a module exceeds 1,000 lines or 50 functions/classes, extract cohesive responsibilities into separate modules.
 - Orchestration layers stay thin (~500 lines max); extract sub-orchestrators or move domain logic to dedicated services when coordination grows.
@@ -122,7 +122,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Never write to `docs/review/` (singular); use `docs/history/reviews/` (plural). See `development_lessons.md` #29.
 - **Never introduce a hardcoded value (asset ticker, constant set, threshold, magic string, fixed ordering) without first flagging it and asking the user.**
 - Verification-first ordering for "is X handled correctly?": code inspection, test execution, doc review before implementation; skip if verification shows correctness.
-- **CRITICAL:** Code inspection is INSUFFICIENT for "is X handled correctly?". Perform full data-trace verification across all source reports; confirm code branches on every authority-cited discriminator. (Logging-config runtime claims too; see `development_lessons.md` #66.)
+- **CRITICAL:** Code inspection is INSUFFICIENT for "is X handled correctly?". Perform full data-trace verification across all source reports; confirm code branches on every authority-cited discriminator. See `development_lessons.md` #66.
 - When a user provides multiple examples to investigate, trace and document ALL; do not assume the first's root cause covers the rest.
 - When verifying a claim that a specific amount is missing from source data, verify whether the report output is an aggregation before concluding it is missing.
 - When adding cross-module utility calls, verify imports resolve (`uv run python -c "from m import f"`).
@@ -194,7 +194,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - `configparser` INI files: `config.ini` (prod), `tests/config.ini` (test). Sections `[COMMON]`, `[EXCHANGE RATES]`, `[TAX JURISDICTION]` (fields/defaults in `README.md`). Update exchange rates annually.
 - `IANA_TIMEZONE`: auto-deduces `Europe/Lisbon` for `TAX_COUNTRY=PT`; REQUIRED for other countries with crypto data, else fails fast.
 - **Law-driven flags** (e.g. `exclude_loan_repayment_gains`) live in `docs/maintenance/tax/decision_points/<fiscal_year>.toml`, NOT `config.ini` (user preferences only); update the `.md` and `.toml` sidecar together.
-- TOML schema: `[meta].fiscal_year` (integer) + `[countries.XX]` boolean tables (multi-type loader also accepts `dict[str, Decimal]`); copy `2025.toml` per year. Missing TOML raises `MissingDecisionPointsError`; invalid `[TAX JURISDICTION]` raises `ConfigurationError`; both surface unwrapped.
+- TOML schema: `[meta].fiscal_year` (integer) + `[countries.XX]` boolean tables (multi-type loader accepts `dict[str, Decimal]`); copy `2025.toml` per year. Missing TOML raises `MissingDecisionPointsError`; invalid `[TAX JURISDICTION]` raises `ConfigurationError`.
 
 ## Testing
 
@@ -209,7 +209,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 
 ## Code Quality
 
-- **Ruff** is primary linter/formatter (`pyproject.toml`: Python 3.14, line length 120, full ruleset), but **unenforced** (no pre-commit/CI), so pre-existing violations accumulate on `master`. Before adding `# noqa`, check the HEAD blob (`git show HEAD:<file> | ruff check`) to avoid mis-attributing master debt. Do not run `ruff check --fix` on modules that re-export for backward compat (e.g. `crypto_reporting.py`); `F401` strips re-exported names tests depend on. See `development_lessons.md` #72.
+- **Ruff** is primary linter/formatter (`pyproject.toml`: Python 3.14, line length 120, full ruleset), but **unenforced** (no pre-commit/CI), so pre-existing violations accumulate on `master`. Before adding `# noqa`, check the HEAD blob (`git show HEAD:<file> | ruff check`) to avoid mis-attributing master debt. Do not run `ruff check --fix` on modules that re-export for backward compat (e.g. `crypto_reporting.py`); `F401` strips re-exported names tests depend on. For "today", use `datetime.now(tz=UTC).date()`, not `date.today()` (`DTZ011`). See `development_lessons.md` #72, #112.
 - Type hints: modern syntax (`X | Y`) with `from __future__ import annotations`; lazy logging, f-string exceptions, named-constant magic numbers (except tests). Never default essential indices/identifiers to 0. Refactor complex functions.
 - Docstrings: always for public modules/classes/`__init__`/complex functions; skip trivial getters/setters/`__repr__`/private methods/test functions.
 - **Code review checklist:** required params truly required; error messages have row context; exception chaining preserves originals; logging parameterized; fail-fast vs missing-data distinction correct.

@@ -101,6 +101,69 @@ Retrieved on: 2026-03-15
 - Issuing date: verified 2026-03-08
 - Purpose: Wirex service-scope split documentation (Wirex Limited GB for fiat, Wirex Digital HR for crypto).
 
+## Mainnet genesis-date extracts (chain registry)
+
+Added 2026-08-01 for plan `2026-08-01-minimal-chains-json-config` Task 1. These
+archive the mainnet genesis/first-block DATE for each EVM chain (not the
+legal-entity domicile dates in the entries above) and the Polygon MATIC->POL
+ticker migration. They ground the `_CHAIN_LAUNCH_DATE` and
+`_CHAIN_ON_CHAIN_NATIVE_TICKER` maps in
+`src/tax_reporting/application/crypto/chain_derivation.py`.
+
+19. `official/ethereum_genesis_2015-07-30.md`
+- URL: https://blog.ethereum.org/2015/07/30/ethereum-frontier-is-live
+- Companion URL: https://ethereum.org/en/history
+- Issuing date: 2015-07-30
+- Purpose: Ethereum mainnet (Frontier) genesis-block date, grounding `_CHAIN_LAUNCH_DATE["Ethereum"] = 2015-07-30` (not the 2024-05-08 Swiss-Stiftung domicile date in entry 6).
+
+20. `official/bnb_chain_genesis_2020-09-01.md`
+- URL: https://docs.bnbchain.org/bnb-smart-chain/overview/#mainnet-launch
+- Companion URL: https://www.bnbchain.org/en/bnb-chain-history
+- Issuing date: 2020-09-01
+- Purpose: BNB Smart Chain mainnet genesis-block date, grounding `_CHAIN_LAUNCH_DATE["Binance Smart Chain"] = 2020-09-01` (not the 2026-01 domicile date in entry 8).
+
+21. `official/berachain_genesis_2025-02-06.md`
+- URL: https://blockworks.co/news/berachain-mainnet-live
+- Companion URL: https://x.com/berachain/status/1889446634270310529
+- Issuing date: 2025-02-06
+- Purpose: Berachain mainnet genesis-block date, grounding `_CHAIN_LAUNCH_DATE["Berachain"] = 2025-02-06` (genesis, not the 2025-02-05 legal-entity service date in entry 1; matches the prior `_EARLIEST_BERA_TX_DATE` constant).
+
+22. `official/polygon_genesis_2020-05-28.md`
+- URL: https://polygon.technology/blog/matic-mainnet-is-live
+- Companion URL: https://docs.polygon.technology/pos/get-started/intro/
+- Issuing date: 2020-05-28
+- Purpose: Polygon (Matic Network) PoS mainnet genesis-block date, grounding `_CHAIN_LAUNCH_DATE["Polygon"] = 2020-05-28` (not the 2024-01-23 Cayman-entity date in entry 10).
+
+23. `official/arbitrum_genesis_2021-08-31.md`
+- URL: https://arbitrum.foundation/post/launching-arbitrum-one
+- Companion URL: https://docs.arbitrum.io/welcome/get-started-intro
+- Issuing date: 2021-08-31
+- Purpose: Arbitrum One mainnet genesis-block date, grounding `_CHAIN_LAUNCH_DATE["Arbitrum"] = 2021-08-31` (not the 2023-07-20 Foundation M&A document in entry 9).
+
+24. `official/base_genesis_2023-08-09.md`
+- URL: https://base.org/blog/base-mainnet-is-live
+- Companion URL: https://docs.base.org/getting-started
+- Issuing date: 2023-08-09
+- Purpose: Base mainnet genesis-block date, grounding `_CHAIN_LAUNCH_DATE["BASE"] = 2023-08-09` (not the 2025-12-04 Coinbase Technologies terms date in entry 11).
+
+25. `official/mantle_genesis_2023-07-17.md`
+- URL: https://mantle.network/blog/mantle-network-mainnet-alpha-is-live
+- Companion URL: https://docs.mantle.xyz/
+- Issuing date: 2023-07-17
+- Purpose: Mantle mainnet genesis-block date, grounding `_CHAIN_LAUNCH_DATE["Mantle"] = 2023-07-17`.
+
+26. `official/zksync_era_genesis_2023-03-24.md`
+- URL: https://matterlabs.introduction/blog/zksync-era-mainnet-is-live
+- Companion URL: https://docs.zksync.io/
+- Issuing date: 2023-03-24
+- Purpose: zkSync Era mainnet genesis-block date, grounding `_CHAIN_LAUNCH_DATE["zkSync ERA"] = 2023-03-24` (not the Matter Labs legal-entity terms in entry 3).
+
+27. `official/polygon_pol_migration_2024-09-04.md`
+- URL: https://polygon.technology/blog/polygon-migration-now-complete
+- Companion URL (governance proposal): https://polygon.technology/governance/proposals/046
+- Issuing date: 2024-09-04
+- Purpose: Polygon MATIC->POL native-asset migration effective date, grounding `_CHAIN_ON_CHAIN_NATIVE_TICKER["Polygon"] = "POL"` (post-migration native ticker for FY2025+ CSV output; separate contract from the stale-for-CSV `_CHAIN_NATIVE_FEE_ASSET["Polygon"] = "MATIC"` Koinly fee-check map).
+
 ## Public-record extracts
 
 1. `public/mantle_public_record_2024-03-15.md`

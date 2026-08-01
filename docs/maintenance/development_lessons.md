@@ -2279,3 +2279,85 @@ When assessing NHR exemptions for foreign income, strictly rely on Portugal's do
 **Example (2026-06-25 Russia DTA suspension):** Russia was added to the EU non-cooperative list in 2023, and it suspended most DTA articles with Portugal. However, because Russia was not added to Portugal's domestic Portaria 150/2004 list, the NHR fallback rule (CIRS Art. 81(5)) still legally exempts Russian rental income in Portugal.
 
 ---
+
+## 112. Getting "today" in this repo: use `datetime.now(tz=UTC).date()`, never `date.today()`
+
+**Principle:** Family A (Mechanical invariants over prompt advice) / Family D (Single source of truth)
+
+This repo's `pyproject.toml` selects the ruff `DTZ` ruleset and ignores `DTZ001`/`DTZ005` but NOT `DTZ011`. `date.today()` therefore trips `DTZ011` and fails `ruff check`. The codebase precedent for "now" is `datetime.now(tz=UTC)` (e.g. `src/tax_reporting/application/crypto/parsing.py:68` uses `datetime.now(tz=UTC).year`).
+
+**Rule:** When new code needs the current date, write `datetime.now(tz=UTC).date()` (importing `datetime` and `UTC`), not `date.today()`. Do not add a `# noqa: DTZ011` to silence it; switch the call. Functions that need test-injectable time should take a `today` callable defaulting to `None` and fall back to `datetime.now(tz=UTC).date()` at call time, so tests inject a fixed date without `freezegun` and without breaking the DTZ rule.
+
+**Shape trigger:** you reach for `date.today()` or `datetime.now()` without a tz argument in new application code; `ruff check` then fails on `DTZ011`.
+
+**Why this matters:** `DTZ011` is selected on purpose to keep date-sources timezone-aware; a `# noqa` or `date.today()` defeats that invariant silently. Following the existing `datetime.now(tz=UTC)` precedent keeps the rule mechanical (grep for `date.today(` should find nothing in `src/`).
+
+**See also:** `src/tax_reporting/application/crypto/parsing.py:68` (the precedent), `pyproject.toml` `[tool.ruff.lint]` select/ignore (DTZ selected, DTZ001/DTZ005 ignored, DTZ011 active), `docs/maintenance/project-guidelines.md` #6 (distinct: localizing naive external-report dates, not getting "today").
+
+## 113. Negation-grep backstops must not match the forbidden token inside prose that merely narrates the seam
+
+**Principle:** Family H (Verify the real thing, not the abstraction) / Family G (Data-loss observability)
+
+This repo's DI-3 discipline includes a negated grep that asserts NO test patches `urllib`/`urlopen` directly (tests must go through the module-level `_http_get_json` seam). A docstring that NARRATED the seam with the sentence "the underlying urllib urlopen transport" caused that grep to match itself: the grep cannot distinguish a guarded code call from a prose mention, so a passing discipline looked like a violation. The fix was rewording the docstring ("the underlying urllib transport"), dodging the literal without weakening the test discipline.
+
+**Rule:** When authoring a backstop NEGATION grep (a grep that must return ZERO matches), treat its forbidden token as a reserved word not just in code but in prose and docstrings. If a docstring or comment must mention the underlying mechanism the grep forbids, paraphrase it so the prose does not contain the grep's literal pattern (e.g. name the responsibility "the underlying transport" or "the network seam", not the token `urlopen` the grep forbids). Conversely, when a negation grep unexpectedly hits, FIRST determine whether the match is prose narration of the seam rather than the forbidden call it guards; do not weaken the grep to keep the prose.
+
+**Shape trigger:** you author a backstop grep whose value is "zero matches for forbidden token X" AND you also write a docstring/comment that explains what the seam abstracts over; the natural phrasing names X ("wraps the X call", "delegates to X"). The grep then hits your own prose.
+
+**Why this matters:** a negation grep is a binary invariant (zero-or-fail); it cannot score partial matches. Prose that legitimately explains the seam is indistinguishable to the grep from the forbidden direct call, so the invariant appears violated when the code is actually clean. The two recoveries - reword the prose, or weaken the grep - have opposite safety properties; always reword the prose.
+
+**See also:** `src/tax_reporting/infrastructure/on_chain/etherscan_client.py` (`_http_get_json` seam docstring), the DI-3 backstop grep block in the on-chain fetcher plan, lesson #55 (deletion backstop greps must cover docs - the scope side; this lesson is the inverse pattern: the grep correctly scans prose and then must not be defeated by self-narration).
+
+---
+
+## 114. The `http_get_json` param on `run_on_chain_fetch` and the `_client_for_wallet` instance assignment are dead code (consumer reads the module global)
+
+**Principle:** Family H (Verify the real thing, not the abstraction) / Family A (Mechanical invariants over prompt advice)
+
+`run_on_chain_fetch(*, http_get_json=None)` accepts an optional DI-3 injection param, and `_client_for_wallet` does `client._http_get_json = http_get_json` when it is provided. But `EtherscanV2Client._call_with_retries` calls the MODULE-LEVEL name `_http_get_json(self.base_url, params)` (a bare global, NOT `self._http_get_json`). The instance attribute is therefore never read; the param and the assignment are dead code today. The unit and integration tests all drive the seam by monkeypatching the module global `tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json` directly, which works regardless of the param. The docstring on `_client_for_wallet` (and the DI-3 note on `run_on_chain_fetch`) currently CLAIMS the instance injection works ("injected into the client so tests can drive the transport"), which is false and will mislead the next maintainer into relying on a no-op path.
+
+**Rule:** Treat the `http_get_json=` param on `run_on_chain_fetch` and the `client._http_get_json = ...` line in `_client_for_wallet` as DEAD until the client is changed to call `self._http_get_json`. To drive the HTTP seam in tests, monkeypatch the module global (`tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json`), never the param. If you fix the client to honor instance injection, use a `field(default_factory=...)` that captures the module function (a `field` default referencing `self._http_get_json` evaluates at runtime and breaks); simpler is to delete the param and the dead assignment entirely, since every test already uses the module-global path.
+
+**Shape trigger:** you reach for `run_on_chain_fetch(..., http_get_json=fake)` in a test expecting it to intercept HTTP, OR you read the `_client_for_wallet` docstring and believe the instance injection is live, OR you are about to "use" the param in new code. The abstraction (a documented injection seam) and the reality (a bare module-global call inside the consumer) diverge.
+
+**Why this matters:** a dead DI surface that is documented as working is worse than no seam at all: a test that passes `http_get_json=fake` will silently hit the real network (or the module default) instead of the fake, and the failure mode is "test does the wrong thing but looks GREEN". Flagged for Phase 3 cleanup (drop the param + assignment, or make the client honor `self._http_get_json` via `field(default_factory=...)`).
+
+**See also:** `src/tax_reporting/application/on_chain_fetcher.py` (`_client_for_wallet` line `client._http_get_json = http_get_json`; `run_on_chain_fetch` signature), `src/tax_reporting/infrastructure/on_chain/etherscan_client.py` (`_call_with_retries` bare `_http_get_json(...)` call), lesson #113 (the DI-3 seam from the grep/prose side), the on-chain fetcher plan's permitted monkeypatch fallback.
+
+---
+
+## 115. A classifier function's terminal fallback must return a sentinel plus a warning, not a default that masquerades as a valid classification
+
+**Principle:** Family C (Representation: sentinel vs None vs exception) / Family G (Data-loss observability)
+
+A classification function that maps an input onto a small set of valid enum-like strings (e.g. `"in"` / `"out"`) via `if ... elif ...` branches must NOT let its terminal `else` fall through to one of those same valid values. An `else: return "in"` is indistinguishable from a genuine `wallet == row["to"]` classification: the downstream row is emitted looking correct, the audit trail shows no anomaly, and an off-wallet leg (here, a checksum mismatch between the configured address and the API's lower-cased form) is silently recorded as a credit. The fallback must instead return a sentinel the valid set does not contain (here `"unknown"`) AND emit a WARNING carrying enough context (tx hash, the wallet under test, the row's from/to) that a reviewer can find and fix the root cause; the row is still emitted, but flagged.
+
+**Rule:** For any function that classifies an input into a fixed set of valid return values and has an "unmapped" path, that path must (1) return a sentinel value that is NOT a member of the valid set and (2) log a WARNING with the discriminating context. Never let the fallback return a valid enum member as a silent default. If a sentinel is not acceptable downstream, raise instead of silently mislabeling. Pair the rule with a test that exercises the unmapped path and asserts both the sentinel return value and the WARNING text.
+
+**Shape trigger:** you are writing or reading an `if x == A: return "a"` / `if x == B: return "b"` / `else: return "a"` (or `"b"`) classifier; the `else` is a "shouldn't happen" case rather than a true fourth classification. The trigger is the terminal branch defaulting to a value that also appears as a legitimate `if`-branch result.
+
+**Why this matters:** a silent valid-looking default is the worst representation choice (Family C): the row is not dropped (so the loss is not a missing row), but its meaning is wrong (so any downstream aggregation that keys on the classification, e.g. inflow vs outflow totals, is silently corrupted). A WARNING plus a non-valid sentinel converts the silent corruption into an observable, greppable anomaly without losing the row.
+
+**Distinguishing from lesson #106 (sentinel for `dict.get` default):** #106 is the same Family-C root cause (a default that collides with a valid data value) but its shape is a `dict.get(key, default)` guard. This lesson is the classifier-function form: an `if/elif/else` whose terminal branch returns a valid enum member. #106 fires on dict-lookup guards; this lesson fires on classification fallback branches.
+
+**Example:** `_direction(row, wallet_address)` in `src/tax_reporting/infrastructure/on_chain/bera_decoder.py` resolved a transaction leg to `"out"` (sender) or `"in"` (receiver); the original terminal `else` returned `"in"` as a default, silently recording any off-wallet leg as a credit. The fix returns the sentinel `"unknown"` and logs `WARNING` "Off-wallet leg for tx hash=...". The `test_off_wallet_leg_emits_unknown_and_warns` test pins both the return and the WARNING substring. See the on-chain fetcher code review r1 finding F3.
+
+**See also:** lesson #106 (sentinel for `dict.get` default - the dict-lookup form of the same Family-C root), lesson #97 (internal sentinels must not leak to user-facing output - the opposite concern: a sentinel that SHOULD be a raw value), `coding_guidelines.md` #6 (user-facing labels use self-explanatory terminology), AGENTS.md Rule #4 (type-safe sentinels).
+
+---
+
+## 116. A config field that filters post-fetch does not bound the HTTP fetch
+
+**Principle:** Family G (Data-loss observability)
+
+A date-range field the consumer applies as a local filter AFTER rows are downloaded does NOT reduce what the API returns. The on-chain fetcher calls Etherscan V2 with `startblock=0`/`endblock=99999999` (block-number pagination, `etherscan_client.py:149-150`); `start_date`/`end_date` only drop rows inside `bera_decoder._in_date_window` (`bera_decoder.py:151,189`) after the full history is fetched. For a long-history chain (Ethereum, BSC, Polygon, Arbitrum, BASE, zkSync) a wallet's full history from block 0 exceeds the client's `max_rows=100000` ceiling (`etherscan_client.py:121,164-173`); the loop logs one WARNING and returns a truncated prefix - a tax-data-loss condition.
+
+**Rule:** When a config field's name suggests it bounds a network fetch (date range, id range), verify WHERE the bound is enforced: an API query parameter, or a post-fetch local filter. Do not document a "supported" set of targets wider than the fetch can retrieve without silent truncation. Either narrow the documented set to what is safe, or fix the fetcher to bound the request at the API before advertising the wider set. A plan that moves such a field from user config to internal derivation is the moment to re-check, because the plan's prose re-states the supported set.
+
+**Shape trigger:** a config refactor touches a date/range field consumed by a fetcher; the plan or docs claim a list of "supported" targets; the field name (`start_date`, `from_block`, `since`) implies it limits the request. Trace the field to its consumer: if it filters a list the transport already returned, the bound is illusory.
+
+**Example:** The minimal-`chains.json` plan (`docs/history/plans/2026-08-01-minimal-chains-json-config.md`) initially documented all 8 EVM Etherscan-V2 chains as supported because the new `_CHAIN_TO_CHAINID` registry covered them. Plan review r1 F1 (High) caught that block-0 pagination silently truncates for 6 of 8; the fold narrowed the documented set to Berachain-only. See `etherscan_client.py:143-179` and `bera_decoder.py:84-86`.
+
+**See also:** lesson #114 (same fetcher; a dead DI seam is the test-side analog - passes but does the wrong thing), `coding_guidelines.md` #5 / AGENTS.md Rule #1 (data-loss conditions never silently discarded; warning+, never debug).
+
+---
