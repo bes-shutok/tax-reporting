@@ -228,10 +228,10 @@ class TestOriginResolverTransferPoolTags:
             tmp_path,
             # Exchange row that provides the LP origin
             "2025-02-23 18:47:14 UTC,exchange,Liquidity in,Ledger APTOS,19.95,APT,112.72,"
-            "Ledger APTOS,0.79,CAKE-LP,112.72,,,,,,hash1,,,add liquidity\n"
+            "Ledger APTOS,0.79,CAKE-LP,112.72,,,,,,,,hash1,add liquidity\n"
             # Later transfer to pool (same asset, same wallet, tag contains "pool")
             "2025-02-23 18:47:49 UTC,transfer,To pool,Ledger APTOS,1.58,CAKE-LP,225.71,"
-            "Ledger APTOS,1.58,CAKE-LP,225.71,,,,,,,hash2,,,pool transfer\n",
+            "Ledger APTOS,1.58,CAKE-LP,225.71,,,,,,,,hash2,pool transfer\n",
         )
         resolver = _build_resolver(path)
         origin = resolver.resolve("2025-02-23", "CAKE-LP", "Ledger APTOS")
@@ -482,12 +482,12 @@ class TestOriginResolverLiquidityOut:
         path = _write_th(
             tmp_path,
             # crypto_withdrawal row (LP tokens sent) - tag is 'Liquidity out' in real data
-            # TxHash stored in TxSrc field (index 16) per real Koinly export format
+            # TxHash at index 18 (Task 4: token_origin reads TxHash, not TxSrc)
             "2025-03-09 11:48:47 UTC,crypto_withdrawal,Liquidity out,Cetus,10,CETUS-LP,50,"
-            ",,,,,,,,,0xfeedface,,,remove liquidity\n"
+            ",,,,,,,,,,,0xfeedface,remove liquidity\n"
             # crypto_deposit row (tokens received from LP)
             "2025-03-09 11:48:47 UTC,crypto_deposit,Liquidity out,,,,,"
-            "Cetus,100,SSUI,200,,,,,,0xfeedface,,,remove liquidity\n",
+            "Cetus,100,SSUI,200,,,,,,,,0xfeedface,remove liquidity\n",
         )
         resolver = _build_resolver(path)
         origin = resolver.resolve("2025-03-09", "SSUI", "Cetus")
@@ -501,9 +501,9 @@ class TestOriginResolverLiquidityOut:
         path = _write_th(
             tmp_path,
             # crypto_deposit row without paired crypto_withdrawal
-            # TxHash stored in TxSrc field (index 16) per real Koinly export format
+            # TxHash at index 18 (Task 4: token_origin reads TxHash, not TxSrc)
             "2025-03-09 11:48:47 UTC,crypto_deposit,Liquidity out,,,,,"
-            "Cetus,100,SSUI,200,,,,,,0xfeedface,,,remove liquidity\n",
+            "Cetus,100,SSUI,200,,,,,,,,0xfeedface,remove liquidity\n",
         )
         resolver = _build_resolver(path)
         origin = resolver.resolve("2025-03-09", "SSUI", "Cetus")
@@ -519,9 +519,9 @@ class TestOriginResolverLiquidityOut:
         """
         path = _write_th(
             tmp_path,
-            # TxHash stored in TxSrc field (index 16) per real Koinly export format
+            # TxHash at index 18 (Task 4: token_origin reads TxHash, not TxSrc)
             "2025-03-09 11:48:47 UTC,exchange,Liquidity out,Cetus,5,CETUS-LP,25,"
-            "Cetus,50,SSUI,100,,,,,,0xfeedface,,,remove liquidity\n",
+            "Cetus,50,SSUI,100,,,,,,,,0xfeedface,remove liquidity\n",
         )
         resolver = _build_resolver(path)
         origin = resolver.resolve("2025-03-09", "SSUI", "Cetus")
@@ -540,15 +540,15 @@ class TestOriginResolverLiquidityIn:
         path = _write_th(
             tmp_path,
             # First withdrawal: SSUI sent - tag is 'Liquidity in' in real data
-            # TxHash stored in TxSrc field (index 16) per real Koinly export format
+            # TxHash at index 18 (Task 4: token_origin reads TxHash, not TxSrc)
             "2025-03-09 10:30:00 UTC,crypto_withdrawal,Liquidity in,Cetus,100,SSUI,200,"
-            ",,,,,,,,,0xabc123,,,add liquidity\n"
+            ",,,,,,,,,,,0xabc123,add liquidity\n"
             # Second withdrawal: USDC sent
             "2025-03-09 10:30:00 UTC,crypto_withdrawal,Liquidity in,Cetus,500,USDC,500,"
-            ",,,,,,,,,0xabc123,,,add liquidity\n"
+            ",,,,,,,,,,,0xabc123,add liquidity\n"
             # crypto_deposit row: LP tokens received
             "2025-03-09 10:30:00 UTC,crypto_deposit,Liquidity in,,,,,"
-            "Cetus,5,CETUS-LP,25,,,,,,0xabc123,,,add liquidity\n",
+            "Cetus,5,CETUS-LP,25,,,,,,,,0xabc123,add liquidity\n",
         )
         resolver = _build_resolver(path)
         origin = resolver.resolve("2025-03-09", "CETUS-LP", "Cetus")
@@ -562,9 +562,9 @@ class TestOriginResolverLiquidityIn:
         """exchange with tag 'Liquidity in' → method LIQUIDITY_PROVISION."""
         path = _write_th(
             tmp_path,
-            # TxHash stored in TxSrc field (index 16) per real Koinly export format
+            # TxHash at index 18 (Task 4: token_origin reads TxHash, not TxSrc)
             "2025-03-09 10:30:00 UTC,exchange,Liquidity in,Cetus,100,SSUI,200,"
-            "Cetus,5,CETUS-LP,25,,,,,,0xabc123,,,add liquidity\n",
+            "Cetus,5,CETUS-LP,25,,,,,,,,0xabc123,add liquidity\n",
         )
         resolver = _build_resolver(path)
         origin = resolver.resolve("2025-03-09", "CETUS-LP", "Cetus")
@@ -623,17 +623,17 @@ class TestOriginResolverRealDataVerification:
         """
         path = _write_th(
             tmp_path,
-            # crypto_withdrawal row (LP tokens sent) - TxHash at index 16
+            # crypto_withdrawal row (LP tokens sent) - TxHash at index 18 (Task 4)
             "2025-03-09 11:48:47 UTC,crypto_withdrawal,Liquidity out,SUI,6.97,CETUS-LP,173,"
-            ",,,,,,,,,0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface,,,remove liquidity\n"  # noqa: E501
-            # crypto_deposit row (SSUI received from LP) - TxHash at index 16
+            ",,,,,,,,,,,0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface,remove liquidity\n"  # noqa: E501
+            # crypto_deposit row (SSUI received from LP) - TxHash at index 18 (Task 4)
             "2025-03-09 11:48:47 UTC,crypto_deposit,Liquidity out,,,,,SUI,54.97,SSUI,172.42,"
-            ",,,,,0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface,,,remove liquidity\n"  # noqa: E501
+            ",,,,,,,0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface,remove liquidity\n"  # noqa: E501
             # Additional deposits from same transaction (USDC, CETUS)
             "2025-03-09 11:48:47 UTC,crypto_deposit,Liquidity out,,,,,SUI,0.52,USDC,0.56,"
-            ",,,,,0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface,,,remove liquidity\n"  # noqa: E501
+            ",,,,,,,0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface,remove liquidity\n"  # noqa: E501
             "2025-03-09 11:48:47 UTC,crypto_deposit,Liquidity out,,,,,SUI,0.15,CETUS,0.02,"
-            ",,,,,0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface,,,remove liquidity\n",  # noqa: E501
+            ",,,,,,,0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface,remove liquidity\n",  # noqa: E501
         )
         resolver = _build_resolver(path)
         origin = resolver.resolve("2025-03-09", "SSUI", "SUI")
@@ -664,7 +664,7 @@ class TestOriginResolverExchangeLPHighConfidence:
         path = _write_th(
             tmp_path,
             "2025-02-23 18:47:14 UTC,exchange,Liquidity in,Ledger APTOS,0.00128427,ABTC,113.00,"
-            "Ledger APTOS,0.78987847,CAKE-LP,113.00,,,,,,hash123,,,add liquidity\n",
+            "Ledger APTOS,0.78987847,CAKE-LP,113.00,,,,,,,,hash123,add liquidity\n",
         )
         resolver = _build_resolver(path)
         origin = resolver.resolve("2025-02-23", "CAKE-LP", "Ledger APTOS")
@@ -677,7 +677,7 @@ class TestOriginResolverExchangeLPHighConfidence:
         path = _write_th(
             tmp_path,
             "2025-02-23 18:47:14 UTC,exchange,Liquidity out,Cetus,5,CETUS-LP,25,"
-            "Cetus,50,SSUI,100,,,,,,hash123,,,remove liquidity\n",
+            "Cetus,50,SSUI,100,,,,,,,,hash123,remove liquidity\n",
         )
         resolver = _build_resolver(path)
         origin = resolver.resolve("2025-02-23", "SSUI", "Cetus")
@@ -696,12 +696,12 @@ class TestOriginResolverExchangeLPHighConfidence:
             tmp_path,
             # Two exchange rows acquiring LP tokens (same TxHash = multi-leg LP provision)
             "2025-02-23 18:47:14 UTC,exchange,Liquidity in,Ledger APTOS,0.00128427,ABTC,113.00,"
-            "Ledger APTOS,0.78987847,CAKE-LP,113.00,,,,,,hash1,,,add liquidity\n"
+            "Ledger APTOS,0.78987847,CAKE-LP,113.00,,,,,,,,hash1,add liquidity\n"
             "2025-02-23 18:47:14 UTC,exchange,Liquidity in,Ledger APTOS,19.95031885,APT,112.72,"
-            "Ledger APTOS,0.78987846,CAKE-LP,112.72,,,,,,hash1,,,add liquidity\n"
+            "Ledger APTOS,0.78987846,CAKE-LP,112.72,,,,,,,,hash1,add liquidity\n"
             # Later transfer to pool
             "2025-02-23 18:47:49 UTC,transfer,To pool,Ledger APTOS,1.57975693,CAKE-LP,225.71,"
-            "Ledger APTOS,1.57975693,CAKE-LP,225.71,,,,,,,hash2,,,pool transfer\n",
+            "Ledger APTOS,1.57975693,CAKE-LP,225.71,,,,,,,,hash2,pool transfer\n",
         )
         resolver = _build_resolver(path)
         origin = resolver.resolve("2025-02-23", "CAKE-LP", "Ledger APTOS")
@@ -722,10 +722,10 @@ class TestOriginResolverExchangeLPHighConfidence:
             tmp_path,
             # Single exchange acquiring LP token
             "2025-02-23 18:47:14 UTC,exchange,Liquidity in,Ledger APTOS,19.95031885,APT,112.72,"
-            "Ledger APTOS,0.78987846,CAKE-LP,112.72,,,,,,hash1,,,add liquidity\n"
+            "Ledger APTOS,0.78987846,CAKE-LP,112.72,,,,,,,,hash1,add liquidity\n"
             # Later transfer to pool (same asset, same wallet - should be skipped)
             "2025-02-23 18:47:49 UTC,transfer,To pool,Ledger APTOS,1.57975693,CAKE-LP,225.71,"
-            "Ledger APTOS,1.57975693,CAKE-LP,225.71,,,,,,,hash2,,,pool transfer\n",
+            "Ledger APTOS,1.57975693,CAKE-LP,225.71,,,,,,,,hash2,pool transfer\n",
         )
         resolver = _build_resolver(path)
         origin = resolver.resolve("2025-02-23", "CAKE-LP", "Ledger APTOS")
@@ -748,9 +748,9 @@ class TestOriginResolverExchangeLPHighConfidence:
             tmp_path,
             # Two exchange rows with different TxHash (separate LP provisions)
             "2025-02-23 18:47:14 UTC,exchange,Liquidity in,Ledger APTOS,0.00128427,ABTC,113.00,"
-            "Ledger APTOS,0.78987847,CAKE-LP,113.00,,,,,,hash1,,,add liquidity\n"
+            "Ledger APTOS,0.78987847,CAKE-LP,113.00,,,,,,,,hash1,add liquidity\n"
             "2025-02-23 18:47:15 UTC,exchange,Liquidity in,Ledger APTOS,19.95031885,APT,112.72,"
-            "Ledger APTOS,0.78987846,CAKE-LP,112.72,,,,,,hash2,,,add liquidity\n",
+            "Ledger APTOS,0.78987846,CAKE-LP,112.72,,,,,,,,hash2,add liquidity\n",
         )
         resolver = _build_resolver(path)
         origin = resolver.resolve("2025-02-23", "CAKE-LP", "Ledger APTOS")

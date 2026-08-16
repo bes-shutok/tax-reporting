@@ -99,6 +99,15 @@ class TransactionHistoryRow:
         row_index: 0-based source CSV row index, supplied by the parser call.
             Used by ``TxCompositeKey`` to guarantee two empty-tx-id rows never
             collide (Invariant 5).
+        event_id: Split-Event discriminator within a single on-chain tx, or
+            None. None for Koinly rows (today's semantics preserved - Koinly
+            collapses a multi-leg tx into one row, so there is no per-event
+            split to distinguish). Non-None for on-chain-derived split rows,
+            where one ``tx_hash`` carries N Events and each Event projects to
+            its own ``TransactionHistoryRow``; ``event_id`` is the unique
+            within-tx Event identifier (Invariant 2, amended for the on-chain
+            Transaction Tagger). Set by the Task 10 on-chain TH adapter; the
+            Koinly parser does not set it.
     """
 
     utc_instant: datetime
@@ -114,6 +123,7 @@ class TransactionHistoryRow:
     tx_src: str | None
     tx_dest: str | None
     row_index: int
+    event_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -177,6 +187,15 @@ class TxCorrelationKey:
     2026-07-06); TxSrc/TxDest are wallet addresses and are NOT used to
     derive tx_id.
 
+    ``event_id`` (Invariant 2, amended for the on-chain Transaction Tagger)
+    is the split-Event discriminator for on-chain txs that project to N
+    ``TransactionHistoryRow``s sharing one ``tx_hash``: two such rows are
+    distinct Events iff their ``event_id`` differs. ``event_id`` is threaded
+    into BOTH equality and the hash so two split rows sharing a hash do not
+    collapse in any dict/set keyed by ``TxCorrelationKey`` (review F7:
+    hash/eq consistency). The Koinly path (``event_id=None`` throughout) is
+    byte-identical to today's behavior.
+
     Attributes:
         tx_id: ``tx_hash`` from the underlying row, or None when the row
             had no on-chain identifier. NEVER populated from ``tx_src`` or
@@ -184,27 +203,59 @@ class TxCorrelationKey:
         composite: ``(utc_instant, asset, wallet, amount, row_index)`` tuple.
             Always carries ``row_index`` so two None-tx_id rows never silently
             merge.
+        event_id: Split-Event discriminator (None for Koinly rows; non-None
+            for on-chain-derived split rows). See ``TransactionHistoryRow``.
     """
 
     tx_id: str | None
     composite: TxCompositeKey
+    event_id: str | None = None
 
     def __eq__(self, other: object) -> bool:
-        """Two-tier equality per Invariant 5.
+        """Two-tier equality per Invariant 5, with event_id refinement.
 
-        Equal iff both have non-None matching tx_id, OR both have tx_id=None
-        and byte-equal composites. Mixed None/non-None pairs are never equal.
+        Equal iff BOTH have non-None matching ``tx_id`` AND (when both
+        ``event_id`` are non-None) ``event_id`` also matches, OR BOTH have
+        ``tx_id=None`` and byte-equal composites. Mixed None/non-None pairs
+        are never equal.
+
+        Concretely, for two keys with the same non-None ``tx_id``:
+
+        - both ``event_id`` None (Koinly path) -> equal (today's behavior).
+        - both ``event_id`` non-None and equal -> equal (same Event).
+        - one None, the other non-None -> NOT equal (a split row must not
+          collapse onto a Koinly-style row sharing the hash).
+        - both non-None and different -> NOT equal (distinct Events).
+
+        For two keys with ``tx_id=None``, equality falls back to the
+        composite (``event_id`` is irrelevant on that path because on-chain
+        split rows always carry a non-None ``tx_hash``).
         """
         if not isinstance(other, TxCorrelationKey):
             return NotImplemented
         if self.tx_id is not None and other.tx_id is not None:
-            return self.tx_id == other.tx_id
+            if self.tx_id != other.tx_id:
+                return False
+            # Same non-None tx_id: require event_id to match when both present.
+            if self.event_id is not None and other.event_id is not None:
+                return self.event_id == other.event_id
+            return self.event_id is None and other.event_id is None
         if self.tx_id is None and other.tx_id is None:
             return self.composite == other.composite
         return False
 
     def __hash__(self) -> int:
-        """Hash consistent with __eq__: tx_id-only when present, else composite hash."""
+        """Hash consistent with __eq__.
+
+        - ``tx_id`` and ``event_id`` both non-None -> ``hash((tx_id, event_id))``
+          so two split rows sharing a hash get distinct buckets.
+        - ``tx_id`` non-None, ``event_id`` None -> ``hash(tx_id)`` (Koinly
+          path; today's behavior, so Koinly keys still hash-equal when their
+          tx_id matches).
+        - ``tx_id`` None -> ``hash(composite)`` (today's behavior).
+        """
+        if self.tx_id is not None and self.event_id is not None:
+            return hash((self.tx_id, self.event_id))
         if self.tx_id is not None:
             return hash(self.tx_id)
         return hash(self.composite)

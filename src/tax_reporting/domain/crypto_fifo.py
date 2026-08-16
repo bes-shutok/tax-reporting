@@ -9,7 +9,20 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-__all__ = ["CryptoAcquisition", "CryptoConsumption", "CryptoFifoRealization", "AssetFifoResult"]
+__all__ = ["CryptoAcquisition", "CryptoConsumption", "CryptoFifoRealization", "AssetFifoResult", "TxKey"]
+
+#: FIFO dedup/correlation key (Plan 2026-08-02 Task 3 / B2). Today (Koinly path)
+#: this is the bare ``tx_hash`` string; the on-chain adapter emits split Events
+#: that share a ``tx_hash`` but differ in ``event_id``, so the key widens to
+#: ``(tx_hash, event_id)`` for those rows. ``str`` is assignable to this union,
+#: so sub-task 3a (alias-only sweep) typechecks with the construction site still
+#: producing ``str``; sub-task 3b flips the construction to the tuple form for
+#: on-chain rows. This is the parallel system to ``TxCorrelationKey`` (Task 2);
+#: both must key on ``(tx_hash, event_id)`` for split Events and stay consistent.
+#: Defined in the domain layer so ``AssetFifoResult`` annotates with it without
+#: reversing the domain -> application dependency direction; the application
+#: FIFO modules import it from here via ``crypto_fifo/contexts.py``.
+TxKey = str | tuple[str, str]
 
 
 @dataclass(frozen=True)
@@ -101,8 +114,8 @@ class AssetFifoResult:
     """FIFO matching result for a single (asset, platform) pair."""
 
     realizations: list[CryptoFifoRealization]
-    carryover_cost_by_tx_key: dict[str, Decimal]
-    partial_carryover_tx_keys: frozenset[str] = field(default_factory=frozenset)
+    carryover_cost_by_tx_key: dict[TxKey, Decimal]
+    partial_carryover_tx_keys: frozenset[TxKey] = field(default_factory=frozenset)
     # Count of taxable disposals that had no matching acquisition at or before the
     # disposal date (pool exhausted OR earliest available lot is after disposal).
     # Pattern F: summed across all (asset, platform) results in

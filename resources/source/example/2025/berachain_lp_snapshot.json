@@ -1,0 +1,27 @@
+{
+  "_comment": "EXAMPLE/TEMPLATE LP-token snapshot for Berachain (Task 8, decision #11). Synthetic, obviously-fake addresses only (Design Invariant #1). The real per-user snapshot lives at resources/source/2025/berachain_lp_snapshot.json and is gitignored under resources/source/*. This file is the committed template that tests read.",
+  "subgraph": "kodiak-v3",
+  "subgraph_version": "2026-08-02.1",
+  "snapshot_as_of_block": 1500000,
+  "snapshot_as_of_date": "2025-12-15",
+  "tokens": [
+    {
+      "token_address": "0x000000000000000000000000000000000000dead",
+      "protocol": "Kodiak",
+      "type": "Pair",
+      "token0": "0x000000000000000000000000000000000000aaaa",
+      "token1": "0x000000000000000000000000000000000000bbbb"
+    },
+    {
+      "token_address": "0x000000000000000000000000000000000000beef",
+      "protocol": "Kodiak",
+      "type": "KodiakVault",
+      "outputToken": "0x000000000000000000000000000000000000beef"
+    },
+    {
+      "token_address": "0x0000000000000000000000000000000000001234",
+      "protocol": "Kodiak",
+      "type": "stakingToken"
+    }
+  ]
+}

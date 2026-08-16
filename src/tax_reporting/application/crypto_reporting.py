@@ -63,8 +63,11 @@ from .crypto.entities import (
     DerivativesPnLEntry,
     HoldingsSnapshot,
     LoanActivityEntry,  # noqa: F401
+    OnChainDeltaBlock,  # noqa: F401
+    OnChainReconciliationRecord,  # noqa: F401
     OperatorOrigin,  # noqa: F401
     RewardTaxClassification,
+    WalletSourceProvenance,  # noqa: F401
 )
 from .crypto.fee_filter import flag_fee_suspects, remove_transaction_fees
 from .crypto.fifo_helpers import (
@@ -184,6 +187,8 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
     koinly_dir: Path,
     jurisdiction: TaxJurisdictionConfig | None = None,
     rates: list[ConversionRate] | None = None,
+    on_chain_reconciliation: OnChainReconciliationRecord | None = None,
+    transaction_history_override: Path | None = None,
 ) -> CryptoTaxReport | None:
     """Load Koinly exports from a directory and normalize for tax reporting.
 
@@ -201,6 +206,20 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
             source shares/dividends use to derive the year-end peg->EUR rate.
             ``None`` (default) is backward-compatible and routes non-EUR-pegged
             stablecoins without a config rate to the review-flag fallback.
+        on_chain_reconciliation: Optional handoff from the on-chain TH
+            substitution path (Plan Task 12). When provided (the opted-in
+            path), its ``per_wallet_source_provenance`` and ``on_chain_delta``
+            populate the new ``CryptoReconciliationSummary`` fields so the
+            Crypto Reconciliation sheet renders the per-wallet source table
+            and the Koinly-vs-on-chain delta block. ``None`` (default; the
+            Koinly-only path) leaves both fields at their defaults so today's
+            sheet is byte-identical.
+        transaction_history_override: Optional explicit transaction-history
+            CSV path threaded from the on-chain TH substitution (Plan F1/F7).
+            When provided, the merged TH at ``on_chain_merged_th.csv`` is read
+            directly instead of re-globbing the Koinly directory. ``None``
+            (default) preserves the glob so the Koinly-only path is
+            byte-identical.
 
     Returns:
         A populated ``CryptoTaxReport`` on success, or ``None`` when the directory
@@ -212,7 +231,16 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
 
     capital_file = _find_report_path(koinly_dir, "capital_gains_report", ".csv")
     income_file = _find_report_path(koinly_dir, "income_report", ".csv")
-    transaction_history_file = _find_report_path(koinly_dir, "transaction_history", ".csv")
+    # TH resolution: honor the explicit ``transaction_history_override`` threaded
+    # from the on-chain TH substitution path (Plan F1/F7). When the override is
+    # ``None`` (flag-off / Koinly-only path), the glob is preserved so today's
+    # byte-identical Koinly behavior holds (Pinned by the characterization suite).
+    # The required-file check below continues to gate on whichever path resolved.
+    transaction_history_file = (
+        transaction_history_override
+        if transaction_history_override is not None
+        else _find_report_path(koinly_dir, "transaction_history", ".csv")
+    )
 
     _required = {
         "capital_gains_report (Capital gains report)": capital_file,
@@ -647,6 +675,17 @@ def load_koinly_crypto_report(  # noqa: PLR0912, PLR0915
         reward_total_eur=sum((row.value_eur for row in reward_entries), start=ZERO),
         opening_holdings=opening,
         closing_holdings=closing,
+        # Plan Task 12: per-wallet source provenance + on-chain delta block.
+        # ``None`` (Koinly-only path) leaves both at their defaults (empty / None)
+        # so today's reconciliation sheet is byte-identical.
+        per_wallet_source_provenance=(
+            list(on_chain_reconciliation.per_wallet_source_provenance)
+            if on_chain_reconciliation is not None
+            else []
+        ),
+        on_chain_delta=(
+            on_chain_reconciliation.on_chain_delta if on_chain_reconciliation is not None else None
+        ),
     )
 
     skipped_zero_value_tokens = [

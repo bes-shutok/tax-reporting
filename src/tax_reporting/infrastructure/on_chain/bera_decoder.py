@@ -38,7 +38,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
-from tax_reporting.application.on_chain_config import OnChainWalletConfig
+from tax_reporting.domain.on_chain_config import OnChainWalletConfig
 
 _LOGGER = logging.getLogger(__name__)
 

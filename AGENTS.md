@@ -117,7 +117,6 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Test string sanitization/validation/parsing edge cases: empty, whitespace-only, multi-byte, control chars, multi-char prefixes, padded.
 - Test error paths including double-failure (e.g. aggregation fails AND workbook.close fails).
 - Examine existing source data files (`resources/source/koinly*/`) directly before asking for samples.
-- Commits allowed by default; never push/PR without instruction; `~/Projects/myrepos` stay local-only.
 - Always use `uv run pytest`, not `uvx pytest`.
 - Never write to `docs/review/` (singular); use `docs/history/reviews/` (plural). See `development_lessons.md` #29.
 - **Never introduce a hardcoded value (asset ticker, constant set, threshold, magic string, fixed ordering) without first flagging it and asking the user.**
@@ -150,6 +149,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - When a task changes data flow semantics (filter/dedup/split), grep ALL `tests/` for assertions on the affected data identity tuple, not just the current task's file.
 - When a plan task changes a function signature OR rendered output text (label cell), grep ALL test tiers for callers and row-locators matching the stale label, including method/function identifiers, not just prose.
 - When renaming fixture paths/filenames, grep ALL test files AND docs for every shape (directory, filename, stem, prose); update conftest constants and scattered refs. See `development_lessons.md` #47.
+- When a plan task changes an artifact's DISCOVERY mechanism (glob -> explicit path), grep ALL test tiers for every call to the OLD discovery helper; each re-discover call site must switch to the new explicit result. See `development_lessons.md` #121.
 - Before downgrading a per-row `logger.warning` to `logger.debug` (warning-grouping recipe, `project-guidelines.md` #7), verify the site's review surface and sweep ALL `caplog.at_level(WARNING)` assertions on the substring; also sweep docs for the level phrase. See `development_lessons.md` #69, #70.
 - When a plan task removes dataclass fields, grep test construction sites; shared conftest helpers forwarding `**overrides` must filter removed keys or the suite becomes uncollectable. See `development_lessons.md` #54.
 - A collection-time `NameError` naming a fixture the edited code does not use, after inserting a `class`/`def`, signals an orphaned indented body re-parented onto the new block; remove it. See `development_lessons.md` #57.
@@ -160,7 +160,6 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - When validating branch compliance (e.g. em dashes) after changes are committed, diff explicitly against the target branch; do not rely on working-tree "touched"/"unstaged" filters.
 - **Never proceed to plan execution or make code changes without explicit user approval when in Planning Mode.**
 - Request a plan amendment before omitting prescribed behaviors.
-- Temporary artifacts must not be in git-tracked folders: **documents** (`.md`/`.patch`) in `{tmp_dir}` (`docs/tmp/`); throwaway **scripts/scratch data** (`.py`/`.csv`/`__pycache__`) in repo-root `tmp/`. See `development_lessons.md` #34.
 
 ### 5. Domain Knowledge References
 
@@ -176,7 +175,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Before advising on an IRS reclamação/impugnação prazo, verify against the mirrored CPPT (`docs/maintenance/tax/laws/pt/official/`); secondary summaries have erred. See `project-guidelines.md` #3.
 - Use the authority level and source date in `crypto_rules.md` to check whether a rule may be stale for the current tax year.
 - For country-specific tax decision points, see `docs/maintenance/tax/decision_points/`.
-- For private personal tax context supplied by the user, read `docs/maintenance/personal/facts.md` (gitignored; do not copy into tracked docs unless requested).
+- For private personal tax or immigration documents, read `docs/maintenance/personal/facts.md`; verify dynamic signing place/date and do not copy its data into tracked docs. See `development_lessons.md` #122.
 - For tax classification of structured products, certificates, blacklisted-issuer rules (CIRS Art. 43(7)), see `development_lessons.md` #33.
 - When preparing Portal das Financas entry data for an IRS annex/Quadro, transcribe the form's full official field list (not a net total) and confirm every title clause (incl. negated qualifiers); Q8A has no per-payer field, so aggregate by (Codigo + Pais). See `development_lessons.md` #35.
 
@@ -209,7 +208,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 
 ## Code Quality
 
-- **Ruff** is primary linter/formatter (`pyproject.toml`: Python 3.14, line length 120, full ruleset), but **unenforced** (no pre-commit/CI), so pre-existing violations accumulate on `master`. Before adding `# noqa`, check the HEAD blob (`git show HEAD:<file> | ruff check`) to avoid mis-attributing master debt. Do not run `ruff check --fix` on modules that re-export for backward compat (e.g. `crypto_reporting.py`); `F401` strips re-exported names tests depend on. For "today", use `datetime.now(tz=UTC).date()`, not `date.today()` (`DTZ011`). See `development_lessons.md` #72, #112.
+- **Ruff** is primary linter/formatter (`pyproject.toml`: Python 3.14, line length 120, full ruleset), but **unenforced** (no pre-commit/CI). Before adding `# noqa`, check the HEAD blob (`git show HEAD:<file> | ruff check`) to avoid mis-attributing master debt. Do not run `ruff check --fix` on re-export modules; `F401` strips re-exported names tests depend on. For "today", use `datetime.now(tz=UTC).date()`, not `date.today()` (`DTZ011`, see `python_guidelines.md`). See `development_lessons.md` #72, #112.
 - Type hints: modern syntax (`X | Y`) with `from __future__ import annotations`; lazy logging, f-string exceptions, named-constant magic numbers (except tests). Never default essential indices/identifiers to 0. Refactor complex functions.
 - Docstrings: always for public modules/classes/`__init__`/complex functions; skip trivial getters/setters/`__repr__`/private methods/test functions.
 - **Code review checklist:** required params truly required; error messages have row context; exception chaining preserves originals; logging parameterized; fail-fast vs missing-data distinction correct.

@@ -11,11 +11,17 @@ from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Final
 
-from ...domain.crypto_fifo import CryptoAcquisition, CryptoConsumption
+from ...domain.crypto_fifo import CryptoAcquisition, CryptoConsumption, TxKey
 
 ZERO: Final = Decimal("0")
 
 LOAN_TAGS: Final[frozenset[str]] = frozenset({"loan", "loan repayment", "loan fee"})
+
+#: ``TxKey`` is re-exported here (imported from the domain layer) so the
+#: application-layer FIFO modules annotate with one canonical alias. The
+#: canonical definition lives in ``domain/crypto_fifo.py`` so the domain layer
+#: can annotate with it without reversing the domain -> application dependency
+#: direction. See its docstring there.
 
 
 @dataclass(frozen=True)
@@ -26,7 +32,7 @@ class AcquisitionContext:
     """
 
     acq: CryptoAcquisition
-    tx_key: str
+    tx_key: TxKey
     source_row_index: int
 
     def with_acq(self, **kwargs) -> AcquisitionContext:
@@ -43,7 +49,7 @@ class ConsumptionContext:
     """Application-layer wrapper for CryptoConsumption with Koinly correlation metadata."""
 
     con: CryptoConsumption
-    tx_key: str
+    tx_key: TxKey
     source_row_index: int
 
     def with_con(self, **kwargs) -> ConsumptionContext:
@@ -66,7 +72,7 @@ class ParsedTxRow:
     row: dict[str, str]
     row_index: int
     date_str: str
-    tx_key: str
+    tx_key: TxKey
     row_type: str
     sent_currency: str
     received_currency: str

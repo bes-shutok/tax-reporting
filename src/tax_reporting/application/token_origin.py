@@ -166,9 +166,11 @@ class TokenOriginResolver:
         if tx_type != "crypto_withdrawal":
             return
 
-        # Read from TxSrc field (index 16), not TxHash field (index 18)
-        # Real Koinly exports store the transaction hash in TxSrc
-        tx_hash = row.get("TxSrc", "").strip()
+        # TxHash is the per-transaction identifier; TxSrc/TxDest are wallet
+        # addresses (Invariant 2 + Invariant 11, AGENTS.md crypto rule).
+        # Indexing withdrawals by TxHash (not TxSrc) avoids the latent per-wallet
+        # collision where all withdrawals from one wallet collapsed into one key.
+        tx_hash = row.get("TxHash", "").strip()
         sent_currency = row.get("Sent Currency", "").strip()
         # Validate TxHash length to prevent DoS via dictionary key bloat
         # Bitcoin: 64 chars, Ethereum: 66 chars (0x + hash), 128 provides safe margin
@@ -273,9 +275,9 @@ class TokenOriginResolver:
         sent_currency = row.get("Sent Currency", "").strip()
         sent_wallet = row.get("Sending Wallet", "").strip()
         tag = row.get("Tag", "").strip().lower()
-        # Read from TxSrc field (index 16), not TxHash field (index 18)
-        # Real Koinly exports store the transaction hash in TxSrc
-        tx_hash = row.get("TxSrc", "").strip()
+        # TxHash is the per-transaction identifier; TxSrc/TxDest are wallet
+        # addresses (Invariant 2 + Invariant 11, AGENTS.md crypto rule).
+        tx_hash = row.get("TxHash", "").strip()
 
         if tx_type == "exchange":
             if not sent_currency:

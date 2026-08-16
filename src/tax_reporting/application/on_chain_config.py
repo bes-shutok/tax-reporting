@@ -38,12 +38,11 @@ Design notes
 
 from __future__ import annotations
 
-import dataclasses
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from ..domain.exceptions import FileProcessingError
+from ..domain.exceptions import ConfigurationError, FileProcessingError
 from ..infrastructure.json_loader import DEGRADED, load_guarded_json
 from .crypto.chain_derivation import (
     chain_launch_date,
@@ -56,6 +55,15 @@ from .crypto.classification import _find_repository_root
 # performed by infrastructure.json_loader.load_guarded_json.
 _MAX_CHAINS_FILE_SIZE = 1 * 1024 * 1024
 
+# Max size of a berachain_lp_snapshot.json file (2 MiB). The subgraph-derived
+# LP allowlist is bounded by the number of Kodiak pools/vaults (low hundreds).
+_MAX_LP_SNAPSHOT_SIZE = 2 * 1024 * 1024
+
+# Sentinel marking an unpinned subgraph version. The design record (§9.2,
+# decision #11) requires the snapshot pin a subgraph VERSION (not "latest"),
+# so "latest" is rejected on load (M2: fail-loud).
+_UNPINNED_SUBGRAPH_VERSION = "latest"
+
 # Required keys for each wallet entry, in declaration order. The user
 # supplies only wallet identity; chainid/native_ticker/start_date/end_date
 # are derived internally (DI-2 restated: chain facts come from the
@@ -67,43 +75,23 @@ _REQUIRED_KEYS: tuple[str, ...] = (
 )
 
 
-@dataclasses.dataclass(frozen=True)
-class OnChainWalletConfig:
-    """A single wallet entry from the per-year chains.json config.
-
-    The user supplies only ``chain``/``label``/``address`` (wallet
-    identity). The four chain-property fields below are DERIVED
-    internally (DI-2 restated): ``chainid``/``native_ticker`` come from
-    the trusted chain registry in :mod:`chain_derivation`, and
-    ``start_date``/``end_date`` come from the fiscal year clamped to the
-    chain's launch date / today.
-
-    Attributes:
-        chain: Human-readable chain name (e.g. ``"Berachain"``). The one
-            chain-identity key supplied by the user; the registry derives
-            the rest.
-        chainid: Etherscan V2 numeric chain id (e.g. ``80094``). Derived
-            from the chain registry via :func:`chainid_for`.
-        label: Free-form wallet label used in CSV output.
-        address: Wallet address this config targets.
-        native_ticker: Native asset ticker for txlist rows (e.g.
-            ``"BERA"``). Derived from the chain registry via
-            :func:`native_ticker_for` (CSV-output-correct map).
-        start_date: Inclusive start, derived as
-            ``max(date(year, 1, 1), chain_launch_date)`` (Jan 1 clamped
-            up to genesis for chains launching mid-year).
-        end_date: Inclusive end, derived as
-            ``min(date(year, 12, 31), today)`` (Dec 31 clamped down to
-            today for future fiscal years).
-    """
-
-    chain: str
-    chainid: int
-    label: str
-    address: str
-    native_ticker: str
-    start_date: date
-    end_date: date
+# --- Domain types re-exported for backward compatibility ---------------------
+# The frozen dataclasses (``OnChainWalletConfig``, ``LpTokenEntry``,
+# ``LpSnapshot``, ``ContractEntry``, ``ContractRegistry``) and the
+# ``is_valid_iso3166_alpha2`` validator now live in
+# :mod:`tax_reporting.domain.on_chain_config` (review F12: pure domain types
+# must not force infrastructure to import UP into application). They are
+# re-exported here so existing callers that import them from the application
+# loader keep working; new infrastructure callers should import from domain.
+from tax_reporting.domain.on_chain_config import (  # noqa: E402,F401
+    ContractEntry,
+    ContractRegistry,
+    LpSnapshot,
+    LpTokenEntry,
+    OnChainWalletConfig,
+    _is_valid_iso3166_alpha2,
+    is_valid_iso3166_alpha2,
+)
 
 
 def _on_error(failed_path: Path, kind: str, detail: str) -> object:
@@ -315,3 +303,504 @@ def load_on_chain_wallets(
     repo_root = _find_repository_root()
     path = repo_root / "resources" / "source" / str(year) / "chains.json"
     return _load_on_chain_wallets_from_path(path, year, today=today)
+
+
+# ---------------------------------------------------------------------------
+# LP-token snapshot loader (Task 8, decision #11)
+# ---------------------------------------------------------------------------
+#
+# Loads + schema-validates a subgraph-derived LP-token allowlist for the
+# bytecode-fallback LP autodiscovery (see
+# ``infrastructure.on_chain.lp_autodiscovery``). This loader is LOADING +
+# VALIDATION only; no classification logic (the processor in Task 9 owns
+# classification). The snapshot is pinned to a subgraph VERSION (not
+# "latest") and carries freshness metadata (``snapshot_as_of_block`` /
+# ``snapshot_as_of_date``); a WARN fires downstream when tx dates postdate
+# the snapshot (handled by ``LpAutodiscovery.check_freshness``).
+
+
+def _require_scalar_field(
+    data: dict[str, object], field: str, source: str
+) -> object:
+    """Return ``data[field]`` asserting it is present (ConfigurationError else)."""
+    if field not in data:
+        raise ConfigurationError(
+            f"LP snapshot is missing required field '{field}': {source}"
+        )
+    return data[field]
+
+
+def _build_token_entry(
+    entry: object, index: int, source: str
+) -> tuple[str, LpTokenEntry]:
+    """Validate one snapshot token entry; return ``(lower_addr, entry)``.
+
+    Requires a non-null ``token_address`` (str); ``protocol`` / ``type`` are
+    optional string tags. Fail-loud via :class:`ConfigurationError`.
+    """
+    if not isinstance(entry, dict):
+        raise ConfigurationError(
+            f"LP snapshot token entry at index {index} must be a JSON "
+            f"object, got {type(entry).__name__}: {source}"
+        )
+    addr = entry.get("token_address")
+    if not isinstance(addr, str) or not addr:
+        raise ConfigurationError(
+            f"LP snapshot token entry at index {index} has a null/invalid "
+            f"'token_address' (must be a non-empty string): {source}"
+        )
+    protocol = entry.get("protocol")
+    if protocol is not None and not isinstance(protocol, str):
+        raise ConfigurationError(
+            f"LP snapshot token entry at index {index} 'protocol' must be "
+            f"a string: {source}"
+        )
+    lp_type = entry.get("type")
+    if lp_type is not None and not isinstance(lp_type, str):
+        raise ConfigurationError(
+            f"LP snapshot token entry at index {index} 'type' must be a "
+            f"string: {source}"
+        )
+    addr_lower = addr.lower()
+    return addr_lower, LpTokenEntry(
+        token_address=addr_lower, protocol=protocol, lp_type=lp_type
+    )
+
+
+def build_lp_snapshot(data: object, *, source: str) -> LpSnapshot:
+    """Validate an in-memory LP snapshot dict and build an :class:`LpSnapshot`.
+
+    Schema (minimum required fields):
+        - ``subgraph_version``: non-empty str, NOT ``"latest"`` (must be pinned).
+        - ``snapshot_as_of_block``: int >= 0.
+        - ``snapshot_as_of_date``: non-empty str (ISO date).
+        - ``tokens``: list of objects each with a non-null ``token_address``
+          (str). ``protocol`` / ``type`` are optional informational tags.
+
+    Args:
+        data: The parsed JSON value (a dict).
+        source: Marker for error messages (file path or ``"<inline-test>"``).
+
+    Returns:
+        The validated :class:`LpSnapshot`.
+
+    Raises:
+        ConfigurationError: If a required field is missing/invalid, an
+            address is null, or the subgraph version is unpinned
+            (``"latest"``). Fail-loud (M2).
+    """
+    if not isinstance(data, dict):
+        raise ConfigurationError(
+            f"LP snapshot must be a JSON object, got {type(data).__name__}: {source}"
+        )
+
+    subgraph_version = _validate_subgraph_version(data, source)
+    block = _validate_snapshot_block(data, source)
+    as_of_date = _validate_snapshot_date(data, source)
+    tokens = _validate_tokens(data, source)
+    subgraph = data.get("subgraph")
+    if subgraph is not None and not isinstance(subgraph, str):
+        raise ConfigurationError(
+            f"LP snapshot 'subgraph' must be a string: {source}"
+        )
+
+    return LpSnapshot(
+        subgraph=subgraph,
+        subgraph_version=subgraph_version,
+        snapshot_as_of_block=block,
+        snapshot_as_of_date=as_of_date,
+        tokens=tokens,
+        source=source,
+    )
+
+
+def _validate_subgraph_version(data: dict[str, object], source: str) -> str:
+    """Validate ``subgraph_version``: non-empty str, NOT ``"latest"``."""
+    subgraph_version = _require_scalar_field(data, "subgraph_version", source)
+    if not isinstance(subgraph_version, str) or not subgraph_version:
+        raise ConfigurationError(
+            f"LP snapshot 'subgraph_version' must be a non-empty string: {source}"
+        )
+    if subgraph_version == _UNPINNED_SUBGRAPH_VERSION:
+        raise ConfigurationError(
+            f"LP snapshot 'subgraph_version' must be pinned (got 'latest'); "
+            f"the subgraph must be pinned to a concrete version, not 'latest': "
+            f"{source}"
+        )
+    return subgraph_version
+
+
+def _validate_snapshot_block(data: dict[str, object], source: str) -> int:
+    """Validate ``snapshot_as_of_block``: non-negative int (bool rejected)."""
+    block = _require_scalar_field(data, "snapshot_as_of_block", source)
+    if not isinstance(block, int) or isinstance(block, bool) or block < 0:
+        raise ConfigurationError(
+            f"LP snapshot 'snapshot_as_of_block' must be a non-negative int, "
+            f"got {block!r}: {source}"
+        )
+    return block
+
+
+def _validate_snapshot_date(data: dict[str, object], source: str) -> str:
+    """Validate ``snapshot_as_of_date``: non-empty str (ISO date)."""
+    as_of_date = _require_scalar_field(data, "snapshot_as_of_date", source)
+    if not isinstance(as_of_date, str) or not as_of_date:
+        raise ConfigurationError(
+            f"LP snapshot 'snapshot_as_of_date' must be a non-empty string: "
+            f"{source}"
+        )
+    return as_of_date
+
+
+def _validate_tokens(data: dict[str, object], source: str) -> dict[str, LpTokenEntry]:
+    """Validate the ``tokens`` list; return the lower-cased address -> entry map."""
+    raw_tokens = _require_scalar_field(data, "tokens", source)
+    if not isinstance(raw_tokens, list):
+        raise ConfigurationError(
+            f"LP snapshot 'tokens' must be a list, got "
+            f"{type(raw_tokens).__name__}: {source}"
+        )
+    tokens: dict[str, LpTokenEntry] = {}
+    for index, entry in enumerate(raw_tokens):
+        addr_lower, token_entry = _build_token_entry(entry, index, source)
+        # First occurrence wins; later duplicates are ignored (no overwrite of
+        # a primary entry by a stale one).
+        tokens.setdefault(addr_lower, token_entry)
+    return tokens
+
+
+def _lp_on_error(failed_path: Path, kind: str, detail: str) -> object:
+    """Policy callback for the LP snapshot loader.
+
+    A *missing* snapshot degrades (returns :data:`DEGRADED`; the caller
+    decides whether to proceed without an allowlist). Every other kind
+    raises :class:`FileProcessingError`.
+    """
+    if kind == "missing":
+        return DEGRADED
+    if kind == "symlink":
+        raise FileProcessingError(
+            f"LP snapshot at {failed_path} is a symlink - "
+            "only regular files are accepted for security"
+        )
+    if kind == "oversize":
+        raise FileProcessingError(
+            f"LP snapshot exceeds size limit ({detail}): {failed_path}"
+        )
+    if kind == "stat_error":
+        raise FileProcessingError(
+            f"Could not stat LP snapshot {failed_path}: {detail}"
+        )
+    if kind == "invalid_json":
+        raise FileProcessingError(
+            f"LP snapshot {failed_path} contains invalid JSON: {detail}"
+        )
+    raise FileProcessingError(
+        f"LP snapshot {failed_path} failed to load ({kind}): {detail}"
+    )
+
+
+def load_lp_snapshot(path: Path) -> LpSnapshot:
+    """Load + schema-validate the LP snapshot at ``path``.
+
+    Runs the mechanical file guards via :func:`load_guarded_json` (symlink,
+    size cap, JSON parse), then :func:`build_lp_snapshot` for schema
+    validation.
+
+    Args:
+        path: Absolute path to ``berachain_lp_snapshot.json``.
+
+    Returns:
+        The validated :class:`LpSnapshot`.
+
+    Raises:
+        FileProcessingError: If the file is a symlink / oversize / malformed
+            JSON / missing-but-not-degraded.
+        ConfigurationError: If schema validation fails (missing required
+            field, null address, unpinned subgraph version).
+    """
+    data = load_guarded_json(
+        path, size_limit=_MAX_LP_SNAPSHOT_SIZE, on_error=_lp_on_error
+    )
+    if data is DEGRADED:
+        # Missing snapshot is a hard error for this loader: callers that want
+        # to proceed without an allowlist should construct an empty
+        # LpSnapshot explicitly. Loading a path that was expected to exist
+        # but is missing is a configuration failure.
+        raise FileProcessingError(
+            f"LP snapshot not found (expected at {path})"
+        )
+    return build_lp_snapshot(data, source=str(path))
+
+
+# ---------------------------------------------------------------------------
+# Contract registry loader (Task 9, design decision #8 amended by B3)
+# ---------------------------------------------------------------------------
+#
+# Loads + validates a per-chain contract registry mapping known reward
+# distributors / DEX routers / rebate routers to a ``kind`` tag and an
+# OPTIONAL ``operator_country`` (ISO-3166 alpha-2) + ``citation`` URL.
+#
+# This loader is LOADING + VALIDATION only; no classification logic. The
+# processor (Task 9, ``berachain_processor``) owns classification.
+#
+# Attacker F1 mitigation: ``operator_country`` is validated against a CLOSED
+# ISO-3166 alpha-2 enum and a ``citation`` URL is REQUIRED whenever
+# ``operator_country`` is present (a per-contract country override is a
+# powerful claim - it must be backed by a citable primary source). Invalid
+# or uncited -> :class:`ConfigurationError` (fail-loud).
+#
+# B3: Berachain ships EMPTY ``operator_country`` for every contract; all
+# Berachain rewards resolve via the chain-level VG (British Virgin Islands)
+# in :mod:`operator_origin`. A per-contract override requires a PRIMARY
+# source stronger than the chain-level mapping; secondary sources (exchange
+# whitepapers) do not qualify.
+
+# Max size of a contracts.json file (1 MiB). The curated registry is bounded
+# by the number of known protocols/contracts (low hundreds).
+_MAX_CONTRACTS_FILE_SIZE = 1 * 1024 * 1024
+
+# Allowed ``kind`` tags. Closed set: the processor branches on these.
+# Extending the set is a deliberate act (add the tag here AND wire a branch
+# in the processor).
+_CONTRACT_KINDS: tuple[str, ...] = (
+    "dex_router",
+    "reward_distributor",
+    "rebate_router",
+)
+
+
+def _validate_citation(entry: dict[str, object], source: str, index: int) -> str | None:
+    """Validate the optional ``citation`` URL field.
+
+    ``citation`` is OPTIONAL in general, but REQUIRED when
+    ``operator_country`` is set (the loader checks that pairing in
+    :func:`_build_contract_entry`). When present, it must be a non-empty
+    string starting with ``http://`` or ``https://`` (a bare domain or a
+    relative path is not a citable URL).
+    """
+    citation = entry.get("citation")
+    if citation is None:
+        return None
+    if not isinstance(citation, str) or not citation.strip():
+        raise ConfigurationError(
+            f"Contract registry entry at index {index} 'citation' must be a "
+            f"non-empty string when present: {source}"
+        )
+    cleaned = citation.strip()
+    if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
+        raise ConfigurationError(
+            f"Contract registry entry at index {index} 'citation' must be an "
+            f"http(s) URL, got {cleaned!r}: {source}"
+        )
+    return cleaned
+
+
+def _build_contract_entry(
+    entry: dict[str, object], index: int, source: str
+) -> tuple[str, ContractEntry]:
+    """Validate one contract entry; return ``(lower_addr, entry)``.
+
+    Required: non-empty ``address`` (str), ``kind`` in
+    :data:`_CONTRACT_KINDS`. Optional: ``label``, ``protocol``,
+    ``operator_country`` (validated against the closed ISO-3166 enum),
+    ``citation`` (required when ``operator_country`` is set). Fail-loud via
+    :class:`ConfigurationError` / :class:`FileProcessingError`.
+    """
+    if not isinstance(entry, dict):
+        raise FileProcessingError(
+            f"Contract registry entry at index {index} must be a JSON "
+            f"object, got {type(entry).__name__}: {source}"
+        )
+    addr = entry.get("address")
+    if not isinstance(addr, str) or not addr.strip():
+        raise ConfigurationError(
+            f"Contract registry entry at index {index} has a null/invalid "
+            f"'address' (must be a non-empty string): {source}"
+        )
+    addr_lower = addr.strip().lower()
+
+    kind = entry.get("kind")
+    if not isinstance(kind, str) or kind not in _CONTRACT_KINDS:
+        raise ConfigurationError(
+            f"Contract registry entry at index {index} 'kind' must be one of "
+            f"{list(_CONTRACT_KINDS)}, got {kind!r}: {source}"
+        )
+
+    label = entry.get("label")
+    if label is not None and not isinstance(label, str):
+        raise ConfigurationError(
+            f"Contract registry entry at index {index} 'label' must be a "
+            f"string: {source}"
+        )
+    protocol = entry.get("protocol")
+    if protocol is not None and not isinstance(protocol, str):
+        raise ConfigurationError(
+            f"Contract registry entry at index {index} 'protocol' must be a "
+            f"string: {source}"
+        )
+
+    operator_country = entry.get("operator_country")
+    citation = _validate_citation(entry, source, index)
+    if operator_country is not None:
+        # Attacker F1: validate against the closed ISO-3166 enum AND require
+        # a citation URL when a per-contract country override is claimed.
+        if not isinstance(operator_country, str) or not operator_country.strip():
+            raise ConfigurationError(
+                f"Contract registry entry at index {index} 'operator_country' "
+                f"must be a non-empty ISO-3166 alpha-2 string when present: "
+                f"{source}"
+            )
+        country = operator_country.strip().upper()
+        if not _is_valid_iso3166_alpha2(country):
+            raise ConfigurationError(
+                f"Contract registry entry at index {index} 'operator_country' "
+                f"{country!r} is not a valid ISO-3166 alpha-2 code: {source}"
+            )
+        if citation is None:
+            raise ConfigurationError(
+                f"Contract registry entry at index {index} sets "
+                f"'operator_country'={country!r} but provides no 'citation' "
+                f"URL; a per-contract country override requires a citable "
+                f"primary source: {source}"
+            )
+        operator_country = country
+    elif citation is not None:
+        # A citation without an operator_country is meaningless; reject so
+        # the registry author notices the dangling field.
+        raise ConfigurationError(
+            f"Contract registry entry at index {index} provides 'citation' "
+            f"but no 'operator_country'; citation is only meaningful with an "
+            f"operator_country override: {source}"
+        )
+
+    return addr_lower, ContractEntry(
+        address=addr_lower,
+        label=label,
+        kind=kind,
+        protocol=protocol,
+        operator_country=operator_country,
+        citation=citation,
+    )
+
+
+def build_contract_registry(data: object, *, source: str) -> ContractRegistry:
+    """Validate an in-memory registry dict and build a :class:`ContractRegistry`.
+
+    Schema:
+        - ``chain``: optional informational string.
+        - ``contracts``: list of objects each with a non-null ``address``
+          (str) and a ``kind`` in :data:`_CONTRACT_KINDS`. ``label`` /
+          ``protocol`` are optional informational tags. ``operator_country``
+          (ISO-3166 alpha-2) is OPTIONAL and REQUIRES a ``citation`` URL
+          when present (Attacker F1).
+
+    Args:
+        data: The parsed JSON value (a dict).
+        source: Marker for error messages (file path or ``"<inline-test>"``).
+
+    Returns:
+        The validated :class:`ContractRegistry`.
+
+    Raises:
+        FileProcessingError: If a contract entry is not a JSON object.
+        ConfigurationError: If schema validation fails (missing required
+            field, null address, invalid kind, invalid/uncited
+            operator_country).
+    """
+    if not isinstance(data, dict):
+        raise ConfigurationError(
+            f"Contract registry must be a JSON object, got "
+            f"{type(data).__name__}: {source}"
+        )
+    chain = data.get("chain")
+    if chain is not None and not isinstance(chain, str):
+        raise ConfigurationError(
+            f"Contract registry 'chain' must be a string: {source}"
+        )
+    if "contracts" not in data:
+        raise ConfigurationError(
+            f"Contract registry must contain a 'contracts' key: {source}"
+        )
+    raw_contracts = data["contracts"]
+    if not isinstance(raw_contracts, list):
+        raise ConfigurationError(
+            f"Contract registry 'contracts' must be a list, got "
+            f"{type(raw_contracts).__name__}: {source}"
+        )
+    contracts: dict[str, ContractEntry] = {}
+    for index, entry in enumerate(raw_contracts):
+        addr_lower, contract_entry = _build_contract_entry(entry, index, source)
+        # First occurrence wins; later duplicates are ignored (no overwrite of
+        # a primary entry by a stale one) - mirrors the LP snapshot policy.
+        contracts.setdefault(addr_lower, contract_entry)
+    return ContractRegistry(
+        chain=chain, contracts=contracts, source=source
+    )
+
+
+def _contracts_on_error(failed_path: Path, kind: str, detail: str) -> object:
+    """Policy callback for the contract registry loader.
+
+    A *missing* registry is a hard error (the orchestrator selects the file
+    per chain; a missing file for a chain that is being processed is a
+    configuration failure). Every other kind raises
+    :class:`FileProcessingError`.
+    """
+    if kind == "missing":
+        return DEGRADED
+    if kind == "symlink":
+        raise FileProcessingError(
+            f"Contract registry at {failed_path} is a symlink - "
+            "only regular files are accepted for security"
+        )
+    if kind == "oversize":
+        raise FileProcessingError(
+            f"Contract registry exceeds size limit ({detail}): {failed_path}"
+        )
+    if kind == "stat_error":
+        raise FileProcessingError(
+            f"Could not stat contract registry {failed_path}: {detail}"
+        )
+    if kind == "invalid_json":
+        raise FileProcessingError(
+            f"Contract registry {failed_path} contains invalid JSON: {detail}"
+        )
+    raise FileProcessingError(
+        f"Contract registry {failed_path} failed to load ({kind}): {detail}"
+    )
+
+
+def load_contracts(path: Path) -> ContractRegistry:
+    """Load + schema-validate the per-chain contract registry at ``path``.
+
+    Runs the mechanical file guards via :func:`load_guarded_json` (symlink,
+    size cap, JSON parse), then :func:`build_contract_registry` for schema
+    validation (including the Attacker-F1 closed-ISO-3166-enum +
+    citation-required checks on ``operator_country``).
+
+    Args:
+        path: Absolute path to ``<chain>_contracts.json``.
+
+    Returns:
+        The validated :class:`ContractRegistry`.
+
+    Raises:
+        FileProcessingError: If the file is a symlink / oversize / malformed
+            JSON / missing-but-not-degraded, or a contract entry is not a
+            JSON object.
+        ConfigurationError: If schema validation fails (missing required
+            field, null address, invalid kind, invalid/uncited
+            operator_country).
+    """
+    data = load_guarded_json(
+        path, size_limit=_MAX_CONTRACTS_FILE_SIZE, on_error=_contracts_on_error
+    )
+    if data is DEGRADED:
+        # Missing registry is a hard error: the orchestrator selected this
+        # file for a chain being processed; a missing file is a configuration
+        # failure (not a degrade-and-continue case).
+        raise FileProcessingError(
+            f"Contract registry not found (expected at {path})"
+        )
+    return build_contract_registry(data, source=str(path))

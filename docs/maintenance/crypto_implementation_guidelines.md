@@ -1802,12 +1802,92 @@ plumbing TxHash onto CG lots (out of scope). Mitigation: the per-lot INFO log
 records the removed lot's identity tuple alongside the fee's TxHash so a
 cross-transaction match is visible during the release-gate spot-check.
 
+## On-chain transaction source (Berachain-first)
+
+This section documents the on-chain-native transaction path that runs in parallel to the Koinly `Aggregator` source, gated per-wallet behind `ON_CHAIN_TH_WALLETS` (Plan `2026-08-02-on-chain-tx-tagger`, design record `docs/architecture/on-chain-tx-design.md`). The post-cutover integrity checks and the A1 accepted-risk live in the dedicated "On-chain-source integrity invariants" section below; this section covers the broader source contract: the processor contract, the LP-autodiscovery stack, the fail-loud policy for opted-in wallets, and the reconciliation-sheet wiring. Cross-reference: the on-chain-native domain objects (`OnChainTransaction`, `Event`, `Leg`, `Gas`, `EventType`, `SubType`) are defined in `docs/maintenance/glossary.md` and `src/tax_reporting/domain/on_chain_transaction.py`; the *Transaction Source* / *Processor* / *Adapter* terms are also in the glossary.
+
+### Processor contract (one per `(ProducerKind, producer_name)`)
+
+A **Transaction Source** is the `(ProducerKind, producer_name)` pair that records *how* raw rows were collected (see glossary). `ProducerKind` is one of `Aggregator` (Koinly, the sole member today), `CEX` (a direct exchange export, hypothetical), or `OnChainExplorer` (raw rows from a block explorer API, **per chain**). A **Processor** is the code module that converts one source's raw rows into the canonical `list[OnChainTransaction]`. The organizing principle is **one processor per distinct `(ProducerKind, producer_name)`** because that pair determines the input row format and the Tag/Type vocabulary.
+
+The shipped processor is `BerachainProcessor` (`src/tax_reporting/infrastructure/on_chain/berachain_processor.py`), the `OnChainExplorer/Etherscan-Berachain` processor. It consumes `list[OnChainTxRow]` from the chain-agnostic CSV reader (`on_chain_csv_reader.py`) and emits `list[OnChainTransaction]`. It coordinates three responsibilities: leg-pattern classification (pure, no I/O, the seven `EventType` values), `SubType` tagging (the seven optional discriminators), and LP-autodiscovery delegation. It stays under the 1000-line / 50-function guideline by keeping classification pure; all I/O (RPC, subgraph snapshot) is delegated to `lp_autodiscovery.py` and `rpc_client.py`.
+
+Adding a chain later means adding one processor module (e.g. `ethereum_processor.py`) that reuses the same CSV reader, the same `OnChainTransaction` model, and the same adapter; only the contract registry, the LP snapshot, and the leg-pattern heuristics change per chain. The design record (`docs/architecture/on-chain-tx-design.md` §9.5) records the role-based naming rationale.
+
+### LP-token autodiscovery: three-layer stack (decision #11)
+
+LP-token classification is **address-keyed**, never symbol-based. Symbol regex was rejected (V2 pairs all return `UNI-V2`; staking receipts share naming; see design record §9.2). The stack, evaluated in order:
+
+1. **Primary - subgraph snapshot allowlist.** A trusted, committed registry (`resources/source/<year>/<chain>_lp_snapshot.json`) built from the Kodiak subgraph, indexed by `token_address`. Covers V2 pairs (`Pair.id`), Kodiak Islands (`KodiakVault.outputToken`), and Bault vaults (`stakingToken`). Lookup is O(1) and 100% name-independent. The snapshot carries **freshness metadata** (`snapshot_as_of_block`, `snapshot_as_of_date`, `subgraph_version`); the subgraph version is **pinned** (not `latest`) so the schema cannot drift mid-flight. The loader (`application/on_chain_config.py`) schema-validates on load; the **freshness WARN** - emitted when a tx's block postdates the snapshot - is owned by `LpAutodiscovery.check_freshness` (`lp_autodiscovery.py`), now wired into `OnChainThSubstituter.maybe_substitute` (Task 2 of plan `2026-08-05-on-chain-tx-tagger-review-leftovers`), NOT the loader (M2: a brand-new pool absent from the snapshot would otherwise fall through to `Swap` - a taxable disposal - instead of `LiquidityDeposit` - a non-disposal - producing a phantom capital gain).
+
+2. **Fallback - on-chain bytecode / implementation-address fingerprint.** For a `token_address` not in the snapshot, one `eth_getCode` call (`infrastructure/on_chain/rpc_client.py`) reads the runtime bytecode; V2 pairs match a keccak hash, and EIP-1167 minimal proxies resolve `implementation()` against documented impl addresses. This is the safety net for tokens newer than the snapshot. It is rate-limited: per-call timeout, max-retries, and a hard cap on fallback calls per run; beyond the cap, remaining tokens classify as `Unknown` + review flag (MO1). `rpc_client.py` mirrors `etherscan_client.py` retry/backoff/timeout/secret-redaction discipline. This fallback is **gated behind the `[TAX JURISDICTION]` config key `ON_CHAIN_RPC_URL`** (the Berachain JSON-RPC endpoint): the key is **optional**, and the default (unset) is **snapshot-only** - non-snapshot tokens classify as `Unknown` + review and are never silently LP-tagged, preserving Koinly-byte-identical output when the key is absent. Only when `ON_CHAIN_RPC_URL` is set does layer 2 activate (Task 7 of plan `2026-08-05-on-chain-tx-tagger-review-leftovers`).
+
+3. **Provenance only - mint-on-deposit tx pattern.** Once a token IS classified as LP (by layer 1 or 2), the existing `token_origin.py` mechanism recovers which underlyings were spent to mint it. **Never used as the classifier** - it cannot distinguish LP claims from staking receipts (both mint-on-deposit).
+
+Cross-reference: the design record (`docs/architecture/on-chain-tx-design.md` §9.2) has the full research corrections (Bault is Kodiak's own product; `WEIGHTED` is an indexer artifact, not Balancer; V3 LP is NFT-position, out of scope).
+
+### Fail-loud for opted-in wallets (M1)
+
+`OnChainThSubstituter.maybe_substitute` in `src/tax_reporting/application/on_chain_th_substitution.py` runs the on-chain path ONLY for wallets listed in `ON_CHAIN_TH_WALLETS`. The exception-handling boundary is load-bearing:
+
+- **Collection-only path** (`run_on_chain_fetch`, the Etherscan pull that writes `bera_transactions.csv`): the existing broad `except Exception` is **preserved**. A fetcher failure logs WARNING and continues IB report generation without on-chain data. On-chain collection is opt-in and non-blocking.
+- **Opted-in TH path** (CSV reader -> processor -> adapter -> TH substitution): parse/tag/adapter failures propagate as `ReportGenerationError`. A tax pipeline that silently skips rows for an opted-in wallet is strictly worse than one that crashes - the run MUST fail-loud rather than emit wrong totals. This aligns with the codebase's Family-G data-loss-observability pattern (AGENTS.md Rule #1).
+
+The fail-loud boundary is tested by injecting a parse failure in the BERA processor and asserting `ReportGenerationError` propagates (not a silent skip). See plan Task 11 / end-to-end test `test_on_chain_bera_opted_in.py`.
+
+### Reconciliation-sheet wiring (M3)
+
+When `ON_CHAIN_TH_WALLETS` lists at least one wallet, the Crypto Reconciliation sheet (`application/persisting/crypto_reconciliation_sheet.py`) renders the per-wallet Koinly-vs-on-chain delta so the operator has an Excel-visible record of the substitution. The schema lives on `CryptoReconciliationSummary` (`application/crypto/entities.py`) as two new fields (Plan Task 12):
+
+- `per_wallet_source_provenance: list[WalletSourceProvenance]` - one row per wallet, carrying `wallet_label`, `source_kind` (`"koinly"` or `"on_chain"`), and `row_count`. This makes the per-wallet substitution auditable at a glance: BERA=on-chain, every other wallet=Koinly.
+- `on_chain_delta: OnChainDeltaBlock | None` - populated ONLY when the flag is on (`None` preserves today's byte-identical reconciliation when the flag is off). Carries the counts (`rows_reclassified`, `rewards_added`, `gas_added`, `lp_reclassified`) plus sample hashes of the Koinly-vs-on-chain divergence (gas now surfaced; spam/airdrop included; multi-leg compression differs).
+
+The delta block is the M3 resolution to the premortem finding that the on-chain path was invisible to the Excel reconciliation surface. Without it, a silent wallet-scoped failure (M1's pre-fix state) would be invisible in aggregate. Cross-reference: the design record's §6/Q14 reconciliation intent and Plan Task 12's schema test.
+
+## On-chain-source integrity invariants (post-cutover, MO2)
+
+The on-chain transaction path (`ON_CHAIN_TH_WALLETS`, Plan `2026-08-02-on-chain-tx-tagger`) ingests `bera_transactions.csv` via a CSV reader, a per-chain processor (`BerachainProcessor`), an LP-autodiscovery stack, a contract registry, and a TH adapter. After the processor produces `list[OnChainTransaction]` and the contract registry has loaded, a PURE post-run checker audits the whole run's output for systemic corruption. It lives in `src/tax_reporting/infrastructure/on_chain/integrity_invariants.py` and is wired into `OnChainThSubstituter.maybe_substitute` (in `src/tax_reporting/application/on_chain_th_substitution.py`) between `processor.process(...)` and `project_on_chain_transactions(...)`.
+
+These are RUN-LEVEL checks (post-aggregation, not per-row, per AGENTS.md). The four invariants and their severity policy:
+
+| Check | Catches | Severity | Action |
+|-------|---------|----------|--------|
+| `registry_dominance` | A single contract-registry entry tagging >30% of txs (Attacker F7: a typo'd or hostile registry entry) | **WARN** | Logged; surfaces for human review. Does not abort (the dominance could be legitimate for a wallet interacting heavily with one protocol). |
+| `decimal_range` | Any leg carrying `amount_decimals` outside `[0, 36]` (echo of Task 7's CSV-reader clamp; Attacker F5) | **FAIL** | `FileProcessingError` (data corruption: `10 ** 77` would OOM). |
+| `unknown_direction_rate` | >=1% of legs with `direction=unknown` (audit echo of the processor's >1% hard fail) | **WARN** | Logged; the processor's gate already aborted a >1% run, so a post-run WARN means the rate is at/above threshold but the run was not gated (audit signal for a future path that bypasses the gate). |
+| `operator_country_enum` | Any registry entry with an `operator_country` that is not a valid ISO-3166 alpha-2 code (Attacker F1 cheap mitigation) | **FAIL** | `FileProcessingError` (data corruption: a bad country code would misroute rewards to the wrong source country). |
+
+WARN vs FAIL rationale (AGENTS.md "warn or fail per severity"): WARN-level findings are systemic-corruption *signals* where the run may still be salvageable (dominance could be legitimate; the unknown gate already covered the hard case). FAIL-level findings indicate material data corruption where downstream EUR / origin resolution would be wrong. The pure `check_on_chain_integrity(...)` returns an `IntegrityReport`; WARN findings are logged inside the checker, FAIL findings are raised by `report.raise_if_failed()` (the caller decides whether to raise).
+
+The `operator_country` validator (`is_valid_iso3166_alpha2` in `application/on_chain_config.py`) is the SHARED helper both the registry loader and the integrity checker use (AGENTS.md rule 30: sibling validators must use a shared helper, not two hand-parallel copies).
+
+### Accepted risk A1: attacker-with-config-write-access
+
+The on-chain source chain trusts the **config-write boundary**. The contract registry (`resources/source/<year>/berachain_contracts.json`) and the LP snapshot (`resources/source/<year>/berachain_lp_snapshot.json`) are plain JSON on the local filesystem; an attacker who can write to these files can poison them (inject a hostile reward-distributor address to mis-tag spam as staking, or a bogus `operator_country` to misroute rewards to the wrong source country).
+
+**This is an accepted risk.** `tax-reporting` is a single-user, local-only CLI: the threat model assumes the user controls their own filesystem. Crypto-signing the config (signing the registry/snapshot at authoring time and verifying the signature on load) was considered and **explicitly rejected** because:
+
+1. Single-user, local-only: there is no untrusted producer/consumer split to protect against. The same user authors and consumes the config.
+2. The complexity (key management, a signing step in the refresh script, signature verification on load, key rotation) is not justified by the threat model.
+3. The premortem (A1) rated the residual risk as LOW given the cheap mitigations below.
+
+**Cheap mitigations implemented** (reduce the blast radius of a typo'd or hostile config without a signing scheme):
+
+- **Closed `operator_country` enum + citation validation** (`on_chain_config.build_contract_registry`): every `operator_country` must be a valid ISO-3166 alpha-2 code AND must carry a `citation` URL citing the primary source justifying the override. A bogus code or an uncited override fails closed (`ConfigurationError` at load time). The post-run `operator_country_enum` invariant is the audit echo.
+- **Decimal clamp** (`on_chain_csv_reader._clamp_decimals`): `amount_decimals` outside `[0, 36]` is clamped at read time with a WARNING + review flag, so a hostile CSV cell can never reach `10 ** decimals`. The post-run `decimal_range` invariant is the audit echo.
+- **Registry dominance WARN** (`integrity_invariants._check_registry_dominance`): a single registry entry tagging >30% of txs fires a WARN, surfacing a typo'd or hostile entry for human review.
+- **Reward-sender verification** (`berachain_processor._reward_sub_type`, Attacker F4): rewards from senders NOT in the contract registry classify as `SubType.spam` + review, never a clean `staking`.
+
+Premortem reference: A1 in `docs/architecture/on-chain-tx-design.md` §12. Plan: `docs/history/plans/2026-08-02-on-chain-tx-tagger.md` (Task 13).
+
 ## References
 
 - Plan: `docs/history/plans/2026-06-18-crypto-payment-proceeds.md` (DP-014)
 - Plan: `docs/history/plans/aggregate-crypto-rewards-income.md`
 - Plan: `docs/history/plans/crypto_manual_review_reduction.md` (token swap history, superseded; heuristic removed 2026-04-05)
 - Plan: `docs/history/plans/2026-04-05-koinly-first-token-origin.md` (implemented: deterministic origin matching via `TokenOriginResolver`)
+- Plan: `docs/history/plans/2026-08-02-on-chain-tx-tagger.md` (on-chain transaction tagger; integrity invariants + accepted risk A1 documented in the "On-chain-source integrity invariants" section above)
+- Design record: `docs/architecture/on-chain-tx-design.md` (premortem A1; decisions 8, 11)
 - Rules: `docs/maintenance/crypto_rules.md`
 - Guidelines: `docs/maintenance/crypto_reporting_guidelines.md`
 - Chain sources: `docs/maintenance/tax/crypto-origin/`

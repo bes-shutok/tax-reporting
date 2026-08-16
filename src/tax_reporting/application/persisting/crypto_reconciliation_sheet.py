@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 from .excel_utils import auto_column_width
 
 
-def write_crypto_reconciliation_sheet(workbook: openpyxl.Workbook, crypto_tax_report: CryptoTaxReport) -> None:
+def write_crypto_reconciliation_sheet(workbook: openpyxl.Workbook, crypto_tax_report: CryptoTaxReport) -> None:  # noqa: PLR0915
     """Create and populate a 'Crypto Reconciliation' worksheet with reconciliation and skipped token data.
 
     Writes:
@@ -106,5 +106,48 @@ def write_crypto_reconciliation_sheet(workbook: openpyxl.Workbook, crypto_tax_re
         worksheet.cell(row_no, 2, "")
         worksheet.cell(row_no, 3, 0)
         worksheet.cell(row_no, 4, "")
+
+    # 5. PER-WALLET SOURCE PROVENANCE (Plan Task 12 / M3).
+    # Rendered ONLY when ``per_wallet_source_provenance`` is populated (i.e. the
+    # opted-in path). The Koinly-only path leaves it empty, so today's sheet is
+    # byte-identical (no new section appears).
+    provenance = crypto_tax_report.reconciliation.per_wallet_source_provenance
+    if provenance:
+        row_no += 2
+        worksheet.cell(row_no, 1, "5. PER-WALLET SOURCE PROVENANCE").font = Font(bold=True)
+        row_no += 1
+        worksheet.cell(row_no, 1, "Wallet")
+        worksheet.cell(row_no, 2, "Source")
+        worksheet.cell(row_no, 3, "Rows")
+        row_no += 1
+        for entry in provenance:
+            worksheet.cell(row_no, 1, entry.wallet_label)
+            worksheet.cell(row_no, 2, entry.source_kind)
+            worksheet.cell(row_no, 3, entry.row_count)
+            row_no += 1
+
+    # 6. ON-CHAIN DELTA BLOCK (Plan Task 12 / M3).
+    # Rendered ONLY when ``on_chain_delta`` is populated (i.e. the opted-in
+    # path). The Koinly-only path leaves it ``None``, so today's sheet is
+    # byte-identical (no new section appears).
+    delta = crypto_tax_report.reconciliation.on_chain_delta
+    if delta is not None:
+        row_no += 2
+        worksheet.cell(row_no, 1, "6. ON-CHAIN DELTA (KOINLY -> ON-CHAIN)").font = Font(bold=True)
+        row_no += 1
+        delta_rows = [
+            ("Rows reclassified (Koinly -> on-chain)", delta.rows_reclassified),
+            ("Rewards added (on-chain)", delta.rewards_added),
+            ("Gas added (on-chain)", delta.gas_added),
+            ("LP reclassified (Koinly -> on-chain)", delta.lp_reclassified),
+        ]
+        if delta.sample_hashes:
+            # Join the sample hashes in order (bounded list, not the full set)
+            # so the cell stays readable and drill-down order is preserved.
+            delta_rows.append(("Sample on-chain tx hashes", ", ".join(delta.sample_hashes)))
+        for key, value in delta_rows:
+            worksheet.cell(row_no, 1, key)
+            worksheet.cell(row_no, 2, value)
+            row_no += 1
 
     auto_column_width(worksheet)

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Final, NamedTuple, get_args, get_type_hints
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..domain.exceptions import MissingDecisionPointsError
@@ -238,6 +239,14 @@ class JurisdictionSectionFields(NamedTuple):
         iana_timezone: Raw IANA timezone string from IANA_TIMEZONE, or the PT default
             ("Europe/Lisbon") when the key is absent and country is PT, or None otherwise.
             Resolved to a ZoneInfo value object in _load_tax_jurisdiction_config.
+        on_chain_th_wallets: Wallet labels opting into the on-chain TH path
+            (comma-separated ``ON_CHAIN_TH_WALLETS``). Empty list when absent/empty
+            (default; today's all-Koinly behavior is preserved byte-identically).
+        on_chain_rpc_url: Optional Berachain JSON-RPC endpoint
+            (``ON_CHAIN_RPC_URL``). When set, the on-chain path auto-classifies
+            LP tokens not in the snapshot via bytecode fingerprinting; when
+            unset (``None``), the LP autodiscovery is snapshot-only (the
+            Koinly-byte-identical default).
     """
 
     country: str
@@ -245,10 +254,16 @@ class JurisdictionSectionFields(NamedTuple):
     threshold: Decimal
     min_proceeds: Decimal
     iana_timezone: str | None
+    on_chain_th_wallets: list[str]
+    on_chain_rpc_url: str | None
 
 
-def _parse_jurisdiction_section(section: configparser.SectionProxy) -> JurisdictionSectionFields:
-    """Parse the [TAX JURISDICTION] section into country, fiscal_year, threshold, min_proceeds, iana_timezone."""
+def _parse_jurisdiction_section(section: configparser.SectionProxy) -> JurisdictionSectionFields:  # noqa: PLR0912
+    """Parse the [TAX JURISDICTION] section.
+
+    Returns country, fiscal_year, threshold, min_proceeds, iana_timezone, and
+    on_chain_th_wallets.
+    """
     country = section.get("TAX_COUNTRY", _DEFAULT_JURISDICTION_COUNTRY).strip().upper()
     if not country:
         raise ValueError("TAX_COUNTRY in [TAX JURISDICTION] must not be empty")
@@ -295,7 +310,55 @@ def _parse_jurisdiction_section(section: configparser.SectionProxy) -> Jurisdict
         iana_timezone = _DEFAULT_PT_TIMEZONE
     else:
         iana_timezone = None
-    return JurisdictionSectionFields(country, fiscal_year, threshold, min_proceeds, iana_timezone)
+    # ON_CHAIN_TH_WALLETS: comma-separated wallet labels opting into the
+    # on-chain TH path (Plan Task 11). Whitespace is stripped per entry and
+    # empty entries dropped. Absent/empty -> [] (today's all-Koinly behavior
+    # preserved byte-identically; Task 1 characterization stays GREEN).
+    on_chain_raw = section.get("ON_CHAIN_TH_WALLETS")
+    on_chain_th_wallets: list[str] = []
+    if on_chain_raw is not None:
+        on_chain_th_wallets = [w.strip() for w in on_chain_raw.split(",") if w.strip()]
+    # ON_CHAIN_RPC_URL: optional Berachain JSON-RPC endpoint for the LP bytecode
+    # fallback (F4+F9). When set, the on-chain path auto-classifies LP tokens not
+    # in the snapshot via bytecode fingerprinting; when unset/empty -> None
+    # (snapshot-only; Koinly-byte-identical default). Whitespace is stripped; an
+    # empty string normalizes to None so the substituter's truthiness check is
+    # unambiguous.
+    on_chain_rpc_url_raw = section.get("ON_CHAIN_RPC_URL")
+    on_chain_rpc_url: str | None = (
+        on_chain_rpc_url_raw.strip() if on_chain_rpc_url_raw is not None else None
+    )
+    if not on_chain_rpc_url:
+        on_chain_rpc_url = None
+    else:
+        # F1: enforce https-only at the config seam. The URL is threaded to
+        # RpcClient.rpc_url, which urllib.request.urlopen POSTs to. The current
+        # on-chain TH substituter constructs RpcClient WITHOUT an api_key, so no
+        # credential is sent on this path today; the https-only check is
+        # defense-in-depth for the future: the RpcClient dataclass supports an
+        # api_key whose bearer token would ride the Authorization header, and
+        # http:// (or any non-https scheme) would carry that credential and the
+        # JSON-RPC body in cleartext. Reject every non-https scheme outright so
+        # a misconfigured URL cannot reach the network sink. Mirrors the
+        # scheme-allowlist pattern of ``_validate_citation`` in
+        # on_chain_config.py, tightened to https-only so a later api_key is
+        # never silently sent over an insecure transport.
+        parsed = urlparse(on_chain_rpc_url)
+        if parsed.scheme != "https":
+            raise ValueError(
+                f"ON_CHAIN_RPC_URL must be an https:// endpoint "
+                f"(got {on_chain_rpc_url!r}); http:// and other schemes are "
+                f"rejected because the RPC client may send credentials in cleartext."
+            )
+    return JurisdictionSectionFields(
+        country,
+        fiscal_year,
+        threshold,
+        min_proceeds,
+        iana_timezone,
+        on_chain_th_wallets,
+        on_chain_rpc_url,
+    )
 
 
 def _load_tax_jurisdiction_config(
@@ -323,10 +386,27 @@ def _load_tax_jurisdiction_config(
         min_proceeds = DEFAULT_ZERO_BASIS_REVIEW_MIN_PROCEEDS
         # Country defaults to PT, so the PT timezone default applies.
         iana_timezone: str | None = _DEFAULT_PT_TIMEZONE
+        on_chain_th_wallets: list[str] = []
+        on_chain_rpc_url: str | None = None
     else:
-        country, fiscal_year, threshold, min_proceeds, iana_timezone = _parse_jurisdiction_section(
-            config["TAX JURISDICTION"]
-        )
+        (
+            country,
+            fiscal_year,
+            threshold,
+            min_proceeds,
+            iana_timezone,
+            on_chain_th_wallets,
+            on_chain_rpc_url,
+        ) = _parse_jurisdiction_section(config["TAX JURISDICTION"])
+        # Defense-in-depth (F5): ``optionxform`` is case-sensitive, so a literal lowercase
+        # ``on_chain_th_wallets`` INI key is silently ignored (the on-chain opt-in is lost
+        # without effect or error). Warn so the user knows the canonical key is uppercase.
+        if "on_chain_th_wallets" in config["TAX JURISDICTION"]:
+            logger.warning(
+                "Found a lowercase 'on_chain_th_wallets' key in [TAX JURISDICTION]; "
+                "the canonical INI key is 'ON_CHAIN_TH_WALLETS' (case-sensitive parser). "
+                "The lowercase form is ignored and the on-chain opt-in had no effect."
+            )
 
     # PT excludes loan repayment gains per CIRS art. 10(20); all other countries default to False.
     try:
@@ -390,6 +470,8 @@ def _load_tax_jurisdiction_config(
         zero_basis_review_min_proceeds=min_proceeds,
         **flag_kwargs,
         timezone=timezone,
+        on_chain_th_wallets=on_chain_th_wallets,
+        on_chain_rpc_url=on_chain_rpc_url,
     )
 
 

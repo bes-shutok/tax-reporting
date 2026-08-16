@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from tax_reporting.domain.exceptions import FileProcessingError
+from tax_reporting.domain.exceptions import ConfigurationError, FileProcessingError
 
 
 def _write_config(path: Path, payload: object) -> Path:
@@ -280,3 +280,90 @@ class TestOnChainConfigLoader:
 
         with pytest.raises(FileProcessingError, match=str(link)):
             _load_on_chain_wallets_from_path(link, 2025)
+
+
+def _valid_contract_entry(**overrides: object) -> dict[str, object]:
+    """Return a minimal valid contract entry for the registry loader.
+
+    ``address`` + ``kind`` are required; everything else is optional. Use
+    ``overrides`` to inject malformed values for characterization tests.
+    """
+    entry: dict[str, object] = {
+        "address": "0xabc0000000000000000000000000000000000000",
+        "kind": "dex_router",
+    }
+    entry.update(overrides)
+    return entry
+
+
+class TestContractRegistryLoader:
+    """Characterization tests for :func:`build_contract_registry` (F1
+    closed-enum + citation guards). Pinning EXISTING behavior; production
+    is NOT changed. If a test reveals the loader does NOT raise as
+    documented, STOP and flag; do NOT change production code.
+    """
+
+    def test_country_without_citation_rejected(self):
+        """Given a contract entry with operator_country='VG' and no
+        citation, expects ConfigurationError matching 'citation' (the
+        per-contract country override requires a citable primary source).
+        """
+        from tax_reporting.application.on_chain_config import (
+            build_contract_registry,
+        )
+
+        entry = _valid_contract_entry(operator_country="VG")  # no citation
+        data = {"chain": "Berachain", "contracts": [entry]}
+
+        with pytest.raises(ConfigurationError, match="citation"):
+            build_contract_registry(data, source="<test>")
+
+    def test_citation_without_country_rejected(self):
+        """Given a contract entry with a citation but no operator_country,
+        expects ConfigurationError matching 'operator_country' (a citation
+        is only meaningful with a per-contract country override).
+        """
+        from tax_reporting.application.on_chain_config import (
+            build_contract_registry,
+        )
+
+        entry = _valid_contract_entry(
+            citation="https://example.example/vg-operator"
+        )  # no operator_country
+        data = {"chain": "Berachain", "contracts": [entry]}
+
+        with pytest.raises(ConfigurationError, match="operator_country"):
+            build_contract_registry(data, source="<test>")
+
+    def test_invalid_iso_code_rejected(self):
+        """Given operator_country='XX' (not a valid ISO-3166 alpha-2
+        code), expects ConfigurationError matching 'ISO-3166'. A citation
+        is supplied so the failure is the ISO check, not the missing
+        citation guard.
+        """
+        from tax_reporting.application.on_chain_config import (
+            build_contract_registry,
+        )
+
+        entry = _valid_contract_entry(
+            operator_country="XX",
+            citation="https://example.example/xx-operator",
+        )
+        data = {"chain": "Berachain", "contracts": [entry]}
+
+        with pytest.raises(ConfigurationError, match="ISO-3166"):
+            build_contract_registry(data, source="<test>")
+
+    def test_invalid_kind_rejected(self):
+        """Given an invalid ``kind`` (not in _CONTRACT_KINDS), expects
+        ConfigurationError (the closed-enum kind guard).
+        """
+        from tax_reporting.application.on_chain_config import (
+            build_contract_registry,
+        )
+
+        entry = _valid_contract_entry(kind="not_a_real_kind")
+        data = {"chain": "Berachain", "contracts": [entry]}
+
+        with pytest.raises(ConfigurationError):
+            build_contract_registry(data, source="<test>")

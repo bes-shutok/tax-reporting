@@ -8,7 +8,11 @@ Two responsibilities, each isolated by an Invariant:
   no precedence chain through ``tx_src`` / ``tx_dest``: those fields carry
   wallet addresses, not transaction identifiers. ``tx_hash`` is already
   normalized to ``None`` when empty by ``parse_th_row`` (Invariant 3), so the
-  resolver does not re-normalize.
+  resolver does not re-normalize. ``event_id`` (Invariant 2, amended for the
+  on-chain Transaction Tagger) is the split-Event discriminator for on-chain
+  txs and is threaded onto the key from ``row.event_id`` (None for Koinly
+  rows, non-None for on-chain split rows); without this the amendment is dead
+  code (review F3).
 
 - **DEX-aware review flag (Invariant 9).** ``requires_review`` is True iff
   ``tx_id is None and wallet_kind is DEX``. CEX rows with missing tx-id are
@@ -91,6 +95,7 @@ class TxCorrelationKeyResolver:
         """
         row = transaction.row
         tx_id = row.tx_hash
+        event_id = row.event_id
 
         if row.sending_wallet and row.sending_amount is not None and row.sending_currency is not None:
             asset = row.sending_currency
@@ -108,7 +113,7 @@ class TxCorrelationKeyResolver:
             amount=amount,
             row_index=row.row_index,
         )
-        key = TxCorrelationKey(tx_id=tx_id, composite=composite)
+        key = TxCorrelationKey(tx_id=tx_id, composite=composite, event_id=event_id)
 
         requires_review = tx_id is None and transaction.wallet_kind is WalletKind.DEX
         return key, requires_review

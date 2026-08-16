@@ -10,7 +10,7 @@ from collections import deque
 from datetime import datetime
 from decimal import Decimal
 
-from ...domain.crypto_fifo import AssetFifoResult, CryptoFifoRealization
+from ...domain.crypto_fifo import AssetFifoResult, CryptoFifoRealization, TxKey
 from .contexts import ZERO, AcquisitionContext, ConsumptionContext
 
 logger = logging.getLogger(__name__)
@@ -71,8 +71,8 @@ def compute_fifo_for_asset(
             continue
         pool.append((a, a.acq.amount))
     realizations: list[CryptoFifoRealization] = []
-    carryover_cost_by_tx_key: dict[str, Decimal] = {}
-    partial_tx_keys: set[str] = set()
+    carryover_cost_by_tx_key: dict[TxKey, Decimal] = {}
+    partial_tx_keys: set[TxKey] = set()
     # Single-cell mutable counter accumulated across consumption events; the value
     # is the number of taxable disposals that had no matching acquisition at or
     # before the disposal date (pattern F). Threaded into ``_consume_against_pool_inplace``
@@ -268,8 +268,8 @@ def _consume_against_pool_inplace(  # noqa: PLR0912, PLR0913, PLR0915
     pool: deque[tuple[AcquisitionContext, Decimal]],
     asset: str,
     platform: str,
-    carryover_cost_by_tx_key: dict[str, Decimal],
-    partial_tx_keys: set[str],
+    carryover_cost_by_tx_key: dict[TxKey, Decimal],
+    partial_tx_keys: set[TxKey],
     unmatched_taxable_counter: list[int] | None = None,
     negative_consumption_counter: list[int] | None = None,
     epoch_counter: list[int] | None = None,

@@ -225,7 +225,25 @@ def _classify_rows_for_loan_affected_assets(  # noqa: PLR0912, PLR0915
             continue
 
         tx_hash = row.get("TxHash", "").strip()
-        tx_key = tx_hash if tx_hash else _build_composite_tx_key(row, row_index)
+        # Plan 2026-08-02 Task 3 (B2): on-chain split Events share a tx_hash
+        # but differ in event_id, so the FIFO dedup/correlation key widens to
+        # ``(tx_hash, event_id)`` for those rows. Koinly TH has no ``event_id``
+        # column (the on-chain adapter writes it), so ``event_id`` is None on
+        # the Koinly path and ``tx_key`` stays the bare ``tx_hash`` string ->
+        # byte-identical Koinly behavior. CROSS-REFERENCE: ``TxCorrelationKey``
+        # (Task 2 / ``tx_correlation_key_resolver``) is the parallel correlation
+        # system; both must key on ``(tx_hash, event_id)`` for split Events and
+        # must stay consistent (a drift here re-introduces the F1 silent-zero-
+        # cost-basis corruption in ``matching.py`` / ``transfer.py``).
+        event_id = row.get("event_id", "").strip() or None
+        # Single construction: tuple ``(tx_hash, event_id)`` when event_id is
+        # present (on-chain split Event), else the bare ``tx_hash`` string
+        # (Koinly), else the composite fallback when tx_hash is also empty.
+        tx_key: str | tuple[str, str] = (
+            (tx_hash, event_id)
+            if event_id is not None
+            else tx_hash if tx_hash else _build_composite_tx_key(row, row_index)
+        )
 
         date_raw = row.get("Date", "").strip()
         if not date_raw:

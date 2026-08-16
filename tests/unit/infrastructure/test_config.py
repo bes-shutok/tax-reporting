@@ -531,6 +531,92 @@ class TestLoadTaxJurisdictionConfig:
         result3 = _parse_jurisdiction_section(cp3["TAX JURISDICTION"])
         assert result3.iana_timezone is None
 
+    def test_on_chain_rpc_url_loaded(self, tmp_path, monkeypatch) -> None:
+        """ON_CHAIN_RPC_URL threads through to TaxJurisdictionConfig.on_chain_rpc_url.
+
+        Given a ``[TAX JURISDICTION]`` section with ``ON_CHAIN_RPC_URL``, the loaded
+        ``TaxJurisdictionConfig.on_chain_rpc_url`` equals that URL string; given no key,
+        it is ``None`` (the snapshot-only default; Koinly-byte-identical behavior).
+        """
+        import tax_reporting.infrastructure.config as config_module
+
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(self._PT_TOML)
+        logger = logging.getLogger(__name__)
+
+        # Set -> the URL is threaded through verbatim.
+        cp_set = self._make_config(
+            {"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025", "ON_CHAIN_RPC_URL": "https://example.rpc"}
+        )
+        result_set = _load_tax_jurisdiction_config(cp_set, logger)
+        assert result_set.on_chain_rpc_url == "https://example.rpc"
+
+        # Absent -> None (snapshot-only default).
+        cp_absent = self._make_config({"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025"})
+        result_absent = _load_tax_jurisdiction_config(cp_absent, logger)
+        assert result_absent.on_chain_rpc_url is None
+
+    def test_on_chain_rpc_url_rejects_http(self, tmp_path, monkeypatch) -> None:
+        """ON_CHAIN_RPC_URL must be an https:// endpoint.
+
+        http:// is rejected because the RpcClient may send credentials (a bearer
+        token) over the wire; an http:// endpoint would carry them in cleartext.
+        The config seam rejects the URL before it reaches the RPC client.
+        """
+        import tax_reporting.infrastructure.config as config_module
+
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(self._PT_TOML)
+        cp = self._make_config(
+            {"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025", "ON_CHAIN_RPC_URL": "http://example.rpc"}
+        )
+        logger = logging.getLogger(__name__)
+        with pytest.raises(ValueError, match="ON_CHAIN_RPC_URL"):
+            _load_tax_jurisdiction_config(cp, logger)
+
+    def test_on_chain_rpc_url_rejects_non_url(self, tmp_path, monkeypatch) -> None:
+        """ON_CHAIN_RPC_URL must parse as an https:// URL.
+
+        Non-https schemes (ftp://) and bare non-URL strings are rejected with the
+        same https-only error, so a misconfigured value cannot reach urllib.
+        """
+        import tax_reporting.infrastructure.config as config_module
+
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(self._PT_TOML)
+        logger = logging.getLogger(__name__)
+
+        # Non-http(s) scheme.
+        cp_ftp = self._make_config(
+            {"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025", "ON_CHAIN_RPC_URL": "ftp://x"}
+        )
+        with pytest.raises(ValueError, match="https"):
+            _load_tax_jurisdiction_config(cp_ftp, logger)
+
+        # Bare non-URL string (no scheme).
+        cp_bare = self._make_config(
+            {"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025", "ON_CHAIN_RPC_URL": "not-a-url"}
+        )
+        with pytest.raises(ValueError, match="https"):
+            _load_tax_jurisdiction_config(cp_bare, logger)
+
+    def test_lowercase_on_chain_key_warns(self, tmp_path, monkeypatch, caplog) -> None:
+        """Defense-in-depth (F5): a lowercase ``on_chain_th_wallets`` INI key is silently
+        ignored because the loader uses case-sensitive ``optionxform``. Warn the user that
+        the canonical INI key is ``ON_CHAIN_TH_WALLETS`` so the opt-in is not lost.
+        """
+        import tax_reporting.infrastructure.config as config_module
+
+        monkeypatch.setattr(config_module, "_DECISION_POINTS_DIR", tmp_path)
+        (tmp_path / "2025.toml").write_text(self._PT_TOML)
+        cp = self._make_config(
+            {"TAX_COUNTRY": "PT", "FISCAL_YEAR": "2025", "on_chain_th_wallets": "bera"}
+        )
+        logger = logging.getLogger(__name__)
+        with caplog.at_level(logging.WARNING, logger=__name__):
+            _load_tax_jurisdiction_config(cp, logger)
+        assert any("ON_CHAIN_TH_WALLETS" in rec.message for rec in caplog.records)
+
 
 @pytest.mark.unit
 class TestConfigParsing:

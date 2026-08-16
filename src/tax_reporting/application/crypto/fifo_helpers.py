@@ -7,7 +7,7 @@ from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
-from ...domain.crypto_fifo import AssetFifoResult, CryptoFifoRealization
+from ...domain.crypto_fifo import AssetFifoResult, CryptoFifoRealization, TxKey
 from ..crypto_fifo import (
     MergedAssetFifoResult,
     compute_fifo_for_asset,
@@ -99,7 +99,7 @@ def _compute_cross_asset_receiver_totals(
     Returns:
         Mapping of tx_key → {asset → total_amount} for all exchange_in_deferred rows.
     """
-    totals: dict[str, dict[str, Decimal]] = {}
+    totals: dict[TxKey, dict[str, Decimal]] = {}
     for asset, acqs in acquisitions_by_asset.items():
         for acq in acqs:
             if acq.acq.source_type == "exchange_in_deferred":
@@ -113,8 +113,8 @@ def _process_single_asset_fifo(  # noqa: PLR0913
     acquisitions_by_asset: dict[str, list],
     consumptions_by_asset: dict[str, list],
     fifo_by_asset: dict[str, MergedAssetFifoResult],
-    tx_key_to_sender: dict[str, list[str]],
-    all_asset_totals: dict[str, dict[str, Decimal]],
+    tx_key_to_sender: dict[TxKey, list[str]],
+    all_asset_totals: dict[TxKey, dict[str, Decimal]],
     phantom_transfers: dict,
     logger: logging.Logger,
     total_unmatched_taxable: list[int],
@@ -207,11 +207,11 @@ def _process_single_asset_fifo(  # noqa: PLR0913
 
     cons = consumptions_by_asset.get(asset, [])
     platforms = {a.acq.platform for a in acqs} | {c.con.platform for c in cons}
-    merged_carryover: dict[tuple[str, str], Decimal] = {}
-    merged_partial_tx_keys: set[str] = set()
+    merged_carryover: dict[tuple[TxKey, str], Decimal] = {}
+    merged_partial_tx_keys: set[TxKey] = set()
 
-    per_platform_carryover: dict[str, dict[str, Decimal]] = {}
-    per_platform_partial_map: dict[str, frozenset[str]] = {}
+    per_platform_carryover: dict[str, dict[TxKey, Decimal]] = {}
+    per_platform_partial_map: dict[str, frozenset[TxKey]] = {}
 
     platform_order = _order_platforms_for_transfers(acqs, cons)
     ordered = list(platform_order)

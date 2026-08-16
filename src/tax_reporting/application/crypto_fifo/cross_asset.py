@@ -11,7 +11,7 @@ import logging
 from decimal import Decimal
 
 from ._graph import topological_sort_with_fallback
-from .contexts import ZERO, AcquisitionContext, ConsumptionContext
+from .contexts import ZERO, AcquisitionContext, ConsumptionContext, TxKey
 from .merge import MergedAssetFifoResult
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ def _build_cross_asset_order(
     """Derive FIFO processing order from cross-asset swap dependencies."""
     all_assets = sorted(set(acquisitions_by_asset) | set(consumptions_by_asset))
 
-    tx_key_to_sender: dict[str, list[str]] = {}
+    tx_key_to_sender: dict[TxKey, list[str]] = {}
     for asset, cons in consumptions_by_asset.items():
         for c in cons:
             if not c.con.taxable and c.con.event_type == "exchange_out":
@@ -53,12 +53,12 @@ def _build_cross_asset_order(
     return ordered + cyclic, tx_key_to_sender
 
 
-def _has_carryover_for_tx_key(carryover: dict[tuple[str, str], Decimal], tx_key: str) -> bool:
+def _has_carryover_for_tx_key(carryover: dict[tuple[TxKey, str], Decimal], tx_key: TxKey) -> bool:
     """Return True if the carryover dict contains any entry matching tx_key."""
     return any(key[0] == tx_key for key in carryover)
 
 
-def _sum_carryover_for_tx_key(carryover: dict[tuple[str, str], Decimal], tx_key: str) -> Decimal:
+def _sum_carryover_for_tx_key(carryover: dict[tuple[TxKey, str], Decimal], tx_key: TxKey) -> Decimal:
     """Sum all carryover costs matching tx_key."""
     return sum((cost for key, cost in carryover.items() if key[0] == tx_key), ZERO)
 
@@ -66,7 +66,7 @@ def _sum_carryover_for_tx_key(carryover: dict[tuple[str, str], Decimal], tx_key:
 def _lookup_carryover_cost(
     acq: AcquisitionContext,
     fifo_results_by_asset: dict[str, MergedAssetFifoResult],
-    tx_key_to_sender: dict[str, list[str]],
+    tx_key_to_sender: dict[TxKey, list[str]],
 ) -> tuple[Decimal, bool, str | None]:
     """Look up the carry-over cost for a deferred acquisition."""
     expected_senders = tx_key_to_sender.get(acq.tx_key, [])
@@ -109,7 +109,7 @@ def _lookup_carryover_cost(
 def _apply_receiver_proportional_split(
     acq: AcquisitionContext,
     cost: Decimal,
-    tx_key_to_asset_totals: dict[str, dict[str, Decimal]],
+    tx_key_to_asset_totals: dict[TxKey, dict[str, Decimal]],
     ambiguity_reason: str | None,
 ) -> tuple[Decimal, str | None]:
     """Apply proportional cost split when multiple deferred receivers share a tx_key."""
@@ -144,8 +144,8 @@ def _apply_receiver_proportional_split(
 def _resolve_single_acquisition(
     acq: AcquisitionContext,
     fifo_results_by_asset: dict[str, MergedAssetFifoResult],
-    tx_key_to_sender: dict[str, list[str]],
-    tx_key_to_asset_totals: dict[str, dict[str, Decimal]],
+    tx_key_to_sender: dict[TxKey, list[str]],
+    tx_key_to_asset_totals: dict[TxKey, dict[str, Decimal]],
     flag_counts: dict[str, int] | None = None,
 ) -> AcquisitionContext:
     """Resolve a single deferred cross-asset acquisition from carry-over costs.
@@ -268,8 +268,8 @@ def _resolve_single_acquisition(
 def resolve_cross_asset_exchanges(
     acquisitions_by_asset: dict[str, list[AcquisitionContext]],
     fifo_results_by_asset: dict[str, MergedAssetFifoResult],
-    tx_key_to_sender: dict[str, list[str]],
-    tx_key_to_asset_totals: dict[str, dict[str, Decimal]],
+    tx_key_to_sender: dict[TxKey, list[str]],
+    tx_key_to_asset_totals: dict[TxKey, dict[str, Decimal]],
     flag_counts: dict[str, int] | None = None,
 ) -> dict[str, list[AcquisitionContext]]:
     """Resolve deferred cross-asset acquisitions from carry-over costs.

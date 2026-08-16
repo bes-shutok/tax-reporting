@@ -103,6 +103,28 @@ class TaxJurisdictionConfig:
             ``config.ini``; ``None`` for non-PT countries without an explicit key (naive dates
             then keep the legacy UTC-stamp behavior). Resolved exactly once at config-load and
             passed to the parser as a value object; never re-constructed at call sites.
+        on_chain_th_wallets: Wallet labels (matching Koinly TH ``Sending Wallet`` /
+            ``Receiving Wallet`` and the on-chain CSV ``wallet_label``) for which the
+            on-chain-native transaction history REPLACES the Koinly TH rows. Empty list
+            (default) preserves today's all-Koinly behavior byte-identically (Task 1
+            characterization stays GREEN). A wallet listed here opts into the on-chain TH
+            path: when its ``bera_transactions.csv`` is present, ``main.py`` runs the on-chain
+            CSV reader -> Berachain processor -> adapter, serializes the projected rows to a
+            TH-shaped CSV (with ``event_id``), and substitutes them for that wallet's Koinly
+            rows. A parse failure for an opted-in wallet raises ``ReportGenerationError``
+            (fail-loud, M1) - it is NEVER swallowed by the broad ``except Exception`` that
+            guards the collection-only ``run_on_chain_fetch`` path.
+        on_chain_rpc_url: Optional Berachain JSON-RPC endpoint
+            (``ON_CHAIN_RPC_URL`` in ``[TAX JURISDICTION]``). When set, the on-chain
+            TH path auto-classifies LP tokens NOT in the snapshot via bytecode
+            fingerprinting (one ``eth_getCode`` per unknown token): a V2-pair
+            runtime-bytecode match classifies the token as a Pair, and an
+            EIP-1167 minimal-proxy ``implementation()`` resolution classifies
+            KodiakIsland/Bault vaults. When unset (default), the LP
+            autodiscovery is snapshot-only and non-snapshot tokens classify as
+            Unknown + review (never silently LP-tagged); this preserves the
+            Koinly-byte-identical default (flag off). The URL is threaded from
+            config -> ``OnChainThSubstituter`` -> ``RpcClient`` -> ``LpAutodiscovery``.
     """
 
     country: str
@@ -120,6 +142,8 @@ class TaxJurisdictionConfig:
     exclude_transaction_fee_default_max_eur: Decimal = Decimal("0.5")
     exclude_transaction_fee_max_eur_per_asset: dict[str, Decimal] = field(default_factory=dict)
     timezone: ZoneInfo | None = None
+    on_chain_th_wallets: list[str] = field(default_factory=list)
+    on_chain_rpc_url: str | None = None
 
     @property
     def derivatives_dedup_enabled(self) -> bool:

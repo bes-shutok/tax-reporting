@@ -314,3 +314,48 @@ LP-token unstaking / "liquidity out" is a separate non-taxable-deferred case
 (DP-005 / PT-C-005) tracked as a follow-up. It will reuse the CG<->TH tag
 correlation built here, keyed on liquidity tags to exclude rather than
 proceeds-correct.
+
+---
+
+## Section 6 -- Koinly is one of multiple Transaction Sources
+
+Koinly is the default *Transaction Source* (`Aggregator` / `Koinly`; see
+`docs/maintenance/glossary.md`) for the crypto transaction-history (TH) layer,
+but it is no longer the only one. The on-chain-native transaction path
+(`OnChainExplorer` / `Etherscan-<chain>`) is an opt-in, **per-wallet**
+alternative selected by the `ON_CHAIN_TH_WALLETS` config field in
+`[TAX JURISDICTION]`.
+
+When a wallet label is listed in `ON_CHAIN_TH_WALLETS`, that wallet's TH is
+built from `resources/result/<year>/bera_transactions.csv` (via the on-chain
+CSV reader -> per-chain processor -> Koinly-compat adapter) and SUBSTITUTED for
+that wallet's Koinly TH rows. Unlisted wallets keep the Koinly TH. The default
+(empty list) preserves today's all-Koinly behavior byte-identically.
+
+This document's Sections 1-5 describe Koinly-specific behaviors, defects, and
+repair workflows. They remain authoritative for the Koinly path AND for any
+wallet NOT listed in `ON_CHAIN_TH_WALLETS`. The on-chain path does NOT inherit
+Koinly's defects (Koinly's gas-dropping, multi-leg collapsing, spam-airdrop
+suppression, and the TxSrc-as-hash quirk are absent - the on-chain model is
+richer and more honest; see design record `docs/architecture/on-chain-tx-design.md`
+§0.4-§0.5). The known divergences when a wallet opts into the on-chain path are
+documented in the reconciliation delta block (see SRG-012 in
+`docs/maintenance/tax_reporting_guidelines.md` and the "On-chain transaction
+source" section of `docs/maintenance/crypto_implementation_guidelines.md`).
+
+Scope note: the on-chain path replaces only the TH *movement layer*. The Income
+and Capital Gains reports stay Koinly-sourced regardless of the flag, because
+on-chain data carries no EUR cost basis (design record §9.3). A wallet opted
+into the on-chain TH still needs a Koinly export for its Income/CG reports
+unless a separate price-oracle plan lands.
+
+Loan-activity divergence: the on-chain adapter's `EVENT_TYPE_TO_KOINLY` mapping
+(in `src/tax_reporting/application/on_chain_th_adapter.py`) emits only
+Reward/Cost/Liquidity in/Liquidity out/empty tags - there is **no**
+`Loan`/`Loan repayment`/`Loan fee` `EventType` in the on-chain vocabulary. A
+wallet opted into the on-chain TH path therefore produces no loan-activity rows,
+so `loan_activity.py` (which classifies rows tagged `Loan`/`Loan repayment`) and
+the loan-affected FIFO rebuild that feeds the
+`exclude_loan_repayment_gains` path are both **lost** for that wallet. If an
+opted-in wallet has loan activity recorded in Koinly, do **not** opt it into the
+on-chain TH path until a `Loan` `EventType` is added to the on-chain adapter.

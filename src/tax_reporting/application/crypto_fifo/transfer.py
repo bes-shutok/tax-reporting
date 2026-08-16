@@ -6,7 +6,7 @@ import logging
 from decimal import Decimal
 
 from ._graph import topological_sort_with_fallback
-from .contexts import ZERO, AcquisitionContext, ConsumptionContext
+from .contexts import ZERO, AcquisitionContext, ConsumptionContext, TxKey
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ def _order_platforms_for_transfers(
     if not all_platforms:
         return []
 
-    tx_key_to_sender: dict[str, str] = {}
+    tx_key_to_sender: dict[TxKey, str] = {}
     for con in consumptions:
         if con.con.event_type == "transfer_out" and con.tx_key:
             tx_key_to_sender[con.tx_key] = con.con.platform
@@ -55,8 +55,8 @@ def _order_platforms_for_transfers(
 
 def _resolve_intra_asset_transfers(  # noqa: PLR0912
     platform_acquisitions: list[AcquisitionContext],
-    per_platform_carryover: dict[str, dict[str, Decimal]],
-    per_platform_partial: dict[str, frozenset[str]] | None = None,
+    per_platform_carryover: dict[str, dict[TxKey, Decimal]],
+    per_platform_partial: dict[str, frozenset[TxKey]] | None = None,
     flag_counts: dict[str, int] | None = None,
 ) -> list[AcquisitionContext]:
     """Resolve transfer_in_deferred acquisitions using sender-platform FIFO carry-over costs.

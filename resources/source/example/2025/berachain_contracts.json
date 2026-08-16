@@ -1,0 +1,30 @@
+{
+  "_comment": "EXAMPLE/TEMPLATE contract registry for Berachain (Task 9, design decision #8 amended by B3). Synthetic, obviously-fake addresses for everything EXCEPT the real BGT Distributor 0xd2f19a79... (a documented trusted constant cited from the design record, not a value invented here). The real per-user registry lives at resources/source/2025/berachain_contracts.json and is gitignored under resources/source/*. This file is the committed template that tests read. Per B3, NO Berachain contract carries operator_country here: all Berachain rewards resolve via the existing chain-level VG (British Virgin Islands, primary source: Berachain ToS) in operator_origin.py:305. A contract-level override requires a PRIMARY source stronger than the chain-level mapping; the KY/Cayman seed (Bitstamp MiCA whitepaper, secondary) was dropped.",
+  "chain": "Berachain",
+  "contracts": [
+    {
+      "address": "0xd2f19a79b026fb636a7c300bf5947df113940761",
+      "label": "BGT Distributor",
+      "kind": "reward_distributor",
+      "protocol": "Berachain"
+    },
+    {
+      "address": "0x000000000000000000000000000000000000dead",
+      "label": "Example DEX Router",
+      "kind": "dex_router",
+      "protocol": "Kodiak"
+    },
+    {
+      "address": "0x000000000000000000000000000000000000beef",
+      "label": "Example Reward Distributor",
+      "kind": "reward_distributor",
+      "protocol": "Kodiak"
+    },
+    {
+      "address": "0x000000000000000000000000000000000000face",
+      "label": "Example Rebate Router",
+      "kind": "rebate_router",
+      "protocol": "Kodiak"
+    }
+  ]
+}

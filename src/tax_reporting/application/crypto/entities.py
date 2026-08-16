@@ -501,10 +501,102 @@ class HoldingsSnapshot:
 
 
 @dataclass(frozen=True)
+class WalletSourceProvenance:
+    """Per-wallet source provenance for the Crypto Reconciliation sheet.
+
+    One row per wallet that contributed to the run's merged Transaction
+    History, recording whether that wallet's rows came from Koinly (the
+    ``Aggregator`` source) or the on-chain-native path (``OnChainExplorer``,
+    Plan Task 11). Populated only when ``on_chain_th_wallets`` lists at least
+    one wallet; the Koinly-only path leaves ``per_wallet_source_provenance``
+    empty so today's reconciliation sheet is byte-identical.
+
+    Attributes:
+        wallet_label: The wallet label (matched against Koinly TH
+            ``Sending Wallet`` / ``Receiving Wallet`` and the on-chain CSV
+            ``wallet_label``).
+        source_kind: ``"koinly"`` (Aggregator) or ``"on_chain"``
+            (OnChainExplorer). Closed literal set; the reconciliation sheet
+            renders this verbatim.
+        row_count: Number of Transaction-History rows this source contributed
+            for this wallet in this run.
+    """
+
+    wallet_label: str
+    source_kind: Literal["koinly", "on_chain"]
+    row_count: int
+
+
+@dataclass(frozen=True)
+class OnChainDeltaBlock:
+    """Koinly-vs-on-chain reconciliation delta for the opted-in wallets.
+
+    Rendered as a delta block on the Crypto Reconciliation sheet when
+    ``on_chain_th_wallets`` is set (Plan Task 12 / M3). Carries the counts of
+    rows the on-chain path reclassified or added vs the Koinly baseline plus a
+    small sample of on-chain tx hashes for audit drill-down. Populated only on
+    the opted-in path; ``on_chain_delta`` is ``None`` on the Koinly-only path.
+
+    Attributes:
+        rows_reclassified: Rows the on-chain path substituted for Koinly TH
+            rows on the opted-in wallet(s) (the Koinly rows dropped by the
+            merge in ``_merge_on_chain_into_koinly_th``).
+        rewards_added: On-chain Reward Events with no Koinly counterpart (e.g.
+            gas-only claims Koinly collapsed/dropped; multi-token reward
+            claims split per asset).
+        gas_added: On-chain gas legs surfaced (Koinly drops gas for shared
+            txs; the native model emits ``GasBurn`` Events so PT-deductible
+            gas isn't lost).
+        lp_reclassified: LP-token rows reclassified Koinly->on-chain (the
+            adapter projects LiquidityDeposit/Withdraw Events the lossy
+            Koinly shape collapsed).
+        sample_hashes: A small, order-preserving sample of on-chain tx hashes
+            involved in the delta, for manual drill-down. Bounded (not the
+            full set) to keep the sheet readable.
+    """
+
+    rows_reclassified: int
+    rewards_added: int
+    gas_added: int
+    lp_reclassified: int
+    sample_hashes: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class OnChainReconciliationRecord:
+    """Handoff record from the on-chain TH substitution path to the crypto loader.
+
+    Plan Task 12: produced by ``_maybe_substitute_on_chain_th`` /
+    ``_merge_on_chain_into_koinly_th`` and consumed by
+    ``load_koinly_crypto_report``.
+
+    Carries the per-wallet source provenance and the Koinly-vs-on-chain delta
+    block produced by ``_maybe_substitute_on_chain_th`` /
+    ``_merge_on_chain_into_koinly_th``. ``load_koinly_crypto_report`` threads
+    this onto ``CryptoReconciliationSummary.per_wallet_source_provenance`` and
+    ``.on_chain_delta`` so the Crypto Reconciliation sheet can render the new
+    sections.
+
+    A ``None`` handoff (the Koinly-only path) leaves both new fields at their
+    defaults (empty list / None), so today's sheet is byte-identical.
+    """
+
+    per_wallet_source_provenance: list[WalletSourceProvenance]
+    on_chain_delta: OnChainDeltaBlock | None
+
+
+
+@dataclass(frozen=True)
 class CryptoReconciliationSummary:
     """Control totals for capital and income sections.
 
     Note: capital_rows counts aggregated capital gain entries only.
+
+    The two on-chain fields (Plan Task 12) are LAST and DEFAULT to their empty
+    values so today's Koinly-only construction sites keep working and the
+    reconciliation sheet is byte-identical when ``on_chain_th_wallets`` is
+    unset (Task 1 characterization stays GREEN). They are populated only on
+    the opted-in path (main.py -> ``load_koinly_crypto_report`` -> here).
     """
 
     capital_rows: int
@@ -519,6 +611,13 @@ class CryptoReconciliationSummary:
     reward_total_eur: Decimal
     opening_holdings: HoldingsSnapshot | None
     closing_holdings: HoldingsSnapshot | None
+    # Per-wallet source provenance (Plan Task 12 / M3). Empty on the Koinly-only
+    # path; populated with one ``WalletSourceProvenance`` per wallet when
+    # ``on_chain_th_wallets`` lists at least one wallet.
+    per_wallet_source_provenance: list[WalletSourceProvenance] = field(default_factory=list)
+    # Koinly-vs-on-chain delta block (Plan Task 12 / M3). ``None`` on the
+    # Koinly-only path; populated when ``on_chain_th_wallets`` is set.
+    on_chain_delta: OnChainDeltaBlock | None = None
 
 
 @dataclass(frozen=True)

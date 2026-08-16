@@ -88,6 +88,107 @@ def _load_layer_1_major_chains() -> set[str]:
 
 
 @dataclasses.dataclass(frozen=True)
+class _TxCooccurrence:
+    """Per-TxHash co-occurrence index for the re-scoped fee guard (Plan B4).
+
+    Built once (Pass 1) from the materialized TH rows. ``co_occurs`` is the
+    F5-correct co-occurrence predicate consulted by the untagged-whitelist and
+    suspect paths in :func:`_identify_fee_and_suspect_events`.
+
+    CSV<->object bridge (Plan Task 5 Step 1, option (a)): the on-chain adapter
+    (Plan Task 10) serializes its rows to a TH-shaped CSV that includes an
+    ``event_id`` column — an on-chain-native field, NOT a Koinly field. The
+    lowercase snake_case name is deliberate: it diverges from Koinly's
+    TitleCase convention because ``event_id`` is not a Koinly column.
+    ``koinly_parser.read_koinly_rows`` needs NO change for this:
+    ``csv.DictReader`` surfaces every header column as a dict key and the
+    parser's row builder (``koinly_parser.py:76``) preserves all columns
+    (``if key is not None``), so an ``event_id`` column in the CSV header flows
+    through to each row dict automatically. Koinly CSVs have no ``event_id``
+    column, so ``row.get("event_id")`` is ``None`` for Koinly rows.
+
+    Review F5 (load-bearing): the guard is NOT ">= 2 distinct events" (that
+    would wrongly admit two fee/withdrawal-Cost events with no non-fee event).
+    The correct predicate is ">= 1 NON-FEE event co-occurs with the
+    withdrawal". A "non-fee event" is a row whose Type is NOT
+    ``crypto_withdrawal`` (the fee-bearing withdrawal type); a Swap
+    (``exchange``) or Reward (``crypto_deposit``) co-occurring is the canonical
+    non-fee event. ``has_embedded_fee`` is orthogonal (an ``exchange`` row that
+    ALSO carries a fee to extract is still a non-fee economic event for B4's
+    co-occurrence purpose) and is NOT part of this predicate.
+
+    Attributes:
+        counts: Number of TH rows sharing each non-empty TxHash.
+        has_event_id: TxHashes for which at least one row carries a non-empty
+            ``event_id`` (on-chain adapter rows). Absent for Koinly rows.
+        has_nonfee_event: TxHashes for which at least one co-occurring row is a
+            non-fee event (Type != ``crypto_withdrawal``).
+    """
+
+    counts: Counter[str]
+    has_event_id: set[str]
+    has_nonfee_event: set[str]
+
+    def co_occurs(self, tx_hash: str) -> bool:
+        """F5-correct co-occurrence predicate for ``tx_hash``.
+
+        Reduction proof (Koinly path byte-identical): when no row of this
+        ``tx_hash`` carries an ``event_id`` (Koinly CSVs have no ``event_id``
+        column), the Koinly branch returns ``count >= 2`` DIRECTLY (the
+        historical row-count predicate) and does NOT consult
+        ``has_nonfee_event``. ``count >= 2`` is therefore only the empirical
+        Koinly co-occurrence signal; it is NOT always equivalent to
+        ``has_nonfee_event`` (the two differ when both co-occurring rows are
+        ``crypto_withdrawal``: that pair has ``count == 2`` but
+        ``has_nonfee_event`` is false). Byte-identity holds precisely because
+        the Koinly branch never consults ``has_nonfee_event``; do NOT weaken
+        this branch to consult it. When ``event_id`` IS present (on-chain
+        adapter rows), the predicate is the B4 intent: a non-fee event must
+        co-occur (review F5: ``>= 2 distinct events`` would wrongly admit two
+        fee/withdrawal-Cost events with no non-fee event).
+
+        The cleanest reduction: when no event_id is present for the tx_hash,
+        fall back to ``count >= 2``; when event_ids are present, use the
+        non-fee-event predicate.
+        """
+        if not tx_hash:
+            return False
+        if tx_hash not in self.has_event_id:
+            # Koinly path (no event_id on any row of this tx_hash): reduce to
+            # today's ``count >= 2`` row-count semantics.
+            return self.counts[tx_hash] >= 2
+        # On-chain path (event_id present): require a non-fee co-occurrence
+        # (B4 intent / review F5 correction).
+        return tx_hash in self.has_nonfee_event
+
+
+def _build_cooccurrence_index(rows: list[dict[str, str]]) -> _TxCooccurrence:
+    """Build the per-TxHash co-occurrence index (Pass 1) from TH ``rows``.
+
+    A single pass records, per non-empty TxHash: the row count, whether any row
+    carries a non-empty ``event_id`` (on-chain marker), and whether any
+    co-occurring row is a non-fee event (Type != ``crypto_withdrawal``).
+    """
+    counts: Counter[str] = Counter()
+    has_event_id: set[str] = set()
+    has_nonfee_event: set[str] = set()
+    for row in rows:
+        tx_hash = row.get("TxHash", "").strip()
+        if not tx_hash:
+            continue
+        counts[tx_hash] += 1
+        if (row.get("event_id") or "").strip():
+            has_event_id.add(tx_hash)
+        # A non-fee event is any row whose Type is not the fee-bearing
+        # withdrawal type (a Swap/Reward/transfer/etc. co-occurring).
+        if (row.get("Type", "").strip()) != _FEE_TH_TYPE:
+            has_nonfee_event.add(tx_hash)
+    return _TxCooccurrence(
+        counts=counts, has_event_id=has_event_id, has_nonfee_event=has_nonfee_event
+    )
+
+
+@dataclasses.dataclass(frozen=True)
 class FeeThEvent:
     """A transaction/network fee event emitted from the Transaction History.
 
@@ -218,12 +319,10 @@ def _identify_fee_and_suspect_events(
 
     rows = read_koinly_rows(transaction_history_file)
 
-    # Pass 1: TxHash frequency map for the co-occurrence guard.
-    tx_hash_counts: Counter[str] = Counter(
-        row.get("TxHash", "").strip()
-        for row in rows
-        if row.get("TxHash", "").strip()
-    )
+    # Pass 1: build the per-TxHash co-occurrence index for the re-scoped guard
+    # (B4). See ``_build_cooccurrence_index`` for the CSV<->object bridge
+    # decision (Plan Task 5 Step 1, option (a)) and the F5-correct predicate.
+    co_occurrence = _build_cooccurrence_index(rows)
 
     # Compute the max ceiling ONCE. When per_asset is empty, default to 0 so
     # the suspect branch's ``<= max_ceiling`` predicate never fires (the
@@ -242,6 +341,12 @@ def _identify_fee_and_suspect_events(
         fee_currency = row.get("Fee Currency", "").strip()
         
         is_withdrawal = row_type == _FEE_TH_TYPE
+        # B5 / Plan Task 10 carrier-row rule: a GasBurn Event is projected as
+        # ``crypto_withdrawal``/``Cost`` with ``Sent Amount``=gas and
+        # ``Fee Amount`` EMPTY (gas isn't a fee on top of itself). With
+        # ``Fee Amount`` empty, ``has_embedded_fee`` is False, so a GasBurn row
+        # fires ONLY the ``is_withdrawal`` path (gas counted once), never the
+        # ``has_embedded_fee`` path (B5: no double-count).
         has_embedded_fee = bool(fee_amount_str) and bool(fee_currency)
 
         if not is_withdrawal and not has_embedded_fee:
@@ -249,9 +354,12 @@ def _identify_fee_and_suspect_events(
         try:
             label = row.get("Tag", "").strip()
             tx_hash = row.get("TxHash", "").strip()
-            # Co-occurrence guard applies to ALL three paths (tagged, untagged,
-            # suspect): the event's TxHash must occur at least twice in TH.
-            occurs_at_least_twice = bool(tx_hash) and tx_hash_counts[tx_hash] >= 2
+            # Co-occurrence guard (B4 re-scope, review F5): applies to the
+            # untagged-whitelist and suspect paths. The tagged path is NOT gated
+            # (an explicit Cost/Loan fee tag is the authority). The predicate is
+            # non-fee-event co-occurrence for on-chain rows, reducing to today's
+            # ``count >= 2`` for Koinly rows (see ``_TxCooccurrence.co_occurs``).
+            occurs_at_least_twice = co_occurrence.co_occurs(tx_hash)
 
             timestamp = parse_koinly_datetime(row["Date"]).strftime(_TIMESTAMP_FORMAT)
             wallet = row.get("Sending Wallet", "").strip()

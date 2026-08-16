@@ -175,3 +175,17 @@ ticker migration. They ground the `_CHAIN_LAUNCH_DATE` and
 
 - `operator_chain_origin_registry.md`
   - Purpose: repository-facing summary of current chain/operator origin mappings and local overrides.
+
+## Source-priority rule (B3)
+
+For Berachain operator-origin resolution, **primary sources win over secondary sources.**
+
+- **Primary sources** are official chain documents (governing-law clauses in the chain's Terms of Service, foundation legal-form filings, official documentation). For Berachain, the primary source is the Berachain Foundation governing-law extract (`official/berachain_terms_2025-02-05.md`): Berachain Foundation Ltd. is domiciled in the British Virgin Islands (BVI). This is the chain-level mapping `Berachain -> VG` applied in `operator_origin.py:305`.
+- **Secondary sources** are data aggregators (exchange MiCA whitepapers, data-provider profiles, third-party analyses). They do NOT override a primary source. A secondary source claiming a different operator domicile for a Berachain contract does not qualify.
+
+**Consequence for the contract registry (`resources/source/<year>/berachain_contracts.json`):** the registry ships EMPTY `operator_country` for every contract. No primary source attributes a specific Berachain DEX / reward-distributor contract to a single operator country distinct from the chain-level domicile; the only primary source (the Berachain ToS) is chain-level. Secondary sources (e.g. a Bitstamp MiCA whitepaper citing Cayman for a Kodiak entity) were evaluated and **dropped** because they are secondary and do not override the chain-level BVI mapping. All Berachain rewards therefore fall through to the chain-level `VG` (British Virgin Islands).
+
+A per-contract `operator_country` override may be added to the registry ONLY when a PRIMARY source stronger than the chain-level mapping attributes the contract's operator to a specific country. The registry loader (`application/on_chain_config.build_contract_registry`, Attacker F1 mitigation) requires both a valid ISO-3166 alpha-2 code AND a `citation` URL pointing at that primary source; an uncited or secondary-only override fails closed. The post-run `operator_country_enum` integrity invariant (Plan `2026-08-02-on-chain-tx-tagger` Task 13) is the audit echo.
+
+Design record: `docs/architecture/on-chain-tx-design.md` (blocker B3 resolution). Plan: `docs/history/plans/2026-08-02-on-chain-tx-tagger.md` (Task 9 ships the empty-`operator_country` registry; Task 13 documents the rule here).
+

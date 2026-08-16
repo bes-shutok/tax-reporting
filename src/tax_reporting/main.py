@@ -14,9 +14,11 @@ import re
 import sys
 from pathlib import Path
 
+from .application.crypto.entities import OnChainReconciliationRecord
 from .application.crypto_reporting import CryptoTaxReport, load_koinly_crypto_report
 from .application.extraction import parse_ib_export_all
 from .application.on_chain_fetcher import run_on_chain_fetch
+from .application.on_chain_th_substitution import OnChainThSubstituter
 from .application.persisting import export_rollover_file, generate_tax_report
 from .application.transformation import calculate_fifo_gains
 from .domain.collections import (
@@ -239,12 +241,87 @@ def _main(  # noqa: PLR0912, PLR0915
 
         if koinly_dir:
             logger.info("Detected Koinly directory: %s", koinly_dir)
+            # --- On-chain TH substitution for opted-in wallets (Plan Task 11) ---
+            #
+            # When ``on_chain_th_wallets`` lists a wallet AND the on-chain CSV
+            # (``bera_transactions.csv``) is present, run the on-chain parse path
+            # (CSV reader -> Berachain processor -> adapter) and SUBSTITUTE the
+            # projected rows for that wallet's Koinly TH rows (bridge option (a):
+            # serialize to a TH-shaped CSV with ``event_id`` written where the
+            # pipeline reads TH from).
+            #
+            # FAIL-LOUD BOUNDARY (M1): this on-chain PARSING/processing path is
+            # wrapped in its OWN ``try/except ReportGenerationError``. A parse
+            # failure for an opted-in wallet propagates ``ReportGenerationError``
+            # and is NEVER swallowed by the broad ``except Exception`` at the
+            # collection-only ``run_on_chain_fetch`` block below. The broad
+            # ``except Exception`` stays ONLY around ``run_on_chain_fetch``
+            # (collection soft-fail); it does NOT cover this parse path.
+            on_chain_year_for_th = (
+                tax_jurisdiction.fiscal_year if tax_jurisdiction is not None else tax_year_hint
+            )
+            opted_in_wallets = (
+                tax_jurisdiction.on_chain_th_wallets if tax_jurisdiction is not None else []
+            )
+            # Plan Task 12: the on-chain TH substitution returns a
+            # reconciliation record (per-wallet provenance + delta block) when
+            # it substitutes rows; ``None`` (no bera CSV, or flag unset) leaves
+            # the new ``CryptoReconciliationSummary`` fields at their defaults
+            # so the Koinly-only sheet is byte-identical.
+            on_chain_reconciliation: OnChainReconciliationRecord | None = None
+            # F1/F7: the merged TH lives at a NON-globbing path
+            # (``on_chain_merged_th.csv``); the pipeline reads it via the explicit
+            # ``transaction_history_override`` threaded through
+            # ``load_koinly_crypto_report`` instead of re-globbing ``koinly_dir``.
+            # ``None`` (no bera CSV / flag unset) preserves the glob (flag-off path
+            # byte-identical).
+            transaction_history_override: Path | None = None
+            if opted_in_wallets and on_chain_year_for_th is not None:
+                try:
+                    # F4+F9 wiring seam: thread the config-derived ON_CHAIN_RPC_URL
+                    # to the OnChainThSubstituter ctor (the FIRST pair of parens),
+                    # NOT to maybe_substitute. F2 assumption: ``tax_jurisdiction``
+                    # is guaranteed non-None here because this gate requires
+                    # ``opted_in_wallets`` (set above), which is only non-empty when
+                    # ``tax_jurisdiction is not None`` (the line 264 comprehension
+                    # returns [] otherwise). So ``.on_chain_rpc_url`` is safe.
+                    substitution = OnChainThSubstituter(
+                        on_chain_rpc_url=tax_jurisdiction.on_chain_rpc_url
+                    ).maybe_substitute(
+                        koinly_dir=koinly_dir,
+                        output_dir=validated_output_dir,
+                        year=on_chain_year_for_th,
+                        opted_in_wallets=opted_in_wallets,
+                        logger=logger,
+                    )
+                    if substitution is not None:
+                        on_chain_reconciliation = substitution.reconciliation
+                        transaction_history_override = substitution.merged_th_path
+                except Exception as exc:
+                    # Fail-loud (M1): an opted-in wallet's parse failure must
+                    # surface, not be silently skipped. ``ReportGenerationError``
+                    # and ``ConfigurationError`` are re-raised unchanged (the
+                    # former would otherwise be double-wrapped here, since
+                    # ``except Exception`` matches subclasses); any other failure
+                    # is wrapped into a fail-loud ``ReportGenerationError`` (NOT a
+                    # soft-fail), because an opted-in wallet has explicitly
+                    # requested on-chain data, so silently falling back to Koinly
+                    # would hide the divergence.
+                    if isinstance(exc, (ReportGenerationError, ConfigurationError)):
+                        raise
+                    raise ReportGenerationError(
+                        f"On-chain TH substitution failed for opted-in wallet(s) "
+                        f"{opted_in_wallets}: {exc}. The opted-in path fails loud (M1); "
+                        f"remove the wallet from ON_CHAIN_TH_WALLETS or fix the on-chain CSV."
+                    ) from exc
             crypto_tax_report = _load_crypto_tax_report(
                 koinly_dir=koinly_dir,
                 tax_year_hint=tax_year_hint,
                 tax_jurisdiction=tax_jurisdiction,
                 logger=logger,
                 rates=app_config.rates if app_config is not None else None,
+                on_chain_reconciliation=on_chain_reconciliation,
+                transaction_history_override=transaction_history_override,
             )
         else:
             logger.warning(
@@ -374,12 +451,14 @@ def _is_koinly_year_mismatch(koinly_dir: Path, tax_year_hint: int | None) -> boo
     return detected_year is not None and detected_year != tax_year_hint
 
 
-def _load_crypto_tax_report(
+def _load_crypto_tax_report(  # noqa: PLR0913
     koinly_dir: Path,
     tax_year_hint: int | None,
     logger: logging.Logger,
     tax_jurisdiction: TaxJurisdictionConfig | None = None,
     rates: list[ConversionRate] | None = None,
+    on_chain_reconciliation: OnChainReconciliationRecord | None = None,
+    transaction_history_override: Path | None = None,
 ) -> CryptoTaxReport | None:
     if _is_koinly_year_mismatch(koinly_dir, tax_year_hint):
         logger.warning(
@@ -417,7 +496,13 @@ def _load_crypto_tax_report(
         )
 
     try:
-        crypto_tax_report = load_koinly_crypto_report(koinly_dir, jurisdiction=tax_jurisdiction, rates=rates)
+        crypto_tax_report = load_koinly_crypto_report(
+            koinly_dir,
+            jurisdiction=tax_jurisdiction,
+            rates=rates,
+            on_chain_reconciliation=on_chain_reconciliation,
+            transaction_history_override=transaction_history_override,
+        )
     except ConfigurationError:
         # A configuration problem raised by the loader must fail the run. It must NOT
         # be degraded to "continue without crypto" like a parse/data error. (The
