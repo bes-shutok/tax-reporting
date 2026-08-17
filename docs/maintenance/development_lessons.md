@@ -2473,3 +2473,28 @@ For a personal authority document, identity fields and signing fields have diffe
 **Rule:** Before delivery, compare every rendered identity field with the facts source and verify the requested signing place and date explicitly. Render the PDF and check the final text before sending it.
 
 **Shape trigger:** A form is generated from a template or an earlier draft, and it includes a signing line or other context-specific fields. Treat those values as unverified until reconciled with the current request.
+
+---
+
+## 123. The Agent Shell Is Not the User Shell: Env-Gated Code Paths Make Tests Env-Dependent, and a Green Agent-Side Suite Proves Nothing About the User's Run
+
+**Principle:** Family H (Verify the real thing, not the abstraction) + Family B (Make the implicit explicit / surface hidden state). A green, fast suite in the agent's non-interactive shell is an *abstraction* over the suite the user actually runs; the *real thing* includes the user's exported environment. Any production env gate (`os.getenv`) silently couples the two.
+
+**Root cause (2026-08-16 test-hermeticity incident):** Production deliberately reads `os.getenv("BERA_CHAIN_API_KEY")` (`src/tax_reporting/main.py:358`, the DI-3 env gate) to enable the optional on-chain Etherscan V2 fetch (correct for production, hazardous for tests). The user's `.zshrc` exports that key, so every test calling `_main()` without pinning the env (`tests/unit/test_cli.py`, `tests/unit/application/test_crypto_reporting.py`, `tests/end_to_end/test_on_chain_bera_opted_in.py`, where the last fakes `getenv` in only one of its tests; its other `_main` calls inherit the real env) performed a live API fetch, read the gitignored real wallet registry `resources/source/<year>/chains.json`, burned API quota, and took ~9s per test at ~5% CPU. The agent shell (no key) ran the same suite green and fast, which is also why five code-review rounds and the then-opt-in path guard never saw it. Both shells were "correct"; only one matched the user's reality.
+
+**Methodology caution (grep false-positive):** `tests/unit/application/test_main_koinly_directory.py` was initially suspected but verified NOT to call `_main` (an early grep matched the substring `via_main(` (a helper METHOD NAME), not a `_main` call site). Grep hits on substrings inside identifiers are not call-site evidence; verify each hit is a real call before treating it as affected.
+
+**Rule: diagnostic ladder for "slow/flaky for the user, green and fast for the agent":**
+1. **CPU-%-of-wall first.** Low CPU + long wall means waiting on I/O (network/disk), not compute; this single observation redirects the whole investigation.
+2. **Reproduce the user's shell:** `zsh -i -c 'uv run pytest <files> -q'` loads the interactive env (rc files, exports). If the slowness appears here and not in the agent shell, it is environmental.
+3. **Find the coupling:** diff the environments (`env` in both shells) and list every env-dependent production gate: `grep -rn getenv src/`. Each hit whose env var differs between shells is a candidate.
+4. **Prove causation in BOTH directions:** unset the var in the user shell (fast again?) and set a dummy in the agent shell (slow now?). One direction is correlation; both is causation.
+
+**Rule: fix contract (test infra only; production stays frozen):**
+1. **Env-pin is PRIMARY.** A function-scoped autouse fixture (`_pin_hermetic_env` in `tests/conftest.py`) deletes the env var before every test (`monkeypatch.delenv(..., raising=False)` covers both "never set" and "set" shells). Tests that legitimately need the key use `monkeypatch.setenv` in the body, which runs after the fixture and wins.
+2. **Socket guard is a TRIPWIRE, not the fix.** An autouse fixture (`_forbid_network`) raises `AssertionError` on any outbound DNS/socket call unless the test opts in with `@pytest.mark.network`. It cannot be the primary gate where the code under test wraps the call in a broad `except Exception` (DI-1 degrade template at `_main`), the AssertionError is swallowed into a warning; only the env-pin actually prevents that fetch.
+3. **Audit-hook path guard always-on.** The open-monitor guard for gitignored personal data (`tests/unit/test_on_chain_tests_no_personal_data.py`) runs by default; the only opt-out is an explicit `SKIP_AUDIT_GUARD=1` (mirroring `-m "not slow"` explicit deselection, never a silent default).
+
+**Shape trigger:** A user reports the test suite is slow, flaky, quota-burning, or touching personal data while the agent/CI run is green and fast; or production code reads `os.getenv`/`environ` anywhere; or a test invokes a wide entry point (`_main`, CLI runner) rather than a seam. Any of these → suspect an ambient-env dependency and run the ladder before touching code.
+
+**See also:** plan `docs/history/plans/2026-08-16-test-hermeticity-guards.md` (guards, invariants, and the incident narrative); lesson #113 (negation-grep matching forbidden tokens inside narrating prose; the sibling grep-hygiene caution for the `via_main(` false-positive); AGENTS.md Testing section (the hermeticity contract: no ambient env vars, no outbound network, no gitignored-data opens).

@@ -1,5 +1,6 @@
 """Shared fixtures and configuration for pytest tests."""
 
+import socket
 from decimal import Decimal
 from pathlib import Path
 
@@ -11,6 +12,95 @@ def pytest_configure(config) -> None:
     config.addinivalue_line("markers", "unit: mark test as a unit test")
     config.addinivalue_line("markers", "integration: mark test as an integration test")
     config.addinivalue_line("markers", "e2e: mark test as an end-to-end test")
+
+
+@pytest.fixture(autouse=True)
+def _pin_hermetic_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Delete ``BERA_CHAIN_API_KEY`` before every test (2026-08-16 incident).
+
+    Production ``_main`` enables the optional on-chain fetch when the DI-3 env
+    gate ``os.getenv("BERA_CHAIN_API_KEY")`` returns a value. The developer's
+    interactive shell exports that key, so ``_main``-calling tests inherited a
+    live Etherscan V2 fetch (plus the gitignored real wallet registry) at ~9s
+    per test while the agent shell (no key) stayed green and fast.
+    ``delenv(..., raising=False)`` handles both the "never set" (agent/CI
+    shell) and "set" (user shell) paths. Tests that deliberately need the key
+    opt in via ``monkeypatch.setenv`` in the test body, which runs after this
+    autouse fixture and therefore wins.
+    """
+    monkeypatch.delenv("BERA_CHAIN_API_KEY", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _forbid_network(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail outbound DNS resolution and socket connects during every test (2026-08-16 plan).
+
+    Tripwire hermeticity guard: an unmarked test that accidentally reaches the
+    network (e.g. a live Etherscan V2 fetch behind a broad ``except``) must
+    fail loudly instead of silently burning API quota and reading gitignored
+    data. Deliberately-live tests opt out with ``@pytest.mark.network``
+    (registered in ``pyproject.toml``); there is deliberately no
+    environment-variable bypass. This is a tripwire, not the primary gate for
+    the ``_main`` fetch path: ``_main`` swallows the ``AssertionError`` into a
+    warning (DI-1 degrade template), so ``_pin_hermetic_env`` above is what
+    actually prevents that fetch.
+    """
+    if "network" in request.keywords:
+        return
+
+    def _guard(address: object) -> AssertionError:
+        return AssertionError(f"test attempted outbound network to {address}; mark @pytest.mark.network to allow")
+
+    def _blocked_getaddrinfo(host: str, port: int, *args: object, **kwargs: object) -> None:
+        raise _guard((host, port))
+
+    def _blocked_gethostbyname(host: str, *args: object, **kwargs: object) -> None:
+        raise _guard(host)
+
+    def _blocked_gethostbyname_ex(host: str, *args: object, **kwargs: object) -> None:
+        raise _guard(host)
+
+    def _blocked_connect(self: socket.socket, address: object) -> None:
+        raise _guard(address)
+
+    def _blocked_connect_ex(self: socket.socket, address: object) -> None:
+        raise _guard(address)
+
+    def _blocked_sendto(self: socket.socket, *args: object) -> None:
+        # sendto(data[, flags], address): the destination is always the last positional.
+        raise _guard(args[-1] if args else None)
+
+    def _blocked_sendmsg(self: socket.socket, *args: object) -> None:
+        # sendmsg(buffers[, ancdata[, flags[, address]]]): a literal destination
+        # can be supplied without connect()/DNS, so block it too; when the full
+        # 4-arg positional form is used, the address is the last positional.
+        raise _guard(args[-1] if len(args) == 4 else "<connected-socket sendmsg>")
+
+    def _blocked_send_fds(
+        sock: socket.socket,
+        buffers: object,
+        fds: object,
+        flags: int = 0,
+        address: object = None,
+    ) -> None:
+        # socket.send_fds(sock, buffers, fds, flags=0, address=None) forwards to
+        # sock.sendmsg with the same positional layout.
+        raise _guard(address)
+
+    # Module-level DNS stubs (socket.create_connection resolves via these), the
+    # connect/connect_ex/sendto/sendmsg methods on the socket class (self is
+    # not part of the address), and the send_fds module-level helper (forwards
+    # to sendmsg). Any remaining send paths (send/sendall/write) require a
+    # prebuilt connected socket, unreachable without connect/DNS (already
+    # blocked).
+    monkeypatch.setattr(socket, "getaddrinfo", _blocked_getaddrinfo)
+    monkeypatch.setattr(socket, "gethostbyname", _blocked_gethostbyname)
+    monkeypatch.setattr(socket, "gethostbyname_ex", _blocked_gethostbyname_ex)
+    monkeypatch.setattr(socket.socket, "connect", _blocked_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", _blocked_connect_ex)
+    monkeypatch.setattr(socket.socket, "sendto", _blocked_sendto)
+    monkeypatch.setattr(socket.socket, "sendmsg", _blocked_sendmsg)
+    monkeypatch.setattr(socket, "send_fds", _blocked_send_fds, raising=False)
 
 
 @pytest.fixture

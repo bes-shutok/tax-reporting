@@ -17,10 +17,16 @@ via a Python audit hook that fails if any on-chain test opens a forbidden path.
 
 Performance: the audit runs all guarded modules in a SINGLE subprocess (one
 spawn, not one per module) because ``sys.addaudithook`` is process-global and
-cannot be cleanly removed once installed. The guard is opt-in: it runs only
-when invoked explicitly (``RUN_AUDIT_GUARD=1``) or via the ``audit`` marker,
-so a default ``uv run pytest`` invocation is not slowed by the subprocess spawn.
-CI / pre-commit should run ``RUN_AUDIT_GUARD=1 uv run pytest tests/unit/test_on_chain_tests_no_personal_data.py``.
+cannot be cleanly removed once installed.
+
+Contract (2026-08-16 test-hermeticity plan, Design Invariant 3): the guard is
+ALWAYS ON - it runs on every default ``uv run pytest`` invocation (fail-closed:
+absent environment means the guard runs). The only opt-out is an explicit
+``SKIP_AUDIT_GUARD=1``, mirroring the documented ``-m "not slow"`` explicit
+deselection pattern: skipping must be named, never silent.
+``RUN_AUDIT_GUARD=1`` (the pre-promotion opt-in gate) is still accepted as a
+no-op alias so invocations recorded in archived completed-plan docs do not
+error; it no longer selects anything special.
 """
 
 from __future__ import annotations
@@ -66,8 +72,23 @@ def _is_forbidden_open(path_str: str, project_root: Path) -> bool:
 
 # On-chain test modules whose runtime file opens we guard. Discovered by glob so
 # new on-chain / bera test modules are picked up automatically. Deduped + sorted
-# as repo-relative STRINGS (the probe subprocess runs with cwd=_PROJECT_ROOT).
-# The guard test module itself is excluded: spawning it would recurse.
+# STRINGS (glob results are absolute; the explicit _main callers below are
+# repo-relative — the probe subprocess runs with cwd=_PROJECT_ROOT, so both
+# resolve). The guard test module itself is excluded: spawning it would recurse.
+#
+# 2026-08-16 hermeticity incident: tests calling production ``_main`` inherit
+# the DI-3 env gate and, when the developer shell exports ``BERA_CHAIN_API_KEY``
+# (env-pin did not exist yet), performed a live fetch that opened the
+# gitignored real wallet registry under ``resources/source/<year>/``. These two
+# verified ``_main`` callers match neither glob, so they are guarded explicitly.
+# ``tests/unit/application/test_main_koinly_directory.py`` is deliberately NOT
+# added: an early grep matched only its ``via_main(`` test NAME; the file was
+# verified not to call ``_main``.
+_MAIN_CALLER_EXPLICIT_PATHS = (
+    "tests/unit/test_cli.py",
+    "tests/unit/application/test_crypto_reporting.py",
+)
+
 _ON_CHAIN_TEST_PATHS = sorted(
     {
         str(p)
@@ -78,6 +99,7 @@ _ON_CHAIN_TEST_PATHS = sorted(
         for p in _PROJECT_ROOT.glob(pattern)
         if p.resolve() != Path(__file__).resolve()
     }
+    | set(_MAIN_CALLER_EXPLICIT_PATHS)
 )
 
 # The probe script installs ONE file-open audit hook, runs ALL guarded modules
@@ -114,6 +136,72 @@ rc = pytest.main(modules + ['-q', '-p', 'no:cacheprovider'])
 print('AUDIT_HITS=' + chr(1).join(sorted(set(hits))))
 print('AUDIT_RC=' + str(rc))
 """
+
+
+def _audit_guard_skip_reason() -> str | None:
+    """Explicit-deselection gate for the probe tests (fail-closed, Design Invariant 3).
+
+    Returns a skip reason ONLY when the user explicitly set ``SKIP_AUDIT_GUARD=1``
+    (mirrors the documented ``-m "not slow"`` named deselection: skipping must
+    be explicit, never silent). An absent environment returns ``None``: the
+    guard runs. ``RUN_AUDIT_GUARD=1`` (the pre-promotion opt-in gate) is
+    intentionally unread here: after the 2026-08-16 promotion it is a no-op
+    alias kept so invocations recorded in archived completed-plan docs do not
+    error; it no longer selects anything special.
+    """
+    if os.environ.get("SKIP_AUDIT_GUARD") == "1":
+        return (
+            "audit guard explicitly deselected via SKIP_AUDIT_GUARD=1 "
+            "(mirrors '-m \"not slow\"' explicit deselection); absent env => guard runs"
+        )
+    return None
+
+
+# SKIP_AUDIT_GUARD gate, expressed once at module level (the gate depends only
+# on process-start environment, so every test in this module shares it; a new
+# probe test cannot forget the opt-out).
+_SKIP_REASON = _audit_guard_skip_reason()
+pytestmark = pytest.mark.skipif(
+    _SKIP_REASON is not None,
+    reason=_SKIP_REASON or "audit guard enabled",
+)
+
+
+def _run_audit_probe(
+    probe_dir: Path, modules: list[str]
+) -> tuple[list[str], str, subprocess.CompletedProcess[str]]:
+    """Spawn ONE probe subprocess that runs ``modules`` under the open-audit hook.
+
+    Returns ``(hits, rc, result)``: ``hits`` is the deduped sorted list of
+    forbidden paths the audit hook saw, ``rc`` is the probe's inner pytest exit
+    code as a string, and ``result`` exposes raw stdout/stderr for failure
+    messages. ``modules`` are repo-relative or absolute test-module paths; the
+    subprocess runs with ``cwd=_PROJECT_ROOT`` so relative forbidden opens
+    resolve against the project root.
+
+    The probe script is written under ``probe_dir``, a per-invocation unique
+    temp directory (``tmp_path_factory.mktemp``): a fixed shared path would let
+    one pytest session's cleanup unlink the script while a concurrent session
+    (two terminals on the same clone) is still executing it. Each session owns
+    its probe file; pytest removes the temp dir tree at session end.
+    """
+    probe = probe_dir / "_probe_personal_data.py"
+    probe.write_text(_PROBE)
+    result = subprocess.run(  # noqa: S603 (probe is our own trusted script; inputs are project_root + test paths under tests/ or tmp_path)
+        [sys.executable, str(probe), str(_PROJECT_ROOT), *modules],
+        cwd=_PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    stdout = result.stdout.splitlines()
+    hits_line = next((ln for ln in stdout if ln.startswith("AUDIT_HITS=")), "AUDIT_HITS=")
+    rc_line = next((ln for ln in stdout if ln.startswith("AUDIT_RC=")), "AUDIT_RC=unknown")
+    hits = [h for h in hits_line[len("AUDIT_HITS="):].split("\x01") if h]
+    rc = rc_line[len("AUDIT_RC="):]
+    return hits, rc, result
 
 
 @pytest.mark.unit
@@ -169,44 +257,23 @@ class TestOnChainTestsNoPersonalData:
         allowed = tmp_path / "resources" / "source" / "example" / "2026" / "berachain_contracts.json"
         assert _is_forbidden_open(str(allowed), tmp_path) is False
 
-    def test_on_chain_modules_do_not_open_personal_data(self) -> None:
+    def test_on_chain_modules_do_not_open_personal_data(self, tmp_path_factory: pytest.TempPathFactory) -> None:
         """Assert no guarded on-chain test module opens a forbidden personal-data file.
 
         Runs all guarded modules in ONE subprocess under a ``sys.addaudithook``
         file-open audit. Fails if any forbidden path was opened, or if any
         module itself failed (a failing module makes the audit meaningless).
 
-        Opt-in: skipped unless ``RUN_AUDIT_GUARD=1`` is set, so a default
-        ``uv run pytest`` invocation is not slowed by the subprocess spawn.
-        CI / pre-commit run it explicitly.
+        Always-on (fail-closed, Design Invariant 3): the probe runs on every
+        default ``uv run pytest`` invocation; an absent environment means the
+        guard runs. The only opt-out is an explicit ``SKIP_AUDIT_GUARD=1``
+        (mirrors the documented ``-m "not slow"`` explicit deselection), applied
+        once at module level via ``pytestmark``. ``RUN_AUDIT_GUARD=1`` is
+        accepted as a no-op alias so invocations recorded in archived completed
+        plan docs do not error.
         """
-        if os.environ.get("RUN_AUDIT_GUARD") != "1":
-            pytest.skip(
-                "audit guard is opt-in (set RUN_AUDIT_GUARD=1); "
-                "run it in CI / pre-commit, not on every default pytest invocation"
-            )
-
-        probe = _PROJECT_ROOT / "tmp" / "_probe_personal_data.py"
-        probe.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            probe.write_text(_PROBE)
-            result = subprocess.run(  # noqa: S603 (probe is our own trusted script; inputs are project_root + test paths under tests/)
-                [sys.executable, str(probe), str(_PROJECT_ROOT), *_ON_CHAIN_TEST_PATHS],
-                cwd=_PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-                timeout=120,
-                check=False,
-            )
-        finally:
-            if probe.exists():
-                probe.unlink()
-
-        stdout = result.stdout.splitlines()
-        hits_line = next((ln for ln in stdout if ln.startswith("AUDIT_HITS=")), "AUDIT_HITS=")
-        rc_line = next((ln for ln in stdout if ln.startswith("AUDIT_RC=")), "AUDIT_RC=unknown")
-        hits = [h for h in hits_line[len("AUDIT_HITS="):].split("\x01") if h]
-        rc = rc_line[len("AUDIT_RC="):]
+        probe_dir = tmp_path_factory.mktemp("audit_probe")
+        hits, rc, result = _run_audit_probe(probe_dir, _ON_CHAIN_TEST_PATHS)
 
         assert not hits, (
             "An on-chain test module opened gitignored personal data (AGENTS.md "
@@ -216,4 +283,33 @@ class TestOnChainTestsNoPersonalData:
         assert rc == "0", (
             f"A guarded on-chain test module failed (rc={rc}); stdout:\n{result.stdout}\n"
             f"stderr:\n{result.stderr}"
+        )
+
+    def test_synthetic_forbidden_open_detected(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Positive control: a module-body open of a forbidden path must land in AUDIT_HITS.
+
+        Writes a tiny synthetic module to ``tmp_path`` at RUNTIME and runs the
+        probe subprocess on it (single subprocess, absolute ``tmp_path``
+        argument). The module body calls ``open("resources/source/2099/synthetic.json")``:
+        the open does NOT need to succeed - the audit event fires on the attempt
+        - and the resulting module-body failure surfaces as a pytest collection
+        error, so ``AUDIT_RC`` is NONZERO (2) by design. The assertion therefore
+        targets ``AUDIT_HITS`` only and must never assert ``rc == 0`` here.
+
+        The synthetic module must NEVER be committed under ``tests/``: it would
+        pollute default collection, and a glob-matching name would make the
+        always-on probe permanently flag its own synthetic violation (a
+        permanently red suite). It exists only transiently under ``tmp_path``.
+        """
+        victim = tmp_path / "test_synthetic_forbidden_open_victim.py"
+        victim.write_text('open("resources/source/2099/synthetic.json")\n')
+
+        probe_dir = tmp_path_factory.mktemp("audit_probe")
+        hits, _rc, _result = _run_audit_probe(probe_dir, [str(victim)])
+
+        assert "resources/source/2099/synthetic.json" in hits, (
+            "the probe did not report the synthetic forbidden open in AUDIT_HITS; "
+            "the audit hook installation or the AUDIT_HITS parsing is broken"
         )

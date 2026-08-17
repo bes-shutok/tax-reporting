@@ -32,8 +32,10 @@ are monkeypatched so no network or real-config dependency leaks in.
 
 from __future__ import annotations
 
+import io
 import json
 import urllib.error
+import zipfile
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -220,6 +222,48 @@ def example_run(tmp_path, monkeypatch):
     return run
 
 
+# Fixed zip entry timestamp used by _normalized_xlsx(). 1980-01-01 is the
+# earliest representable MS-DOS zip timestamp, so it can never collide with a
+# real wall-clock save time.
+_FIXED_ZIP_DATE_TIME = (1980, 1, 1, 0, 0, 0)
+
+# Content-level timestamps embedded in docProps/core.xml (<dcterms:created> and
+# <dcterms:modified>, sourced from wb.properties.created which defaults to
+# wall-clock now) are NOT part of the equality under test: the invariant is
+# that the report CONTENT is unaffected by the on-chain fetch, not that the
+# workbook metadata timestamps match. Exclude that entry from the normalized
+# comparison rather than rewriting its XML.
+_CORE_PROPERTIES_ENTRY = "docProps/core.xml"
+
+
+def _normalized_xlsx(xlsx_path: Path) -> bytes:
+    """Return a timestamp-insensitive canonical byte form of an xlsx file.
+
+    openpyxl output embeds wall-clock timestamps two ways: (1) each zip entry's
+    ``date_time`` field, and (2) ``docProps/core.xml`` content via
+    ``wb.properties.created`` (defaults to now). When two saves straddle a
+    wall-clock second boundary the raw bytes differ nondeterministically. This
+    helper rewrites every entry into a fresh in-memory zip with a fixed entry
+    timestamp, sorted entry order, and fixed compression, excluding the
+    core-properties entry (content-level timestamps, see
+    ``_CORE_PROPERTIES_ENTRY``), so equal workbook content yields equal bytes.
+    """
+    normalized = io.BytesIO()
+    with zipfile.ZipFile(xlsx_path, "r") as src, zipfile.ZipFile(
+        normalized, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6
+    ) as dst:
+        for info in sorted(src.infolist(), key=lambda i: i.filename):
+            if info.filename == _CORE_PROPERTIES_ENTRY:
+                continue
+            dst.writestr(
+                zipfile.ZipInfo(info.filename, date_time=_FIXED_ZIP_DATE_TIME),
+                src.read(info.filename),
+                compress_type=zipfile.ZIP_DEFLATED,
+                compresslevel=6,
+            )
+    return normalized.getvalue()
+
+
 @pytest.mark.unit
 class TestMainOnChainWiring:
     """Pin the on-chain fetcher wiring in ``main.py`` (Task 6)."""
@@ -385,7 +429,7 @@ class TestMainOnChainWiring:
             config=_pt_2025_config(),
             wallets=[_artificial_wallet()],
         )
-        bytes_a = out_a.read_bytes()
+        normalized_a = _normalized_xlsx(out_a)
 
         out_b, _ = example_run(
             fetcher=_Recorder(),
@@ -393,8 +437,48 @@ class TestMainOnChainWiring:
             config=_pt_2025_config(),
             wallets=[_artificial_wallet()],
         )
-        bytes_b = out_b.read_bytes()
+        normalized_b = _normalized_xlsx(out_b)
 
-        assert bytes_a == bytes_b, (
-            "extract.xlsx must be byte-identical whether or not the on-chain fetcher runs"
+        assert normalized_a == normalized_b, (
+            "extract.xlsx content must be identical whether or not the on-chain fetcher runs"
+        )
+
+    def test_normalized_xlsx_ignores_wallclock_timestamps(self, tmp_path):
+        """Guard for the normalization helper: forced timestamp drift must not break equality.
+
+        Two openpyxl saves of the same content are made with deliberately
+        different wall-clock inputs: different ``wb.properties.created`` (which
+        lands in ``docProps/core.xml``) and different zip entry ``date_time``
+        (achieved by saving, waiting past a second boundary, and saving again).
+        Raw bytes differ (content-level and zip-metadata timestamps drift);
+        normalized bytes must be equal.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        from openpyxl import Workbook
+
+        def _save(path: Path, created: datetime) -> None:
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Extract"
+            ws["A1"] = "frozen content"
+            wb.properties.created = created
+            wb.properties.modified = created
+            wb.save(path)
+
+        path_a = tmp_path / "a.xlsx"
+        path_b = tmp_path / "b.xlsx"
+        _save(path_a, datetime(2026, 8, 17, 10, 0, 0, tzinfo=UTC))
+        # Force a wall-clock second-boundary gap so the zip entry date_time
+        # values differ between the two saves (the observed flake trigger).
+        import time
+
+        time.sleep(1.1)
+        _save(path_b, datetime(2026, 8, 17, 12, 34, 56, tzinfo=UTC) + timedelta(days=7))
+
+        assert path_a.read_bytes() != path_b.read_bytes(), (
+            "precondition: forced timestamp drift must change the raw bytes"
+        )
+        assert _normalized_xlsx(path_a) == _normalized_xlsx(path_b), (
+            "normalized form must be equal despite zip-metadata and core.xml timestamp drift"
         )

@@ -7,7 +7,7 @@ Guidance for coding agents (canonical `AGENTS.md`; `CLAUDE.md` is a symlink to i
 This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` skill).
 - **Layer 1:** [README.md](docs/README.md) (concise overview).
 - **Layer 2 (Shared):** `docs/architecture/` and `docs/maintenance/` (guidelines, glossary, decisions, tax-law). Update in-session when behavior or rules change.
-- **Layer 3 (History):** `docs/history/` (plans, completed plans).
+- **Layer 3 (History):** `docs/history/` (plans, completed plans, backlog ideas archived to `backlog/completed/`).
 - **LLM-only / Temporary:** `docs/tmp/` and gitignored `docs/history/reviews/` and `docs/maintenance/personal/`.
 - **Resolution:** Other skills resolve paths (like `{plans_dir}`) from `.ai-playbook/facts.md` (using-skills Step 0).
 
@@ -16,18 +16,18 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 ### 1. Reusable Engineering Rules
 
 - For numeric fields from external reports, detect thousands/decimal separators or fail clearly.
-- Do not classify a leading-zero integer part (e.g. `0,001`) as thousands-grouped; treat a single dot-grouped triplet (e.g. `1.234`) as ambiguous and raise. Only multi-group dot patterns (e.g. `1.234.567`) may be stripped as European thousands.
+- A leading-zero integer part (e.g. `0,001`) is never thousands-grouped; a single dot-grouped triplet (e.g. `1.234`) is ambiguous and must raise; only multi-group dot patterns (e.g. `1.234.567`) may be stripped as European thousands.
 - Use f-strings in exception constructors; never pass multiple positional args.
-- Catch row-level parse errors per row (warn and skip); do not let one bad row discard the whole dataset.
-- Inside a row-level `try...except`, reuse the parsed object for any second derived value; wrap a fallible secondary parse in a nested `try...except` when a trusted-path branch must not be skipped. See UL #80, #125.
+- Catch row-level parse errors per row (warn and skip); one bad row must not discard the whole dataset.
+- In a row-level `try...except`, reuse the parsed object for second derived values; nest a `try...except` around a fallible secondary parse when a trusted-path branch must not be skipped. See UL #80, #125.
 - Absent optional fields use a type-safe sentinel (e.g. `"0"` for numeric, `"MISSING"` when `"0"` is valid), not `""`; a classifier `else` fallback must use a non-valid sentinel + WARNING. See `coding_guidelines.md` #4, `development_lessons.md` #106, #115.
-- Data-loss conditions (unmatched items, dropped records) must never be silently discarded: apply an explicit fallback and log at warning+, never debug. See `coding_guidelines.md` #5.
+- Data-loss conditions (unmatched items, dropped records) must not be silently discarded: apply an explicit fallback and log at warning+, not debug. See `coding_guidelines.md` #5.
 - All-or-nothing validation for required file sets: none present -> skip; partial set -> raise `FileProcessingError` listing missing files; all present -> proceed.
 - Verification/hygiene guards must fail closed when the manifest is absent; `grep -f <missing>` exits non-zero, so `cmd && echo BAD || echo GOOD` false-passes.
-- Validation that depends on complete state runs post-aggregation, not per-row (mid-accumulation state can be temporarily invalid).
+- Validation that depends on complete state runs post-aggregation, not per-row (mid-accumulation state can be invalid).
 - When reusing a validation/security pattern, inherit the guards but recalibrate exception handling to the cost of silent failure at the new call site.
 - When an aggregator takes `entries[0]` for a field assumed constant across a group, add a heterogeneity guard. Sibling aggregators merging the same type must use byte-identical patterns or a shared helper.
-- Partial or uncertain results must carry an explicit indicator so the user cannot mistake them for complete. Review flags must include specific actionable explanations, not bare booleans.
+- Partial or uncertain results must carry an explicit indicator so users cannot mistake them for complete. Review flags must give specific actionable explanations, not bare booleans.
 - User-facing output labels use self-explanatory terminology, not terse names from source formats; f-strings interpolating `str | None` must degrade explicitly. See `coding_guidelines.md` #6.
 
 ### 2. Repository Style and Conventions
@@ -42,12 +42,12 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - If an inferred IB tax year exists and the selected Koinly directory year differs, skip crypto loading for that run.
 - Dividend aggregation validates one currency per symbol; mismatches raise `FileProcessingError`.
 - `TradeDate` is a `NamedTuple(year, month, day)`. Do not call `.date()` on it; use it directly or `.to_datetime()`.
-- External-report date parsers must localize naive dates to the jurisdiction zone (a `strptime` literal like ` UTC` does not populate `tzinfo`).
-- When classifying a dividend row as withholding tax, match only the literal `"Withholding Tax"`; never bare `"Tax"` (dividend descriptions contain "Tax" as a word fragment, e.g. "Tax-Exempt Interest").
+- External-report date parsers must localize naive dates to the jurisdiction zone (a `strptime` literal ` UTC` does not populate `tzinfo`).
+- Withholding-tax classification matches only the literal `"Withholding Tax"`, never bare `"Tax"` (descriptions contain "Tax" as a fragment, e.g. "Tax-Exempt Interest").
 - `docs/maintenance/tax/.../official/` keeps only source-origin files; derived notes and numbered guidance belong outside `official/`; `sources.md` records issuing/effective/superseded dates. See `project-guidelines.md` #1.
 - For fiscal-year versioned tax decision points, see `docs/maintenance/project-guidelines.md` #2.
 - When AT guidance cites a CIRS paragraph number, verify against the consolidated CIRS/CPPT/CIS PDFs; AT documents may predate renumbering amendments. See `docs/maintenance/project-guidelines.md` #3.
-- For tax/origin web sources, prefer authoritative PDFs or extracted Markdown over raw HTML; reuse local mirrors. A locally-archived official source wins over a conflicting secondary source.
+- For tax/origin web sources, prefer authoritative PDFs or extracted Markdown over raw HTML and reuse local mirrors; a locally-archived official source wins over a conflicting secondary source.
 - Authoritative law portals render the CURRENT version by default; for a prior fiscal year, use the version in force then ("Redações anteriores"), cross-checked against a year-dated secondary source. See `development_lessons.md` #31.
 - Before assuming an official source is unavailable, probe the authority's canonical URL with a HEAD request; a web/search MCP tool quota/rate-limit is a tool outage, not a missing source. See `development_lessons.md` #37.
 - Under `docs/maintenance/tax/`, use `laws/<jurisdiction>/crypto-tax/` for tax-law archives and `crypto-origin/` for chain/operator domicile archives.
@@ -58,7 +58,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Share crypto `País da Fonte` resolution across rewards and capital gains. Never use taxpayer residence.
 - Keep `docs/maintenance/tax/crypto-origin/` source manifest, registry, and decision log synchronized when changing chain/operator mappings.
 - Chain derivation uses deterministic normalization and validates against trusted sources in `docs/maintenance/tax/crypto-origin/`.
-- Wallet labels are discovery hints only; final chain/country mappings come from archived operator origin documents, not asset symbols. Use `Unknown` when labels don't allow chain derivation.
+- Wallet labels are discovery hints only; final chain/country mappings come from archived operator origin documents, not asset symbols; use `Unknown` when labels don't allow derivation.
 - Test-side per-row platform attribution must mirror `wallet_kind._row_platform` (skip empty OR case-insensitive `"unknown"`); bare `tr.sending_wallet or tr.receiving_wallet` misattributes. See `development_lessons.md` #44.
 - Throwaway shadow/verification scripts re-parsing an external-report CSV must call the production reader, not `csv.DictReader` (preamble/header handling diverges). See `development_lessons.md` #45.
 - Doc-drift grep backstops scan `docs/maintenance/`, `docs/architecture/`, `README.md` prose; sweep NEW value at each rendered-text site. See `development_lessons.md` #55, #58, #70.
@@ -185,7 +185,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - **Entry point:** `uv run tax-reporting` (flags in `README.md`). Alt: `uv run python ./src/tax_reporting/main.py`.
 - **Dependencies:** `uv` (local, not on PyPI). Tests: `uv run pytest`.
 - **Architecture:** Layered (domain -> application -> infrastructure -> presentation). Full walkthrough in `README.md`.
-- **Excel report sections** (Capital Gains, Crypto Gains, Loan Activity, Dividend Income, Report Structure): documented in `docs/maintenance/tax_reporting_guidelines.md`.
+- **Excel report sections:** documented in `docs/maintenance/tax_reporting_guidelines.md`.
 - **Data flow:** `resources/source/` CSVs -> domain-driven transform (currency conversion, ISIN mapping) -> Excel reports + rollover CSV in `resources/result/`; see `README.md` (incl. `shares-leftover.csv` merge ordering).
 
 ## Configuration
@@ -198,13 +198,13 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 ## Testing
 
 - 3-tier: `tests/unit/` (unit-marked), `tests/integration/`, `tests/end_to_end/` (e2e-marked).
-- **Do not import pytest fixtures**; they are injected by name (`tmp_path`, `capsys`, `caplog`, `monkeypatch`, `request`).
-- Tests must not read gitignored data; inline expected values, commit the fixture, or generate it deterministically. See `coding_guidelines.md` #26.
-- Test class names must match `python_classes = ["Test*"]` in `pyproject.toml`; non-`Test*`-prefix names are silently deselected.
-- Pytest assertion guards: `pytest.raises(...)` needs `match=` (PT011); asserting NONE of N lookups fire under a short-circuit `or`/`and` predicate needs all N monkeypatched. See `python_guidelines.md` #14, #15.
+- The suite is hermetic: no ambient env vars reach tests (the suite's only production env gate (`BERA_CHAIN_API_KEY` in `main.py`) is pinned off by an autouse fixture in `tests/conftest.py`); no outbound network (autouse guard; opt-in via `@pytest.mark.network`); no gitignored-data opens (audit-hook guard; only opt-out `SKIP_AUDIT_GUARD=1`) - inline expected values, commit a synthetic fixture, or generate fixtures deterministically. See `development_lessons.md` #123, `coding_guidelines.md` #26.
+- Do not import pytest fixtures; they are injected by name (`tmp_path`, `monkeypatch`).
+- Test class names must match `python_classes = ["Test*"]` in `pyproject.toml`; other prefixes are silently deselected.
+- Pytest guards: `pytest.raises(...)` needs `match=` (PT011); asserting NONE of N lookups fire under a short-circuit predicate needs all N monkeypatched. See `python_guidelines.md` #14, #15.
 - Remove unused imports (Ruff F401). Only import `Path` when instantiating or type-annotating.
-- Test meaningful business logic and real edge cases; avoid duplicating coverage (high-value: complex CSV formats, tax calculations, error handling; low-value: zero amounts, trivial parsing).
-- Excel output tests: structural identification over hardcoded value exclusions; default-empty cell assertions accept `None`/`""`; reuse the production validator for domain-validity predicates.
+- Test meaningful business logic and real edge cases; avoid duplicating coverage (high-value: complex CSV formats, tax calculations, error handling).
+- Excel output tests: structural identification over hardcoded value exclusions; default-empty cell assertions accept `None`/`""`; reuse the production validator for validity predicates.
 
 ## Code Quality
 
