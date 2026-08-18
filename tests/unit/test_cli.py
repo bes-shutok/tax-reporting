@@ -13,7 +13,6 @@ from unittest.mock import patch
 
 import pytest
 
-from tax_reporting.domain.collections import IBExportData
 from tax_reporting.domain.exceptions import ConfigurationError, MissingDecisionPointsError
 from tax_reporting.main import _build_arg_parser, _main, cli
 
@@ -205,10 +204,9 @@ class TestCliMain:
 
         Asserts the FINAL handler state (not the call sequence), so it is robust to
         whether the implementation uses a pre-config + re-configure or a single
-        conditional configure call. Patches downstream IB/FIFO/generate calls so
-        ``_main`` runs to completion.
+        conditional configure call. Patches the single ``run_report`` seam on
+        ``main`` (this file's driven surface) so ``_main`` runs to completion.
         """
-        from tax_reporting.domain.collections import IBExportData
         from tax_reporting.domain.jurisdiction import TaxJurisdictionConfig
         from tax_reporting.infrastructure.config import Config
 
@@ -237,10 +235,7 @@ class TestCliMain:
         original_handlers = list(root.handlers)
         try:
             with (
-                patch("tax_reporting.main.parse_ib_export_all", return_value=IBExportData({}, {})),
-                patch("tax_reporting.main.calculate_fifo_gains"),
-                patch("tax_reporting.main.export_rollover_file"),
-                patch("tax_reporting.main.generate_tax_report", return_value=False),
+                patch("tax_reporting.main.run_report"),
                 patch("tax_reporting.main.load_configuration_from_file", return_value=app_config),
             ):
                 _main(source_file=source_file, output_dir=tmp_path, log_level=None)
@@ -248,10 +243,18 @@ class TestCliMain:
             # log_level=None -> resolved_level = app_config.log_level = "ERROR".
             self._assert_console_handler_level(logging.ERROR)
         finally:
-            for h in root.handlers:
-                h.close()
-            root.handlers.clear()
-            root.handlers.extend(original_handlers)
+            # Close ONLY the handlers this run added, then re-attach the snapshotted
+            # originals (guarded, so a pre-configure failure cannot duplicate them).
+            # Production ``configure_application_logging`` CLOSES the originals while
+            # reconfiguring; they are re-attached regardless so root never ends the
+            # test with zero handlers (matches TestMainCompositionRoot._drive).
+            for h in list(root.handlers):
+                if h not in original_handlers:
+                    h.close()
+                    root.handlers.remove(h)
+            for h in original_handlers:
+                if h not in root.handlers:
+                    root.handlers.append(h)
             root.setLevel(original_level)
 
     def test_cli_log_level_overrides_config_on_console_handler(self, tmp_path, monkeypatch) -> None:
@@ -263,7 +266,6 @@ class TestCliMain:
         branch (so resolved always falls to app_config) leaves this test RED: the handler
         would be at ERROR (from config), not DEBUG (from CLI).
         """
-        from tax_reporting.domain.collections import IBExportData
         from tax_reporting.domain.jurisdiction import TaxJurisdictionConfig
         from tax_reporting.infrastructure.config import Config
 
@@ -288,10 +290,7 @@ class TestCliMain:
         original_handlers = list(root.handlers)
         try:
             with (
-                patch("tax_reporting.main.parse_ib_export_all", return_value=IBExportData({}, {})),
-                patch("tax_reporting.main.calculate_fifo_gains"),
-                patch("tax_reporting.main.export_rollover_file"),
-                patch("tax_reporting.main.generate_tax_report", return_value=False),
+                patch("tax_reporting.main.run_report"),
                 patch("tax_reporting.main.load_configuration_from_file", return_value=app_config),
             ):
                 # Explicit CLI log_level=DEBUG must override config's ERROR.
@@ -299,10 +298,18 @@ class TestCliMain:
 
             self._assert_console_handler_level(logging.DEBUG)
         finally:
-            for h in root.handlers:
-                h.close()
-            root.handlers.clear()
-            root.handlers.extend(original_handlers)
+            # Close ONLY the handlers this run added, then re-attach the snapshotted
+            # originals (guarded, so a pre-configure failure cannot duplicate them).
+            # Production ``configure_application_logging`` CLOSES the originals while
+            # reconfiguring; they are re-attached regardless so root never ends the
+            # test with zero handlers (matches TestMainCompositionRoot._drive).
+            for h in list(root.handlers):
+                if h not in original_handlers:
+                    h.close()
+                    root.handlers.remove(h)
+            for h in original_handlers:
+                if h not in root.handlers:
+                    root.handlers.append(h)
             root.setLevel(original_level)
 
     def test_invalid_log_level_surfaces_as_configuration_error(self, tmp_path, monkeypatch) -> None:
@@ -366,10 +373,9 @@ class TestMainWithMissingConfig:
         Design Invariant 9(c) / r1 review F2: the not-found WARNING must not be lost to an
         unconfigured root logger. Asserts the FINAL logging state (WARNING reaches the file)
         rather than the exact call sequence, so it is robust to the pre-config-vs-branch-call
-        implementation approach. Patches the downstream IB/FIFO block so _main() runs to
-        completion on the FileNotFoundError path.
+        implementation approach. Patches the single ``run_report`` seam on ``main`` so
+        _main() runs to completion on the FileNotFoundError path.
         """
-        from tax_reporting.domain.collections import IBExportData
         from tax_reporting.infrastructure.config import DEFAULT_LOG_LEVEL
 
         source_file = tmp_path / "ib_export.csv"
@@ -380,10 +386,7 @@ class TestMainWithMissingConfig:
         log_file = tmp_path / "logs" / "tax-reporting.log"
 
         with (
-            patch("tax_reporting.main.parse_ib_export_all", return_value=IBExportData({}, {})),
-            patch("tax_reporting.main.calculate_fifo_gains"),
-            patch("tax_reporting.main.export_rollover_file"),
-            patch("tax_reporting.main.generate_tax_report", return_value=False),
+            patch("tax_reporting.main.run_report"),
             patch("tax_reporting.main.load_configuration_from_file", side_effect=FileNotFoundError("no config")),
         ):
             _main(source_file=source_file, output_dir=tmp_path)
@@ -404,9 +407,7 @@ def test_main_raises_configuration_error_for_missing_decision_points(tmp_path):
     source_file.write_text("header\n", encoding="utf-8")
 
     with (
-        patch("tax_reporting.main.parse_ib_export_all", return_value=IBExportData({}, {})),
-        patch("tax_reporting.main.calculate_fifo_gains"),
-        patch("tax_reporting.main.export_rollover_file"),
+        patch("tax_reporting.main.run_report"),
         patch(
             "tax_reporting.main.load_configuration_from_file",
             side_effect=MissingDecisionPointsError("missing toml"),

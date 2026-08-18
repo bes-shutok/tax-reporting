@@ -198,7 +198,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 ## Testing
 
 - 3-tier: `tests/unit/` (unit-marked), `tests/integration/`, `tests/end_to_end/` (e2e-marked).
-- The suite is hermetic: no ambient env vars reach tests (the suite's only production env gate (`BERA_CHAIN_API_KEY` in `main.py`) is pinned off by an autouse fixture in `tests/conftest.py`); no outbound network (autouse guard; opt-in via `@pytest.mark.network`); no gitignored-data opens (audit-hook guard; only opt-out `SKIP_AUDIT_GUARD=1`) - inline expected values, commit a synthetic fixture, or generate fixtures deterministically. See `development_lessons.md` #123, `coding_guidelines.md` #26.
+- The suite is hermetic: no ambient env vars reach tests (the suite's only production env gate (`BERA_CHAIN_API_KEY` in `_main`) is pinned off by an autouse fixture in `tests/conftest.py`); no outbound network (autouse guard; opt-in via `@pytest.mark.network`); no gitignored-data opens (audit-hook guard; only opt-out `SKIP_AUDIT_GUARD=1`) - inline expected values, commit a synthetic fixture, or generate fixtures deterministically. See `development_lessons.md` #123, `coding_guidelines.md` #26.
 - Do not import pytest fixtures; they are injected by name (`tmp_path`, `monkeypatch`).
 - Test class names must match `python_classes = ["Test*"]` in `pyproject.toml`; other prefixes are silently deselected.
 - Pytest guards: `pytest.raises(...)` needs `match=` (PT011); asserting NONE of N lookups fire under a short-circuit predicate needs all N monkeypatched. See `python_guidelines.md` #14, #15.

@@ -1514,7 +1514,7 @@ Because a zone is mandatory to localize naive dates, the application enforces a
 STRICT fail-fast at the crypto-loading boundary: when crypto data is present and
 the timezone cannot be resolved - a configured jurisdiction with `timezone is
 None` (any non-PT country without `IANA_TIMEZONE`) OR no config loaded at all
-(`jurisdiction is None`) - `_load_crypto_tax_report` in `main.py` raises
+(`jurisdiction is None`) - `_load_crypto_tax_report` in `application/run_report.py` raises
 `ConfigurationError` before any date is parsed, and `_main` propagates it
 unwrapped. The program fails rather than silently treating naive dates as UTC.
 The loader `load_koinly_crypto_report` itself stays a pure parser and does NOT

@@ -11457,6 +11457,7 @@ def test_payment_proceeds_config_missing_fails_fast(tmp_path, monkeypatch):
     real CG/TH data (vs. the monkeypatched-loader STRICT tests in
     ``test_main_koinly_directory.py``).
     """
+    import tax_reporting.application.run_report as run_report_mod
     import tax_reporting.main as main_mod
     from tax_reporting.domain.exceptions import ConfigurationError
 
@@ -11485,7 +11486,7 @@ def test_payment_proceeds_config_missing_fails_fast(tmp_path, monkeypatch):
     # STRICT: with crypto data present and no resolved jurisdiction timezone, the helper
     # fails fast. The rates expression must still degrade safely to None (no NameError).
     with pytest.raises(ConfigurationError, match="no jurisdiction config"):
-        main_mod._load_crypto_tax_report(
+        run_report_mod._load_crypto_tax_report(
             koinly_dir=koinly_dir,
             tax_year_hint=2025,
             tax_jurisdiction=None,  # Stays None on the config-missing path
@@ -11508,6 +11509,7 @@ def test_payment_proceeds_config_missing_warns_then_fails_fast_via_main(tmp_path
     both halves: the WARNING fires, and a ``ConfigurationError`` (not a ``NameError`` on
     ``app_config``) escapes ``_main``.
     """
+    import tax_reporting.application.run_report as run_report_mod
     import tax_reporting.main as main_mod
     from tax_reporting.domain.exceptions import ConfigurationError
 
@@ -11515,7 +11517,7 @@ def test_payment_proceeds_config_missing_warns_then_fails_fast_via_main(tmp_path
         raise FileNotFoundError("config.ini missing")
 
     monkeypatch.setattr(main_mod, "load_configuration_from_file", _raise_fnf)
-    monkeypatch.setattr(main_mod, "generate_tax_report", lambda *_a, **_kw: False)
+    monkeypatch.setattr(run_report_mod, "generate_tax_report", lambda *_a, **_kw: False)
 
     src = tmp_path / "ib_export.csv"
     src.write_text("Data,Header\n", encoding="utf-8")
@@ -11526,9 +11528,9 @@ def test_payment_proceeds_config_missing_warns_then_fails_fast_via_main(tmp_path
         cg_rows=[_cg_row(**_PHANTOM_USDT_BYBIT)],
         th_rows=[_th_payment_row(amount="50,00000000", currency="USDT", net_value_eur='"120,00"')],
     )
-    monkeypatch.setattr(main_mod, "parse_ib_export_all", lambda _p: _EmptyIbData())
-    monkeypatch.setattr(main_mod, "calculate_fifo_gains", lambda *_a, **_kw: None)
-    monkeypatch.setattr(main_mod, "export_rollover_file", lambda *_a, **_kw: None)
+    monkeypatch.setattr(run_report_mod, "parse_ib_export_all", lambda _p: _EmptyIbData())
+    monkeypatch.setattr(run_report_mod, "calculate_fifo_gains", lambda *_a, **_kw: None)
+    monkeypatch.setattr(run_report_mod, "export_rollover_file", lambda *_a, **_kw: None)
 
     main_logger = logging.getLogger("tax_reporting.main")
     captured: list[str] = []

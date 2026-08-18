@@ -2498,3 +2498,53 @@ For a personal authority document, identity fields and signing fields have diffe
 **Shape trigger:** A user reports the test suite is slow, flaky, quota-burning, or touching personal data while the agent/CI run is green and fast; or production code reads `os.getenv`/`environ` anywhere; or a test invokes a wide entry point (`_main`, CLI runner) rather than a seam. Any of these → suspect an ambient-env dependency and run the ladder before touching code.
 
 **See also:** plan `docs/history/plans/2026-08-16-test-hermeticity-guards.md` (guards, invariants, and the incident narrative); lesson #113 (negation-grep matching forbidden tokens inside narrating prose; the sibling grep-hygiene caution for the `via_main(` false-positive); AGENTS.md Testing section (the hermeticity contract: no ambient env vars, no outbound network, no gitignored-data opens).
+
+---
+
+## 124. Package-Wide Static Guards Must Derive the Module Set From the Package, Not a Hardcoded Tuple
+
+**Principle:** Family H (Verify the real thing, not the abstraction). A hardcoded module tuple in a guard test is an abstraction over the package's current module list; it drifts silently the moment a module is added, so the guard stays green while its coverage shrinks.
+
+**Trigger:** A test asserts "no module in package X performs Y" and enumerates the modules by hand.
+
+**Rule:** Derive the set at test time: `pkgutil.walk_packages(pkg.__path__, prefix=...)` (covers subpackages too, not just top-level `iter_modules`), but SEED the list with the already-imported package module itself (`sys.modules[pkg.__name__]`) because `walk_packages` yields only CHILDREN, never the package's own `__init__`. Import each via `importlib.import_module`; never skip `ImportError` silently (a module that fails to import escapes the guard entirely) - collect skipped names and assert the list is empty with a message naming them, and pass an `onerror` callback to `walk_packages` that records traversal errors, also asserted empty. Keep only a sanity anchor asserting the known module is in the derived set. Never restate the package membership in the test.
+
+**Example:** r3 review finding on the DI-3 env-read guard in `tests/unit/application/test_run_report.py` (`test_no_env_reads_is_static`): it hardcoded two modules while the `application` package had more; any future module reading `os.getenv` would have escaped the guard entirely. r4 finding: the r3 fix still used `iter_modules`, silently skipping the `crypto`, `crypto_fifo`, `extraction`, and `persisting` subpackages; `walk_packages` closed the gap. r5 findings: `walk_packages` still missed `application/__init__.py` itself (children only; fixed by seeding the package module), and the `except ImportError: continue` defensive skip would have silently exempted any unimportable module (fixed by asserting the skipped list empty).
+
+**See also:** lesson #123 (hermeticity guards); AGENTS.md Testing section ("Static hygiene guards must scan every file the protected value could realistically reach").
+
+---
+
+## 125. Static Guards Ban the Operation, Not the Import of the Module That Can Perform It
+
+**Principle:** Family H. Banning `import os` (by substring or AST `ast.Import`) targets a vehicle, not the hazard; a module may legitimately use the same import for safe operations. The guard must match the dangerous operation itself.
+
+**Trigger:** Drafting an AST/substring hygiene guard and the simplest predicate is "the module imports X".
+
+**Rule:** Match the operation's AST shapes (e.g. `os.getenv`/`os.environ` as Attribute/ImportFrom/Name predicates), which hold under any import style (`import os`, `from os import getenv`, `os = __import__("os")` aliasing is out of scope but import-style variation is not). Record any deliberate deviation from a reviewer's letter-of-the-finding fix in the test docstring.
+
+**Example:** r3 finding: a literal `import os` ban over the application package would false-fail `on_chain_th_substitution`, which legitimately calls `os.fsync`; the env-read predicates already caught every import style. r4 finding: widening the module set to subpackages exposed a leftover `node.module == "os"` ImportFrom clause that false-failed `persisting/excel_utils`'s legitimate `from os import PathLike`; rescoped the clause to the env-read alias names only. Widening a guard's module set can surface latent over-firing predicates; re-scope every clause to the prohibited names, not the source module.
+
+---
+
+## 126. Assert the Callee's Call Shape Against a Raw Double, Not Against a Shape the Double Itself Constructed
+
+**Principle:** Family H. A recording test double that formats or filters the kwargs it records can mirror the assertion back at itself; the test then verifies the double, not the production caller.
+
+**Trigger:** A test asserts the exact kwargs keys/values a production function passed to an injected double.
+
+**Rule:** The double must be minimal and raw: `def _fetch(**kwargs): calls.append(kwargs)`. Assert `set(calls[0]) == {...}` (or the values) directly on what the caller supplied, with no transformation between the call site and the recorded list.
+
+**Example:** r3 finding in `tests/unit/application/test_main_on_chain_wiring.py` (`test_runs_when_fetch_injected`): the shared `_recording_fetch` helper made the kwargs assertion tautological; a local raw-kwargs double exposed the orchestrator's actual call shape (`{"year", "output_dir"}`).
+
+## 127. Canary Tests for Env-Gated External Fetchers Replace the Fetcher, Not the Data Source
+
+**Principle:** Family C. When a canary test proves that an env-gated external collaborator degrades safely, exercising the REAL collaborator would itself perform the forbidden access (open the personal-data registry, hit the network); the canary must fake at the collaborator boundary and pin the degrade contract, while naming the autouse fixture that keeps the real collaborator out of tests.
+
+**Trigger:** Writing a test that sets the production env gate (e.g. an API key) and drives the real composition root to observe "the fetch aborts under test guards".
+
+**Rule:** Replace only the external-collaborator function (at the composition-root module it is bound from) with a double that records its kwargs and raises a sentinel error; assert (a) the injected call happened exactly once with the config-derived year, (b) the broad-`except` degrade WARNING names the sentinel error, and (c) no artifacts were written. Never let the real collaborator run just to see the guards bite: its FIRST operation may be the personal-data read the suite forbids, and the degrade handler swallows the guard exception quietly anyway. State in the docstring which autouse fixture is the actual gate for the real path.
+
+**Example:** `test_set_key_fetch_invoked_and_degrades` (tests/unit/application/test_main_composition_root.py): with `BERA_CHAIN_API_KEY` set and real `_main` + real `run_report`, `run_on_chain_fetch` is replaced because its first op opens the gitignored wallet registry; the aborting fake pins the DI-1 WARNING and the absence of `bera_transactions.csv`, and the docstring names `_pin_hermetic_env` (tests/conftest.py) as the gate keeping the real fetcher out.
+
+**See also:** lesson #123 (hermeticity guards); AGENTS.md Testing section (the env-pin autouse note).

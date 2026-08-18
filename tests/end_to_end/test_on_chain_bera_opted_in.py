@@ -10,7 +10,8 @@ The flag
 ``on_chain_th_wallets`` (config.ini ``[TAX JURISDICTION]
 ON_CHAIN_TH_WALLETS``, a comma-separated list of wallet labels) opts one or
 more wallets into the on-chain TH path. When the flag lists a wallet AND the
-on-chain CSV (``bera_transactions.csv``) is present, ``main.py`` runs:
+on-chain CSV (``bera_transactions.csv``) is present, the pipeline
+(``run_report``) runs:
 
     read_on_chain_csv -> BerachainProcessor.process -> project_on_chain_transactions
                       -> serialize_projected_rows_to_th_csv
@@ -48,7 +49,6 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -57,8 +57,8 @@ from tax_reporting.application.on_chain_th_substitution import (
     OnChainThSubstituter,
     OnChainThSubstitutionResult,
 )
+from tax_reporting.application.run_report import run_report
 from tax_reporting.domain.exceptions import ReportGenerationError
-from tax_reporting.main import _main
 
 # Repo root (tests/end_to_end/test_on_chain_bera_opted_in.py -> parents[2]).
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -448,11 +448,11 @@ class TestOnChainBeraOptedIn:
         ``except Exception`` that guards the collection-only fetcher.
 
         Injects the failure by monkeypatching ``BerachainProcessor.process``
-        to raise. Runs ``_main`` with ``on_chain_th_wallets=[BERA]`` and the
-        bera CSV present (so the opted-in parse path is reached). The failure
-        must propagate as ``ReportGenerationError`` (the opted-in try/except
-        wraps non-ConfigurationError exceptions into ReportGenerationError),
-        NOT be silently swallowed.
+        to raise. Runs ``run_report`` with ``on_chain_th_wallets=[BERA]`` and
+        the bera CSV present (so the opted-in parse path is reached). The
+        failure must propagate as ``ReportGenerationError`` (the opted-in
+        try/except wraps non-ConfigurationError exceptions into
+        ReportGenerationError), NOT be silently swallowed.
         """
         from tax_reporting.domain.exceptions import FileProcessingError
 
@@ -499,10 +499,10 @@ class TestOnChainBeraOptedIn:
         # example data) and resolve the IB tax-year hint to 2025 (matches the
         # 2025 Koinly dir so the year-mismatch guard does not skip crypto).
         monkeypatch.setattr(
-            "tax_reporting.main._resolve_koinly_directory", lambda *_args, **_kwargs: koinly_dir
+            "tax_reporting.application.run_report._resolve_koinly_directory", lambda *_args, **_kwargs: koinly_dir
         )
         monkeypatch.setattr(
-            "tax_reporting.main._infer_tax_year_hint_from_ib_data", lambda _ib: 2025
+            "tax_reporting.application.run_report._infer_tax_year_hint_from_ib_data", lambda _ib: 2025
         )
 
         # Build an opted-in PT/2025 jurisdiction.
@@ -524,19 +524,28 @@ class TestOnChainBeraOptedIn:
         )
 
         with pytest.raises(ReportGenerationError, match="On-chain TH substitution failed"):
-            _run_with_config(opted_in_config, tmp_path / "out", monkeypatch)
+            run_report(
+                source_file=_EXAMPLE_SOURCE,
+                output_dir=tmp_path / "out",
+                app_config=opted_in_config,
+                on_chain_fetch=None,
+                logger=logging.getLogger("test_opted_in_parse_failure"),
+            )
 
     def test_collection_only_path_still_soft_fails(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Flag UNSET + a fetcher failure -> WARNING + report still generates
-        (the broad ``except Exception`` is preserved for the collection-only path).
+        """Flag UNSET + an injected fetcher failure -> WARNING + report still
+        generates (the broad ``except Exception`` is preserved for the
+        collection-only path).
 
         ``on_chain_th_wallets`` is unset (empty list), so the opted-in parse
-        path is NOT reached. ``run_on_chain_fetch`` is monkeypatched to raise.
-        The broad ``except Exception`` around ``run_on_chain_fetch`` must
-        swallow it (collection-only soft-fail); ``extract.xlsx`` must still
-        generate and NO ``ReportGenerationError`` must escape.
+        path is NOT reached. The ``on_chain_fetch`` callable is INJECTED and
+        raises (the injection replaces the former env-gated
+        ``run_on_chain_fetch`` binding). The broad ``except Exception``
+        around the injected fetch call must swallow it (collection-only
+        soft-fail); ``extract.xlsx`` must still generate and NO
+        ``ReportGenerationError`` must escape.
         """
         from tax_reporting.domain.exceptions import FileProcessingError
         from tax_reporting.domain.jurisdiction import TaxJurisdictionConfig
@@ -559,70 +568,39 @@ class TestOnChainBeraOptedIn:
 
         out_dir = tmp_path / "out"
         out_dir.mkdir()
-        tmp_log = tmp_path / "audit.log"
         extract_path = out_dir / "extract.xlsx"
-
-        # Redirect the audit log to tmp (the reliable capture mechanism; _main
-        # reconfigures the root logger and detaches caplog mid-run).
-        from tax_reporting.infrastructure import logging_config as _logging_config
-
-        _real_configure = _logging_config.configure_application_logging
-
-        def _redirecting_configure(*args, **kwargs):  # type: ignore[no-untyped-def]
-            kwargs["log_file"] = tmp_log
-            return _real_configure(*args, **kwargs)
-
-        # Force the fetcher to run (env var set + a wallet present) and raise.
-        import os
-
-        real_getenv = os.getenv
-
-        def _getenv(key, default=None):  # type: ignore[no-untyped-def]
-            if key == "BERA_CHAIN_API_KEY":
-                return "some-key"
-            return real_getenv(key, default)
 
         def _boom_fetch(**kwargs):  # type: ignore[no-untyped-def]
             raise FileProcessingError("injected collection failure")
 
-        monkeypatch.setattr("tax_reporting.main.os.getenv", _getenv)
-        monkeypatch.setattr("tax_reporting.main.run_on_chain_fetch", _boom_fetch)
-        monkeypatch.setattr("tax_reporting.main.configure_application_logging", _redirecting_configure)
-        # Provide a wallet so the fetcher is reached (then it raises).
-        from datetime import date
-
-        from tax_reporting.application.on_chain_config import OnChainWalletConfig
-
-        monkeypatch.setattr(
-            "tax_reporting.application.on_chain_fetcher.load_on_chain_wallets",
-            lambda _year, **_kw: [
-                OnChainWalletConfig(
-                    chain="Berachain",
-                    chainid=80094,
-                    label="Example Wallet (BERA)",
-                    address="0x0000000000000000000000000000000000001111",
-                    native_ticker="BERA",
-                    start_date=date(2025, 2, 6),
-                    end_date=date(2025, 12, 31),
-                )
-            ],
-        )
-
-        with patch("tax_reporting.main.load_configuration_from_file", return_value=unset_config):
+        logger = logging.getLogger("test_collection_only_soft_fail")
+        with caplog.at_level(logging.WARNING, logger="test_collection_only_soft_fail"):
             # Must NOT raise (the broad except swallows the collection failure).
-            _main(source_file=_EXAMPLE_SOURCE, output_dir=out_dir, log_level="WARNING")
+            run_report(
+                source_file=_EXAMPLE_SOURCE,
+                output_dir=out_dir,
+                app_config=unset_config,
+                on_chain_fetch=_boom_fetch,
+                logger=logger,
+            )
 
         assert extract_path.exists(), (
             "extract.xlsx must still generate despite the collection-only fetch failure"
         )
-        log_text = tmp_log.read_text(encoding="utf-8") if tmp_log.exists() else ""
-        assert "Continuing without on-chain transaction data" in log_text, (
+        assert "Continuing without on-chain transaction data" in caplog.text, (
             "the broad except must log a WARNING and continue (collection-only soft-fail)"
+        )
+        assert "injected collection failure" in caplog.text, (
+            "the soft-fail WARNING must name the fetch failure"
         )
 
     def test_opted_in_reconciliation_diff(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Flag on + bera CSV present -> the run completes and the Crypto
-        Reconciliation sheet exists (high-level signal).
+        """Flag on + bera CSV present -> the run_report run completes and the
+        Crypto Reconciliation sheet exists (high-level signal).
+
+        The ``main()``-level variant of this e2e (driving the composition root
+        with the env pinned) lives in
+        ``tests/unit/application/test_main_composition_root.py``.
 
         NOTE: the detailed on-chain delta block (rows reclassified, gas added,
         etc.) is Task 12's reconciliation-sheet schema extension. For THIS
@@ -656,13 +634,13 @@ class TestOnChainBeraOptedIn:
             "tax_reporting.application.on_chain_th_substitution._find_repository_root",
             lambda: _PROJECT_ROOT,
         )
-        # Point ``_main`` at the synthetic koinly_dir + a 2025 IB year hint so
-        # the on-chain substitution + crypto load read the synthetic TH.
+        # Point ``run_report`` at the synthetic koinly_dir + a 2025 IB year
+        # hint so the on-chain substitution + crypto load read the synthetic TH.
         monkeypatch.setattr(
-            "tax_reporting.main._resolve_koinly_directory", lambda *_args, **_kwargs: koinly_dir
+            "tax_reporting.application.run_report._resolve_koinly_directory", lambda *_args, **_kwargs: koinly_dir
         )
         monkeypatch.setattr(
-            "tax_reporting.main._infer_tax_year_hint_from_ib_data", lambda _ib: 2025
+            "tax_reporting.application.run_report._infer_tax_year_hint_from_ib_data", lambda _ib: 2025
         )
 
         from tax_reporting.domain.jurisdiction import TaxJurisdictionConfig
@@ -684,8 +662,13 @@ class TestOnChainBeraOptedIn:
 
         out_dir = tmp_path / "out"
         extract_path = out_dir / "extract.xlsx"
-        with patch("tax_reporting.main.load_configuration_from_file", return_value=opted_in_config):
-            _main(source_file=_EXAMPLE_SOURCE, output_dir=out_dir, log_level="WARNING")
+        run_report(
+            source_file=_EXAMPLE_SOURCE,
+            output_dir=out_dir,
+            app_config=opted_in_config,
+            on_chain_fetch=None,
+            logger=logging.getLogger("test_opted_in_reconciliation_diff"),
+        )
 
         assert extract_path.exists(), "the opted-in run must complete and produce extract.xlsx"
         wb = openpyxl.load_workbook(extract_path)
@@ -1403,13 +1386,3 @@ class TestOnChainBeraOptedIn:
             "r2: the user's real Koinly TH must NOT be unlinked by the finally "
             "(the on_chain_th_csv != koinly_th guard stays)"
         )
-
-
-def _run_with_config(config, out_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Run ``_main`` with an injected Config (patched load_configuration_from_file).
-
-    Extracted so ``test_opted_in_parse_failure_raises`` can build the opted-in
-    config inline and still drive the full ``_main`` flow.
-    """
-    with patch("tax_reporting.main.load_configuration_from_file", return_value=config):
-        _main(source_file=_EXAMPLE_SOURCE, output_dir=out_dir, log_level="WARNING")

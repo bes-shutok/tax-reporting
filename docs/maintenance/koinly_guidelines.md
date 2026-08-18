@@ -266,7 +266,7 @@ enforces STRICT fail-fast at the crypto-loading boundary: when crypto data is
 present and the timezone cannot be resolved - either a configured jurisdiction
 with `timezone is None` (any non-PT country without `IANA_TIMEZONE`; PT
 auto-deduces `Europe/Lisbon`) OR no config loaded at all (`jurisdiction is
-None`) - `_load_crypto_tax_report` in `main.py` raises `ConfigurationError`
+None`) - `_load_crypto_tax_report` in `application/run_report.py` raises `ConfigurationError`
 instead of silently stamping naive dates as UTC, and `_main` propagates it. The
 loader `load_koinly_crypto_report` stays a pure parser and does not enforce
 this; the no-zone UTC-stamp is a library affordance in `parse_koinly_datetime`,
