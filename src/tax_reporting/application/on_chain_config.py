@@ -64,6 +64,13 @@ _MAX_LP_SNAPSHOT_SIZE = 2 * 1024 * 1024
 # so "latest" is rejected on load (M2: fail-loud).
 _UNPINNED_SUBGRAPH_VERSION = "latest"
 
+# The only chain the on-chain TH path validates/substitutes (plan Terms).
+# ONE definition shared by the validation runner's wallet filter and the
+# composition root's ON_CHAIN_TH_WALLETS precedence filter (review r1 F17:
+# two independently written copies of the literal could drift apart and
+# silently change the validated wallet set at the production flip).
+BERACHAIN_CHAIN = "Berachain"
+
 # Required keys for each wallet entry, in declaration order. The user
 # supplies only wallet identity; chainid/native_ticker/start_date/end_date
 # are derived internally (DI-2 restated: chain facts come from the
@@ -562,11 +569,14 @@ _MAX_CONTRACTS_FILE_SIZE = 1 * 1024 * 1024
 
 # Allowed ``kind`` tags. Closed set: the processor branches on these.
 # Extending the set is a deliberate act (add the tag here AND wire a branch
-# in the processor).
+# in the processor). ``self_wallet`` (C3, validation-harness plan Task 8)
+# marks the tracked wallet's OTHER own wallets so self-transfers classify
+# as Transfer, not Reward/spam or Unknown.
 _CONTRACT_KINDS: tuple[str, ...] = (
     "dex_router",
     "reward_distributor",
     "rebate_router",
+    "self_wallet",
 )
 
 

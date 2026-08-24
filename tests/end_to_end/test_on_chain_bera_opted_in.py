@@ -69,6 +69,9 @@ _EXAMPLE_CONTRACTS = (
 _EXAMPLE_LP_SNAPSHOT = (
     _PROJECT_ROOT / "resources" / "source" / "example" / "2025" / "berachain_lp_snapshot.json"
 )
+_EXAMPLE_POSITION_TOKENS = (
+    _PROJECT_ROOT / "resources" / "source" / "example" / "2025" / "bera_position_tokens.json"
+)
 # The committed example Koinly CG + income reports seed the synthetic koinly_dir
 # so the crypto pipeline's 3-file presence guard clears (TH is overwritten by
 # the synthetic on-chain-merged TH). Read from the committed example data.
@@ -252,6 +255,7 @@ class TestOnChainBeraOptedIn:
         substitution = OnChainThSubstituter(
             contracts_path=_EXAMPLE_CONTRACTS,
             lp_snapshot_path=_EXAMPLE_LP_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
         ).maybe_substitute(
             koinly_dir=koinly_dir,
             output_dir=tmp_path / "out",
@@ -334,6 +338,7 @@ class TestOnChainBeraOptedIn:
         substitution = OnChainThSubstituter(
             contracts_path=_EXAMPLE_CONTRACTS,
             lp_snapshot_path=_EXAMPLE_LP_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
         ).maybe_substitute(
             koinly_dir=koinly_dir,
             output_dir=tmp_path / "out",
@@ -397,6 +402,7 @@ class TestOnChainBeraOptedIn:
         substitution = OnChainThSubstituter(
             contracts_path=_EXAMPLE_CONTRACTS,
             lp_snapshot_path=_EXAMPLE_LP_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
         ).maybe_substitute(
             koinly_dir=koinly_dir,
             output_dir=tmp_path / "out",
@@ -488,11 +494,22 @@ class TestOnChainBeraOptedIn:
         def _fake_load_lp_snapshot(path):  # type: ignore[no-untyped-def]
             return _oc.load_lp_snapshot(_EXAMPLE_LP_SNAPSHOT)
 
+        def _fake_load_position_tokens(path):  # type: ignore[no-untyped-def]
+            from tax_reporting.infrastructure.on_chain.position_token_registry import (
+                load_position_token_registry,
+            )
+
+            return load_position_token_registry(_EXAMPLE_POSITION_TOKENS)
+
         monkeypatch.setattr(
             "tax_reporting.application.on_chain_th_substitution.load_contracts", _fake_load_contracts
         )
         monkeypatch.setattr(
             "tax_reporting.application.on_chain_th_substitution.load_lp_snapshot", _fake_load_lp_snapshot
+        )
+        monkeypatch.setattr(
+            "tax_reporting.application.on_chain_th_substitution.load_position_token_registry",
+            _fake_load_position_tokens,
         )
         # Point ``_main`` at the synthetic koinly_dir (so the on-chain
         # substitution + crypto load read the synthetic TH, not the real
@@ -624,11 +641,22 @@ class TestOnChainBeraOptedIn:
         def _fake_load_lp_snapshot(path):  # type: ignore[no-untyped-def]
             return _oc.load_lp_snapshot(_EXAMPLE_LP_SNAPSHOT)
 
+        def _fake_load_position_tokens(path):  # type: ignore[no-untyped-def]
+            from tax_reporting.infrastructure.on_chain.position_token_registry import (
+                load_position_token_registry,
+            )
+
+            return load_position_token_registry(_EXAMPLE_POSITION_TOKENS)
+
         monkeypatch.setattr(
             "tax_reporting.application.on_chain_th_substitution.load_contracts", _fake_load_contracts
         )
         monkeypatch.setattr(
             "tax_reporting.application.on_chain_th_substitution.load_lp_snapshot", _fake_load_lp_snapshot
+        )
+        monkeypatch.setattr(
+            "tax_reporting.application.on_chain_th_substitution.load_position_token_registry",
+            _fake_load_position_tokens,
         )
         monkeypatch.setattr(
             "tax_reporting.application.on_chain_th_substitution._find_repository_root",
@@ -710,6 +738,7 @@ class TestOnChainBeraOptedIn:
         substitution = OnChainThSubstituter(
             contracts_path=_EXAMPLE_CONTRACTS,
             lp_snapshot_path=_EXAMPLE_LP_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
         ).maybe_substitute(
             koinly_dir=koinly_dir,
             output_dir=tmp_path / "out",
@@ -763,6 +792,7 @@ class TestOnChainBeraOptedIn:
         substitution = OnChainThSubstituter(
             contracts_path=_EXAMPLE_CONTRACTS,
             lp_snapshot_path=_EXAMPLE_LP_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
         ).maybe_substitute(
             koinly_dir=koinly_dir,
             output_dir=tmp_path / "out",
@@ -854,6 +884,7 @@ class TestOnChainBeraOptedIn:
         substituter = OnChainThSubstituter(
             contracts_path=_EXAMPLE_CONTRACTS,
             lp_snapshot_path=_EXAMPLE_LP_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
         )
         # First run (None branch: no Koinly TH on disk).
         first = substituter.maybe_substitute(
@@ -935,6 +966,7 @@ class TestOnChainBeraOptedIn:
         substitution = OnChainThSubstituter(
             contracts_path=_EXAMPLE_CONTRACTS,
             lp_snapshot_path=_EXAMPLE_LP_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
         ).maybe_substitute(
             koinly_dir=koinly_dir,
             output_dir=tmp_path / "out",
@@ -991,7 +1023,7 @@ class TestOnChainBeraOptedIn:
 
     def test_opted_in_provenance_count_matches_under_case_mismatch(self, tmp_path: Path) -> None:
         """Review r1 F2: the reconciliation provenance lookup must use the SAME
-        normalization (``_norm_label``) as the merge drop.
+        normalization (``normalize_wallet_label``) as the merge drop.
 
         The merge drops Koinly rows on NORMALIZED labels (case-insensitive), but
         ``_build_on_chain_reconciliation_record`` previously looked up
@@ -1020,7 +1052,7 @@ class TestOnChainBeraOptedIn:
         bera_csv_dir.mkdir(parents=True)
         # bera CSV wallet_label is the LOWERCASE form; the configured opted-in
         # value below is the canonical mixed-case form. These differ in case but
-        # normalize to the same key under ``_norm_label``.
+        # normalize to the same key under ``normalize_wallet_label``.
         (bera_csv_dir / "bera_transactions.csv").write_text(
             _bera_csv_rows(wallet_label="ledger berachain (bera)"), encoding="utf-8"
         )
@@ -1029,6 +1061,7 @@ class TestOnChainBeraOptedIn:
         substitution = OnChainThSubstituter(
             contracts_path=_EXAMPLE_CONTRACTS,
             lp_snapshot_path=_EXAMPLE_LP_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
         ).maybe_substitute(
             koinly_dir=koinly_dir,
             output_dir=tmp_path / "out",
@@ -1060,7 +1093,7 @@ class TestOnChainBeraOptedIn:
         assert entry.row_count >= 1, (
             f"F2: the opted-in wallet's on-chain row_count must reflect the merged "
             f"rows (expected >=1), not 0; the provenance lookup must use "
-            f"_norm_label like the merge drop (got {entry.row_count})"
+            f"normalize_wallet_label like the merge drop (got {entry.row_count})"
         )
 
     def test_opted_in_label_not_in_koinly_th_raises(self, tmp_path: Path) -> None:
@@ -1092,6 +1125,7 @@ class TestOnChainBeraOptedIn:
         substituter = OnChainThSubstituter(
             contracts_path=_EXAMPLE_CONTRACTS,
             lp_snapshot_path=_EXAMPLE_LP_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
         )
         with pytest.raises(
             ReportGenerationError, match="not found in Koinly TH"
@@ -1164,6 +1198,7 @@ class TestOnChainBeraOptedIn:
             substitution = OnChainThSubstituter(
                 contracts_path=_EXAMPLE_CONTRACTS,
                 lp_snapshot_path=_EXAMPLE_LP_SNAPSHOT,
+                position_tokens_path=_EXAMPLE_POSITION_TOKENS,
             ).maybe_substitute(
                 koinly_dir=koinly_dir,
                 output_dir=tmp_path / "out",
@@ -1231,6 +1266,7 @@ class TestOnChainBeraOptedIn:
             substitution = OnChainThSubstituter(
                 contracts_path=_EXAMPLE_CONTRACTS,
                 lp_snapshot_path=_EXAMPLE_LP_SNAPSHOT,
+                position_tokens_path=_EXAMPLE_POSITION_TOKENS,
             ).maybe_substitute(
                 koinly_dir=koinly_dir,
                 output_dir=tmp_path / "out",
@@ -1351,6 +1387,7 @@ class TestOnChainBeraOptedIn:
         substituter = OnChainThSubstituter(
             contracts_path=_EXAMPLE_CONTRACTS,
             lp_snapshot_path=_EXAMPLE_LP_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
         )
         with pytest.raises(expected_exc_type, match=expected_match) as excinfo:
             substituter.maybe_substitute(

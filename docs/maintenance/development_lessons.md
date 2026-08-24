@@ -2548,3 +2548,236 @@ For a personal authority document, identity fields and signing fields have diffe
 **Example:** `test_set_key_fetch_invoked_and_degrades` (tests/unit/application/test_main_composition_root.py): with `BERA_CHAIN_API_KEY` set and real `_main` + real `run_report`, `run_on_chain_fetch` is replaced because its first op opens the gitignored wallet registry; the aborting fake pins the DI-1 WARNING and the absence of `bera_transactions.csv`, and the docstring names `_pin_hermetic_env` (tests/conftest.py) as the gate keeping the real fetcher out.
 
 **See also:** lesson #123 (hermeticity guards); AGENTS.md Testing section (the env-pin autouse note).
+
+## 128. Plan-Embedded Forbidden-Pattern Greps Must Be Self-Match Immune
+
+**Principle:** Family H (verify the real thing, not the abstraction). A validation command inside a plan file that greps for a forbidden literal (e.g. a renamed artifact) matches the plan's own command text once the plan is committed, so the gate exits 1 forever. Bracket-escape one character in the pattern literal (`artifact[.]yaml`, not `artifact.yaml`) so the document's own escaped text cannot satisfy the regex while genuine stale references still match; note beside the command that the escape is intentional so nobody "normalizes" it; verify the gate against the tracked state (intent-to-add) rather than the working tree. Witness: validation-harness plan review r2 found the `.yaml` sweep gate self-matching the plan's own line after `git add -N` simulation. See plans-skill Validation Commands authoring rules; user-level lessons #204.
+
+The same immunity applies to prose inside the guarded files: a docstring or comment asserting a pattern's absence must not quote the deny literal verbatim (write "DictReader-based CSV parsing", not the full dotted import), or the guarded file trips its own gate. Witness: an on-chain comparator module docstring quoted the denied reader literal while asserting its absence; rephrased before the gate ran.
+
+## 129. Project-corpus citations use prose, never the user-corpus token
+
+**Principle:** Family H (verify the real thing, not the abstraction). A citation token that is canonical in the user-level corpus is a reserved word in the project corpus; the file-independence conformance test enforces this, but only in a suite run.
+
+**Trigger:** A session appends to or edits `docs/maintenance/development_lessons.md` (a `learn` capture or a plan-authoring commit that records a lesson), especially when cross-referencing a user-level lesson.
+
+**Rule:** In the project corpus, cite user-level lessons as prose (`user-level lessons #N`), never the raw user-corpus token `UL[#]N` (bracket escape intentional per lesson #128: this corpus must not contain the forbidden substring, not even inside this lesson). Before committing any edit to the corpus file, run `uv run pytest tests/unit/test_lessons_corpus_conformance.py`; "docs-only commit" is not a test-skip reason when a pure-file assertion covers the edited file. A full-suite run that PREDATES the final content edit covers nothing about the commit: the gate must run on the post-edit tree, however cheap the tier.
+
+**Example:** A plan-authoring commit appended project lesson #128 ending with a raw user-corpus citation; the suite went red on `test_project_file_independence` only at the next implementation task's full-suite gate, forcing an out-of-scope one-token fix unrelated to that task. Repeated 2026-08-22 despite this lesson: the full suite ran GREEN immediately BEFORE appending lesson #136 (which cited the user corpus token), the commit went in without re-running any gate on the post-edit tree, and the red suite surfaced only when a plan-review sub-agent measured it three turns later - a pre-edit green run is not post-edit verification, and the tier that covers the edited file costs under a second.
+
+## 130. Block-Count Assertions Anchor to a Per-Block Unique Line
+
+**Principle:** Family H (verify the real thing, not the abstraction). A test that counts how many structural blocks a generated text file contains must not count the block-opening marker literal: the file's own header/help template legitimately documents the marker in prose, so the count measures documentation plus blocks.
+
+**Trigger:** Asserting the number of rendered template blocks (TOML arrays of tables, INI sections, fenced blocks) in a file whose header comment explains the format and mentions the marker by name.
+
+**Rule:** Key the count to a substring only a real rendered block contains (its identifying key line, e.g. `signature = "<expected-id>"`), never to the marker literal. An exact-equality count false-fails (header mention plus one block = 2 vs 1); a `>= 1` count false-passes when zero real blocks exist but the header mentions the marker. Both modes disappear when the anchor is the per-block unique line.
+
+**Example:** A dispositions-file test asserted `text.count("[[clusters]]") == 1` after appending one cluster block; the file header reads "appends one [[clusters]] template block", so the count returned 2 and the test failed despite exactly one block existing. Re-keying the assertion to the block's `signature = "<SIG>"` line fixed it without touching the implementation.
+
+**See also:** lesson #128 (deny-direction self-match immunity via bracket-escaping; here escaping is wrong because real blocks must match); user-level lessons #204; AGENTS.md Testing (structural identification over hardcoded value exclusions).
+
+## 131. Interrupted TDD Tasks Recover RED Evidence in a HEAD Worktree
+
+**Principle:** Family H (verify the real thing, not the abstraction). RED evidence is an observed failure of each new test at the pre-change baseline, not a narrative claim. When a TDD implement step is interrupted after GREEN-phase production edits are applied, the working tree can no longer produce that observation; the relaunch must neither skip RED nor reset the tree to fake it.
+
+**Trigger:** Taking over an interrupted TDD task (quota cutoff, crash) whose working tree already mixes new tests with production changes and whose implement log records no RED run.
+
+**Rule:** First audit the partial tree per file against HEAD (`git diff <file>`), classifying each task file COMPLETE or PARTIAL before writing anything. Then recover RED mechanically: `git worktree add <tmp> HEAD`, copy ONLY the new/modified test files in, run the new tests there; each new-behavior test must fail for the expected reason and negative clauses must pass; `git worktree remove --force <tmp>` and confirm the main tree is untouched. Never `git stash` and never reset the working tree to obtain RED.
+
+**Example:** Task 8 of the 2026-08-18 on-chain validation harness plan: the predecessor was interrupted after applying loader/processor changes, leaving no RED evidence and a processor calling helpers that were never defined. The relaunch audited all task files, then proved RED at HEAD with only the three test files copied into a temp worktree: 6 failed for the exact expected reasons, 47 passed, both negative clauses green.
+
+**See also:** lesson #27 (TDD RED then GREEN), lesson #46 (revert the guarded change and confirm the test fails; the worktree is the safe mechanism when that change is uncommitted and interleaved), lesson #71 (worktree ops can revert the main index; use a temp path and verify the tree afterwards), user-level lessons #69 (worktree over stash for transient clean trees).
+
+## 132. Check the HEAD Blob Is Format-Clean Before Running the Formatter
+
+**Principle:** Family H (verify the real thing, not the abstraction), sibling of #72. A linter reports; a formatter rewrites. When formatting is unenforced (no CI/pre-commit), the committed baseline drifts from the current formatter version, so formatting a touched file rewrites large regions of pre-existing code the task never touched.
+
+**Trigger:** About to run an auto-formatting command (`ruff format`) over a file with uncommitted changes in a repo whose formatting is not CI-enforced.
+
+**Rule:** First verify the file's HEAD blob is already format-clean under the installed tool version (`git show HEAD:<file> | uv run ruff format --check -`; a non-zero exit means the baseline itself is not format-clean). If it is not, do not run the formatter; hand-format only your own hunks, matching surrounding style. If churn already happened, reset the file to HEAD and re-apply only the intended hunks, comparing blob hashes where an audit snapshot exists, then re-run the suite.
+
+**Example:** Task 8 of the 2026-08-18 on-chain validation harness plan: `uv run ruff format` churned about 200 pre-existing lines across two files whose HEAD blobs themselves would be rewritten by the current formatter (tool-version drift; the repo does not enforce formatting). Recovery: reset both files to HEAD, re-apply the intended hunks by hand, confirm one restored file's blob hash matched the pre-format audit; full suite stayed green.
+
+**Witness (recurrence, 2026-08-24 bera-unknown-followups review r4 fixes):** `uv run ruff format` on two edited files churned ~150-480 pre-existing unformatted lines each; both HEAD blobs fail `ruff format --check`. Same recovery: `git checkout --` both files, re-apply only the intended edits, validate with `ruff check` instead.
+
+**See also:** lesson #72 (`ruff check` on the HEAD blob for `# noqa` attribution; same unenforced-baseline root cause, reporting tool vs this mutating-tool failure mode); user-level lessons #68 (auto-fix rewriting re-export import blocks).
+
+## 133. Tasks Changing Behavior After the Plan's Doc Task Re-Sweep Layer 2 Docs
+
+**Principle:** Family D (single source of truth) - the code is the source and the Layer 2 doc is a view; a documentation task earlier in the same plan pins only the view that existed when it ran.
+
+**Trigger:** Implementing a plan task that changes a module's runtime behavior (new rules, changed semantics) when an EARLIER task in the same plan already wrote or updated the Layer 2 doc describing that module.
+
+**Rule:** A behavior-changing task must sweep the Layer 2 docs (`docs/maintenance/`, `docs/architecture/`, `README.md`) for the module's behavior description in the SAME task, not only the plan file. The doc task's checked `[x]` and the current task's Files list naming only the plan file are not evidence the Layer 2 docs are current; the later task's edits are exactly what invalidated them.
+
+**Example:** Task 10 of the 2026-08-18 on-chain validation harness plan wrote `docs/maintenance/on_chain_validation.md` describing the comparator's PD-010 equivalence rules. Task 11 (real-data walk-forward tuning) then landed four comparator rendering-variance rules (ticker-case folding, mirrored-row single counting, gas-folded native amount, compatibility widening), updating the module docstring and the plan outcomes but NOT the maintenance doc - its Compare step still described the pre-tuning semantics. Caught in the Task-11 `done` verification pass and fixed there (rendering-variance paragraph added to the Compare step).
+
+**See also:** AGENTS.md doc-hierarchy rule ("Update in-session when behavior or rules change"); the doc-drift grep backstops (lessons #55, #58, #70 - rendered-value sweeps; this is the plan-sequencing analog: the sweep must be re-run by whichever LATER task invalidates the doc).
+
+## 134. Two-Source Total Disagreement: Compare Underlying Record Cardinality Before Ruling a Side Wrong
+
+**Principle:** Family H (verify the real thing, not the abstraction). The real thing is the per-key record count on both sides; an aggregate total, a ratio, or a plausibility argument about the other side's aggregation is the abstraction.
+
+**Trigger:** Two independent sources report different totals for the same entity (per-tx reward sums, per-day volumes, per-symbol amounts) and the drafting instinct is to hedge between "our side dropped something" and "their side merged something".
+
+**Rule:** When sources disagree on a total, count the underlying records per key on BOTH sides before writing a root cause. A source returning FEWER records for the same key is incomplete, not wrong about arithmetic; a source carrying MORE records for the same on-chain key cannot plausibly have invented them. A per-row-scaled tolerance also leaks the counterparty's row count - read it as cardinality evidence. Disposition against the short side's fetch path, and verify the mechanism with one direct query (production reader on the source file) before committing the root-cause wording.
+
+**Why:** The first draft of the 2025 claim-cluster root cause hedged "Koinly merged two claims (or our side dropped a leg)" - both branches looked plausible from the amounts alone.
+
+**Shape:** Ours-roughly-X%-below-theirs across several assets in one entity, with no constant ratio (a constant ratio would suggest a fee or rounding rule instead).
+
+**Example:** The 2025 on-chain-vs-Koinly validation: our per-asset claim sums ran ~25-35% below Koinly's. Per-tx comparison: the export carried 81 legs where Koinly had 101 rows for the same tx hash (18 eWBERA-4 and both sWBERA transfers absent, same receiving wallet) - fetch-side per-transaction truncation, settled in one query. Sibling of #116 (history-level `max_rows` truncation ceiling); this is per-transaction completeness.
+
+**See also:** #116 (block-0 pagination ceiling); the harness's tolerance-scaling rule (`DISPLAY_TOLERANCE_PER_ROW * koinly_rows_in_bucket`) documented in `on_chain_validation.md`.
+
+## 135. Append-Only Decision Files: Every Block Must State Its Current Status Accurately
+
+**Principle:** Family D (single source of truth). The disposition/status field is the block's truth; a template comment baked in at append time becomes a second source that drifts silently when analysis or rules change.
+
+**Trigger:** A harness appends template blocks to a human-facing append-only file (dispositions TOML, review ledgers) and the template comment carries a default proposal; later analysis revises proposals, families stop occurring, or decisions get recorded by other routes.
+
+**Rule:**
+1. Template comments never bake in a default proposal value; they carry status words that stay true ("awaiting ruling") or nothing.
+2. When a block's reality changes, update its comment/status text in the same pass: append-only protects CONTENT and rulings, not stale labels.
+3. Non-occurring blocks get an explicit "no ruling needed" marker so the reader's attention funnels to open items; the file owner asked to see ONLY what genuinely needs input.
+4. Appended empty blocks for NEW signatures carry no explanation by default - the pass that drafts root causes owns filling them with plain-English evidence.
+
+**Why:** The file owner opened the dispositions TOML after a re-run, saw the identical stale `# PROPOSED: acceptable_difference` comment on every drafted block (including blocks actually proposing missing_rule), found newly appended blocks empty, and concluded the file was untouched and misleading.
+
+**Shape:** A human-facing register where re-runs change nothing visually (append-only) AND every block carries the same boilerplate comment.
+
+**Example:** The 2025 dispositions TOML rebuild: accurate per-block proposals, plain-English root causes, "not occurring - no ruling needed" markers on dead blocks, `agent-decided` markers with evidence, and a header explaining the append-only mechanics plus where sample evidence lives (`on_chain_validation.md`).
+
+**See also:** `on_chain_validation.md` (Disposition vocabulary and the decision-authority delegation); coding_guidelines #6 (user-facing labels self-explanatory - this is the register-file analog).
+
+## 136. Aggregator Token Labels Are Temporal Views: Anchor Identity on the Contract
+
+**Principle:** Family D (Single source of truth) - the token contract's address and its declared `symbol()`/`name()` are the identity source; a third-party aggregator/explorer label (Etherscan `tokenSymbol`, Koinly currency) is a view over that source and can be re-served differently over time, even for an unchanged contract address.
+
+**Trigger:** Any join, alias, or user-facing rendering keyed on a token ticker that originates from an external report or explorer export, especially when comparing two exports fetched at different times (a re-fetch after a fix, a fresh validation baseline), or when a previously-matching comparison suddenly degrades with "on-chain X vs Koinly 0" half-empty buckets on BOTH assets.
+
+**Rule:**
+1. Treat third-party ticker labels as temporal. The same contract address can carry different labels across fetches: the 2026-08-22 Etherscan metadata refresh renamed `0xfcbd14dc...` from HONEY to BUSD between two fetches three weeks apart (313 rows relabeled with no data change).
+2. When a label-keyed join degrades after a re-fetch, scope the change with a full-row multiset diff (Counter over full-row tuples, diffed both directions; count-equality can conceal whole-row relabeling), then query the contract itself (`eth_call symbol()`/`name()`) for ground truth before blaming either side.
+3. Bridge stale-vs-current labels with an evidenced alias-table entry (per-contract evidence: address unique in the dataset, per-tx amounts equal once merged; `_ISSUER_TICKER_ALIASES`, PD-010 amendment #3), and keep the fail-loud ticker-collision guard as the backstop when an alias would merge two contracts.
+4. Production identity stays address-keyed (CSV `token_address`, LP snapshot, chain registry); label aliases live only in the validation comparator.
+
+**Example:** The pagination-drain re-fetch (2026-08-22) recovered 84 missing legs but matched DROPPED 300 -> 275: the same refresh that accompanied the re-fetch window relabeled the stablecoin contract, splitting equal per-tx amounts into complementary HONEY/BUSD half-empty buckets. `eth_call` proved the contract now declares BUSD ("Bera USD"); the issuer-rename alias entry recovered matched to 303 and closed the claim cluster.
+
+**See also:** #134 (compare cardinality before ruling a side wrong); `docs/maintenance/on_chain_validation.md` comparator rules (issuer ticker aliases); PD-010 amendment #3 in `project-decisions.md`.
+
+## 137. Routing-Contract Gates Must Scan Carrier Legs; Validate on Real Data
+
+**Principle:** Family H (verified the abstraction, not the real thing). A routing rule derived from a real residual must be validated against that residual's actual leg structure; a synthetic positive test that simplifies the shape passes GREEN while the rule never fires on the data that motivated it.
+
+**Trigger:** Writing a classifier/matcher gate keyed on a counterparty address (registry member, allow-list) for transactions where a router contract spends gas; declaring a "still occurring" gate closed after a code fix.
+
+**Rule:**
+1. When membership is inferred from a recipient address, scan ALL out-direction legs including the zero-value native gas carrier (the tx-level `to`), not only economic legs: routing/target contracts often appear solely as the carrier recipient while the economic legs go to pools.
+2. Derive the positive test fixture from the real transaction's actual leg list (or re-run the harness) before declaring the gate closed; a synthetic shape that differs in one routing detail is a false GREEN.
+3. Name the gate scope in the dispatch-order docstring in the same change when a shape slot's semantics widen.
+
+**Why:** Pass 1 of the zap-deposit rule checked only the single economic leg's recipient (the AMM pool, not a member) and passed RED/GREEN on a synthetic fixture, yet the harness still reported the signature occurring; the registry-member vault was only the carrier leg's recipient.
+
+**Shape:** GREEN unit tests plus a still-failing end-to-end occurrence gate after a "fix".
+
+**Example:** The 2026-08-23 Unknown-family residual: a zap deposit whose BUSD leg went to a non-member pool and whose zero-value BERA carrier leg went to the position-NFT vault; extending the gate to `_any_out_leg_recipient_is_registry_member(legs)` over the unfiltered leg list closed the signature (final harness: zero of 8 still occurring).
+
+**See also:** #136 (anchor identity on the contract); `docs/maintenance/on_chain_validation.md` harness gate semantics; AGENTS.md section 3 (on-chain TH validation harness is user-run).
+
+## 138. Pagination Drain Loops Keep a Termination Guarantee When Switching Dedup Strategy
+
+**Principle:** Family A (silently wrong result accepted). Replacing the termination mechanism of a loop (dedup-by-identity instead of positional slicing) also removes its only no-progress bound; any input where the new key collapses to one value turns the loop unbounded.
+
+**Trigger:** Editing a positional pagination drain (slice-while-nonempty over an ordered client API) to deduplicate by a per-row identity tuple instead, or building synthetic test rows for such a loop via a row-helper that fills only the fields the test asserts on.
+
+**Rule:**
+1. A pagination loop must retain an explicit termination guarantee (no-progress break or `max_rows` cap) independent of the dedup key; the dedup strategy only narrows what is consumed, never what stops the loop.
+2. Synthetic test rows for a loop keyed on row identity must populate the identity fields production rows carry; otherwise every fixture row collapses to one key and exercises a code path production never takes.
+3. A loop that both accumulates memory and logs per iteration is a memory-amplification hazard: run the new fixture under pytest with a timeout before declaring the change safe.
+
+**Why:** The 2026-08-23 review-fix switched the block-boundary drain to identity dedup; the test row-helper omitted identity fields, so all rows shared one identity tuple, the queue never drained, and the WARNING-per-row accumulation exceeded 20 GB under pytest and forced a machine reboot. The revert restored positional slicing while keeping the parse guard and a no-progress guard.
+
+**Shape:** A "more correct dedup" refactor plus a test run that hangs or balloons memory instead of failing.
+
+**See also:** #59 (fixture values at production column indices); the `_drain_boundary_block` docstring in `src/tax_reporting/infrastructure/on_chain/etherscan_client.py` (identity-dedup deferred until fixtures carry real identity fields).
+
+## 139. Data-Registry Provenance Outranks a Coarse User Design Decision in Plans
+
+**Principle:** Family D (single source of truth). A gitignored data registry's per-entry `provenance` field records the ground-truth classification contract for that entry; a user's coarse plan-level design decision cannot silently widen it. When the two conflict, the plan must encode a discriminating rule and surface the refinement to the user, not pick one.
+
+**Trigger:** Writing a plan task that changes a classifier rule gated on a data registry (position-token registry, LP snapshot, origin mappings) based on an abstract design decision, without re-reading the registry entries' provenance text.
+
+**Rule:**
+1. Before a plan task widens a registry-gated rule, read every registry entry's `provenance` and check none of them states a narrower intended semantics (e.g. "identity data, not a per-cluster rule").
+2. If a provenance statement conflicts with the requested widening, split the rule on a discriminating signal (e.g. vault-target vs counterparty match) so existing baseline classifications are preserved, and report the refinement to the user for veto.
+
+**Why:** The 2026-08-23 follow-ups plan encoded a user decision "LST unstakes classify LiquidityWithdraw" as a counterparty-match rule; the registry's LBGT entry provenance explicitly said its bidirectional exchanges classify via the existing Swap shape. The counterparty rule would have silently reclassified that 8-tx baseline family; the plan-review round caught it and the rule was split on a vault-target discriminator.
+
+**Shape:** A plan review finding that a new rule changes classification of existing baseline records the registry already documents differently.
+
+**See also:** #136 (aggregator labels are temporal views; anchor identity on the contract); AGENTS.md "wallet labels are discovery hints only" constraint.
+
+## 140. Asserting CLI Logging Output: caplog Is Dead After `configure_application_logging` Clears Root Handlers
+
+**Principle:** Family H (Verify the real thing, not the abstraction). pytest's `caplog` works by attaching its own capture handler to the root logger; any code path that calls `configure_application_logging()` (the `cli()` entry does) CLEARS root handlers, dropping caplog's handler mid-test, so `caplog.records` ends up empty and the assertion fails with "got 0". caplog is not merely bypassed here (as in #66); it is actively destroyed by the code under test.
+
+**Trigger:** Writing a test that invokes `cli()` (or anything calling `configure_application_logging`) and asserts on a log record, and reaching for `caplog.at_level(...)` / `caplog.records`.
+
+**Rule:**
+1. For tests that exercise `cli()`, assert logging output by reading the tmp-cwd log file (`logs/tax-reporting.log` under `tmp_path`), not via `caplog`. Follow the existing idiom of the file-not-found CLI test.
+2. If a console StreamHandler mirrors the record to stdout, do NOT also assert the traceback text is absent from stdout; the design legitimately mirrors it there. Guard the actual contract instead (e.g. `pytest.raises(SystemExit)` with the exit code; no exception propagating out of `cli()`).
+
+**Why:** During the 2026-08-23 validation-CLI crash-wrapper task, the crash test initially used `caplog`; `configure_application_logging` had cleared root handlers and the `logger.exception` record was only observable in the log file. Drafted negative stdout assertions also contradicted the logging design (StreamHandler mirrors the record), so they were dropped in favor of the SystemExit assertion.
+
+**Shape:** A CLI-level test where `caplog.records` is empty despite production logging demonstrably firing.
+
+**See also:** #66 (caplog bypasses logging config; assert production-call-site file contents); #68 (caplog `rec.name` filter mismatch).
+
+## 141. Coverage Gates Over Matched Sets: ANY-Match Fails Open on Mixed Batches
+
+**Principle:** Family B (Error-policy propagation): a coverage gate whose degraded state is "silently clean" is an error-policy hole; unmatched items must surface, not pass. A coverage gate written as set-intersection ANY-match (`covered & required`) declares a batch clean when ONE required item is covered, even while sibling items remain unmatched; the correct predicate is subset (`required - covered == empty`). Missing identifiers on either side must NOT be filtered symmetrically: filtering both sets makes an all-missing batch vacuously clean (fail-open); keep a non-coverable sentinel on the required side.
+
+**Trigger:** Writing or reviewing a "all counterparties matched, else review-flag" gate over per-row address/identifier sets where some identifiers may be absent or unnormalizable.
+
+**Rule:**
+1. Express coverage as subset semantics: `unmatched = required - covered`; clean iff empty; the review reason must name the uncovered items.
+2. Exclude missing identifiers from the covering set, but keep a `"<missing>"` sentinel in the required set so absent values are never coverable.
+3. When a review finding proposes a literal fix, re-derive it against the CURRENT semantics if a sibling fix in the same round already changed the matching rule (a "filter both sets" fix written against ANY-match fails open once subset semantics land).
+
+**Why:** The on-chain shape-6 LP-member gate used `member_recipients & in_senders` ANY-match, so a mixed batch (one vault-covered leg, one uncovered leg) passed clean with no review flag. Review r1 F2 switched to subset semantics; F3's literal suggested fix (filter BOTH sets of missing addresses) was rejected because it would have made an all-missing-recipient transaction vacuously clean; the fail-closed sentinel was implemented instead.
+
+**Shape:** A gate whose boolean comes from set intersection rather than difference; a RED test where a batch with one covered and one uncovered item passes clean.
+
+**Scope confirmation (2026-08-24 r2 of the 2026-08-23 on-chain plan):** the ANY-match hole had a SIBLING branch: the registry-member leg of the same shape-6 dispatch still used `any()` after the r1 LP-side fix landed, so a mixed registry batch (one vault-target leg + one DEX-pair leg) again passed clean. When a review fix corrects one branch of a symmetric dispatch, grep the sibling branches for the same predicate in the SAME round (per AGENTS.md "sibling aggregators use byte-identical patterns"). The sentinel itself was also spoofable: the source reader does no format validation, so a raw field containing the literal `<missing>` string could self-cover; the covering-set exclusion now rejects both `""` and the sentinel literal. Fix shape: fire the gate only on a vault-target leg (preserving the single-leg fall-through characterization), compute non-vault recipients over the member legs, and flag with a disposal-worded WARNING naming them. Same family, no new lesson.
+
+**Scope confirmation (2026-08-24 r3 of the same plan):** the family crossed a branch boundary a third time: the LP-member dispatch branch `return`s before the registry-member branch runs, so once the LP subset predicate was satisfied, a same-transaction registry-member leg to a non-vault recipient passed clean with the registry gate never consulted. When a symmetric dispatch has EARLY-RETURN branches, a fix in one branch must re-derive coverage for inputs whose legs span BOTH branches (mixed batches), not just per-branch inputs; the fix folds registry-member non-vault out-legs into the LP branch's review computation so clean requires both predicates.
+
+**See also:** AGENTS.md "Verification/hygiene guards must fail closed"; #106 (sentinel selection when a value is valid); AGENTS.md "sibling aggregators use byte-identical patterns or a shared helper".
+
+## 142. Assert on Structured Message Delimiters, Not Prose Parentheticals
+
+**Principle:** Family B (Error-policy propagation): a test that asserts on log/message text couples the suite to incidental wording; when a review fix rewords a message, the assertion breaks (or worse, silently stops testing the exclusion it pinned).
+
+**Trigger:** Writing `assert "..." not in msg` / substring-parsing assertions against a WARNING/reason string that a later fix may reword.
+
+**Rule:** When an assertion must extract a set from a message (e.g. the uncovered recipients a review reason names), parse between STABLE structured delimiters the message format guarantees (`label: ` before, ` received` after), never between a parenthetical aside and the next token; prefer asserting membership of the parsed set over the raw phrasing.
+
+**Why:** The mixed-batch exclusion test split on the literal `" (in-leg senders"`, a parenthetical added by the r1 fix wording; review r3 F2 replaced it with `msg.split("recipient(s) ", 1)[1].split(" received", 1)[0]`, which survives rewording of the parenthetical while still verifying the same exclusion set.
+
+**Shape:** A test regex/split key containing an opening parenthesis or punctuation that belongs to sentence prose, not a format contract.
+
+**See also:** AGENTS.md "Review flags must give specific actionable explanations" (the reason text is free to change; the structured delimiters are the contract).
+
+## 143. Prefer Early-Return Guards Over `assert` Narrowing in Production Helpers
+
+**Principle:** Family B (error-policy propagation), sibling of the S101 lint intent. An `assert` used only to narrow `Optional` state for a type checker is a stripped-under-`-O` no-op guard and a full-ruleset lint violation (Ruff S101), not a contract.
+
+**Trigger:** Adding a new helper inside production code that consumes an `Optional` field already gated `is not None` by both callers, and the draft uses `assert self.x is not None` to satisfy the type checker.
+
+**Rule:** When the None case already has a defined behavior at the call sites (empty list, empty dict), give the helper its OWN early-return guard for that case (`if self.x is None: return <empty>`) instead of an `assert`; behavior is identical under the callers' gates and the guard survives `python -O`.
+
+**Example (2026-08-24 bera-unknown-followups r4 F6):** extracting a shared non-vault-recipient predicate used by two dispatch branches, the first draft narrowed `self.position_registry` with `assert ... is not None` (Ruff S101); replaced with an early `return []`, byte-identical behavior under both callers' `is not None` gates.
+
+**See also:** AGENTS.md Ruff section (full ruleset, unenforced); #132/#72 (check the HEAD blob before formatter/noqa decisions on the same files).

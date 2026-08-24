@@ -11,11 +11,24 @@ Block-range pagination (DI-5, option b):
     The Free tier exposes no result total-count, so end-of-stream is detected
     only by receiving a partial page or an empty result. The loop starts at
     ``startblock=0`` (the steady-state first call on every run), and whenever a
-    page returns exactly ``page_size`` rows it advances
-    ``startblock = max(blockNumber of the page) + 1`` and refetches ``page=1``.
-    This means a run whose history length is an exact multiple of ``page_size``
-    issues one extra empty-page request before terminating (r1 F8) - that is the
-    only reliable end-of-stream signal on Free tier and is accepted.
+    page returns exactly ``page_size`` rows it drains the page's LAST block
+    (see below) and then advances ``startblock = max(blockNumber of the page)+1``
+    and refetches ``page=1``. This means a run whose history length is an exact
+    multiple of ``page_size`` issues one extra empty-page request before
+    terminating (r1 F8) - that is the only reliable end-of-stream signal on
+    Free tier and is accepted.
+
+Boundary-block drain (mid-block page cuts):
+    A full page can end INSIDE a block that has more rows for the wallet (a
+    claim-style transaction puts 100+ transfer legs in one block). Advancing
+    past the block there would silently drop that block's remaining rows, so
+    on every full page the client re-queries the boundary block alone
+    (``startblock = endblock = B``) and pages WITHIN it (Etherscan's own
+    ``page`` parameter over the fixed single-block result set), skipping the
+    first ``held`` rows it already accumulated (``held % page_size`` rows are
+    sliced off page ``held // page_size + 1``; server row order for an
+    immutable block range is stable). The drain ends on its own partial or
+    empty page, then the outer loop advances to ``B + 1``.
 
 Termination guards (DI-5):
     - A configurable ``max_rows`` ceiling caps any single call's accumulation
@@ -63,6 +76,24 @@ _ENDBLOCK_SENTINEL = 99999999
 _RATE_LIMIT_MARKER = "max rate limit reached"
 _API_KEY_MARKER = "invalid api key"
 _BACKOFF_BASE_SECONDS = 0.1
+
+
+def _parse_block_number(row: dict) -> int | None:
+    """Parse ``row['blockNumber']``, WARNING + skip on a malformed value.
+
+    Mirrors the decoder layer's malformed-row guard (review r1 F9): an
+    unguarded ``int()`` here turned one bad row into a whole-wallet fetch
+    abort. Returns ``None`` for malformed rows; callers treat ``None`` as
+    "not in this block / not a boundary candidate".
+    """
+    try:
+        return int(row["blockNumber"])
+    except (KeyError, ValueError, TypeError):
+        _LOGGER.warning(
+            "Skipping row with malformed/missing blockNumber (hash=%s).",
+            row.get("hash"),
+        )
+        return None
 
 
 def _redact_params(params: dict[str, str | int]) -> dict[str, str | int]:
@@ -138,6 +169,18 @@ class EtherscanV2Client:
         """Fetch ERC-20 (``tokentx``) token transfers for ``address``."""
         return self._fetch_with_block_pagination("tokentx", address)
 
+    def fetch_internal_txs(self, address: str) -> list[dict]:
+        """Fetch internal (``txlistinternal``) transactions for ``address``.
+
+        Recovers native-value transfers executed via internal calls (contract
+        calls) that never appear in ``txlist``. Reuses the same block-range +
+        boundary-drain pagination loop as the other actions; the endpoint's
+        pagination semantics are identical. ERC-721 NFT mint receipts are NOT
+        recovered by this endpoint (they need a tokentx ERC-721 surface, which
+        is out of scope for this task).
+        """
+        return self._fetch_with_block_pagination("txlistinternal", address)
+
     def _fetch_with_block_pagination(self, action: str, address: str) -> list[dict]:
         """Drive the block-range pagination loop for one ``action``.
 
@@ -147,18 +190,9 @@ class EtherscanV2Client:
         accumulated: list[dict] = []
         startblock = 0
         while True:
-            params: dict[str, str | int] = {
-                "chainid": self.chainid,
-                "module": "account",
-                "action": action,
-                "address": address,
-                "startblock": startblock,
-                "endblock": _ENDBLOCK_SENTINEL,
-                "page": 1,
-                "offset": self.page_size,
-                "sort": "asc",
-                "apikey": self.api_key,
-            }
+            params = self._page_params(
+                action, address, startblock, _ENDBLOCK_SENTINEL, page=1
+            )
             payload = self._call_with_retries(params, action, address)
             status = str(payload.get("status", ""))
             result = payload.get("result")
@@ -168,18 +202,20 @@ class EtherscanV2Client:
                 accumulated.extend(rows)
                 # DI-5 termination guard: cap accumulation and warn.
                 if len(accumulated) >= self.max_rows:
-                    _LOGGER.warning(
-                        "max_rows ceiling reached for action=%s address=%s chainid=%s; "
-                        "stopping at %d rows",
-                        action,
-                        address,
-                        self.chainid,
-                        len(accumulated),
-                    )
+                    self._warn_max_rows(action, address, len(accumulated))
                     return accumulated[: self.max_rows]
-                # Full page -> advance block range, refetch page=1.
+                # Full page -> drain the boundary block (a page can end inside
+                # a block that has more rows), then advance the block range.
                 if len(rows) >= self.page_size:
-                    startblock = self._max_block(rows) + 1
+                    boundary = self._max_block(rows)
+                    held = sum(
+                        1
+                        for row in rows
+                        if _parse_block_number(row) == boundary
+                    )
+                    if self._drain_boundary_block(action, address, boundary, held, accumulated):
+                        return accumulated[: self.max_rows]
+                    startblock = boundary + 1
                     continue
                 # Partial page -> done.
                 return accumulated
@@ -207,6 +243,130 @@ class EtherscanV2Client:
                 address,
             )
             return accumulated
+
+    def _drain_boundary_block(
+        self,
+        action: str,
+        address: str,
+        block: int,
+        held: int,
+        accumulated: list[dict],
+    ) -> bool:
+        """Page within the single ``block`` range until the block is drained.
+
+        Called after a full outer page whose last block is ``block``; ``held``
+        is how many of that block's rows (its first, in server order) were
+        already accumulated. Continues with Etherscan's own ``page`` parameter
+        over the fixed ``[block, block]`` result set, slicing the ``held %
+        page_size`` already-seen rows off the first response, so no row is
+        duplicated or dropped at the page boundary. This relies on the
+        documented assumption that server row order for an immutable block
+        range is stable (module docstring); an identity-based reconciliation
+        was attempted for review r1 F9 and reverted - not because the
+        endpoint's rows are unidentifiable, but because the synthetic TEST
+        rows carried no per-row identity fields (all rows collapsed to one
+        identity and the drain made no progress); see
+        development_lessons.md #138. Mutates ``accumulated``.
+
+        Returns:
+            True when the ``max_rows`` ceiling was hit (caller trims and
+            returns), False when the block drained normally.
+        """
+        while True:
+            page_num = held // self.page_size + 1
+            skip = held % self.page_size
+            params = self._page_params(action, address, block, block, page=page_num)
+            payload = self._call_with_retries(params, action, address)
+            status = str(payload.get("status", ""))
+            result = payload.get("result")
+
+            if status == "1" and isinstance(result, list):
+                take = result[skip:]
+                if not take:
+                    if len(result) == skip:
+                        # Review r2 F6: the NORMAL end-of-block path - the
+                        # page carried exactly the already-held rows (the
+                        # block's total equals ``held``), so there is nothing
+                        # unseen. DEBUG, not WARNING (a WARNING here fired on
+                        # every fetch ending exactly at a block boundary).
+                        _LOGGER.debug(
+                            "Boundary-block drain reached the end of block %d "
+                            "for action=%s address=%s (block total == held "
+                            "rows); nothing left to fetch.",
+                            block,
+                            action,
+                            address,
+                        )
+                        return False
+                    # No-progress guard (anomalous): a paged response that
+                    # repeats only already-held rows (or returns fewer than
+                    # already held) leaves ``held`` (and therefore
+                    # ``page_num``) unchanged; stop the drain loudly rather
+                    # than re-requesting the same page forever. Review r2
+                    # F15: name the potential row loss explicitly.
+                    _LOGGER.warning(
+                        "Boundary-block drain made no progress for action=%s "
+                        "address=%s block=%d page=%d: the page carried no "
+                        "unseen rows; remaining rows of block %d, if any, "
+                        "will not be fetched this run.",
+                        action,
+                        address,
+                        block,
+                        page_num,
+                        block,
+                    )
+                    return False
+                accumulated.extend(take)
+                held += len(take)
+                if len(accumulated) >= self.max_rows:
+                    self._warn_max_rows(action, address, len(accumulated))
+                    return True
+                # Full page -> the block may have further rows; keep paging.
+                if len(result) >= self.page_size:
+                    continue
+                return False
+
+            if status == "0":
+                # Includes the beyond-data empty page that ends an
+                # exact-multiple block (accepted extra request, r1 F8 analog).
+                return False
+
+            _LOGGER.warning(
+                "unexpected Etherscan response shape for action=%s address=%s "
+                "block=%d; stopping boundary-block drain",
+                action,
+                address,
+                block,
+            )
+            return False
+
+    def _page_params(
+        self, action: str, address: str, startblock: int, endblock: int, *, page: int
+    ) -> dict[str, str | int]:
+        """Build one page request's query parameters (shared by both loops)."""
+        return {
+            "chainid": self.chainid,
+            "module": "account",
+            "action": action,
+            "address": address,
+            "startblock": startblock,
+            "endblock": endblock,
+            "page": page,
+            "offset": self.page_size,
+            "sort": "asc",
+            "apikey": self.api_key,
+        }
+
+    def _warn_max_rows(self, action: str, address: str, row_count: int) -> None:
+        """Log the single max_rows-ceiling WARNING (shared by both loops)."""
+        _LOGGER.warning(
+            "max_rows ceiling reached for action=%s address=%s chainid=%s; "
+            "stopping at %d rows",
+            action,
+            address,
+            self.chainid,
+            row_count,
+        )
 
     def _call_with_retries(
         self, params: dict[str, str | int], action: str, address: str
@@ -262,8 +422,24 @@ class EtherscanV2Client:
 
     @staticmethod
     def _max_block(rows: list[dict]) -> int:
-        """Return the maximum ``blockNumber`` across ``rows`` (all strings)."""
-        return max(int(row["blockNumber"]) for row in rows)
+        """Return the maximum ``blockNumber`` across ``rows`` (all strings).
+
+        Malformed ``blockNumber`` values are WARNING-skipped via
+        :func:`_parse_block_number` (review r1 F9) rather than aborting the
+        whole wallet fetch with a raw ``ValueError``.
+        """
+        blocks = [
+            block
+            for block in (_parse_block_number(row) for row in rows)
+            if block is not None
+        ]
+        if not blocks:
+            raise FileProcessingError(
+                "Cannot resolve the boundary block: every row on the full "
+                "page has a malformed/missing blockNumber; stopping rather "
+                "than guessing the block range to advance to."
+            )
+        return max(blocks)
 
     @staticmethod
     def _failure_text(payload: dict) -> str:

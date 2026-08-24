@@ -367,3 +367,59 @@ class TestContractRegistryLoader:
 
         with pytest.raises(ConfigurationError):
             build_contract_registry(data, source="<test>")
+
+    def test_self_wallet_kind_accepted(self, tmp_path: Path):
+        """C3 (validation-harness plan Task 8): given a contracts JSON with
+        a ``self_wallet`` entry, expects it loads through the production
+        loader and ``ContractRegistry.get`` reports the kind (registering a
+        second own wallet is what reclassifies self-transfers as Transfer).
+        """
+        from tax_reporting.application.on_chain_config import load_contracts
+
+        entry = _valid_contract_entry(
+            address="0x0000000000000000000000000000000000002222",
+            kind="self_wallet",
+            label="Second Berachain wallet",
+        )
+        path = _write_config(
+            tmp_path / "contracts.json",
+            {"chain": "Berachain", "contracts": [entry]},
+        )
+
+        registry = load_contracts(path)
+
+        got = registry.get("0x0000000000000000000000000000000000002222")
+        assert got is not None
+        assert got.kind == "self_wallet"
+
+    def test_unknown_kind_still_rejected(self):
+        """C3 negative: adding ``self_wallet`` must not loosen the closed
+        kind enum. Given kind ``"banana"``, expects the existing rejection
+        (ConfigurationError carrying the 'kind must be one of' guard text).
+        """
+        from tax_reporting.application.on_chain_config import (
+            build_contract_registry,
+        )
+
+        entry = _valid_contract_entry(kind="banana")
+        data = {"chain": "Berachain", "contracts": [entry]}
+
+        with pytest.raises(
+            ConfigurationError, match=r"'kind' must be one of"
+        ):
+            build_contract_registry(data, source="<test>")
+
+    def test_kinds_tuple_includes_self_wallet(self):
+        """C3: ``_CONTRACT_KINDS`` carries ``self_wallet`` alongside the
+        original three kinds (the closed set the loader validates against;
+        the domain ``ContractEntry`` docstring lists the same set).
+        """
+        from tax_reporting.application.on_chain_config import _CONTRACT_KINDS
+
+        assert "self_wallet" in _CONTRACT_KINDS
+        assert set(_CONTRACT_KINDS) == {
+            "dex_router",
+            "reward_distributor",
+            "rebate_router",
+            "self_wallet",
+        }

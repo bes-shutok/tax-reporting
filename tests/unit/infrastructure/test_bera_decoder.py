@@ -81,6 +81,29 @@ def _txlist_row(**overrides: object) -> dict:
     return base
 
 
+def _internal_row(**overrides: object) -> dict:
+    """Build a minimal txlistinternal row as the Etherscan API returns it.
+
+    Mirrors the real ``action=txlistinternal`` field set per the Etherscan API
+    docs: it carries ``gasUsed`` but NOT ``gasPrice`` (gas is recorded on the
+    parent tx's ``txlist`` row, so no fee is attributed to internal rows).
+    """
+    base: dict = {
+        "hash": "0xparent",
+        "blockNumber": "150",
+        "timeStamp": _TS_INSIDE,
+        "from": _WALLET_FROM,
+        "to": _WALLET_TO,
+        "value": "2500000000000000000",
+        "gas": "30000",
+        "gasUsed": "30000",
+        "input": "",
+        "type": "call",
+    }
+    base.update(overrides)
+    return base
+
+
 def _tokentx_row(**overrides: object) -> dict:
     """Build a minimal tokentx row as the Etherscan API returns it."""
     base: dict = {
@@ -233,6 +256,87 @@ class TestBeraDecoder:
         assert isinstance(amount_raw, (int, str))
         assert not isinstance(amount_raw, float)
         assert str(amount_raw) == "1000000000000000000"
+
+    def test_internal_native_receive_becomes_in_leg(self):
+        # Given - an internal-tx row with native value TO the wallet, for a tx
+        # that already carries a token out-leg (the cluster-2 shape: native BERA
+        # received via an internal call inside a parent tx).
+        cfg = _config(address=_WALLET_TO)
+        token_out = _tokentx_row(**{"from": _WALLET_TO, "to": _WALLET_FROM})
+        internal = _internal_row()  # from=_WALLET_FROM, to=_WALLET_TO
+
+        # When
+        result = decode_rows([], [token_out], cfg, raw_internal_rows=[internal])
+
+        # Then - the decoded rows include BOTH legs: the token out-leg and the
+        # native receive leg with direction 'in'.
+        assert len(result) == 2
+        receive = [r for r in result if r.direction == "in"]
+        assert len(receive) == 1
+        assert receive[0].asset == _NATIVE_TICKER
+        assert receive[0].amount_raw == 2500000000000000000
+        assert receive[0].amount_decimals == 18
+        assert receive[0].token_address == ""
+        assert receive[0].tx_hash == "0xparent"
+
+    def test_internal_row_without_gas_price_still_decodes(self):
+        # Given - an internal-tx row whose schema omits ``gasPrice`` (the real
+        # txlistinternal field set per the Etherscan API docs) but carries
+        # ``gasUsed``. The row must decode into a receive leg, not be silently
+        # skipped; fees are NOT attributed to internal rows (the parent tx's
+        # gas already lives on its txlist row - no double count).
+        cfg = _config(address=_WALLET_TO)
+        assert "gasPrice" not in _internal_row()  # fixture mirrors the real schema
+        internal = _internal_row()
+
+        # When
+        result = decode_rows([], [], cfg, raw_internal_rows=[internal])
+
+        # Then - one decoded receive leg with zero fee attributed.
+        assert len(result) == 1
+        decoded = result[0]
+        assert decoded.direction == "in"
+        assert decoded.asset == _NATIVE_TICKER
+        assert decoded.fee_amount_raw == 0
+        assert decoded.fee_asset == ""
+
+    def test_reverted_internal_row_skipped_with_warning(self, caplog):
+        # Review r1 F1: a reverted internal call (errCode non-empty / isError
+        # == '1') never executed, so it must NOT become a phantom in-leg that
+        # flips the classifier's pure-outflow deposit shapes into
+        # bidirectional Swap/Reward shapes.
+        cfg = _config(address=_WALLET_TO)
+        token_out = _tokentx_row(**{"from": _WALLET_TO, "to": _WALLET_FROM})
+        reverted_by_errcode = _internal_row(errCode="Reverted")
+        reverted_by_iserror = _internal_row(isError="1")
+
+        with caplog.at_level(logging.WARNING):
+            result = decode_rows(
+                [],
+                [token_out],
+                cfg,
+                raw_internal_rows=[reverted_by_errcode, reverted_by_iserror],
+            )
+
+        # Only the token out-leg survives: both reverted rows are skipped.
+        assert len(result) == 1
+        assert result[0].direction == "out"
+        warnings = [r for r in caplog.records if "reverted" in r.getMessage()]
+        assert len(warnings) == 2, "each reverted row logs its own WARNING naming the hash"
+        assert all("0xparent" in w.getMessage() for w in warnings)
+
+    def test_zero_value_internal_row_skipped(self):
+        # Review r1 F1: a zero-value internal row carries no native movement;
+        # decoding it would fabricate an amount-0 in-leg. It must be skipped so
+        # the tx's pure-outflow deposit shape is not flipped.
+        cfg = _config(address=_WALLET_TO)
+        token_out = _tokentx_row(**{"from": _WALLET_TO, "to": _WALLET_FROM})
+        zero_value = _internal_row(value="0")
+
+        result = decode_rows([], [token_out], cfg, raw_internal_rows=[zero_value])
+
+        assert len(result) == 1
+        assert result[0].direction == "out"
 
     def test_native_ticker_from_config_not_hardcoded(self):
         # Given - a NON-real chain (artificial Examplechain / EXM). If the

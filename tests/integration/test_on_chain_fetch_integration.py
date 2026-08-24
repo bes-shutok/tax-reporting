@@ -6,7 +6,8 @@ pieces (client pagination, decoder mapping, CSV writer); this file wires them
 together to guard the end-to-end contract:
 
 - DI-5 block-range pagination advances the ``startblock`` query param past the
-  previous page's max block (NOT a page-count increment).
+  previous page's max block (NOT a page-count increment), draining the full
+  page's boundary block first so a mid-block page cut drops no rows.
 - The decoder's date-window filter is exercised through the whole pipeline.
 - The consolidated CSV at ``output_dir/<year>/bera_transactions.csv`` is
   sorted by ``block_number`` and carries the correct ``direction`` per the
@@ -122,13 +123,14 @@ class TestOnChainFetchIntegration:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         """End-to-end: a FULL txlist page (page_size rows at blocks 100-102)
-        -> a second txlist page (2 rows at blocks 103,104) -> an empty txlist
-        page -> one tokentx row. Exercises DI-5 block-range advance through
-        the orchestrator and asserts the written CSV.
+        -> the boundary-block drain for block 102 -> an advanced txlist page
+        (2 rows at blocks 103,104) -> an empty txlist page -> one tokentx row.
+        Exercises DI-5 block-range advance + boundary drain through the
+        orchestrator and asserts the written CSV.
 
         The client's default ``page_size`` is patched down to 3 so the first
-        3-row page is "full" and the client MUST advance ``startblock`` past
-        the page's max block (102 -> 103) on the next call.
+        3-row page is "full" and the client MUST drain the boundary block
+        (102) and then advance ``startblock`` past it (102 -> 103).
         """
         from tax_reporting.application.on_chain_fetcher import run_on_chain_fetch
         from tax_reporting.infrastructure.on_chain.etherscan_client import EtherscanV2Client
@@ -156,13 +158,16 @@ class TestOnChainFetchIntegration:
             _txlist_row(101, 6, out=False, hash_="0xa"),
             _txlist_row(102, 6, out=True, hash_="0xa"),
         ]
-        # Second txlist page (partial): 2 rows at blocks 103,104 -> terminates.
+        # Boundary-block drain: block 102 holds only its 1 already-seen row
+        # (partial page) -> block drained, outer loop advances to 103.
+        drain_rows = [_txlist_row(102, 6, out=True, hash_="0xa")]
+        # Third txlist call (partial): 2 rows at blocks 103,104 -> terminates.
         page_two_rows = [
             _txlist_row(103, 7, out=True, hash_="0xa"),
             _txlist_row(104, 8, out=False, hash_="0xa"),
         ]
         tokentx_rows = [_tokentx_row(200, 9, out=False, hash_="0xb")]
-        txlist_pages: list[list[dict[str, Any]]] = [page_one_rows, page_two_rows]
+        txlist_pages: list[list[dict[str, Any]]] = [page_one_rows, drain_rows, page_two_rows]
 
         def fake_http(url: str, params: dict[str, str | int]) -> dict[str, Any]:
             calls.append(dict(params))
@@ -204,20 +209,27 @@ class TestOnChainFetchIntegration:
         fieldnames, rows = _read_csv(csv_path)
         assert "tx_hash" in fieldnames
 
-        # DI-5: the second txlist call's startblock advanced past the first
-        # page's max block (102 -> 103). Find the txlist calls in order.
+        # DI-5: full page -> boundary-block drain -> block-range advance.
+        # Find the txlist calls in order.
         txlist_calls = [c for c in calls if str(c.get("action")) == "txlist"]
-        assert len(txlist_calls) >= 2, "expected at least two txlist calls (full + advance)"
+        assert len(txlist_calls) == 3, (
+            "expected three txlist calls (full page + boundary drain + advance)"
+        )
         assert int(txlist_calls[0]["startblock"]) == 0
+        # The drain re-queries the boundary block alone at page 1.
+        assert int(txlist_calls[1]["startblock"]) == 102
+        assert int(txlist_calls[1]["endblock"]) == 102
+        assert int(txlist_calls[1]["page"]) == 1
         # Advance = max block of the full page (102) + 1 = 103, page stays 1.
-        assert int(txlist_calls[1]["startblock"]) == 103, (
+        assert int(txlist_calls[2]["startblock"]) == 103, (
             "block-range advance: startblock must be max(full page block)+1 = 103"
         )
-        assert int(txlist_calls[1]["page"]) == 1, (
+        assert int(txlist_calls[2]["page"]) == 1, (
             "block-range advance keeps page=1 (not a page-count increment)"
         )
 
-        # All 5 txlist-derived rows (blocks 100-104) + the 1 tokentx row present.
+        # All 5 txlist-derived rows (blocks 100-104; block 102 exactly once)
+        # + the 1 tokentx row present - the drain's re-fetch added no dup.
         block_numbers = [int(r["block_number"]) for r in rows]
         assert set(block_numbers) == {100, 101, 102, 103, 104, 200}
         assert len(rows) == 6
@@ -308,3 +320,69 @@ class TestOnChainFetchIntegration:
         )
         assert len(rows) == 1
         assert rows[0]["direction"] == "out"
+
+    def test_full_flow_includes_internal_receives(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """End-to-end: the seam serves txlist + tokentx + txlistinternal; the
+        CSV must carry the internal receive row (a native BERA receive via an
+        internal call inside a parent tx that also has a token out-leg).
+        """
+        from tax_reporting.application.on_chain_fetcher import run_on_chain_fetch
+
+        monkeypatch.setattr(_LOADER, lambda _year: [_wallet()])
+
+        txlist_rows = [_txlist_row(100, 6, out=True, hash_="0xa")]
+        tokentx_rows = [_tokentx_row(200, 7, out=True, hash_="0xb")]
+        # Internal native receive to the wallet inside parent tx 0xc (cluster-2
+        # shape). txlistinternal rows carry gasUsed but no gasPrice.
+        internal_rows = [
+            {
+                "hash": "0xc",
+                "blockNumber": "100",
+                "timeStamp": _ts(6),
+                "from": _OTHER,
+                "to": _ADDRESS,
+                "value": "2500000000000000000",
+                "gas": "30000",
+                "gasUsed": "30000",
+                "type": "call",
+            }
+        ]
+
+        def fake_http(url: str, params: dict[str, str | int]) -> dict[str, Any]:
+            action = str(params.get("action"))
+            payloads: dict[str, list[dict[str, Any]]] = {
+                "txlist": txlist_rows,
+                "tokentx": tokentx_rows,
+                "txlistinternal": internal_rows,
+            }
+            if action in payloads:
+                if payloads[action]:
+                    consumed = payloads[action][:]
+                    payloads[action].clear()
+                    return {"status": "1", "message": "OK", "result": consumed}
+            return {"status": "0", "message": "No transactions found", "result": []}
+
+        monkeypatch.setattr(_HTTP_SEAM, fake_http)
+        result = run_on_chain_fetch(
+            year=2025, output_dir=tmp_path, api_key="test-key"
+        )
+
+        assert result is not None
+        _, rows = _read_csv(result)
+
+        # The internal receive row is present with direction 'in', native
+        # asset, and no fee attributed (parent tx gas lives on its txlist row).
+        internal_legs = [r for r in rows if r["tx_hash"] == "0xc"]
+        assert len(internal_legs) == 1, (
+            f"expected the internal receive row in the CSV, got hashes "
+            f"{[r['tx_hash'] for r in rows]}"
+        )
+        leg = internal_legs[0]
+        assert leg["direction"] == "in"
+        assert leg["asset"] == _TICKER
+        assert leg["amount_raw"] == "2500000000000000000"
+        assert leg["fee_amount_raw"] == "0"
+        # All three endpoints were served.
+        assert len(rows) == 3

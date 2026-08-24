@@ -301,6 +301,52 @@ class TestOnChainThAdapter:
         assert non_carrier.fee is None
 
     # ----------------------------------------------------------------- #
+    # Clause 9 (validation-harness plan Task 7 / C1): a claim-with-      #
+    # carrier tx projects to exactly one Reward row with the gas fee.   #
+    # ----------------------------------------------------------------- #
+
+    def test_claim_with_carrier_projects_single_reward_row_with_fee(self) -> None:
+        # C1 adapter-level confirmation. Post-fix processor output for a
+        # distributor claim carrying a zero-value native gas-carrier leg:
+        # ONE Reward Event (the carrier leg is excluded from the Event's
+        # legs - design record Q6) plus the parent-tx gas. The adapter must
+        # project this to exactly one crypto_deposit/Reward row, and - with
+        # no native leg left in any Event - the carrier-row gas rule falls
+        # back to the FIRST emitted row, so the gas rides THIS row's fee
+        # payload (the Koinly shape for claims: Reward rows + gas as Cost).
+        gas = Gas(asset="BERA", amount_raw=20_000_000_000_000, decimals=18)  # 0.00002 BERA
+        reward = _event(
+            event_id=f"{_TX_HASH}#1",
+            event_type=EventType.Reward,
+            sub_type=SubType.staking,
+            legs=[
+                _erc20_leg(
+                    asset="BGT",
+                    amount_raw=1_097_000_000_000_000_000,
+                    direction="in",
+                    from_address="0xDistributor0000000000000000000000000000aa",
+                ),
+            ],
+        )
+        tx = _tx(events=[reward], gas=gas)
+
+        projected = project_on_chain_transactions([tx])
+
+        # Exactly ONE row: the Reward (the carrier leg produced no Event).
+        assert len(projected) == 1
+        p = projected[0]
+        assert p.row.type == "crypto_deposit"
+        assert p.row.tag == "Reward"
+        assert p.row.receiving_currency == "BGT"
+        assert p.row.receiving_amount == Decimal("1.097")
+        # The gas rides the single row's fee payload (no native leg -> the
+        # first-row carrier fallback; Reward is not GasBurn, so the B5
+        # exception does not skip it).
+        assert p.fee is not None
+        assert p.fee.amount == Decimal("0.00002")
+        assert p.fee.currency == "BERA"
+
+    # ----------------------------------------------------------------- #
     # Clause 5: GasBurn row -> Sent Amount=gas, Fee Amount EMPTY (B5)   #
     # ----------------------------------------------------------------- #
 

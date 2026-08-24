@@ -55,11 +55,13 @@ class TestEtherscanClient:
 
     def test_fetch_paginates_by_block_range(self, monkeypatch):
         # Given - first call full (page_size=3 rows at blocks 100,101,102),
-        # second call partial (blocks 103,104). Proves block-range advance,
-        # NOT page-count increment.
+        # boundary-block drain (block 102 has only its 1 seen row -> partial),
+        # then the advanced call partial (blocks 103,104). Proves block-range
+        # advance, NOT page-count increment.
         calls: list[tuple[str, dict]] = []
         responses = [
             {"status": "1", "message": "OK", "result": _rows(100, 101, 102)},
+            {"status": "1", "message": "OK", "result": _rows(102)},
             {"status": "1", "message": "OK", "result": _rows(103, 104)},
         ]
 
@@ -75,18 +77,27 @@ class TestEtherscanClient:
         # When
         rows = client.fetch_normal_txs(_ADDRESS)
 
-        # Then - 5 rows, 2 calls, second call's startblock advanced to 103
+        # Then - 5 rows, 3 calls: full page -> boundary drain -> advance.
         assert len(rows) == 5
-        assert len(calls) == 2
-        # The advance is max(blockNumber of full page)+1 = 102+1 = 103, and
-        # page stays at 1 (block-range advance, not page-count increment).
-        assert calls[1][1]["startblock"] == 103
+        assert len(calls) == 3
+        # The drain re-queries the boundary block alone (102, 102) at page 1;
+        # the 1 row it returns is the already-seen row (sliced off, no dup).
+        assert calls[1][1]["startblock"] == 102
+        assert calls[1][1]["endblock"] == 102
         assert calls[1][1]["page"] == 1
+        # The outer advance is max(blockNumber of full page)+1 = 103, and
+        # page stays at 1 (block-range advance, not page-count increment).
+        assert calls[2][1]["startblock"] == 103
+        assert calls[2][1]["endblock"] == 99999999
+        assert calls[2][1]["page"] == 1
 
     def test_terminates_at_empty_page(self, monkeypatch):
-        # Given - a sequence ending in an empty "No transactions found" page.
+        # Given - a full page, a boundary drain that comes back EMPTY
+        # ("No transactions found"), and an advanced call that is also empty.
+        # The loop must stop after the second empty page; no infinite loop.
         responses = [
             {"status": "1", "message": "OK", "result": _rows(100, 101, 102)},
+            {"status": "0", "message": "No transactions found", "result": []},
             {"status": "0", "message": "No transactions found", "result": []},
         ]
         calls: list[tuple[str, dict]] = []
@@ -98,17 +109,14 @@ class TestEtherscanClient:
         monkeypatch.setattr(
             "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json", fake
         )
-        # page_size large enough that the first page is partial -> would normally
-        # terminate after page 1; but we want to also exercise the empty-page path,
-        # so make page_size exactly 3 (full) then empty.
         client = EtherscanV2Client(api_key="k", chainid=_CHAINID, page_size=3)
 
         # When
         rows = client.fetch_normal_txs(_ADDRESS)
 
-        # Then - loop stopped after the empty page; no infinite loop.
+        # Then - loop stopped after the empty pages; 3 rows kept.
         assert len(rows) == 3
-        assert len(calls) == 2
+        assert len(calls) == 3
 
     def test_rate_limit_retried_then_succeeds(self, monkeypatch):
         # Given - a rate-limit response then a success page.
@@ -194,6 +202,292 @@ class TestEtherscanClient:
         # Then - stops at the max-rows ceiling and logs a WARNING substring.
         assert len(rows) == 6
         assert any("max_rows" in rec.message for rec in caplog.records)
+
+    def test_full_page_cutting_mid_block_returns_all_boundary_block_rows(
+        self, monkeypatch
+    ):
+        # The claim-tx shape: a FULL page ends INSIDE a block that has more
+        # rows (page cut after 2 of block 102's 5 rows). Advancing to
+        # startblock=103 silently drops the remaining 3 rows of block 102;
+        # the client must drain the boundary block instead.
+        responses: dict[tuple[int, int, int], dict] = {
+            (0, 99999999, 1): {"status": "1", "message": "OK", "result": _rows(100, 102, 102)},
+            (102, 102, 1): {"status": "1", "message": "OK", "result": _rows(102, 102, 102)},
+            (102, 102, 2): {"status": "1", "message": "OK", "result": _rows(102, 102)},
+            (103, 99999999, 1): {"status": "0", "message": "No transactions found", "result": []},
+        }
+        calls: list[tuple[str, dict]] = []
+
+        def fake(url: str, params: dict) -> dict:
+            calls.append((url, params))
+            key = (int(params["startblock"]), int(params["endblock"]), int(params["page"]))
+            return responses[key]
+
+        monkeypatch.setattr(
+            "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json", fake
+        )
+        client = EtherscanV2Client(api_key="k", chainid=_CHAINID, page_size=3)
+
+        rows = client.fetch_token_transfers(_ADDRESS)
+
+        block_counts = {b: sum(1 for r in rows if r["blockNumber"] == str(b)) for b in (100, 102)}
+        assert block_counts == {100: 1, 102: 5}, (
+            f"boundary block 102 must yield all 5 rows, got {block_counts}"
+        )
+
+    def test_whole_page_single_block_pages_within_block(self, monkeypatch):
+        # A full page consisting ENTIRELY of one block's rows must continue
+        # INSIDE that block at page=2 (not re-fetch page=1 and duplicate, not
+        # advance past the block and drop the tail).
+        responses: dict[tuple[int, int, int], dict] = {
+            (0, 99999999, 1): {"status": "1", "message": "OK", "result": _rows(102, 102, 102)},
+            (102, 102, 2): {"status": "1", "message": "OK", "result": _rows(102, 102)},
+            (103, 99999999, 1): {"status": "0", "message": "No transactions found", "result": []},
+        }
+        calls: list[tuple[str, dict]] = []
+
+        def fake(url: str, params: dict) -> dict:
+            calls.append((url, params))
+            key = (int(params["startblock"]), int(params["endblock"]), int(params["page"]))
+            return responses[key]
+
+        monkeypatch.setattr(
+            "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json", fake
+        )
+        client = EtherscanV2Client(api_key="k", chainid=_CHAINID, page_size=3)
+
+        rows = client.fetch_token_transfers(_ADDRESS)
+
+        assert len(rows) == 5, f"block 102 has 5 rows total, got {len(rows)}"
+        assert all(r["blockNumber"] == "102" for r in rows)
+
+    def test_exact_multiple_block_drain_ends_on_empty_page(self, monkeypatch):
+        # Block 102 has exactly 2*page_size rows: every drain page comes back
+        # FULL, so end-of-block is signalled only by the extra empty page
+        # (accepted semantics, mirroring r1 F8 for the outer loop).
+        responses: dict[tuple[int, int, int], dict] = {
+            (0, 99999999, 1): {"status": "1", "message": "OK", "result": _rows(102, 102, 102)},
+            (102, 102, 2): {"status": "1", "message": "OK", "result": _rows(102, 102, 102)},
+            (102, 102, 3): {"status": "0", "message": "No transactions found", "result": []},
+            (103, 99999999, 1): {"status": "0", "message": "No transactions found", "result": []},
+        }
+
+        def fake(url: str, params: dict) -> dict:
+            key = (int(params["startblock"]), int(params["endblock"]), int(params["page"]))
+            return responses[key]
+
+        monkeypatch.setattr(
+            "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json", fake
+        )
+        client = EtherscanV2Client(api_key="k", chainid=_CHAINID, page_size=3)
+
+        rows = client.fetch_token_transfers(_ADDRESS)
+
+        assert len(rows) == 6, f"block 102 has exactly 6 rows, got {len(rows)}"
+
+    def test_boundary_drain_end_of_block_is_quiet(self, monkeypatch, caplog):
+        # Review r2 F6: when the boundary block's total row count exactly
+        # equals ``held`` (the normal end-of-block path), the single-block
+        # page returns exactly the already-held rows and ``take`` is empty -
+        # that must be a QUIET (DEBUG) return, not a WARNING, so operators
+        # are not trained to ignore the module's warnings.
+        responses: dict[tuple[int, int, int], dict] = {
+            (0, 99999999, 1): {"status": "1", "message": "OK", "result": _rows(100, 102, 102)},
+            # Block 102 has exactly 2 rows (both already held): drain page 1
+            # returns them, skip=2 slices them all off.
+            (102, 102, 1): {"status": "1", "message": "OK", "result": _rows(102, 102)},
+            (103, 99999999, 1): {"status": "0", "message": "No transactions found", "result": []},
+        }
+
+        def fake(url: str, params: dict) -> dict:
+            key = (int(params["startblock"]), int(params["endblock"]), int(params["page"]))
+            return responses[key]
+
+        monkeypatch.setattr(
+            "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json", fake
+        )
+        client = EtherscanV2Client(api_key="k", chainid=_CHAINID, page_size=3)
+
+        with caplog.at_level(logging.WARNING):
+            rows = client.fetch_token_transfers(_ADDRESS)
+
+        assert len(rows) == 3
+        assert not any("no progress" in rec.message for rec in caplog.records), (
+            "normal end-of-block drain completion must not log a WARNING"
+        )
+
+    def test_boundary_drain_anomalous_repeat_warns_of_row_loss(self, monkeypatch, caplog):
+        # Review r2 F15: the anomalous arm of the no-progress guard (the page
+        # returns FEWER rows than already held) keeps its WARNING, and the
+        # message must name the potential row loss.
+        responses: dict[tuple[int, int, int], dict] = {
+            (0, 99999999, 1): {"status": "1", "message": "OK", "result": _rows(100, 102, 102)},
+            # Anomalous: only 1 row returned where 2 were already held.
+            (102, 102, 1): {"status": "1", "message": "OK", "result": _rows(102)},
+            (103, 99999999, 1): {"status": "0", "message": "No transactions found", "result": []},
+        }
+
+        def fake(url: str, params: dict) -> dict:
+            key = (int(params["startblock"]), int(params["endblock"]), int(params["page"]))
+            return responses[key]
+
+        monkeypatch.setattr(
+            "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json", fake
+        )
+        client = EtherscanV2Client(api_key="k", chainid=_CHAINID, page_size=3)
+
+        with caplog.at_level(logging.WARNING):
+            rows = client.fetch_token_transfers(_ADDRESS)
+
+        assert len(rows) == 3
+        msgs = [rec.message for rec in caplog.records if "no progress" in rec.message]
+        assert msgs, "expected the anomalous no-progress WARNING"
+        assert "will not be fetched this run" in msgs[0], (
+            "the WARNING must name the potential row loss"
+        )
+
+    def test_boundary_drain_respects_max_rows(self, monkeypatch, caplog):
+        # The max_rows ceiling must also bind INSIDE the boundary-block drain
+        # (a single pathological block must not bypass the runaway guard).
+        responses: dict[tuple[int, int, int], dict] = {
+            (0, 99999999, 1): {"status": "1", "message": "OK", "result": _rows(100, 102, 102)},
+            (102, 102, 1): {"status": "1", "message": "OK", "result": _rows(102, 102, 102)},
+        }
+
+        def fake(url: str, params: dict) -> dict:
+            key = (int(params["startblock"]), int(params["endblock"]), int(params["page"]))
+            return responses[key]
+
+        monkeypatch.setattr(
+            "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json", fake
+        )
+        client = EtherscanV2Client(api_key="k", chainid=_CHAINID, page_size=3, max_rows=4)
+
+        with caplog.at_level(logging.WARNING):
+            rows = client.fetch_token_transfers(_ADDRESS)
+
+        assert len(rows) == 4
+        assert any("max_rows" in rec.message for rec in caplog.records)
+
+    def test_fetch_internal_txs_uses_block_pagination(self, monkeypatch):
+        # txlistinternal must reuse the SAME block-range + boundary-drain loop
+        # as fetch_normal_txs: full page (page_size=3 at blocks 100,101,102),
+        # boundary-block drain (block 102 has only its 1 seen row -> partial),
+        # then the advanced call partial (blocks 103, 104).
+        calls: list[tuple[str, dict]] = []
+        responses = [
+            {"status": "1", "message": "OK", "result": _rows(100, 101, 102)},
+            {"status": "1", "message": "OK", "result": _rows(102)},
+            {"status": "1", "message": "OK", "result": _rows(103, 104)},
+        ]
+
+        def fake(url: str, params: dict) -> dict:
+            calls.append((url, params))
+            return responses.pop(0)
+
+        monkeypatch.setattr(
+            "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json", fake
+        )
+        client = EtherscanV2Client(api_key="k", chainid=_CHAINID, page_size=3)
+
+        # When
+        rows = client.fetch_internal_txs(_ADDRESS)
+
+        # Then - 5 rows, 3 calls, all with action=txlistinternal; the drain
+        # re-queries the boundary block alone and the outer loop advances to
+        # max(block)+1 with page=1 (block-range advance, not page increment).
+        assert len(rows) == 5
+        assert len(calls) == 3
+        assert all(c[1]["action"] == "txlistinternal" for c in calls)
+        assert calls[1][1]["startblock"] == 102
+        assert calls[1][1]["endblock"] == 102
+        assert calls[1][1]["page"] == 1
+        assert calls[2][1]["startblock"] == 103
+        assert calls[2][1]["endblock"] == 99999999
+        assert calls[2][1]["page"] == 1
+
+    def test_fetch_internal_txs_boundary_drain(self, monkeypatch):
+        # A FULL txlistinternal page ends INSIDE a block that has more internal
+        # rows (page cut after 2 of block 102's 5 rows); the boundary block must
+        # be drained so no rows are dropped (mirrors the tokentx drain tests).
+        responses: dict[tuple[int, int, int], dict] = {
+            (0, 99999999, 1): {"status": "1", "message": "OK", "result": _rows(100, 102, 102)},
+            (102, 102, 1): {"status": "1", "message": "OK", "result": _rows(102, 102, 102)},
+            (102, 102, 2): {"status": "1", "message": "OK", "result": _rows(102, 102)},
+            (103, 99999999, 1): {"status": "0", "message": "No transactions found", "result": []},
+        }
+        calls: list[tuple[str, dict]] = []
+
+        def fake(url: str, params: dict) -> dict:
+            calls.append((url, params))
+            key = (int(params["startblock"]), int(params["endblock"]), int(params["page"]))
+            return responses[key]
+
+        monkeypatch.setattr(
+            "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json", fake
+        )
+        client = EtherscanV2Client(api_key="k", chainid=_CHAINID, page_size=3)
+
+        rows = client.fetch_internal_txs(_ADDRESS)
+
+        block_counts = {b: sum(1 for r in rows if r["blockNumber"] == str(b)) for b in (100, 102)}
+        assert block_counts == {100: 1, 102: 5}, (
+            f"boundary block 102 must yield all 5 internal rows, got {block_counts}"
+        )
+
+    def test_malformed_block_number_row_is_skipped_not_fatal(self, monkeypatch, caplog):
+        # Review r3 F3: one row on a FULL page missing blockNumber must be
+        # WARNING-skipped (never abort the wallet fetch); the boundary block
+        # is computed from the remaining rows and pagination proceeds.
+        responses: dict[tuple[int, int, int], dict] = {
+            (0, 99999999, 1): {
+                "status": "1",
+                "message": "OK",
+                "result": [
+                    {"hash": "0xbad"},  # no blockNumber at all
+                    {"blockNumber": "101", "hash": "0xok1"},
+                    {"blockNumber": "102", "hash": "0xok2"},
+                ],
+            },
+            (102, 102, 1): {"status": "1", "message": "OK", "result": _rows(102)},
+            (103, 99999999, 1): {"status": "0", "message": "No transactions found", "result": []},
+        }
+
+        def fake(url: str, params: dict) -> dict:
+            key = (int(params["startblock"]), int(params["endblock"]), int(params["page"]))
+            return responses[key]
+
+        monkeypatch.setattr(
+            "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json", fake
+        )
+        client = EtherscanV2Client(api_key="k", chainid=_CHAINID, page_size=3)
+
+        with caplog.at_level(logging.WARNING):
+            rows = client.fetch_internal_txs(_ADDRESS)
+
+        # All 3 rows come back (including the malformed one); boundary came
+        # from the valid rows (drain queried block 102 alone), not a crash.
+        assert len(rows) == 3
+        assert any("malformed/missing blockNumber" in rec.message for rec in caplog.records)
+
+    def test_all_rows_malformed_block_number_raises(self, monkeypatch):
+        # Review r3 F3 (fail-loud arm): a FULL page where EVERY row has a
+        # malformed blockNumber cannot resolve the boundary block -> raise
+        # FileProcessingError rather than guessing the block range.
+        def fake(url: str, params: dict) -> dict:
+            return {
+                "status": "1",
+                "message": "OK",
+                "result": [{"hash": "0xbad1"}, {"hash": "0xbad2"}, {"hash": "0xbad3"}],
+            }
+
+        monkeypatch.setattr(
+            "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json", fake
+        )
+        client = EtherscanV2Client(api_key="k", chainid=_CHAINID, page_size=3)
+
+        with pytest.raises(FileProcessingError, match="Cannot resolve the boundary block"):
+            client.fetch_internal_txs(_ADDRESS)
 
     def test_fetches_both_txlist_and_tokentx(self, monkeypatch):
         # Given - the client must issue calls for BOTH actions.

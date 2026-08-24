@@ -145,6 +145,23 @@ def _read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
     return fieldnames, rows
 
 
+class TestBeraCsvPath:
+    """Tests for the bera-CSV path helper (fetcher-owned single literal)."""
+
+    def test_bera_csv_path_value(self, tmp_path: Path):
+        """Given ``output_dir`` and ``year``, expects ``bera_csv_path`` to
+        return ``output_dir / str(year) / "bera_transactions.csv"``.
+
+        Characterization (Task 3 consolidation): pins the path value around
+        the helper's move into the fetcher module.
+        """
+        from tax_reporting.application.on_chain_fetcher import bera_csv_path
+
+        assert bera_csv_path(tmp_path, 2025) == (
+            tmp_path / "2025" / "bera_transactions.csv"
+        )
+
+
 class TestOnChainFetcher:
     """Tests for run_on_chain_fetch (orchestrator + CSV writer)."""
 

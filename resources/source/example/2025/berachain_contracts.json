@@ -25,6 +25,12 @@
       "label": "Example Rebate Router",
       "kind": "rebate_router",
       "protocol": "Kodiak"
+    },
+    {
+      "address": "0x0000000000000000000000000000000000002222",
+      "label": "Example Self Wallet",
+      "kind": "self_wallet",
+      "protocol": null
     }
   ]
 }

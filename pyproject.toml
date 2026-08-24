@@ -26,8 +26,9 @@ classifiers = [
 dev = [
     "pytest>=8.4.2",
     "pytest-cov>=7.0.0",
+    "pytest-timeout>=2.3.1",
     "ruff>=0.14.5",
-    "types-openpyxl>=3.1.5.20250919"
+    "types-openpyxl>=3.1.5.20250919",
 ]
 
 [project.scripts]
@@ -54,6 +55,11 @@ addopts = [
     "--strict-config",
     "--verbose"
 ]
+# Per-test wall-clock ceiling (pytest-timeout). Guards against unbounded loops
+# that would otherwise accumulate memory until the host dies (incident lesson
+# #138: identity-dedup drain loop + per-iteration WARNING under caplog >20 GB).
+# The suite runs in ~7 s, so 120 s only ever fires on a genuine runaway.
+timeout = 120
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "unit: mark test as a unit test",

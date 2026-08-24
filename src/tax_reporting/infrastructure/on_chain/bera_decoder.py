@@ -115,14 +115,21 @@ def decode_rows(
     raw_txlist_rows: list[dict],
     raw_tokentx_rows: list[dict],
     wallet_config: OnChainWalletConfig,
+    *,
+    raw_internal_rows: list[dict] | None = None,
 ) -> list[OnChainTxRow]:
-    """Decode raw Etherscan ``txlist`` + ``tokentx`` rows into CSV rows.
+    """Decode raw Etherscan ``txlist`` + ``tokentx`` (+ ``txlistinternal``) rows into CSV rows.
 
     Args:
         raw_txlist_rows: Native-transfer row dicts (``action=txlist``).
         raw_tokentx_rows: ERC-20-transfer row dicts (``action=tokentx``).
         wallet_config: The wallet this batch belongs to; supplies the chain
             name, native ticker, wallet address/label, and date window.
+        raw_internal_rows: Optional internal-transaction row dicts
+            (``action=txlistinternal``); native-value receives executed via
+            internal calls that never appear in ``txlist``. Fees are NOT
+            attributed to these rows (the parent tx's gas already lives on
+            its ``txlist`` row - attributing it here would double-count).
 
     Returns:
         The list of successfully-decoded :class:`OnChainTxRow` records.
@@ -135,11 +142,51 @@ def decode_rows(
         parsed = _decode_native(row, wallet_config)
         if parsed is not None:
             decoded.append(parsed)
+    for row in raw_internal_rows or []:
+        parsed = _decode_internal(row, wallet_config)
+        if parsed is not None:
+            decoded.append(parsed)
     for row in raw_tokentx_rows:
         parsed = _decode_token(row, wallet_config)
         if parsed is not None:
             decoded.append(parsed)
     return decoded
+
+
+def _build_native_row(  # noqa: PLR0913 - fee fields passed as kwargs keep the two call sites explicit
+    row: dict,
+    cfg: OnChainWalletConfig,
+    ts_dt: datetime,
+    amount_raw: int,
+    *,
+    fee_asset: str,
+    fee_amount_raw: int,
+) -> OnChainTxRow:
+    """Build an ``OnChainTxRow`` for a native-transfer row (review r2 F12).
+
+    Shared by ``_decode_native`` (``txlist``: fee = gasUsed * gasPrice on the
+    native asset) and ``_decode_internal`` (``txlistinternal``: NO fee - the
+    parent tx's gas already lives on its ``txlist`` row), so adding an
+    ``OnChainTxRow`` field requires editing ONE construction, not two.
+    """
+    return OnChainTxRow(
+        tx_hash=row.get("hash", ""),
+        block_number=str(row.get("blockNumber", "")),
+        timestamp_utc=ts_dt.isoformat(),
+        chain=cfg.chain,
+        from_address=row.get("from", ""),
+        to_address=row.get("to", ""),
+        # DI-2: native asset name from config, never a literal.
+        asset=cfg.native_ticker,
+        token_address="",
+        amount_raw=amount_raw,
+        amount_decimals=_NATIVE_DECIMALS,
+        direction=_direction(row, cfg.address),
+        fee_asset=fee_asset,
+        fee_amount_raw=fee_amount_raw,
+        wallet_label=cfg.label,
+        wallet_address=cfg.address,
+    )
 
 
 def _decode_native(
@@ -153,27 +200,62 @@ def _decode_native(
         amount_raw = int(row["value"])
         gas_used = int(row["gasUsed"])
         gas_price = int(row["gasPrice"])
-        return OnChainTxRow(
-            tx_hash=row.get("hash", ""),
-            block_number=str(row.get("blockNumber", "")),
-            timestamp_utc=ts_dt.isoformat(),
-            chain=cfg.chain,
-            from_address=row.get("from", ""),
-            to_address=row.get("to", ""),
-            # DI-2: native asset name from config, never a literal.
-            asset=cfg.native_ticker,
-            token_address="",
-            amount_raw=amount_raw,
-            amount_decimals=_NATIVE_DECIMALS,
-            direction=_direction(row, cfg.address),
+        return _build_native_row(
+            row,
+            cfg,
+            ts_dt,
+            amount_raw,
             fee_asset=cfg.native_ticker,
             fee_amount_raw=gas_used * gas_price,
-            wallet_label=cfg.label,
-            wallet_address=cfg.address,
         )
     except (KeyError, ValueError, TypeError) as exc:
         _LOGGER.warning(
             "Skipping malformed txlist row (hash=%s): %s",
+            row.get("hash"),
+            exc,
+        )
+        return None
+
+
+def _decode_internal(
+    row: dict, cfg: OnChainWalletConfig
+) -> OnChainTxRow | None:
+    """Decode one ``txlistinternal`` (internal native transfer) row, or skip with a WARNING.
+
+    Internal rows carry the parent tx's hash and a native ``value`` but do NOT
+    carry a usable ``gasPrice`` (per the Etherscan ``txlistinternal`` field
+    set); gas is paid by the parent tx and is already recorded on its
+    ``txlist`` row, so no fee is attributed here (avoids double-counting).
+
+    Reverted and zero-value rows are NOT economic receives (review r1 F1):
+    a reverted internal call never executed (``errCode`` non-empty /
+    ``isError == '1'`` -> WARNING naming the hash, mirroring the malformed-row
+    idiom), and a zero-value internal row carries no native movement. Decoding
+    either would fabricate a phantom or amount-0 in-leg that flips the
+    classifier's pure-outflow deposit shapes into bidirectional Swap/Reward
+    shapes, so both are skipped.
+    """
+    if row.get("errCode") or str(row.get("isError", "0")) == "1":
+        _LOGGER.warning(
+            "Skipping reverted txlistinternal row (hash=%s, errCode=%s).",
+            row.get("hash"),
+            row.get("errCode") or "<isError>",
+        )
+        return None
+    try:
+        ts_dt = _parse_timestamp(row["timeStamp"])
+        if not _in_date_window(ts_dt, cfg.start_date, cfg.end_date):
+            return None
+        amount_raw = int(row["value"])
+        if amount_raw == 0:
+            return None
+        # Parent tx's gas lives on its txlist row; never attribute here.
+        return _build_native_row(
+            row, cfg, ts_dt, amount_raw, fee_asset="", fee_amount_raw=0
+        )
+    except (KeyError, ValueError, TypeError) as exc:
+        _LOGGER.warning(
+            "Skipping malformed txlistinternal row (hash=%s): %s",
             row.get("hash"),
             exc,
         )

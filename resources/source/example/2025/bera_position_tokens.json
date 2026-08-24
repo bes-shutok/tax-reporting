@@ -1,0 +1,19 @@
+{
+  "_comment": "EXAMPLE/TEMPLATE position-token registry for Berachain (plan 2026-08-22-bera-unknown-classifier-rules, Task 3). Synthetic, obviously-fake addresses only (Design Invariant #1). The real per-user registry lives at resources/source/2025/bera_position_tokens.json and is gitignored under resources/source/*. This file is the committed template that tests read.",
+  "as_of_date": "2026-08-22",
+  "provenance": "<example template>",
+  "tokens": [
+    {
+      "token_address": "0x0000000000000000000000000000000000000f17",
+      "label": "iTEST",
+      "kind": "lst",
+      "provenance": "<example template>"
+    },
+    {
+      "token_address": "0x0000000000000000000000000000000000000ee5",
+      "label": "TEST-POS",
+      "kind": "position_nft",
+      "provenance": "<example template>"
+    }
+  ]
+}

@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 
@@ -128,6 +129,211 @@ def test_example_conflicts_with_output_dir():
 
     with pytest.raises(SystemExit):
         _validate_args(args, parser)
+
+
+def test_validate_flag_parsed(tmp_path, monkeypatch):
+    """--validate-on-chain-th YEAR parses (int) and dispatches to the runner.
+
+    Mirrors the existing ``@patch("tax_reporting.main.main")`` dispatch tests:
+    ``run_validation`` is patched at ``tax_reporting.main.run_validation``
+    (the consumer-module binding), the cwd is a tmp dir (the tolerant
+    missing-config branch keeps the dispatch hermetic - no repo files read,
+    and the validation log file lands in the tmp dir), and ``cli()`` must exit
+    with the runner's status via ``sys.exit``.
+    """
+    parser = _build_arg_parser()
+    args = parser.parse_args(["--validate-on-chain-th", "2025"])
+
+    assert args.validate_on_chain_th == 2025
+    assert args.date_from is None
+    assert args.date_to is None
+
+    monkeypatch.chdir(tmp_path)
+    with (
+        patch("tax_reporting.main.run_validation", return_value=0) as mock_run_validation,
+        patch("sys.argv", ["tax-reporting", "--validate-on-chain-th", "2025"]),
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        cli()
+
+    assert exit_info.value.code == 0
+    mock_run_validation.assert_called_once_with(
+        year=2025,
+        output_dir=Path("resources/result"),
+        koinly_dir=None,
+        wallets=None,
+        rpc_url=None,
+        date_from=None,
+        date_to=None,
+        logger=ANY,
+    )
+
+
+def test_validate_flag_conflicts_rejected():
+    """--validate-on-chain-th cannot be combined with --example, --source-file,
+    or --output-dir (review r1 F21: the validation artifacts carry real tx
+    hashes whose PII rule is enforced by location under gitignored
+    ``resources/result/<year>/`` only - a shared --output-dir would move them
+    outside that surface, so the contract is enforced, not just documented)."""
+    from tax_reporting.main import _validate_args
+
+    parser = _build_arg_parser()
+    for argv in (
+        ["--validate-on-chain-th", "2025", "--example"],
+        ["--validate-on-chain-th", "2025", "--source-file", "/custom/path.csv"],
+        ["--validate-on-chain-th", "2025", "--output-dir", "/elsewhere"],
+    ):
+        args = parser.parse_args(argv)
+        with pytest.raises(SystemExit):
+            _validate_args(args, parser)
+
+
+# --------------------------------------------------------------------------- #
+# ON_CHAIN_TH_WALLETS precedence arm (review r1 F3): the composition root's
+# only enforcement of Design Invariant 9's precedence half - it activates
+# exactly when the user flips the production flag after validation passes.
+# --------------------------------------------------------------------------- #
+
+
+def _precedence_wallet(chain: str, label: str):
+    """A synthetic ``OnChainWalletConfig`` for the precedence-arm tests."""
+    from tax_reporting.domain.on_chain_config import OnChainWalletConfig
+
+    return OnChainWalletConfig(
+        chain=chain,
+        chainid=80094 if chain == "Berachain" else 1,
+        label=label,
+        address=f"0x{abs(hash(label)) % 16**40:040x}",
+        native_ticker="BERA" if chain == "Berachain" else "ETH",
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 12, 31),
+    )
+
+
+class TestValidateWalletPrecedence:
+    """``ON_CHAIN_TH_WALLETS`` precedence (main.py ``_run_validation_from_cli``)."""
+
+    def test_configured_labels_filter_berachain_wallets(self, tmp_path, monkeypatch):
+        """A configured ``on_chain_th_wallets`` selects the wallets under
+        validation: chains.json is filtered to Berachain AND to the configured
+        labels, matched through ``normalize_wallet_label`` (case/whitespace-insensitive).
+        A differently-cased configured label still matches; a non-Berachain
+        wallet and a non-configured Berachain wallet are both excluded."""
+        from types import SimpleNamespace
+
+        bera_configured = _precedence_wallet("Berachain", "Ledger Berachain (BERA)")
+        bera_other = _precedence_wallet("Berachain", "Rabby Other")
+        eth_wallet = _precedence_wallet("Ethereum", "Metamask ETH")
+        monkeypatch.chdir(tmp_path)
+        with (
+            patch(
+                "tax_reporting.main.load_configuration_from_file",
+                return_value=SimpleNamespace(
+                    tax_jurisdiction=SimpleNamespace(
+                        on_chain_rpc_url=None,
+                        on_chain_th_wallets=("  LEDGER BERACHAIN (BERA)  ",),
+                    )
+                ),
+            ) as mock_config,
+            patch(
+                "tax_reporting.main.load_on_chain_wallets",
+                return_value=[eth_wallet, bera_other, bera_configured],
+            ) as mock_load_wallets,
+            patch("tax_reporting.main.run_validation", return_value=0) as mock_run_validation,
+            patch("sys.argv", ["tax-reporting", "--validate-on-chain-th", "2025"]),
+            pytest.raises(SystemExit) as exit_info,
+        ):
+            cli()
+
+        assert exit_info.value.code == 0
+        mock_config.assert_called_once()
+        mock_load_wallets.assert_called_once_with(2025)
+        assert mock_run_validation.call_args.kwargs["wallets"] == [bera_configured], (
+            "only the configured Berachain label may be under validation"
+        )
+
+    def test_configured_label_matching_nothing_passes_empty_list(self, tmp_path, monkeypatch):
+        """A configured label matching no Berachain wallet resolves to an
+        EMPTY list (documented behavior) - which reaches ``run_validation``
+        verbatim so the runner fails loud on it, never silently widening the
+        scope back to all Berachain wallets."""
+        from types import SimpleNamespace
+
+        monkeypatch.chdir(tmp_path)
+        with (
+            patch(
+                "tax_reporting.main.load_configuration_from_file",
+                return_value=SimpleNamespace(
+                    tax_jurisdiction=SimpleNamespace(on_chain_rpc_url=None, on_chain_th_wallets=("No Such Wallet",))
+                ),
+            ),
+            patch(
+                "tax_reporting.main.load_on_chain_wallets",
+                return_value=[_precedence_wallet("Berachain", "Ledger Berachain (BERA)")],
+            ),
+            patch("tax_reporting.main.run_validation", return_value=1) as mock_run_validation,
+            patch("sys.argv", ["tax-reporting", "--validate-on-chain-th", "2025"]),
+            pytest.raises(SystemExit) as exit_info,
+        ):
+            cli()
+
+        assert exit_info.value.code == 1
+        assert mock_run_validation.call_args.kwargs["wallets"] == []
+
+    def test_invalid_config_raises_configuration_error(self, tmp_path, monkeypatch):
+        """A present-but-invalid config (``ValueError`` from the loader) fails
+        loud as ``ConfigurationError`` before any validation runs."""
+        monkeypatch.chdir(tmp_path)
+        with (
+            patch("tax_reporting.main.load_configuration_from_file", side_effect=ValueError("bad setting")),
+            patch("tax_reporting.main.run_validation", return_value=0) as mock_run_validation,
+            patch("sys.argv", ["tax-reporting", "--validate-on-chain-th", "2025"]),
+            pytest.raises(ConfigurationError, match="invalid settings"),
+        ):
+            cli()
+
+        mock_run_validation.assert_not_called()
+
+    def test_missing_decision_points_propagates(self, tmp_path, monkeypatch):
+        """``MissingDecisionPointsError`` re-raises unchanged (the dedicated
+        fail-fast, never wrapped in ``ConfigurationError``)."""
+        monkeypatch.chdir(tmp_path)
+        with (
+            patch(
+                "tax_reporting.main.load_configuration_from_file",
+                side_effect=MissingDecisionPointsError("missing decision points"),
+            ),
+            patch("tax_reporting.main.run_validation", return_value=0) as mock_run_validation,
+            patch("sys.argv", ["tax-reporting", "--validate-on-chain-th", "2025"]),
+            pytest.raises(MissingDecisionPointsError),
+        ):
+            cli()
+
+        mock_run_validation.assert_not_called()
+
+
+def test_window_flags_validation():
+    """--from/--to require --validate-on-chain-th, must be ordered, and bind dates."""
+    from tax_reporting.main import _validate_args
+
+    parser = _build_arg_parser()
+
+    # Window flags without the validate path are rejected.
+    for argv in (["--from", "2025-01-01"], ["--to", "2025-06-30"]):
+        args = parser.parse_args(argv)
+        with pytest.raises(SystemExit):
+            _validate_args(args, parser)
+
+    # An inverted window (--from after --to) is rejected.
+    args = parser.parse_args(["--validate-on-chain-th", "2025", "--from", "2025-07-01", "--to", "2025-01-01"])
+    with pytest.raises(SystemExit):
+        _validate_args(args, parser)
+
+    # A valid window parses with the two date values bound.
+    args = parser.parse_args(["--validate-on-chain-th", "2025", "--from", "2025-01-01", "--to", "2025-06-30"])
+    _validate_args(args, parser)
+    assert args.date_from == date(2025, 1, 1)
+    assert args.date_to == date(2025, 6, 30)
 
 
 @patch("tax_reporting.main.main")
@@ -399,6 +605,66 @@ class TestMainWithMissingConfig:
         # Sanity: DEFAULT_LOG_LEVEL is the level used on this failure path (asserted to be a
         # valid level name, not a bare literal in the wiring).
         assert DEFAULT_LOG_LEVEL in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
+
+class TestCli:
+    """cli() validation-path crash wrapper and exit-code contract."""
+
+    def test_validation_crash_exits_2(self, tmp_path, monkeypatch, capsys):
+        """An unexpected crash inside the validation path exits 2, prints a
+        friendly one-line message, and routes the traceback through
+        ``logger.exception`` into the file audit trail - never a bare
+        unhandled traceback propagating out of ``cli()``."""
+        monkeypatch.chdir(tmp_path)
+        with (
+            patch("tax_reporting.main.run_validation", side_effect=RuntimeError("boom")),
+            patch("sys.argv", ["tax-reporting", "--validate-on-chain-th", "2025"]),
+            pytest.raises(SystemExit) as exit_info,
+        ):
+            cli()
+
+        assert exit_info.value.code == 2
+        out = capsys.readouterr().out
+        assert "crashed unexpectedly" in out
+        # logger.exception record: the full traceback lands in the file audit trail
+        # (caplog's handler is replaced by configure_application_logging, so the
+        # log file is the durable logging surface to assert on).
+        log_text = (tmp_path / "logs" / "tax-reporting.log").read_text(encoding="utf-8")
+        assert "Unexpected error during on-chain TH validation" in log_text
+        assert "RuntimeError: boom" in log_text
+
+    @pytest.mark.parametrize("code", [0, 1, 3])
+    def test_validation_exit_codes_passthrough(self, code, tmp_path, monkeypatch):
+        """run_validation return values 0/1/3 reach ``sys.exit`` unchanged
+        (backward compat: exit 1 stays misconfiguration-only)."""
+        monkeypatch.chdir(tmp_path)
+        with (
+            patch("tax_reporting.main.run_validation", return_value=code),
+            patch("sys.argv", ["tax-reporting", "--validate-on-chain-th", "2025"]),
+            pytest.raises(SystemExit) as exit_info,
+        ):
+            cli()
+
+        assert exit_info.value.code == code
+
+    @pytest.mark.parametrize(
+        ("exc_type", "message"),
+        [
+            (ConfigurationError, "invalid settings"),
+            (MissingDecisionPointsError, "missing decision points"),
+        ],
+    )
+    def test_validation_config_error_not_swallowed(self, exc_type, message, tmp_path, monkeypatch):
+        """ConfigurationError / MissingDecisionPointsError propagate out of
+        ``cli()`` as their own type - never converted to SystemExit(2) nor
+        swallowed into the friendly crash message."""
+        monkeypatch.chdir(tmp_path)
+        with (
+            patch("tax_reporting.main._run_validation_from_cli", side_effect=exc_type(message)),
+            patch("sys.argv", ["tax-reporting", "--validate-on-chain-th", "2025"]),
+            pytest.raises(exc_type, match=message),
+        ):
+            cli()
 
 
 def test_main_raises_configuration_error_for_missing_decision_points(tmp_path):

@@ -113,8 +113,10 @@ class ContractEntry:
         address: The contract address (lower-cased).
         label: Human-readable label (informational).
         kind: One of :data:`_CONTRACT_KINDS` (``dex_router``,
-            ``reward_distributor``, ``rebate_router``). Drives processor
-            classification.
+            ``reward_distributor``, ``rebate_router``, ``self_wallet``).
+            Drives processor classification. ``self_wallet`` (C3) marks the
+            tracked wallet's other own wallets: transfers to/from such an
+            address classify as ``Transfer``, not Reward/spam or Unknown.
         protocol: Originating protocol tag (informational).
         operator_country: ISO-3166 alpha-2 country code for the operator's
             domicile, or ``None`` when the contract falls through to the

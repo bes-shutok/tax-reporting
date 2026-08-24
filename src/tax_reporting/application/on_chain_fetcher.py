@@ -6,10 +6,11 @@ Koinly-based crypto tax pipeline). It:
 
 1. Loads the per-year wallet config via :func:`load_on_chain_wallets`.
 2. For each wallet, drives an :class:`EtherscanV2Client` to fetch the raw
-   ``txlist`` (native) and ``tokentx`` (ERC-20) rows.
+   ``txlist`` (native), ``tokentx`` (ERC-20), and ``txlistinternal``
+   (internal native receives) rows.
 3. Decodes the raw rows via :func:`decode_rows`.
-4. Writes a single consolidated CSV at
-   ``output_dir / str(year) / "bera_transactions.csv"``.
+4. Writes a single consolidated CSV at the path resolved by
+   :func:`bera_csv_path` (``output_dir / str(year) / <_CSV_FILENAME>``).
 
 Design notes
 ------------
@@ -63,6 +64,17 @@ logger = logging.getLogger(__name__)
 _CSV_FILENAME = "bera_transactions.csv"
 
 
+def bera_csv_path(output_dir: Path, year: int) -> Path:
+    """Resolve the on-chain bera CSV path for ``year`` (review r2 F11).
+
+    Single construction site: the fetcher (this module, the CSV's producer),
+    the TH substitution service, and the validation harness all resolve the
+    SAME path object via this helper, so a layout-convention change updates
+    one literal (``_CSV_FILENAME`` above).
+    """
+    return output_dir / str(year) / _CSV_FILENAME
+
+
 def _client_for_wallet(
     wallet: OnChainWalletConfig, api_key: str
 ) -> EtherscanV2Client:
@@ -86,7 +98,8 @@ def _decode_wallet(
     """
     txlist_rows = client.fetch_normal_txs(wallet.address)
     tokentx_rows = client.fetch_token_transfers(wallet.address)
-    return decode_rows(txlist_rows, tokentx_rows, wallet)
+    internal_rows = client.fetch_internal_txs(wallet.address)
+    return decode_rows(txlist_rows, tokentx_rows, wallet, raw_internal_rows=internal_rows)
 
 
 def _write_csv(path: Path, rows: list[OnChainTxRow]) -> None:
@@ -157,7 +170,7 @@ def run_on_chain_fetch(
     # tokentx rows for the same block).
     decoded.sort(key=lambda r: (int(r.block_number) if r.block_number else 0))
 
-    csv_path = output_dir / str(year) / _CSV_FILENAME
+    csv_path = bera_csv_path(output_dir, year)
     _write_csv(csv_path, decoded)
     logger.info(
         "Wrote %d on-chain transaction rows to %s", len(decoded), csv_path

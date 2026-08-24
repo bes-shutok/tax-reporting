@@ -21,6 +21,13 @@ serialization, Koinly-TH merge) propagates to the caller, which wraps non-
 ``ConfigurationError`` / ``ReportGenerationError`` exceptions into
 ``ReportGenerationError``. This path is NOT under the broad ``except Exception``
 that guards the collection-only ``run_on_chain_fetch``.
+
+Two reusable seams (validation-harness Task 1, pure extraction):
+:meth:`OnChainThSubstituter.build_projection` exposes the pre-merge pipeline
+(reader -> processor -> audit -> adapter projection) with an optional inclusive
+date window, and :func:`is_wallet_row` exposes the merge's wallet-row match
+idiom, so downstream consumers (the TH validation harness) reuse EXACTLY the
+production path instead of growing a parallel one.
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ import csv
 import logging
 import os
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 from ..domain.exceptions import ReportGenerationError
@@ -39,6 +47,10 @@ from ..infrastructure.on_chain.berachain_processor import BerachainProcessor
 from ..infrastructure.on_chain.integrity_invariants import check_on_chain_integrity
 from ..infrastructure.on_chain.lp_autodiscovery import LpAutodiscovery
 from ..infrastructure.on_chain.on_chain_csv_reader import read_on_chain_rows
+from ..infrastructure.on_chain.position_token_registry import (
+    PositionTokenRegistry,
+    load_position_token_registry,
+)
 from ..infrastructure.on_chain.rpc_client import RpcClient
 from .crypto.classification import _find_repository_root
 from .crypto.entities import (
@@ -50,6 +62,7 @@ from .on_chain_config import (
     load_contracts,
     load_lp_snapshot,
 )
+from .on_chain_fetcher import bera_csv_path
 from .on_chain_th_adapter import (
     TH_CSV_COLUMNS,
     ProjectedThRow,
@@ -58,18 +71,55 @@ from .on_chain_th_adapter import (
 )
 
 
-def _norm_label(s: str) -> str:
+def normalize_wallet_label(s: str) -> str:
     """Normalize a wallet label for case-insensitive matching (Plan F2).
 
     Strips surrounding whitespace, casefolds (a strict superset of lowercase
     for printable ASCII, so an exact match today still matches after
     normalization), and drops non-printable characters (control chars that
-    could otherwise sneak past a bare ``.lower()`` comparison). Used ONLY for
-    the drop decision in :meth:`OnChainThSubstituter._merge_on_chain_into_koinly_th`;
-    the reconciliation provenance keeps the RAW label (the user sees raw labels
-    in the sheet).
+    could otherwise sneak past a bare ``.lower()`` comparison). Public
+    (review r2 F7): the CLI validation path in :mod:`tax_reporting.main`
+    imports this same normalization instead of reaching for a private
+    helper; the reconciliation provenance keeps the RAW label (the user sees
+    raw labels in the sheet).
     """
     return "".join(ch for ch in s.strip().casefold() if ch.isprintable())
+
+
+def matched_wallet_labels(row: dict[str, str], labels: set[str]) -> set[str]:
+    """Return which of ``labels`` the Koinly TH ``row``'s wallet cells match.
+
+    Matches the row's ``Sending Wallet`` / ``Receiving Wallet`` cells against
+    ``labels`` with the same ``normalize_wallet_label`` semantics the merge drop uses
+    (strip + casefold + printable-only). Returns the SUBSET of ``labels``
+    actually matched (empty set = no match), so callers that need the matched
+    labels (the merge loop's fail-loud no-match check) reuse this single
+    normalization instead of re-normalizing the same cells again (review
+    r1 F20: four parallel copies of the same normalization can drift apart).
+
+    Args:
+        row: A Koinly TH row dict (as returned by ``read_koinly_rows``).
+        labels: Wallet labels ALREADY normalized via ``normalize_wallet_label`` (and with
+            empty entries filtered out). Pre-normalizing at the caller keeps
+            an empty configured label from matching a row whose wallet cells
+            are empty (``normalize_wallet_label("") == ""`` would otherwise be a member).
+
+    Returns:
+        The set of matched normalized labels (possibly empty).
+    """
+    sending_n = normalize_wallet_label((row.get("Sending Wallet") or "").strip())
+    receiving_n = normalize_wallet_label((row.get("Receiving Wallet") or "").strip())
+    return {label for label in (sending_n, receiving_n) if label in labels}
+
+
+def is_wallet_row(row: dict[str, str], labels: set[str]) -> bool:
+    """Return whether a Koinly TH ``row`` belongs to one of ``labels``.
+
+    Thin boolean wrapper over :func:`matched_wallet_labels` (the merge's
+    drop decision and the TH validation harness's row filter share ONE
+    matching idiom - no parallel matching path can drift).
+    """
+    return bool(matched_wallet_labels(row, labels))
 
 
 @dataclass
@@ -110,13 +160,63 @@ class OnChainThSubstitutionResult:
     merged_th_path: Path | None
 
 
+@dataclass
+class OnChainProjection:
+    """Result of :meth:`OnChainThSubstituter.build_projection` (validation-harness Task 1).
+
+    Carries the FULL pre-merge pipeline output - the processed on-chain
+    transactions, the adapter's TH projection, and the loaded registry /
+    LP-snapshot collaborators - so downstream consumers (the TH substitution
+    merge and the TH validation harness) see exactly what the production path
+    produces.
+
+    Attributes:
+        transactions: The processor's ``OnChainTransaction`` list (one per
+            ``tx_hash``; post-classification, post-audit).
+        projected_rows: The adapter's ``ProjectedThRow`` list (one per Event).
+        registry: The per-year contract registry that drove classification.
+        lp_snapshot: The per-year LP-token snapshot used for LP classification.
+    """
+
+    transactions: list[OnChainTransaction]
+    projected_rows: list[ProjectedThRow]
+    registry: ContractRegistry
+    lp_snapshot: LpSnapshot
+
+
 # Upper bound on the sample-hashes list rendered in the delta block (keeps the
 # cell readable; the full hash set lives in the merged TH for drill-down).
 _DELTA_SAMPLE_HASH_CAP = 10
 
+#: The Koinly TH discovery glob marker + suffix (the ONE definition shared by
+#: the substituter's merge-side lookup and the validation runner's baseline
+#: lookup - review r1 F17: twin inline literals can drift apart silently).
+TH_MARKER = "transaction_history"
+TH_SUFFIX = ".csv"
+
+
+def in_window_inclusive(day: date, date_from: date | None, date_to: date | None) -> bool:
+    """Inclusive window check (both bounds participate when set).
+
+    The ONE shared predicate for BOTH sides of the TH validation (the raw-row
+    filter in :meth:`OnChainThSubstituter.build_projection` and the runner's
+    Koinly-baseline filter - review r1 F17): the two sides must see the same
+    window or the hash partitions diverge, so the equality is enforced by
+    sharing the code, not by parallel literals.
+    """
+    if date_from is not None and day < date_from:
+        return False
+    return date_to is None or day <= date_to
+
 
 class OnChainThSubstituter:
     """Substitute on-chain TH rows for opted-in wallets (Plan Task 11, bridge (a)).
+
+    The pre-merge pipeline (reader -> processor -> audit -> adapter projection)
+    is exposed as :meth:`build_projection` so the TH validation harness reuses
+    the EXACT production path (validation-harness Task 1, pure extraction);
+    :meth:`maybe_substitute` is that projection plus the Koinly-TH merge /
+    reconciliation tail.
 
     When the on-chain CSV (``bera_transactions.csv``) is present for ``year``,
     :meth:`maybe_substitute` runs the on-chain parse path (CSV reader ->
@@ -160,11 +260,13 @@ class OnChainThSubstituter:
         *,
         contracts_path: Path | None = None,
         lp_snapshot_path: Path | None = None,
+        position_tokens_path: Path | None = None,
         on_chain_rpc_url: str | None = None,
     ) -> None:
         """Initialize the substituter with optional test-injected registry paths."""
         self._contracts_path = contracts_path
         self._lp_snapshot_path = lp_snapshot_path
+        self._position_tokens_path = position_tokens_path
         self._on_chain_rpc_url = on_chain_rpc_url
 
     def maybe_substitute(  # noqa: PLR0913
@@ -192,7 +294,7 @@ class OnChainThSubstituter:
             koinly_dir: The Koinly directory the crypto pipeline will read from.
                 The merged TH CSV is written here.
             output_dir: Base output directory; the bera CSV is read from
-                ``output_dir / str(year) / "bera_transactions.csv"``.
+                the fetcher's ``bera_csv_path(output_dir, year)``.
             year: The fiscal year (selects the bera CSV subdirectory and the
                 per-year contract registry / LP snapshot).
             opted_in_wallets: Wallet labels opting into the on-chain TH path
@@ -200,38 +302,19 @@ class OnChainThSubstituter:
                 ``Receiving Wallet`` columns and the bera CSV ``wallet_label``).
             logger: Logger for diagnostics.
         """
-        bera_csv = output_dir / str(year) / "bera_transactions.csv"
-        if not bera_csv.is_file():
-            logger.warning(
-                "ON_CHAIN_TH_WALLETS lists %s but no on-chain CSV found at %s; "
-                "leaving Koinly TH untouched for this run.",
-                opted_in_wallets,
-                bera_csv,
-            )
+        projection = self.build_projection(year=year, output_dir=output_dir, logger=logger)
+        if projection is None:
             return OnChainThSubstitutionResult(reconciliation=None, merged_th_path=None)
 
         logger.info(
             "ON_CHAIN_TH_WALLETS=%s opted in; substituting on-chain TH from %s.",
             opted_in_wallets,
-            bera_csv,
+            bera_csv_path(output_dir, year),
         )
+        txs = projection.transactions
+        projected = projection.projected_rows
 
-        # --- Pipeline (review F10: each stage was inline; now extracted helpers) ---
-        repo_root = _find_repository_root()
-        registry, snapshot = self._load_registries(year, repo_root, logger)
-        processor, autodiscovery = self._build_processor(registry, snapshot)
-        on_chain_rows = read_on_chain_rows(bera_csv)
-        txs = processor.process(on_chain_rows)
-        self._audit(txs=txs, registry=registry, autodiscovery=autodiscovery)
-        projected = project_on_chain_transactions(txs)
-        logger.info(
-            "On-chain TH path: %d CSV row(s) -> %d tx(s) -> %d projected TH row(s).",
-            len(on_chain_rows),
-            len(txs),
-            len(projected),
-        )
-
-        koinly_th = _find_report_path(koinly_dir, "transaction_history", ".csv")
+        koinly_th = _find_report_path(koinly_dir, TH_MARKER, TH_SUFFIX)
         merge_stats, merged_th_path = self._serialize_and_merge(
             projected=projected,
             koinly_dir=koinly_dir,
@@ -250,13 +333,102 @@ class OnChainThSubstituter:
             merged_th_path=merged_th_path,
         )
 
+    def build_projection(
+        self,
+        *,
+        year: int,
+        output_dir: Path,
+        logger: logging.Logger,
+        date_from: date | None = None,
+        date_to: date | None = None,
+    ) -> OnChainProjection | None:
+        """Build the on-chain projection (reader -> processor -> audit -> adapter).
+
+        Extracted verbatim from ``maybe_substitute``'s pre-merge pipeline
+        (validation-harness Task 1; pure refactor - ``maybe_substitute`` calls
+        this with no window so the production path is byte-identical). Performs
+        exactly the original steps: bera-CSV presence check (absent -> WARNING
+        + ``None``), repository-root resolution, registry + snapshot load,
+        processor build, CSV read, classification, integrity/freshness audit,
+        adapter projection.
+
+        The ONE addition: when ``date_from``/``date_to`` is set, the RAW rows
+        are filtered to the inclusive date window (comparing the reader's
+        already-parsed ``OnChainTxRow.timestamp_utc.date()``) BEFORE
+        ``processor.process``, so the processor, the integrity checks, and the
+        projection never see out-of-window transactions.
+
+        Fail-loud (M1): any failure on this path propagates to the caller
+        (same contract as ``maybe_substitute``).
+
+        Args:
+            year: The fiscal year (selects the bera CSV subdirectory and the
+                per-year contract registry / LP snapshot).
+            output_dir: Base output directory; the bera CSV is read from
+                the fetcher's ``bera_csv_path(output_dir, year)``.
+            logger: Logger for diagnostics.
+            date_from: Optional inclusive window start; rows whose
+                ``timestamp_utc.date()`` is EARLIER are dropped before
+                processing. ``None`` (production default) keeps every row.
+            date_to: Optional inclusive window end; rows whose
+                ``timestamp_utc.date()`` is LATER are dropped before
+                processing. ``None`` (production default) keeps every row.
+
+        Returns:
+            ``OnChainProjection`` with the processed transactions, the
+            projected TH rows, and the loaded registry + LP snapshot; or
+            ``None`` when the bera CSV is absent (WARNING logged).
+        """
+        bera_csv = bera_csv_path(output_dir, year)
+        if not bera_csv.is_file():
+            logger.warning(
+                "No on-chain CSV found at %s; no on-chain TH projection was built.",
+                bera_csv,
+            )
+            return None
+
+        logger.info("Building on-chain TH projection from %s.", bera_csv)
+
+        # --- Pipeline (review F10: each stage was inline; now extracted helpers) ---
+        repo_root = _find_repository_root()
+        registry, snapshot, position_tokens = self._load_registries(year, repo_root, logger)
+        processor, autodiscovery = self._build_processor(
+            registry, snapshot, position_tokens
+        )
+        on_chain_rows = read_on_chain_rows(bera_csv)
+        if date_from is not None or date_to is not None:
+            # Inclusive window on the reader's parsed UTC date; applied to the
+            # RAW rows so the processor/audit/projection never see out-of-window
+            # transactions (validation-harness Task 1). Production passes no
+            # window, so this filter never runs on the substituter path. The
+            # SHARED predicate (review r1 F17): the runner's Koinly-side filter
+            # uses the same function, so the two sides cannot drift.
+            on_chain_rows = [
+                row for row in on_chain_rows if in_window_inclusive(row.timestamp_utc.date(), date_from, date_to)
+            ]
+        txs = processor.process(on_chain_rows)
+        self._audit(txs=txs, registry=registry, autodiscovery=autodiscovery)
+        projected = project_on_chain_transactions(txs)
+        logger.info(
+            "On-chain TH path: %d CSV row(s) -> %d tx(s) -> %d projected TH row(s).",
+            len(on_chain_rows),
+            len(txs),
+            len(projected),
+        )
+        return OnChainProjection(
+            transactions=txs,
+            projected_rows=projected,
+            registry=registry,
+            lp_snapshot=snapshot,
+        )
+
     def _load_registries(
         self,
         year: int,
         repo_root: Path,
         logger: logging.Logger,
-    ) -> tuple[ContractRegistry, LpSnapshot]:
-        """Resolve + load the per-year contract registry and LP snapshot.
+    ) -> tuple[ContractRegistry, LpSnapshot, PositionTokenRegistry]:
+        """Resolve + load the per-year contract registry, LP snapshot, and position-token registry.
 
         Production resolves these from ``resources/source/<year>/`` (the per-user
         override dir); when absent (a fresh clone has no personal data there - it
@@ -277,12 +449,27 @@ class OnChainThSubstituter:
                 year, "berachain_lp_snapshot.json", self._lp_snapshot_path, repo_root, logger
             )
         )
-        return registry, snapshot
+        # Position-token registry (plan 2026-08-22 Task 3): same resolution
+        # contract, but the loader DEGRADES to an empty registry + WARNING
+        # when the file is absent (LST outflows then classify Unknown +
+        # review; a fresh clone without the personal registry must not
+        # abort the opted-in path).
+        position_tokens = load_position_token_registry(
+            self._resolve_registry_path(
+                year,
+                "bera_position_tokens.json",
+                self._position_tokens_path,
+                repo_root,
+                logger,
+            )
+        )
+        return registry, snapshot, position_tokens
 
     def _build_processor(
         self,
         registry: ContractRegistry,
         snapshot: LpSnapshot,
+        position_tokens: PositionTokenRegistry,
     ) -> tuple[BerachainProcessor, LpAutodiscovery]:
         """Wire the RPC client + LP autodiscovery + Berachain processor.
 
@@ -310,6 +497,7 @@ class OnChainThSubstituter:
             chain="Berachain",
             contract_registry=registry,
             lp_autodiscovery=autodiscovery,
+            position_token_registry=position_tokens,
         )
         return processor, autodiscovery
 
@@ -464,11 +652,11 @@ class OnChainThSubstituter:
             always ``koinly_dir / "on_chain_merged_th.csv"``.
         """
         # F2: match opted-in labels CASE-INSENSITIVELY (normalized). An exact
-        # match today still matches after ``_norm_label`` (casefold is a strict
+        # match today still matches after ``normalize_wallet_label`` (casefold is a strict
         # superset of exact for printable ASCII), so backward-compat holds. The
         # reconciliation provenance keeps RAW labels (the user sees raw labels
         # in the sheet); ONLY the drop decision uses the normalized form.
-        opted_norm = {_norm_label(w) for w in opted_in_wallets if w.strip()}
+        opted_norm = {normalize_wallet_label(w) for w in opted_in_wallets if w.strip()}
 
         surviving_koinly_rows: list[dict[str, str]] = []
         dropped_koinly_rows = 0
@@ -478,15 +666,9 @@ class OnChainThSubstituter:
         if koinly_th is not None and koinly_th != on_chain_th_csv:
             all_koinly_rows = read_koinly_rows(koinly_th)
             for row in all_koinly_rows:
-                sending_raw = (row.get("Sending Wallet") or "").strip()
-                receiving_raw = (row.get("Receiving Wallet") or "").strip()
-                sending_n = _norm_label(sending_raw)
-                receiving_n = _norm_label(receiving_raw)
-                if sending_n in opted_norm or receiving_n in opted_norm:
-                    if sending_n in opted_norm:
-                        matched_norm.add(sending_n)
-                    if receiving_n in opted_norm:
-                        matched_norm.add(receiving_n)
+                matches = matched_wallet_labels(row, opted_norm)
+                if matches:
+                    matched_norm.update(matches)
                     dropped_koinly_rows += 1
                     continue  # replaced by the on-chain projection
                 surviving_koinly_rows.append(row)
@@ -611,7 +793,7 @@ class OnChainThSubstituter:
         order-preserving sample of the on-chain tx hashes.
         """
         # Per-wallet on-chain projected row counts (one projected row per Event).
-        # Review r1 F2: key by NORMALIZED label (``_norm_label``) so the lookup
+        # Review r1 F2: key by NORMALIZED label (``normalize_wallet_label``) so the lookup
         # below tolerates the same case/form mismatch the merge drop already
         # tolerates. The DISPLAYED ``wallet_label`` in the provenance row stays
         # RAW (the user sees what they configured); only the COUNT-lookup key is
@@ -625,7 +807,7 @@ class OnChainThSubstituter:
             # receiving to be robust to future adapter changes.
             row = p.row
             label = (row.sending_wallet or row.receiving_wallet or "Unknown").strip()
-            norm = _norm_label(label)
+            norm = normalize_wallet_label(label)
             on_chain_per_wallet[norm] = on_chain_per_wallet.get(norm, 0) + 1
 
         opted_set = {w.strip() for w in opted_in_wallets if w.strip()}
@@ -644,7 +826,7 @@ class OnChainThSubstituter:
                     # Look up the count by NORMALIZED label so a case/form
                     # mismatch between the configured label and the bera CSV
                     # wallet_label still resolves (review r1 F2).
-                    row_count=on_chain_per_wallet.get(_norm_label(label), 0),
+                    row_count=on_chain_per_wallet.get(normalize_wallet_label(label), 0),
                 )
             )
         # Then the surviving-Koinly wallets (koinly), sorted for determinism.

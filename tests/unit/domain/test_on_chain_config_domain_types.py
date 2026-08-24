@@ -94,6 +94,24 @@ class TestOnChainConfigDomainTypes:
         assert is_valid_iso3166_alpha2("XX") is False
         assert is_valid_iso3166_alpha2("") is False
 
+    def test_contract_entry_docstring_lists_self_wallet(self):
+        """C3 doc-drift pin (validation-harness plan Task 8): the
+        ``ContractEntry`` docstring enumerates the allowed registry kinds
+        and must list ``self_wallet`` (added alongside the original three).
+        Keeps this file's kind enumeration honest when the loader's closed
+        set grows or shrinks.
+        """
+        docstring = ContractEntry.__doc__ or ""
+        for kind in (
+            "dex_router",
+            "reward_distributor",
+            "rebate_router",
+            "self_wallet",
+        ):
+            assert kind in docstring, (
+                f"ContractEntry docstring must list the {kind!r} registry kind"
+            )
+
 
 @pytest.mark.unit
 class TestInfrastructureImportsFromDomain:

@@ -11,9 +11,13 @@ The processor is PURE: it takes a flat ``list[OnChainTxRow]`` plus injected
 dependencies (a :class:`ContractRegistry` and a :class:`LpAutodiscovery`)
 and returns ``list[OnChainTransaction]``. It performs NO I/O - no RPC, no
 filesystem reads. Classification is a pure function of the rows + the two
-injected registries. This keeps the module under the 1000-line / 50-function
-guideline (AGENTS.md) by keeping the I/O (CSV read, contract-registry load,
-LP-snapshot load, RPC fallback) in their own modules.
+injected registries. The I/O (CSV read, contract-registry load,
+LP-snapshot load, position-token-registry load, RPC fallback) lives in its
+own modules. KNOWN DEBT (review r1 F5): the module is OVER the 1000-line
+guideline (AGENTS.md) after the 2026-08-22 unknown-classifier shapes; the
+pure leg/gas helpers should be extracted to a sibling module in a planned
+follow-up (kept here for now to bound this round's blast radius on the
+order-critical dispatcher).
 
 Classification rules (leg pattern -> EventType / SubType), grounded in the
 design record §9.1 and the plan's 11 test clauses. Rows are grouped by
@@ -25,7 +29,24 @@ the legs are classified into Events:
 +-----------------------------------+-------------------------------+---------------------+
 | BIDIRECTIONAL 1 in-asset <-> 1 out| Swap                          | None                |
 +-----------------------------------+-------------------------------+---------------------+
+| BIDIRECTIONAL sending LP/vault    | LiquidityWithdraw             | internal_transfer   |
+| receipt token (island unstake;    | (+ review WARNING when the    |                     |
+| registry-vault-target LST unstake | LP-member receive side is     |                     |
+| is vault-target gated; LP-member  | not the redemption            |                     |
+| sends to a non-counterparty       | counterparty: possible        |                     |
+| recipient carry a review flag)    | disposal)                     |                     |
++-----------------------------------+-------------------------------+---------------------+
 | BIDIRECTIONAL receiving LP token  | LiquidityDeposit              | internal_transfer   |
++-----------------------------------+-------------------------------+---------------------+
+| PURE outflow of LP-snapshot /     | LiquidityDeposit              | internal_transfer   |
+| position-registry member tokens,  |                               | (+ review when no   |
+| or multi-leg zap outflow (all     |                               | member signal)      |
+| non-gas out-legs economic)        |                               |                     |
++-----------------------------------+-------------------------------+---------------------+
+| PURE single-leg outflow (non-     | LiquidityDeposit              | internal_transfer   |
+| member token) whose tx recipient  |                               |                     |
+| is a position-registry VAULT      |                               |                     |
+| (kind-gated)                      |                               |                     |
 +-----------------------------------+-------------------------------+---------------------+
 | MULTI inflow (rewards), no outflow| Reward (one per (tx, asset))  | staking | spam      |
 +-----------------------------------+-------------------------------+---------------------+
@@ -37,6 +58,12 @@ the legs are classified into Events:
 +-----------------------------------+-------------------------------+---------------------+
 | inflow from unrecognized sender   | Reward                        | spam (+ review)     |
 +-----------------------------------+-------------------------------+---------------------+
+| PURE inflow from a registered     | Transfer                      | internal_transfer   |
+| self-wallet (C3)                  |                               |                     |
++-----------------------------------+-------------------------------+---------------------+
+| PURE outflow to a registered      | Transfer                      | internal_transfer   |
+| self-wallet (C3)                  |                               |                     |
++-----------------------------------+-------------------------------+---------------------+
 | direction == "unknown"            | Unknown                       | None (+ review)     |
 +-----------------------------------+-------------------------------+---------------------+
 
@@ -44,7 +71,11 @@ Gas: lifted to the parent-tx level (``OnChainTransaction.gas``) from the
 group's row-level ``fee_asset`` / ``fee_amount_raw`` (the CSV reader carries
 gas per-row; the processor collapses it to one parent-tx gas). If all rows
 have empty fee fields, ``gas`` is ``None``. Gas NEVER attaches to an Event
-(decision 9: gas is a property of the tx, not of any leg/Event).
+(decision 9: gas is a property of the tx, not of any leg/Event). Because
+the gas lives on the tx, a zero-value NATIVE outflow leg (the gas carrier,
+design record Q6) is excluded from the economic in/out partition inside
+``_classify_events`` - except in the GAS_ONLY shape, whose single carrier
+leg IS the GasBurn Event's payload.
 
 Attacker mitigations (see plan CRITICAL RULES):
 
@@ -85,6 +116,9 @@ from tax_reporting.domain.on_chain_transaction import (
 )
 from tax_reporting.infrastructure.on_chain.lp_autodiscovery import LpAutodiscovery
 from tax_reporting.infrastructure.on_chain.on_chain_csv_reader import OnChainTxRow
+from tax_reporting.infrastructure.on_chain.position_token_registry import (
+    PositionTokenRegistry,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -93,6 +127,10 @@ _LOGGER = logging.getLogger(__name__)
 # the decimals explicitly. Recorded here as a named constant (AGENTS.md: no
 # magic numbers).
 _NATIVE_DEFAULT_DECIMALS: Final = 18
+
+# Minimum number of economic out-legs for the pure-outflow multi-leg (zap-add)
+# deposit shape: a zap routes one input through several deposits/ swaps at once.
+_MIN_MULTI_LEG_OUTLEGS: Final = 2
 
 # The native-leg asset is the one with no token_address (it is the chain's
 # native coin, not an ERC-20). Used to (a) detect GAS_ONLY txs and (b) source
@@ -111,11 +149,16 @@ class BerachainProcessor:
             Used for the ``OnChainTransaction.chain`` field; the orchestrator
             selects the right processor per chain.
         contract_registry: The loaded + validated :class:`ContractRegistry`
-            (reward-distributor / DEX-router / rebate-router tags). Consulted
-            for reward-sender verification (F4) and DEX-router detection.
+            (reward-distributor / DEX-router / rebate-router / self-wallet
+            tags). Consulted for reward-sender verification (F4),
+            DEX-router detection, and self-transfer detection (C3).
         lp_autodiscovery: The :class:`LpAutodiscovery` (Task 8). Consulted
             for the BIDIRECTIONAL-receiving-LP-token -> LiquidityDeposit
             classification.
+        position_token_registry: The :class:`PositionTokenRegistry` (plan
+            2026-08-22 Task 3) - address-keyed LST / staking-position
+            allowlist gating the pure-outflow LST deposit rule. ``None``
+            behaves as empty (Unknown fallback).
     """
 
     def __init__(
@@ -124,11 +167,20 @@ class BerachainProcessor:
         chain: str,
         contract_registry: ContractRegistry,
         lp_autodiscovery: LpAutodiscovery,
+        position_token_registry: PositionTokenRegistry | None = None,
     ) -> None:
-        """Bind the chain, contract registry, and LP autodiscovery."""
+        """Bind the chain, contract registry, LP autodiscovery, and position registry.
+
+        ``position_token_registry`` (plan 2026-08-22 Task 3) gates the
+        pure-outflow LST deposit rule. ``None`` behaves as an EMPTY registry
+        (LST outflows fall to the Unknown fallback); the production wiring
+        injects the loaded registry at
+        :meth:`application.on_chain_th_substitution.OnChainThSubstituter._build_processor`.
+        """
         self.chain = chain
         self.contract_registry = contract_registry
         self.lp_autodiscovery = lp_autodiscovery
+        self.position_token_registry = position_token_registry
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -233,90 +285,446 @@ class BerachainProcessor:
             events=tuple(events),
         )
 
-    def _classify_events(  # noqa: PLR0911 - classification dispatcher with one return per shape
+    def _classify_events(  # noqa: PLR0911, PLR0912 - classification dispatcher: one return/branch per recognized shape
         self, tx_hash: str, rows: list[OnChainTxRow], legs: list[Leg]
     ) -> list[Event]:
         """Classify one tx's legs into a list of Events.
 
-        Dispatch order matters: more-specific shapes are checked before the
-        generic BIDIRECTIONAL swap. The shapes, in priority order:
+        Dispatch order matters: earlier shapes consume later ones. The
+        pure-inflow reward shape catches EVERY pure inflow, so the
+        self-wallet check must precede it; a pure outflow passes the
+        bidirectional branches untouched and reaches only the self-wallet
+        check, the pure-outflow deposit rules, and the Unknown fallback.
+        Shapes in ACTUAL dispatch order (plan 2026-08-22 Task 3 added the
+        vault-withdraw rule as shape 6, slotting BEFORE the AMM-deposit
+        read of the old shape 6 - which would otherwise classify a
+        receipt-token send as a deposit - and the pure-outflow deposit
+        rules as shapes 10-11, slotting AFTER the self-wallet outbound
+        transfer, which keeps precedence):
 
-        1. GAS_ONLY (zero-value native outflow, only gas burned) -> GasBurn.
-        2. reward-claim-then-swap (reward-distributor AND DEX router both
+        1. Any direction=unknown leg -> one Unknown Event per unknown leg
+           (+ review); never guess a direction.
+        2. GAS_ONLY (single zero-value native outflow, only gas burned) ->
+           GasBurn (keeps its UNFILTERED leg - the carrier IS the payload).
+        3. reward-claim-then-swap (reward-distributor AND DEX router both
            touched) -> Reward + Swap (split, linked by parent_event_id).
-        3. MULTI inflow with no outflow (multi-token reward claim) -> one
-           Reward Event per asset (summed).
-        4. BIDIRECTIONAL receiving an LP token -> LiquidityDeposit.
-        5. BIDIRECTIONAL 1 in-asset <-> 1 out-asset -> Swap.
-        6. Any direction=unknown leg -> Unknown (+ review).
-        7. PURE inflow from a single sender -> Reward (single-asset case).
+        4. PURE inflow whose single counterparty sender is a registered
+           ``self_wallet`` -> Transfer/internal_transfer (C3a; before the
+           reward branch, which would otherwise consume the shape).
+        5. PURE inflow with no outflow (multi-token reward claim) -> one
+           Reward Event per (asset, sender), summed.
+        6. BIDIRECTIONAL SENDING a member token, split by member source
+           (plan 2026-08-23 Task 1). BEFORE shape 7: the deposit read
+           would otherwise classify the receive side of the same tx as the
+           event's direction; the send direction is the withdrawal.
+           (a) LP-snapshot member out-leg (island unstake, AMM
+           remove-liquidity) -> LiquidityWithdraw; clean only when EVERY
+           member out-leg's recipient equals some economic in-leg's sender
+           (case-insensitive; a missing recipient keeps a ``<missing>``
+           sentinel and is never coverable); if any member out-leg's
+           recipient is uncovered, the entry is still LiquidityWithdraw but
+           carries a review WARNING naming the uncovered recipient(s)
+           (possible disposal).
+           (b) registry-ONLY member out-leg (e.g. an LST): a SINGLE leg
+           fires LiquidityWithdraw ONLY when its to_address is a registry
+           VAULT (kind-gated); anything else (a DEX-pair exchange included)
+           falls through to Swap with NO shape-6 review warning. A batch
+           with at least one vault-target leg fires LiquidityWithdraw, and
+           every registry-member leg whose recipient is NOT a registry
+           vault (or is missing) carries a review WARNING naming it
+           (possible disposal); a batch with no vault-target leg keeps the
+           Swap fall-through.
+        7. BIDIRECTIONAL receiving an LP token -> LiquidityDeposit.
+        8. BIDIRECTIONAL 1 in-asset <-> 1 out-asset -> Swap.
+        9. PURE outflow whose single recipient is a registered
+           ``self_wallet`` -> Transfer/internal_transfer (C3b; keeps
+           precedence over the pure-outflow deposit rules - an internal
+           self-transfer is never a deposit).
+        10. PURE outflow deposit rules: (a) every economic out-leg token
+            is an LP-snapshot or position-registry member (island/vault
+            re-staking, LST deposit), or (b) a SINGLE economic out-leg
+            whose token is NOT a member but SOME out-direction leg
+            recipient - INCLUDING the zero-value native gas carrier (the
+            tx-level ``to``) - IS a position-registry VAULT member
+            (deposit routed through a registered position-NFT vault; the
+            ERC-721 receipt is invisible to txlist/tokentx/txlistinternal;
+            Task 5 fix for the residual sig-2 family) -> LiquidityDeposit.
+        11. PURE outflow with >=2 economic out-legs (zap-add / BERA+LST
+            deposit shapes) -> LiquidityDeposit with ALL non-gas out-legs
+            economic (a NON-ZERO native out-leg is economic, not a gas
+            carrier - only zero-value native legs are carriers). Carries a
+            review flag when NO member signal is present (review r1 F2).
+        12. Fallback -> one Unknown Event + review (never silently dropped).
+
+        Before shapes 3-8, zero-value NATIVE outflow legs (gas carriers,
+        design record Q6) are excluded from the in/out partition and from
+        the Event leg lists: the actual gas is already lifted to the parent
+        tx (:func:`_lift_gas`), so the carrier is not an economic movement.
+        Shape 2 (GAS_ONLY) keeps its UNFILTERED leg (a gas-only tx's single
+        leg IS the carrier shape); zero-value TOKEN legs are never excluded
+        (narrow rule: only the chain's gas asset has no ``token_address``).
         """
-        # 6. Unknown-direction legs emit an Unknown Event each (never guess).
-        #    Checked early so a stray unknown leg never gets folded into a
-        #    Swap/Reward by a later branch. (The run-level invariant has
-        #    already capped the unknown rate at <=1%.)
+        # 1. Unknown-direction legs emit an Unknown Event each (never
+        #    guess). Checked first so a stray unknown leg never gets folded
+        #    into a Swap/Reward/Transfer by a later branch. (The run-level
+        #    invariant has already capped the unknown rate at <=1%.)
         if any(leg.direction == "unknown" for leg in legs):
             return self._unknown_events(tx_hash, legs)
 
-        in_legs = [leg for leg in legs if leg.direction == "in"]
-        out_legs = [leg for leg in legs if leg.direction == "out"]
+        # Unfiltered direction split - consumed ONLY by the GAS_ONLY shape
+        # below (its Event must carry the unfiltered carrier leg). Every
+        # later shape partitions the ECONOMIC legs (C1 exclusion below), so
+        # the two partitions below carry distinct names (review r1 F18: the
+        # old rebinding made the same names mean different things above and
+        # below the C1 exclusion).
+        unfiltered_out_legs = [leg for leg in legs if leg.direction == "out"]
 
-        # 1. GAS_ONLY: a single zero-value native outflow whose only economic
+        # 2. GAS_ONLY: a single zero-value native outflow whose only economic
         #    movement is the gas burn. Koinly drops these; the native model
         #    emits one GasBurn Event so the PT-deductible gas isn't lost.
+        #    Keeps the UNFILTERED out-legs: a gas-only tx's single leg IS
+        #    the carrier shape, and the Event must still carry it (the
+        #    adapter renders its TxSrc/TxDest from that leg).
         if _is_gas_only(legs):
-            return [_gasburn_event(tx_hash, out_legs)]
+            return [_gasburn_event(tx_hash, unfiltered_out_legs)]
 
-        # 2. reward-claim-then-swap: both a reward-distributor AND a DEX
+        # C1 gas-carrier exclusion (design record Q6): a zero-value NATIVE
+        #    outflow leg is the gas carrier, not an economic leg; the actual
+        #    gas is already lifted to the parent tx. Drop carriers from the
+        #    economic partition so a claim-with-carrier tx classifies by its
+        #    economic legs alone (Reward, not Swap). The exclusion applies
+        #    ONLY where an economic leg remains: when every leg is a carrier
+        #    (and the tx is not GAS_ONLY, handled above), the legs stay
+        #    unfiltered so no Event is built from an empty list.
+        economic_legs = [leg for leg in legs if not _is_gas_carrier(leg)]
+        if not economic_legs:
+            economic_legs = legs
+        in_legs = [leg for leg in economic_legs if leg.direction == "in"]
+        out_legs = [leg for leg in economic_legs if leg.direction == "out"]
+
+        # 3. reward-claim-then-swap: both a reward-distributor AND a DEX
         #    router are touched. Split into a Reward Event (the distributor
         #    inflow) and a Swap Event (the DEX-router exchange), linked by
         #    their shared parent_event_id (the tx_hash).
         reward_inflows, dex_swap_legs = self._split_reward_then_swap(rows, legs)
         if reward_inflows is not None:
-            return self._reward_then_swap_events(tx_hash, reward_inflows, dex_swap_legs)
+            # C1: gas carriers are not swap legs; drop them from the split's
+            # swap side. When nothing economic remains there, the tx is a
+            # pure claim - fall through to shape 4/5 instead of emitting a
+            # legless Swap Event.
+            economic_swap_legs = [
+                leg for leg in dex_swap_legs if not _is_gas_carrier(leg)
+            ]
+            if economic_swap_legs:
+                return self._reward_then_swap_events(
+                    tx_hash, reward_inflows, economic_swap_legs
+                )
 
-        # 3. MULTI inflow, no outflow -> multi-token reward claim. Group
-        #    in-legs by asset; emit one Reward Event per (tx, asset) with the
-        #    SUMMED amount (matches Koinly's per-asset reward behavior).
+        # 4. C3a self-wallet inbound: a pure inflow whose single
+        #    counterparty sender (the in-legs' from-addresses) is a
+        #    registered ``self_wallet`` is an internal self-transfer, not
+        #    income. BEFORE shape 5: the pure-inflow reward branch consumes
+        #    every pure-inflow shape, so a check placed later never sees
+        #    inbound self-transfers.
+        if in_legs and not out_legs and self._single_sender_is_self_wallet(in_legs):
+            return [_transfer_event(tx_hash, in_legs)]
+
+        # 5. MULTI inflow, no outflow -> multi-token reward claim. Group
+        #    in-legs by asset; emit one Reward Event per (tx, asset, sender)
+        #    with the SUMMED amount (matches Koinly's per-asset reward
+        #    behavior).
         if in_legs and not out_legs:
             return self._multi_token_reward_events(tx_hash, in_legs)
 
-        # 4. BIDIRECTIONAL receiving an LP token -> LiquidityDeposit.
+        # 6. BIDIRECTIONAL SENDING a member token, split by member source
+        #    (plan 2026-08-23 Task 1). BEFORE shape 7: the deposit read
+        #    below classifies by the RECEIVE side, so a withdraw (send the
+        #    receipt, receive the underlying) would misclassify as a
+        #    deposit/Swap; the SEND direction of the receipt token is the
+        #    withdrawal.
+        #    (a) LP-snapshot member out-leg (island unstake / AMM
+        #    remove-liquidity) -> LiquidityWithdraw, CLEAN only when the
+        #    redemption-counterparty predicate holds (EVERY member out-leg's
+        #    to_address equals some economic in-leg's from_address,
+        #    case-insensitive; in-leg senders that are empty or the literal
+        #    sentinel cannot provide coverage); otherwise the same Event
+        #    carries a review WARNING naming the mismatched counterparty (the
+        #    receive side may be a third-party sale, not a vault redemption).
+        #    Review r3 F1: in a same-tx LP+registry mix this branch folds
+        #    the registry-member out-legs into its review computation - the
+        #    tx is clean ONLY when the LP subset predicate holds AND every
+        #    registry-member out-leg targets a registry vault.
+        #    (b) registry-ONLY member out-leg (position-registry member,
+        #    e.g. an LST): a SINGLE leg fires LiquidityWithdraw ONLY when
+        #    its to_address is a registry VAULT (kind-gated); a batch with
+        #    at least one vault-target leg fires LiquidityWithdraw, and
+        #    every registry-member leg whose recipient is NOT a registry
+        #    vault (or is missing) carries a review WARNING naming it
+        #    (review r2 F1: one vault leg must not silently clean a
+        #    sibling disposal leg). Everything else (a single DEX-pair
+        #    counterparty included) falls through to Swap with NO review
+        #    warning: registry entries are identity data, not per-cluster
+        #    rules (the LBGT provenance rule).
+        if in_legs and out_legs:
+            # Full evaluation (no `any()` short-circuit) is intentional: the
+            # recipient set below needs EVERY member out-leg, so later legs
+            # must still be probed after the first snapshot member is found
+            # (deliberate deviation from the plan's any() wording; review r1 F9).
+            lp_member_legs = [
+                leg
+                for leg in out_legs
+                if leg.token_address is not None
+                and self.lp_autodiscovery.is_lp_token(leg.token_address).is_lp
+            ]
+            if lp_member_legs:
+                # Review r1 F2: EVERY member out-leg recipient must be covered
+                # by an in-leg sender (subset, not ANY-match) - in a mixed
+                # batch tx one covered leg must not clean an uncovered sale
+                # leg. Review r1 F3: a MISSING recipient keeps a "<missing>"
+                # marker (never coverable, fails closed into review) while
+                # missing in-leg senders are excluded, so the empty-string
+                # sentinel cannot self-collide into a clean match.
+                member_recipients = {
+                    (leg.to_address or "<missing>").lower() for leg in lp_member_legs
+                }
+                # Review r2 F2: a from_address cell holding the literal
+                # "<missing>" marker (hand-edited CSV) must not spoof
+                # coverage of the recipient sentinel - senders equal to the
+                # sentinel are excluded, so the check stays fail-closed.
+                in_senders = {
+                    (leg.from_address or "").lower()
+                    for leg in in_legs
+                    if (leg.from_address or "").lower() not in ("", "<missing>")
+                }
+                unmatched = member_recipients - in_senders
+                # Review r3 F1: branch (a) must not shadow the registry-side
+                # review condition (review r2 F1) in a same-tx LP+registry
+                # mix: the (a) block returns before the registry arm below,
+                # so the registry-member out-legs whose recipients are NOT
+                # registry vaults (or are missing) are folded into THIS
+                # branch's review computation. A mixed tx is clean ONLY when
+                # the LP subset predicate holds AND every registry-member
+                # out-leg targets a registry vault; one combined WARNING
+                # names both the uncovered LP recipients and the non-vault
+                # registry legs.
+                registry_nonvault_recipients: set[str] = set()
+                if self.position_token_registry is not None:
+                    # Review r4 F6: shared with the registry-only arm below so
+                    # the two branches cannot drift apart (sibling shapes, one
+                    # predicate).
+                    registry_nonvault_recipients = {
+                        (leg.to_address or "<missing>").lower()
+                        for leg in self._registry_member_legs_without_vault_target(
+                            out_legs
+                        )
+                    }
+                if not unmatched and not registry_nonvault_recipients:
+                    return [
+                        _event(
+                            tx_hash,
+                            EventType.LiquidityWithdraw,
+                            SubType.internal_transfer,
+                            economic_legs,
+                        )
+                    ]
+                reason_parts: list[str] = []
+                if unmatched:
+                    reason_parts.append(
+                        f"LP-member out-leg recipient(s) {sorted(unmatched)} "
+                        f"received no matching economic in-leg sender "
+                        f"(in-leg senders: {sorted(in_senders)})"
+                    )
+                if registry_nonvault_recipients:
+                    reason_parts.append(
+                        f"registry-member out-leg recipient(s) "
+                        f"{sorted(registry_nonvault_recipients)} are not "
+                        f"registry vaults"
+                    )
+                return [
+                    _event(
+                        tx_hash,
+                        EventType.LiquidityWithdraw,
+                        SubType.internal_transfer,
+                        economic_legs,
+                        review=True,
+                        reason=(
+                            f"redemption-counterparty mismatch: "
+                            f"{'; '.join(reason_parts)}; the "
+                            f"receive side may be a third-party disposal of "
+                            f"the LP/position token, not a vault redemption - "
+                            f"verify before filing"
+                        ),
+                    )
+                ]
+            # Review r2 F1: mirror the (a) subset semantics on the registry
+            # side. A SINGLE registry-member out-leg keeps the plan's
+            # vault-target rule (no vault target -> Swap fall-through, the
+            # LBGT single-leg invariant); a batch with at least one
+            # vault-target leg fires LiquidityWithdraw, and every
+            # registry-member leg whose recipient is NOT a registry vault
+            # (or is missing) is named in a review WARNING - one vault leg
+            # must not silently clean a sibling disposal leg. A batch with
+            # NO vault-target leg keeps the Swap fall-through (no fire).
+            if self.position_token_registry is not None:
+                registry_member_legs = [
+                    leg
+                    for leg in out_legs
+                    if leg.token_address is not None
+                    and self.position_token_registry.is_position_token(leg.token_address)
+                ]
+                registry_vault_legs = [
+                    leg
+                    for leg in registry_member_legs
+                    if leg.to_address
+                    and self.position_token_registry.is_position_vault(leg.to_address)
+                ]
+                if registry_vault_legs:
+                    # Review r4 F6: shared with the branch (a) fold above so
+                    # the two branches cannot drift apart.
+                    non_vault_recipients = {
+                        (leg.to_address or "<missing>").lower()
+                        for leg in self._registry_member_legs_without_vault_target(
+                            registry_member_legs
+                        )
+                    }
+                    if not non_vault_recipients:
+                        return [
+                            _event(
+                                tx_hash,
+                                EventType.LiquidityWithdraw,
+                                SubType.internal_transfer,
+                                economic_legs,
+                            )
+                        ]
+                    return [
+                        _event(
+                            tx_hash,
+                            EventType.LiquidityWithdraw,
+                            SubType.internal_transfer,
+                            economic_legs,
+                            review=True,
+                            reason=(
+                                f"registry-member out-leg recipient(s) "
+                                f"{sorted(non_vault_recipients)} are not registry "
+                                f"vaults while sibling leg(s) targeted a vault; "
+                                f"the receive side may be a third-party disposal "
+                                f"of the position token, not a vault redemption - "
+                                f"verify before filing"
+                            ),
+                        )
+                    ]
+
+        # 7. BIDIRECTIONAL receiving an LP token -> LiquidityDeposit.
         if in_legs and out_legs and self._receives_lp_token(in_legs):
             return [
                 _event(
                     tx_hash,
                     EventType.LiquidityDeposit,
                     SubType.internal_transfer,
-                    legs,
+                    economic_legs,
                 )
             ]
 
-        # 5. BIDIRECTIONAL 1 in-asset <-> 1 out-asset -> Swap.
+        # 8. BIDIRECTIONAL 1 in-asset <-> 1 out-asset -> Swap.
         if in_legs and out_legs:
-            return [_event(tx_hash, EventType.Swap, None, legs)]
+            return [_event(tx_hash, EventType.Swap, None, economic_legs)]
 
-        # 7. PURE inflow from a single sender (single-asset reward) -> Reward.
-        #    Reached when there is exactly one in-leg and no outflow.
-        if in_legs:
-            return self._multi_token_reward_events(tx_hash, in_legs)
+        # 9. C3b self-wallet outbound: a pure outflow whose single recipient
+        #    (the out-legs' to-addresses) is a registered ``self_wallet`` is
+        #    the outbound leg of an internal self-transfer. BEFORE the
+        #    fallback: today such txs fall to Event(Unknown) + review. (A tx
+        #    with both in- and out-legs already returned at shape 6/7, so
+        #    only pure outflows reach here.)
+        if out_legs and self._single_recipient_is_self_wallet(out_legs):
+            return [_transfer_event(tx_hash, out_legs)]
 
-        # Fallback: nothing matched (e.g. only outflow legs with no in-legs
-        # and not GAS_ONLY). Emit one Unknown Event + review rather than
-        # silently dropping the tx (AGENTS.md: data-loss conditions must
-        # never be silently discarded).
+        # 10. PURE-outflow DEPOSIT rules (plan 2026-08-22 Task 3, routing
+        #     targets 1/4 + the Task-5 residual sig-2 fix). Two predicates,
+        #     one shared Event builder (``_deposit_event``, review r2 F9:
+        #     "two shapes, one builder" - twin constructions drift; review r1
+        #     F19 collapsed three copies of the same body):
+        #     (a) member tokens: EVERY economic out-leg token is an
+        #         LP-snapshot member (island/vault re-staking) or a
+        #         position-registry member (LST deposit);
+        #     (b) member recipient: a SINGLE-leg outflow whose token is
+        #         NOT a member, but SOME out-direction leg - including the
+        #         zero-value native gas carrier, whose ``to`` is the
+        #         tx-level recipient - targets a position-registry VAULT
+        #         (kind-gated, review r1 F3): the wallet deposits into a
+        #         registered vault and receives an ERC-721 position mint
+        #         that txlist/tokentx/txlistinternal cannot serve.
+        #     Both are gated ADDRESS-KEYED (never by asset name); a
+        #     single-leg outflow with no member signal anywhere falls
+        #     through to the Unknown fallback. AFTER shape 9 (a self-wallet
+        #     transfer is never a deposit).
+        if out_legs and not in_legs and (
+            all(self._is_member_token(leg) for leg in out_legs)
+            or (
+                len(out_legs) == 1
+                # Predicate (a) already established non-membership for a
+                # single leg (``or`` short-circuit), so no re-check here
+                # (review r2 F8: the re-check was a dead conjunct).
+                and self._any_out_leg_recipient_is_registry_member(legs)
+            )
+        ):
+            return [self._deposit_event(tx_hash, out_legs)]
+
+        # 11. PURE multi-leg outflow (routing target 2: zap-add / BERA+LST
+        #     deposit shapes): >=2 economic out-legs -> LiquidityDeposit
+        #     with ALL non-gas out-legs economic. The C1 carrier exclusion
+        #     above already dropped zero-value native legs, so a NON-ZERO
+        #     native out-leg (e.g. the economic BERA leg of the BERA+iBGT
+        #     family) stays economic here. Review r1 F2 gate: the clean
+        #     (no-review) classification is limited to txs carrying a
+        #     member signal (a member token on any out-leg, or a
+        #     registry-member recipient); a member-signal-less multi-leg
+        #     outflow is still classified LiquidityDeposit but flagged for
+        #     review, so a genuine multi-asset disposal (batch send,
+        #     payment plus donation) cannot silently lose its tax
+        #     treatment.
+        if out_legs and not in_legs and len(out_legs) >= _MIN_MULTI_LEG_OUTLEGS:
+            gated = any(self._is_member_token(leg) for leg in out_legs) or (
+                self._any_out_leg_recipient_is_registry_member(legs)
+            )
+            return [self._deposit_event(tx_hash, out_legs, review=not gated)]
+
+        # 12. Fallback: nothing matched (e.g. only outflow legs with no
+        #    in-legs and not GAS_ONLY). Emit one Unknown Event + review
+        #    rather than silently dropping the tx (AGENTS.md: data-loss
+        #    conditions must never be silently discarded). The Event carries
+        #    the UNFILTERED legs, so the warning names the economic counts
+        #    AND the total to stay reconcilable with what it carries.
         _LOGGER.warning(
             "tx_hash=%s matched no classification pattern "
-            "(in_legs=%d, out_legs=%d); emitting Event(Unknown) for review",
+            "(economic in_legs=%d, economic out_legs=%d, %d leg(s) total "
+            "on the Event); emitting Event(Unknown) for review",
             tx_hash,
             len(in_legs),
             len(out_legs),
+            len(legs),
         )
         return [_event(tx_hash, EventType.Unknown, None, legs, review=True)]
 
     # ------------------------------------------------------------------
     # Shape detectors / event builders
     # ------------------------------------------------------------------
+
+    def _deposit_event(
+        self, tx_hash: str, out_legs: list[Leg], *, review: bool = False
+    ) -> Event:
+        """Build the shapes-10/11 ``LiquidityDeposit`` Event (one construction).
+
+        Review r2 F9: shapes 10 and 11 previously carried twin ``_event``
+        constructions that a future SubType edit could silently diverge;
+        both now share this builder (two shapes, one builder).
+        """
+        return _event(
+            tx_hash,
+            EventType.LiquidityDeposit,
+            SubType.internal_transfer,
+            out_legs,
+            review=review,
+        )
 
     def _receives_lp_token(self, in_legs: list[Leg]) -> bool:
         """Return True iff any in-leg's token is autodiscovery-confirmed LP.
@@ -332,6 +740,71 @@ class BerachainProcessor:
                 return True
         return False
 
+    def _is_member_token(self, leg: Leg) -> bool:
+        """Return True iff ``leg`` sends a registry-member token (address-keyed).
+
+        Membership = the LP snapshot (via :class:`LpAutodiscovery`) OR the
+        position-token registry (plan 2026-08-22 Task 3). A native leg
+        (``token_address`` is None) is never a member; matching is by
+        ADDRESS, never by asset name (Design Invariant "Address-keyed
+        identity").
+        """
+        if leg.token_address is None:
+            return False
+        if self.lp_autodiscovery.is_lp_token(leg.token_address).is_lp:
+            return True
+        return self.position_token_registry is not None and (
+            self.position_token_registry.is_position_token(leg.token_address)
+        )
+
+    def _registry_member_legs_without_vault_target(self, out_legs: list[Leg]) -> list[Leg]:
+        """Return the registry-member out-legs NOT targeting a registry vault.
+
+        Shared predicate for the shape-6 branch (a) fold and the registry-only
+        branch (b) (review r4 F6: sibling shapes over the same type must use
+        one helper, not duplicated copies that can drift). A leg qualifies
+        when its token is a position-registry member AND its recipient is
+        missing or not a registry vault. Returns an empty list when no
+        registry is loaded (callers gate on the registry being present).
+        """
+        if self.position_token_registry is None:
+            return []
+        return [
+            leg
+            for leg in out_legs
+            if leg.token_address is not None
+            and self.position_token_registry.is_position_token(leg.token_address)
+            and not (
+                leg.to_address
+                and self.position_token_registry.is_position_vault(leg.to_address)
+            )
+        ]
+
+    def _any_out_leg_recipient_is_registry_member(self, legs: list[Leg]) -> bool:
+        """Return True iff ANY out-direction leg's recipient is a registry VAULT.
+
+        Scans the UNFILTERED legs (the full tx, not the C1-filtered economic
+        partition): the registry-member vault is frequently the tx-level
+        ``to`` - i.e. the recipient of the zero-value native GAS-CARRIER leg
+        - while the economic leg's own recipient is the AMM pool. Review r1
+        F3: recipient matching is kind-gated (``kind="position_nft"`` via
+        :meth:`PositionTokenRegistry.is_position_vault`) so the registry's
+        one address set cannot silently serve two different predicates -
+        adding an LST (``kind="lst"``) entry widens the TOKEN rule (shape
+        10a) but never the RECIPIENT rule here, because an LST token
+        contract is a normal direct-interaction target, not the position-NFT
+        vault the deposit routes through. An absent registry or no member
+        vault recipient is never a match (fail-loud fallback, never a guess).
+        """
+        if self.position_token_registry is None:
+            return False
+        for leg in legs:
+            if leg.direction != "out" or not leg.to_address:
+                continue
+            if self.position_token_registry.is_position_vault(leg.to_address):
+                return True
+        return False
+
     def _split_reward_then_swap(
         self, rows: list[OnChainTxRow], legs: list[Leg]
     ) -> tuple[list[Leg], list[Leg]] | tuple[None, None]:
@@ -343,9 +816,12 @@ class BerachainProcessor:
         ``from_address`` is a registered reward-distributor; the remaining
         legs (the DEX-router exchange) form the Swap.
 
-        The two must co-occur: a reward inflow alone is the multi-token
-        reward shape (branch 3); a DEX-router exchange alone is the swap
-        shape (branch 5). Only their co-occurrence triggers the split.
+        The two must co-occur: a reward inflow alone is the pure-inflow
+        reward branch of :meth:`_classify_events`; a DEX-router exchange
+        alone is the Swap branch. Only their co-occurrence triggers the
+        split. (Branch names are used instead of shape numbers so these
+        second-source references cannot drift when shapes are inserted -
+        review r1 F7.)
         """
         from_addresses = {(r.from_address or "").lower() for r in rows}
         has_distributor = any(
@@ -479,6 +955,36 @@ class BerachainProcessor:
         entry = self.contract_registry.get(address)
         return entry is not None and entry.kind == "dex_router"
 
+    def _is_self_wallet(self, address: str) -> bool:
+        """Return True iff ``address`` is a registered self-wallet (C3)."""
+        entry = self.contract_registry.get(address)
+        return entry is not None and entry.kind == "self_wallet"
+
+    def _single_sender_is_self_wallet(self, in_legs: list[Leg]) -> bool:
+        """Return True iff the in-legs share ONE registered self-wallet sender.
+
+        Resolves the counterparty sender from the in-legs' ``from_address``
+        values (the same lookup idiom :meth:`_is_reward_distributor` uses;
+        addresses are lower-cased before the registry lookup). The
+        single-sender requirement is the heterogeneity guard (AGENTS.md):
+        a Transfer claims the legs ride ONE self-transfer, so legs with
+        mixed or empty senders fall through to the reward branch (whose
+        per-sender grouping + F4 verification handles them safely).
+        """
+        senders = {(leg.from_address or "").lower() for leg in in_legs}
+        return len(senders) == 1 and self._is_self_wallet(senders.pop())
+
+    def _single_recipient_is_self_wallet(self, out_legs: list[Leg]) -> bool:
+        """Return True iff the out-legs share ONE registered self-wallet recipient.
+
+        Mirror of :meth:`_single_sender_is_self_wallet` for the outbound
+        direction: the counterparty is the out-legs' ``to_address``. Mixed
+        or empty recipients fall through to the Unknown fallback (reviewed,
+        never guessed) rather than being claimed as a self-transfer.
+        """
+        recipients = {(leg.to_address or "").lower() for leg in out_legs}
+        return len(recipients) == 1 and self._is_self_wallet(recipients.pop())
+
 
 # ----------------------------------------------------------------------
 # Module-level pure helpers (no instance state, no I/O)
@@ -543,23 +1049,35 @@ def _lift_gas(rows: list[OnChainTxRow]) -> Gas | None:
     return None
 
 
+def _is_gas_carrier(leg: Leg) -> bool:
+    """Detect a gas-carrier leg (design record Q6): a zero-value NATIVE outflow.
+
+    The native asset has no ``token_address``; a zero-value outflow of it is
+    the tx's gas carrier - the leg the explorer emits so the (parent-tx)
+    gas has a row to ride on. It is NOT an economic movement: the actual
+    gas amount is lifted to the parent tx by :func:`_lift_gas`. Zero-value
+    TOKEN legs (``token_address`` set) are never carriers (narrow rule:
+    only the chain's gas asset has no contract).
+    """
+    return (
+        leg.direction == "out"
+        and leg.token_address is None
+        and leg.amount_raw == 0
+    )
+
+
 def _is_gas_only(legs: list[Leg]) -> bool:
     """Detect the GAS_ONLY shape (decision-record: 139-tx shape).
 
     A GAS_ONLY tx is one whose only economic movement is the gas burn: a
-    single zero-value native outflow. Heuristics: exactly one leg, it is an
-    outflow of the native asset (no token_address), and its amount is zero.
-    The gas itself lives on the parent tx (lifted by :func:`_lift_gas`);
-    this function only decides whether to emit a GasBurn Event.
+    single zero-value native outflow. Heuristics: exactly one leg, and that
+    leg is the gas-carrier shape (:func:`_is_gas_carrier`). The gas itself
+    lives on the parent tx (lifted by :func:`_lift_gas`); this function
+    only decides whether to emit a GasBurn Event.
     """
     if len(legs) != 1:
         return False
-    only = legs[0]
-    return (
-        only.direction == "out"
-        and only.token_address is None
-        and only.amount_raw == 0
-    )
+    return _is_gas_carrier(legs[0])
 
 
 def _gasburn_event(tx_hash: str, out_legs: list[Leg]) -> Event:
@@ -576,6 +1094,26 @@ def _gasburn_event(tx_hash: str, out_legs: list[Leg]) -> Event:
         EventType.GasBurn,
         SubType.cost_gas,
         out_legs,
+    )
+
+
+def _transfer_event(tx_hash: str, legs: list[Leg]) -> Event:
+    """Build the Transfer Event for a C3 self-wallet shape (a or b).
+
+    Both C3 branches (the inbound pure-inflow self-wallet branch and the
+    outbound pure-outflow self-wallet branch of
+    :meth:`BerachainProcessor._classify_events`) emit the byte-identical
+    ``Transfer/internal_transfer`` Event, so the construction lives HERE
+    once (the file's builder idiom) rather than inline twice in the
+    dispatcher (review r1 F18: two copies can drift apart; branch names are
+    used instead of shape numbers so this reference cannot drift - review
+    r1 F7).
+    """
+    return _event(
+        tx_hash,
+        EventType.Transfer,
+        SubType.internal_transfer,
+        legs,
     )
 
 
@@ -644,13 +1182,14 @@ def _group_legs_by_asset(
     return summed
 
 
-def _event(
+def _event(  # noqa: PLR0913 - module-level Event builder; the plan's frozen signature
     tx_hash: str,
     event_type: EventType,
     sub_type: SubType | None,
     legs: list[Leg],
     *,
     review: bool = False,
+    reason: str | None = None,
 ) -> Event:
     """Build an :class:`Event` with a tx-unique sequential ``event_id``.
 
@@ -659,6 +1198,9 @@ def _event(
     ``_EventIdMint`` helper to guarantee uniqueness). When ``review`` is
     True, a WARNING is logged naming the Event so the run's review surface
     is visible (AGENTS.md: data-loss/uncertain conditions log at warning+).
+    ``reason`` (optional) appends a specific, actionable explanation to the
+    review WARNING (AGENTS.md: review flags give specific reasons, not bare
+    booleans).
     """
     # NOTE: ``event_id`` minting is done by ``_mint_event_ids`` AFTER the
     # events are built (so the index reflects emission order). This helper
@@ -666,10 +1208,11 @@ def _event(
     if review:
         _LOGGER.warning(
             "tx_hash=%s emitting Event(%s, sub_type=%s) with a review flag "
-            "(uncertain classification - investigate)",
+            "(uncertain classification - investigate%s)",
             tx_hash,
             event_type.name,
             sub_type.name if sub_type is not None else "<none>",
+            f"; {reason}" if reason is not None else "",
         )
     return Event(
         event_id="",  # minted by _mint_event_ids
