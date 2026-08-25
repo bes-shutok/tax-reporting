@@ -24,13 +24,28 @@ from typing import Any
 
 import pytest
 
-from tax_reporting.application.on_chain_config import OnChainWalletConfig
+from tax_reporting.application.on_chain_config import (
+    OnChainWalletConfig,
+    load_position_token_registry_for_year,
+)
+from tax_reporting.application.on_chain_fetcher import run_on_chain_fetch
 from tax_reporting.domain.exceptions import FileProcessingError
 
 # Module path of the DI-3 HTTP seam (monkeypatched per-test).
 _HTTP_SEAM = "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json"
 # Module path of the config loader (monkeypatched to avoid repo-root files).
 _LOADER = "tax_reporting.application.on_chain_fetcher.load_on_chain_wallets"
+# Module path of the per-year position-token registry loader (monkeypatched
+# per-test so the fetcher tests never read repo-root / gitignored registry
+# files). Review r4 F7: the loader is the shared facade imported into the
+# fetcher namespace.
+_REGISTRY_LOADER = (
+    "tax_reporting.application.on_chain_fetcher.load_position_token_registry_for_year"
+)
+
+# Synthetic position-token-registry member contract (hermetic; clearly fake).
+_POS_CONTRACT = "0x0000000000000000000000000000000000007777"
+_NON_MEMBER_CONTRACT = "0x0000000000000000000000000000000000008888"
 
 
 def _wallet(
@@ -92,30 +107,78 @@ def _tokentx_row(**overrides: Any) -> dict[str, Any]:
     return row
 
 
+def _nft_row(**overrides: Any) -> dict[str, Any]:
+    """Return one artificial nfttx (ERC-721 transfer) raw row."""
+    row: dict[str, Any] = {
+        "hash": "0xccc",
+        "blockNumber": "300",
+        "timeStamp": "1739000200",
+        "from": "0x0000000000000000000000000000000000003333",
+        "to": "0x0000000000000000000000000000000000001111",
+        "contractAddress": _POS_CONTRACT,
+        "tokenSymbol": "ALGB-POS",
+        "tokenID": "26874",
+    }
+    row.update(overrides)
+    return row
+
+
+def _position_registry(member_contracts: list[str]):
+    """Build a synthetic position-token registry (hermetic, inline)."""
+    from tax_reporting.infrastructure.on_chain.position_token_registry import (
+        build_position_token_registry,
+    )
+
+    return build_position_token_registry(
+        {
+            "tokens": [
+                {
+                    "token_address": addr,
+                    "label": "ALGB-POS",
+                    "kind": "position_nft",
+                }
+                for addr in member_contracts
+            ]
+        },
+        source="<inline-test>",
+    )
+
+
 def _etherscan_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Wrap raw rows in a status:"1" Etherscan V2 success response."""
     return {"status": "1", "message": "OK", "result": list(rows)}
 
 
 def _install_fake_http(
-    monkeypatch: pytest.MonkeyPatch, **canned: list[dict[str, Any]] | BaseException
+    monkeypatch: pytest.MonkeyPatch, **canned: Any
 ) -> dict[str, int]:
-    """Monkeypatch the DI-3 HTTP seam to return canned Etherscan payloads.
+    """Monkeypatch the DI-3 HTTP seam + registry loader (hermetic defaults).
 
     Keyword args configure the fake (all optional):
-        txlist_rows / tokentx_rows: default flat row lists for any address.
-        txlist_rows_by_address / tokentx_rows_by_address: per-address maps.
+        txlist_rows / tokentx_rows / nfttx_rows: default flat row lists.
+        txlist_rows_by_address / tokentx_rows_by_address /
+        nfttx_rows_by_address: per-address maps.
+        position_registry: registry returned by the patched loader (defaults
+            to an EMPTY registry, so no test reads repo-root files).
         raise_exc: a BaseException to raise instead of returning a payload.
 
     Returns a call-counter dict ``{"calls": n}`` the test can inspect. The
-    fake dispatches on the ``action`` query param (``txlist``/``tokentx``);
-    per-address maps take precedence over the flat default lists.
+    fake dispatches on the ``action`` query param
+    (``txlist``/``tokentx``/``nfttx``); per-address maps take precedence over
+    the flat default lists.
     """
     txlist_by_addr = canned.get("txlist_rows_by_address", {})  # type: ignore[arg-type]
     tokentx_by_addr = canned.get("tokentx_rows_by_address", {})  # type: ignore[arg-type]
+    nfttx_by_addr = canned.get("nfttx_rows_by_address", {})  # type: ignore[arg-type]
     default_txlist = canned.get("txlist_rows", [])  # type: ignore[arg-type]
     default_tokentx = canned.get("tokentx_rows", [])  # type: ignore[arg-type]
+    default_nfttx = canned.get("nfttx_rows", [])  # type: ignore[arg-type]
     raise_exc = canned.get("raise_exc")
+    monkeypatch.setattr(
+        _REGISTRY_LOADER,
+        lambda _year, _override=None, _repo_root=None: canned.get("position_registry")
+        or _position_registry([]),
+    )
     counter = {"calls": 0}
 
     def fake_http(url: str, params: dict[str, str | int]) -> dict[str, Any]:
@@ -128,6 +191,8 @@ def _install_fake_http(
             rows = txlist_by_addr.get(address, default_txlist)
         elif action == "tokentx":
             rows = tokentx_by_addr.get(address, default_tokentx)
+        elif action == "nfttx":
+            rows = nfttx_by_addr.get(address, default_nfttx)
         else:
             rows = []
         return _etherscan_payload(rows)
@@ -162,8 +227,173 @@ class TestBeraCsvPath:
         )
 
 
+class TestResolveRegistryPath:
+    """Direct tests for ``resolve_registry_path``'s three branches (r1 F4)."""
+
+    def _resolve(self, repo_root: Path, override: Path | None) -> Path:
+        from tax_reporting.application.paths import resolve_registry_path
+
+        return resolve_registry_path(2025, "reg.json", override, repo_root)
+
+    def test_override_wins(self, tmp_path: Path):
+        """Given an explicit override, expects it returned verbatim."""
+        override = tmp_path / "override.json"
+        override.write_text("{}", encoding="utf-8")
+
+        assert self._resolve(tmp_path, override) == override
+
+    def test_primary_per_user_file_wins(self, tmp_path: Path):
+        """Given an existing per-user primary file (and an example fallback
+        also present), expects the PRIMARY returned.
+        """
+        primary = tmp_path / "resources" / "source" / "2025" / "reg.json"
+        primary.parent.mkdir(parents=True)
+        primary.write_text("{}", encoding="utf-8")
+        fallback = tmp_path / "resources" / "source" / "example" / "2025" / "reg.json"
+        fallback.parent.mkdir(parents=True)
+        fallback.write_text("{}", encoding="utf-8")
+
+        assert self._resolve(tmp_path, None) == primary
+
+    def test_absent_primary_returns_example_fallback(self, tmp_path: Path):
+        """Given NO per-user primary, expects the committed-example fallback
+        path returned (whether or not it exists - existence is the loader's
+        concern; it degrades with a WARNING).
+        """
+        from tax_reporting.application.paths import resolve_registry_path
+
+        result = resolve_registry_path(2025, "reg.json", None, tmp_path)
+
+        assert result == (
+            tmp_path / "resources" / "source" / "example" / "2025" / "reg.json"
+        )
+
+
+class TestLoadPositionRegistryWiring:
+    """Wiring tests for the fetcher's registry resolution (review r1 F4).
+
+    These pin the REAL per-year loader chain (resolution -> loader); every
+    ``run_on_chain_fetch`` test monkeypatches the loader, so without these
+    the resolution path is untested. Review r4 F7: the chain lives in the
+    shared facade :func:`load_position_token_registry_for_year`
+    (``application.on_chain_config``); the fetcher and the TH substituter
+    both call it. Hermeticity: the repo-root-pinned case uses a year with
+    NO per-user (gitignored) and NO example registry file, so no personal
+    data is ever opened; the example-resolution case pins the root to a
+    synthetic tree.
+    """
+
+    def test_load_position_registry_resolves_example_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Given a root whose per-user file is absent but whose committed
+        example exists, expects the registry loaded FROM the example path.
+        """
+        example = (
+            tmp_path
+            / "resources"
+            / "source"
+            / "example"
+            / "2025"
+            / "bera_position_tokens.json"
+        )
+        example.parent.mkdir(parents=True)
+        example.write_text(
+            '{"tokens": [{"token_address": '
+            '"0x0000000000000000000000000000000000007777", '
+            '"label": "ALGB-POS", "kind": "position_nft"}]}',
+            encoding="utf-8",
+        )
+
+        registry = load_position_token_registry_for_year(2025, repo_root=tmp_path)
+
+        assert registry.source.endswith(
+            "resources/source/example/2025/bera_position_tokens.json"
+        )
+        assert registry.is_position_token(
+            "0x0000000000000000000000000000000000007777"
+        )
+
+    def test_load_position_registry_for_year_defaults_root_to_repo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The facade's ``repo_root=None`` fallback arm (the fetcher's only
+        production path): the root resolves via
+        ``on_chain_config.find_repository_root`` when the caller does not
+        supply one (review r5 F2; mirrors the e2e pattern of patching the
+        imported name). Without this pin, a regression re-rooting the
+        fallback would degrade silently to an empty registry.
+        """
+        example = (
+            tmp_path
+            / "resources"
+            / "source"
+            / "example"
+            / "2025"
+            / "bera_position_tokens.json"
+        )
+        example.parent.mkdir(parents=True)
+        example.write_text(
+            '{"tokens": [{"token_address": "0xabc", "kind": "position_nft"}]}',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "tax_reporting.application.on_chain_config.find_repository_root",
+            lambda: tmp_path,
+        )
+
+        registry = load_position_token_registry_for_year(2025)
+
+        assert registry.source.endswith(
+            "resources/source/example/2025/bera_position_tokens.json"
+        )
+
+    def test_load_position_registry_degrades_with_warning(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        """Given an EMPTY tmp root (no per-user and no example registry file
+        for the year; review r2 F2: pinned to tmp_path, never the REAL repo
+        root - the per-user ``resources/source/<year>/`` tree is gitignored
+        and machine-dependent, so the real root makes the test
+        non-hermetic), expects an EMPTY registry and a WARNING naming the
+        resolved file (the degrade path).
+        """
+        with caplog.at_level(logging.WARNING):
+            registry = load_position_token_registry_for_year(2024, repo_root=tmp_path)
+
+        assert registry.tokens == {}
+        warning_text = "\n".join(rec.message for rec in caplog.records)
+        assert "No position-token registry" in warning_text
+        assert "bera_position_tokens.json" in warning_text
+
+
 class TestOnChainFetcher:
     """Tests for run_on_chain_fetch (orchestrator + CSV writer)."""
+
+    def test_fetch_passes_fiscal_year_to_registry_loader(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Review r5 F3: pin the year plumbing - the fetcher must pass the
+        # fiscal year to load_position_token_registry_for_year (a hardcoded
+        # year regression would silently load the wrong per-year registry
+        # while every fake loader swallows the argument).
+        seen_years: list[int] = []
+
+        def _spy_loader(year, _override=None, _repo_root=None):
+            seen_years.append(year)
+            return _position_registry([])
+
+        monkeypatch.setattr(_LOADER, lambda _year: [_wallet()])
+        _install_fake_http(monkeypatch)
+        # AFTER _install_fake_http: it patches _REGISTRY_LOADER with its
+        # hermetic default, so the spy must be installed on top of it.
+        monkeypatch.setattr(_REGISTRY_LOADER, _spy_loader)
+
+        run_on_chain_fetch(year=2024, output_dir=tmp_path, api_key="k")
+
+        assert seen_years == [2024]
 
     def test_run_writes_csv_for_single_wallet(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -327,6 +557,15 @@ class TestOnChainFetcher:
             native_ticker="OTH",
         )
         monkeypatch.setattr(_LOADER, lambda _year: [wallet_a, wallet_b])
+        # Review r4 F5: wallet B also gets an nfttx row (address-keyed per
+        # wallet) so the multi-wallet x nfttx combination is covered: the
+        # consolidated CSV row must carry wallet B's address/label and the
+        # SYMBOL#tokenID asset.
+        wallet_b_nft = _nft_row(
+            hash="0xwn",
+            blockNumber="30",
+            to=wallet_b.address,  # the receiving wallet drives direction
+        )
         _install_fake_http(
             monkeypatch,
             txlist_rows_by_address={
@@ -337,13 +576,19 @@ class TestOnChainFetcher:
                 wallet_a.address: [],
                 wallet_b.address: [],
             },
+            nfttx_rows_by_address={
+                wallet_a.address: [],
+                wallet_b.address: [wallet_b_nft],
+            },
+            position_registry=_position_registry([_POS_CONTRACT]),
         )
 
         run_on_chain_fetch(year=2025, output_dir=tmp_path, api_key="k")
 
         csv_path = tmp_path / "2025" / "bera_transactions.csv"
         _, rows = _read_csv(csv_path)
-        assert len(rows) == 2
+        assert len(rows) == 3
+        rows_by_hash = {r["tx_hash"]: r for r in rows}
         labels = {r["wallet_label"] for r in rows}
         addresses = {r["wallet_address"] for r in rows}
         chains = {r["chain"] for r in rows}
@@ -358,6 +603,11 @@ class TestOnChainFetcher:
             elif row["tx_hash"] == "0xwb":
                 assert row["wallet_address"] == wallet_b.address
                 assert row["chain"] == "Otherchain"
+        # Review r4 F5: wallet B's nfttx row lands in the consolidated CSV
+        # tagged with wallet B's address/label and the SYMBOL#tokenID asset.
+        assert rows_by_hash["0xwn"]["wallet_address"] == wallet_b.address
+        assert rows_by_hash["0xwn"]["wallet_label"] == "Wallet B"
+        assert rows_by_hash["0xwn"]["asset"] == "ALGB-POS#26874"
 
     def test_empty_config_returns_none_and_warns_once(
         self,
@@ -388,3 +638,94 @@ class TestOnChainFetcher:
             "Orchestrator must own exactly one WARNING for an empty config (DI-6)."
         )
         assert "No chains.json" in warnings[0].getMessage()
+
+    def test_fetch_writes_nft_rows_to_csv(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Given a stubbed client returning txlist + tokentx + nfttx rows for
+        a registry-member contract, expects the written
+        ``bera_transactions.csv`` to contain the ``ALGB-POS#26874`` row with
+        the existing 15-column schema unchanged (gains rows, not columns).
+        """
+        from tax_reporting.application.on_chain_fetcher import run_on_chain_fetch
+
+        wallet = _wallet()
+        monkeypatch.setattr(_LOADER, lambda _year: [wallet])
+        _install_fake_http(
+            monkeypatch,
+            txlist_rows=[_txlist_row(hash="0xaaa", blockNumber="100")],
+            tokentx_rows=[_tokentx_row(hash="0xbbb", blockNumber="200")],
+            nfttx_rows=[_nft_row(hash="0xccc", blockNumber="300")],
+            position_registry=_position_registry([_POS_CONTRACT]),
+        )
+
+        result = run_on_chain_fetch(year=2025, output_dir=tmp_path, api_key="k")
+
+        assert result is not None
+        fieldnames, rows = _read_csv(result)
+        # Review r1 overflow: the header is pinned to the FULL OnChainTxRow
+        # field order (a column rename would fail here, not just a count
+        # change).
+        import dataclasses
+
+        from tax_reporting.infrastructure.on_chain.bera_decoder import OnChainTxRow
+
+        assert fieldnames == [f.name for f in dataclasses.fields(OnChainTxRow)]
+        assert len(fieldnames) == 15
+        nft_rows = [r for r in rows if r["asset"] == "ALGB-POS#26874"]
+        assert len(nft_rows) == 1
+        assert nft_rows[0]["tx_hash"] == "0xccc"
+        assert nft_rows[0]["token_address"] == _POS_CONTRACT
+        assert nft_rows[0]["amount_raw"] == "1"
+        assert nft_rows[0]["amount_decimals"] == "0"
+        assert nft_rows[0]["direction"] == "in"
+
+    def test_fetch_skips_non_registry_nft_contracts(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        """Given a stubbed client whose nfttx page mixes one registry-member
+        and one non-member transfer, expects only the member row written and
+        a WARNING carrying the skipped count (C8 membership gating).
+        """
+        from tax_reporting.application.on_chain_fetcher import run_on_chain_fetch
+
+        wallet = _wallet()
+        monkeypatch.setattr(_LOADER, lambda _year: [wallet])
+        _install_fake_http(
+            monkeypatch,
+            txlist_rows=[],
+            tokentx_rows=[],
+            nfttx_rows=[
+                _nft_row(hash="0xmember", blockNumber="300"),
+                _nft_row(
+                    hash="0xspam",
+                    blockNumber="301",
+                    contractAddress=_NON_MEMBER_CONTRACT,
+                    tokenSymbol="BERA777",
+                ),
+            ],
+            position_registry=_position_registry([_POS_CONTRACT]),
+        )
+
+        with caplog.at_level(
+            logging.WARNING,
+            logger="tax_reporting.infrastructure.on_chain.bera_decoder",
+        ):
+            result = run_on_chain_fetch(year=2025, output_dir=tmp_path, api_key="k")
+
+        assert result is not None
+        _, rows = _read_csv(result)
+        assert len(rows) == 1
+        assert rows[0]["tx_hash"] == "0xmember"
+        # Review r2 F5: pin the exact count record, not a digit-substring
+        # over the joined text (blockNumber "301" also contains "1").
+        skip_warnings = [
+            rec
+            for rec in caplog.records
+            if "not position_nft-kind registry members" in rec.getMessage()
+        ]
+        assert len(skip_warnings) == 1
+        assert "Skipped 1 nfttx row" in skip_warnings[0].getMessage()

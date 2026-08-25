@@ -366,7 +366,7 @@ class TestMainCompositionRoot:
 
         monkeypatch.setattr(_subst, "load_contracts", lambda _path: _oc.load_contracts(example_contracts))
         monkeypatch.setattr(_subst, "load_lp_snapshot", lambda _path: _oc.load_lp_snapshot(example_lp_snapshot))
-        monkeypatch.setattr(_subst, "_find_repository_root", lambda: project_root)
+        monkeypatch.setattr(_subst, "find_repository_root", lambda: project_root)
         monkeypatch.setattr(run_report_module, "_resolve_koinly_directory", lambda *_a, **_k: koinly_dir)
         monkeypatch.setattr(run_report_module, "_infer_tax_year_hint_from_ib_data", lambda _ib: 2025)
 

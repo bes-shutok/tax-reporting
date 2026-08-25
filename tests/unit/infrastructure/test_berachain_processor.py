@@ -59,6 +59,8 @@ the committed example contract registry lives at
 from __future__ import annotations
 
 import logging
+import re
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import Mock
@@ -130,6 +132,12 @@ _REGISTRY_MEMBER_RECIPIENT = "0x0000000000000000000000000000000000000e77"
 _LP_BUYER = "0x0000000000000000000000000000000000000b09"
 _DEX_PAIR = "0x0000000000000000000000000000000000000aa1"
 _NONVAULT_RECIPIENT = "0x0000000000000000000000000000000000000cc3"
+# Plan 2026-08-24 Task 4 (visible ERC-721 position legs): a synthetic ERC-721
+# position-NFT contract (registry member, kind="position_nft"; the
+# ``ALGB-POS#26874`` asset name embeds the token ID and is display-only) and
+# a synthetic wrapped-native token. All synthetic (Design Invariant #1).
+_POSITION_NFT = "0x0000000000000000000000000000000000000d7a"
+_WBERA = "0x0000000000000000000000000000000000000bb1"
 
 _TS = datetime(2025, 2, 25, 13, 53, 25, tzinfo=UTC)
 
@@ -218,6 +226,16 @@ def _position_registry():  # type: ignore[no-untyped-def]
                 {
                     "token_address": _REGISTRY_MEMBER_RECIPIENT,
                     "label": "TEST position vault",
+                    "kind": "position_nft",
+                    "provenance": "<inline-test>",
+                },
+                {
+                    # Plan 2026-08-24 Task 4: the ERC-721 position-NFT
+                    # contract itself (the mint the nfttx surface makes
+                    # visible); membership is address-keyed, the
+                    # ``ALGB-POS#26874`` asset name is display-only.
+                    "token_address": _POSITION_NFT,
+                    "label": "ALGB-POS",
                     "kind": "position_nft",
                     "provenance": "<inline-test>",
                 },
@@ -874,7 +892,13 @@ class TestBerachainProcessor:
         event_fields = {f.name for f in dataclasses.fields(Event)}
         assert "gas" not in event_fields
         assert {
-            "event_id", "event_type", "sub_type", "legs", "parent_tx_hash"
+            "event_id",
+            "event_type",
+            "sub_type",
+            "legs",
+            "parent_tx_hash",
+            # Review r6 F1: the persisted review reason (None when unflagged).
+            "review_reason",
         } == event_fields
         for event in _events(tx):
             assert "gas" not in {f.name for f in dataclasses.fields(event)}
@@ -974,6 +998,147 @@ class TestBerachainProcessor:
         assert events[0].event_type is EventType.Unknown
         # The processor warned (no silent misclassification).
         assert any("unknown" in rec.message.lower() for rec in caplog.records)
+
+    def test_every_flagged_event_persists_actionable_review_reason(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Review r7 F1: EVERY Event built with review=True must persist a
+        # specific actionable ``review_reason`` (PT-C-030 family) so the
+        # merged-TH Description cell keeps the review indicator on the
+        # persisted surface. The r6 tests pinned only the reason-bearing
+        # shapes (provenance mint, shape-6 mismatch); this property test
+        # covers the flagged-without-reason sites: the matched-no-pattern
+        # Unknown fallback, the unknown-direction per-leg fallback, the
+        # ungated shape-11 multi-leg deposit, and spam rewards.
+        rows: list[OnChainTxRow] = []
+        # 200 known-direction swap legs (100 simple swaps) so the single
+        # unknown-direction leg stays far under the run-level >1% unknown
+        # guard (F7 fail-loud).
+        for i in range(100):
+            rows.append(
+                _row(
+                    tx_hash=f"0xpad{i}",
+                    asset="BERA",
+                    direction="out",
+                    from_address=_WALLET,
+                    to_address=_DEX_ROUTER,
+                )
+            )
+            rows.append(
+                _row(
+                    tx_hash=f"0xpad{i}",
+                    asset="HONEY",
+                    direction="in",
+                    token_address="0x000000000000000000000000000000000000abcd",
+                    from_address=_DEX_ROUTER,
+                    to_address=_WALLET,
+                    fee_asset=None,
+                    fee_amount_raw=None,
+                )
+            )
+        # Spam reward (unverified sender, F4).
+        rows.append(
+            _row(
+                tx_hash="0xspam",
+                asset="BERA777",
+                direction="in",
+                token_address="0x000000000000000000000000000000000007777",
+                from_address=_REWARD_DISTRIBUTOR_UNVERIFIED,
+                to_address=_WALLET,
+                fee_asset=None,
+                fee_amount_raw=None,
+            )
+        )
+        # Matched-no-pattern fallback: a single non-member economic outflow
+        # with no member signal anywhere (no registry loaded).
+        rows.append(
+            _row(
+                tx_hash="0xtermfb",
+                asset="HONEY",
+                direction="out",
+                token_address="0x000000000000000000000000000000000000abcd",
+                from_address=_WALLET,
+                to_address=_DEX_ROUTER,
+                amount_raw=10**18,
+                fee_asset=None,
+                fee_amount_raw=None,
+            )
+        )
+        # Ungated shape-11 multi-leg deposit: two non-member economic
+        # out-legs, no registry-member recipient.
+        for asset, token in (
+            ("WETH", "0x000000000000000000000000000000000000aaaa"),
+            ("BUSD", "0x000000000000000000000000000000000000bbbb"),
+        ):
+            rows.append(
+                _row(
+                    tx_hash="0xungated",
+                    asset=asset,
+                    direction="out",
+                    token_address=token,
+                    from_address=_WALLET,
+                    to_address=_DEX_ROUTER,
+                    amount_raw=10**18,
+                    fee_asset=None,
+                    fee_amount_raw=None,
+                )
+            )
+        # Unknown-direction leg (its own tx).
+        rows.append(
+            _row(
+                tx_hash="0xunknown",
+                asset="MYSTERY",
+                direction="unknown",
+                token_address="0x000000000000000000000000000000000000abcd",
+                from_address=_DEX_ROUTER,
+                to_address=_WALLET,
+                fee_asset=None,
+                fee_amount_raw=None,
+            )
+        )
+        processor = _processor()
+
+        with caplog.at_level(logging.WARNING, logger=BerachainProcessor.__module__):
+            txs = processor.process(rows)
+
+        events = [event for tx in txs for event in tx.events]
+        by_tx: dict[str, list[Event]] = {}
+        for event in events:
+            by_tx.setdefault(event.parent_tx_hash, []).append(event)
+        # Per-shape: each newly-reasoned flagged Event carries a specific,
+        # actionable reason (non-empty, names what to verify).
+        expected: dict[str, EventType] = {
+            "0xspam": EventType.Reward,
+            "0xtermfb": EventType.Unknown,
+            "0xungated": EventType.LiquidityDeposit,
+            "0xunknown": EventType.Unknown,
+        }
+        for tx_hash, event_type in expected.items():
+            matching = [e for e in by_tx[tx_hash] if e.event_type is event_type]
+            assert matching, f"expected an {event_type.name} Event for {tx_hash}"
+            for event in matching:
+                assert event.review_reason, f"{tx_hash}: flagged Event has no review_reason"
+                assert "verify" in event.review_reason, (
+                    f"{tx_hash}: review_reason is not actionable: {event.review_reason!r}"
+                )
+        # Property: every review-flag WARNING corresponds to an Event with a
+        # non-empty review_reason (no flagged Event may persist None).
+        flag_pattern = re.compile(r"tx_hash=(?P<tx>\S+) emitting Event\((?P<type>\w+),")
+        flagged: set[tuple[str, str]] = set()
+        for record in caplog.records:
+            message = record.getMessage()
+            if record.levelno == logging.WARNING and "review flag" in message:
+                match = flag_pattern.search(message)
+                assert match is not None, f"unparseable review WARNING: {message!r}"
+                flagged.add((match.group("tx"), match.group("type")))
+        assert flagged, "expected review-flag WARNINGs for the fixture shapes"
+        missing = [
+            event
+            for event in events
+            if (event.parent_tx_hash, event.event_type.name) in flagged
+            and not event.review_reason
+        ]
+        assert not missing, f"flagged Events persisted without a review_reason: {missing}"
 
     def test_reward_distributor_country_falls_through_to_chain(self) -> None:
         # Given - a BGT reward from the verified Distributor
@@ -2184,6 +2349,714 @@ class TestBerachainProcessor:
         assert events[0].event_type is EventType.Swap
         assert events[0].sub_type is None
 
+    # ------------------------------------------------------------------
+    # Plan 2026-08-24 Task 4: classifier behavior with visible ERC-721
+    # position legs (the nfttx fetch makes the position-NFT mint/burn legs
+    # visible; membership and vault-target checks key on token_address
+    # ONLY - the ``SYMBOL#tokenID`` asset name is display-only).
+    # ------------------------------------------------------------------
+
+    def test_deposit_with_position_nft_in_leg_classifies_liquidity_deposit(
+        self,
+    ) -> None:
+        # RED on HEAD: the now-visible bidirectional shape (out WBERA to the
+        # vault, in the ERC-721 position mint) reaches the plain Swap branch
+        # because the receive-side detector only knows LP-snapshot members.
+        # It must classify LiquidityDeposit, not regress from today's
+        # registry-member-recipient inference (which read this tx as a PURE
+        # outflow deposit while the mint leg was invisible).
+        rows = [
+            _row(
+                tx_hash="0xposdep",
+                asset="WBERA",
+                direction="out",
+                token_address=_WBERA,
+                from_address=_WALLET,
+                to_address=_REGISTRY_MEMBER_RECIPIENT,  # the position-NFT vault
+                amount_raw=10**18,
+                fee_asset="BERA",
+                fee_amount_raw=21_000_002_730_000,
+            ),
+            _row(
+                tx_hash="0xposdep",
+                asset="ALGB-POS#26874",
+                direction="in",
+                token_address=_POSITION_NFT,  # registry member by ADDRESS
+                from_address=_REGISTRY_MEMBER_RECIPIENT,
+                to_address=_WALLET,
+                amount_raw=1,
+                amount_decimals=0,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+        processor = _processor(position_registry=_position_registry())
+
+        txs = processor.process(rows)
+
+        assert len(txs) == 1
+        events = _events(txs[0])
+        assert len(events) == 1
+        assert events[0].event_type is EventType.LiquidityDeposit
+        assert events[0].sub_type is SubType.internal_transfer
+        assert {leg.direction for leg in events[0].legs} == {"in", "out"}
+
+    def test_withdraw_of_position_nft_to_vault_target_classifies_liquidity_withdraw(
+        self,
+    ) -> None:
+        # The ERC-721 position leg sent to a registry VAULT
+        # (kind="position_nft") with the underlying coming back: the
+        # shape-6 registry-only vault-target rule must keep firing now that
+        # the leg is VISIBLE (previously the invisible leg left a pure
+        # WBERA inflow -> Reward misroute). Regression pin.
+        rows = [
+            _row(
+                tx_hash="0xposwd",
+                asset="ALGB-POS#26874",
+                direction="out",
+                token_address=_POSITION_NFT,  # registry member by ADDRESS
+                from_address=_WALLET,
+                to_address=_REGISTRY_MEMBER_RECIPIENT,  # registry VAULT target
+                amount_raw=1,
+                amount_decimals=0,
+                fee_asset="BERA",
+                fee_amount_raw=21_000_002_730_000,
+            ),
+            _row(
+                tx_hash="0xposwd",
+                asset="WBERA",
+                direction="in",
+                token_address=_WBERA,
+                from_address=_REGISTRY_MEMBER_RECIPIENT,  # the vault
+                to_address=_WALLET,
+                amount_raw=5 * 10**18,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+        processor = _processor(position_registry=_position_registry())
+
+        txs = processor.process(rows)
+
+        assert len(txs) == 1
+        events = _events(txs[0])
+        assert len(events) == 1
+        assert events[0].event_type is EventType.LiquidityWithdraw
+        assert events[0].sub_type is SubType.internal_transfer
+        assert {leg.direction for leg in events[0].legs} == {"in", "out"}
+
+    def test_position_nft_swapped_outside_vault_stays_swap(self) -> None:
+        # LBGT-family invariant (user-confirmed 2026-08-23): an ERC-721
+        # position leg exchanged on a DEX pair (NOT a registry vault) keeps
+        # the Swap fall-through - registry entries are identity data, not
+        # per-cluster rules. Pins that the deposit-side extension never
+        # fires on the SEND side.
+        rows = [
+            _row(
+                tx_hash="0xposdex",
+                asset="ALGB-POS#26874",
+                direction="out",
+                token_address=_POSITION_NFT,  # registry member by ADDRESS
+                from_address=_WALLET,
+                to_address=_DEX_PAIR,  # NOT a registry vault
+                amount_raw=1,
+                amount_decimals=0,
+                fee_asset="BERA",
+                fee_amount_raw=21_000_002_730_000,
+            ),
+            _row(
+                tx_hash="0xposdex",
+                asset="WBERA",
+                direction="in",
+                token_address=_WBERA,
+                from_address=_DEX_PAIR,  # == the out-leg recipient
+                to_address=_WALLET,
+                amount_raw=5 * 10**18,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+        processor = _processor(position_registry=_position_registry())
+
+        txs = processor.process(rows)
+
+        assert len(txs) == 1
+        events = _events(txs[0])
+        assert len(events) == 1
+        assert events[0].event_type is EventType.Swap
+        assert events[0].sub_type is None
+
+    def test_lst_kind_receive_on_dex_swap_stays_swap(self) -> None:
+        # Review r2 F1: a bidirectional DEX PURCHASE of a registered LST
+        # (out WBERA to the pair, in the lst-kind member) must stay Swap -
+        # the LBGT invariant (registry entries are identity data, not
+        # per-cluster rules) applied to the RECEIVE side. RED on HEAD: the
+        # ungated membership detector misroutes this to
+        # LiquidityDeposit/internal_transfer (shape 7 fires before Swap).
+        rows = [
+            _row(
+                tx_hash="0xlstbuy",
+                asset="WBERA",
+                direction="out",
+                token_address=_WBERA,
+                from_address=_WALLET,
+                to_address=_DEX_PAIR,  # NOT a registry vault
+                amount_raw=5 * 10**18,
+                fee_asset="BERA",
+                fee_amount_raw=21_000_002_730_000,
+            ),
+            _row(
+                tx_hash="0xlstbuy",
+                asset="iTEST",
+                direction="in",
+                token_address=_POSITION_TOKEN,  # registry member, kind="lst"
+                from_address=_DEX_PAIR,
+                to_address=_WALLET,
+                amount_raw=1476177230747713290,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+        processor = _processor(position_registry=_position_registry())
+
+        txs = processor.process(rows)
+
+        assert len(txs) == 1
+        events = _events(txs[0])
+        assert len(events) == 1
+        assert events[0].event_type is EventType.Swap
+        assert events[0].sub_type is None
+
+    def test_position_nft_bought_on_dex_stays_swap(self) -> None:
+        # Review r3 F1: a bidirectional market PURCHASE of a position NFT
+        # (out WBERA to a non-vault pair, in the position_nft-kind member
+        # from that pair) must stay Swap - the LBGT invariant (user-confirmed
+        # 2026-08-23; registry entries are identity data, not per-cluster
+        # rules) mirrored to the RECEIVE side, exactly as the send side
+        # (test_position_nft_swapped_outside_vault_stays_swap) and the
+        # lst-kind receive side (test_lst_kind_receive_on_dex_swap_stays_swap)
+        # already pin. The clean LiquidityDeposit fires only when the
+        # economic out-legs target a registry vault (the mint shape the
+        # plan's deposit fixture encodes).
+        rows = [
+            _row(
+                tx_hash="0xposbuy",
+                asset="WBERA",
+                direction="out",
+                token_address=_WBERA,
+                from_address=_WALLET,
+                to_address=_DEX_PAIR,  # NOT a registry vault
+                amount_raw=5 * 10**18,
+                fee_asset="BERA",
+                fee_amount_raw=21_000_002_730_000,
+            ),
+            _row(
+                tx_hash="0xposbuy",
+                asset="ALGB-POS#26874",
+                direction="in",
+                token_address=_POSITION_NFT,  # registry member, kind="position_nft"
+                from_address=_DEX_PAIR,  # == the out-leg recipient
+                to_address=_WALLET,
+                amount_raw=1,
+                amount_decimals=0,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+        processor = _processor(position_registry=_position_registry())
+
+        txs = processor.process(rows)
+
+        assert len(txs) == 1
+        events = _events(txs[0])
+        assert len(events) == 1
+        assert events[0].event_type is EventType.Swap
+        assert events[0].sub_type is None
+
+    def test_router_mediated_position_nft_mint_is_liquidity_deposit(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Review r4 F1: a router/zapper-mediated mint deposit - the wallet
+        # pays an intermediary (a NON-vault router), and the position NFT
+        # still arrives FROM the registry vault - is a LiquidityDeposit, not
+        # a Swap. The mint's provenance touchpoint (the vault dispatching
+        # the NFT) is recognized in addition to the payment touchpoint
+        # (out-legs targeting the vault). RED on HEAD: the out-leg-only
+        # discriminator misses the vault and the tx classifies as an
+        # unflagged Swap.
+        # Review r5 F1: the provenance-only shape is ambiguous with a
+        # vault-seller resale, so the LiquidityDeposit carries a review flag
+        # with an actionable reason naming the vault-sender and the
+        # non-vault payment counterparty (PT-C-030 family).
+        rows = [
+            _row(
+                tx_hash="0xzapper",
+                asset="WBERA",
+                direction="out",
+                token_address=_WBERA,
+                from_address=_WALLET,
+                to_address=_DEX_PAIR,  # the router/zapper - NOT a registry vault
+                amount_raw=5 * 10**18,
+                fee_asset="BERA",
+                fee_amount_raw=21_000_002_730_000,
+            ),
+            _row(
+                tx_hash="0xzapper",
+                asset="ALGB-POS#26874",
+                direction="in",
+                token_address=_POSITION_NFT,  # registry member, kind="position_nft"
+                from_address=_REGISTRY_MEMBER_RECIPIENT,  # the vault dispatching the mint
+                to_address=_WALLET,
+                amount_raw=1,
+                amount_decimals=0,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+        processor = _processor(position_registry=_position_registry())
+
+        with caplog.at_level(logging.WARNING, logger=BerachainProcessor.__module__):
+            txs = processor.process(rows)
+
+        assert len(txs) == 1
+        events = _events(txs[0])
+        assert len(events) == 1
+        assert events[0].event_type is EventType.LiquidityDeposit
+        assert events[0].sub_type is SubType.internal_transfer
+        assert {leg.direction for leg in events[0].legs} == {"in", "out"}
+        # Provenance-only mint shape: ambiguous with a vault-seller resale,
+        # so the classification must carry a review flag naming the
+        # vault-sender and the non-vault payment counterparty.
+        review_msgs = _review_messages(caplog)
+        assert review_msgs, "provenance-only mint must carry a review flag"
+        assert _DEX_PAIR.lower() in review_msgs[0].lower()
+        assert _REGISTRY_MEMBER_RECIPIENT.lower() in review_msgs[0].lower()
+        # Review r6 F1: the reason must also PERSIST on the Event (the log
+        # alone is not a user-facing surface; PT-C-030 family).
+        reason = events[0].review_reason
+        assert reason is not None, (
+            "r6 F1: the provenance-only mint's review reason must persist on the Event"
+        )
+        assert _DEX_PAIR.lower() in reason.lower()
+        assert _REGISTRY_MEMBER_RECIPIENT.lower() in reason.lower()
+        assert "verify" in reason.lower()
+
+    def test_vault_seller_resale_classifies_deposit_with_review(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Review r5 F1 RED test: a secondary-market purchase where the vault
+        # itself is the NFT transfer-from (escrow release, liquidated
+        # position resale) while the payment goes to a non-vault marketplace
+        # escrow. On-chain this is indistinguishable from a router-mediated
+        # mint (both have vault provenance and non-vault payment), so the
+        # Type stays LiquidityDeposit but the event must carry a review
+        # flag with an actionable reason naming the vault-sender and the
+        # non-vault payment counterparty. RED on HEAD: the provenance arm
+        # alone vouches for the whole tx, classifying it review-free.
+        rows = [
+            _row(
+                tx_hash="0xresale",
+                asset="WBERA",
+                direction="out",
+                token_address=_WBERA,
+                from_address=_WALLET,
+                to_address=_DEX_PAIR,  # marketplace escrow - NOT a registry vault
+                amount_raw=5 * 10**18,
+                fee_asset="BERA",
+                fee_amount_raw=21_000_002_730_000,
+            ),
+            _row(
+                tx_hash="0xresale",
+                asset="ALGB-POS#26874",
+                direction="in",
+                token_address=_POSITION_NFT,  # registry member, kind="position_nft"
+                from_address=_REGISTRY_MEMBER_RECIPIENT,  # the vault re-selling the position
+                to_address=_WALLET,
+                amount_raw=1,
+                amount_decimals=0,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+        processor = _processor(position_registry=_position_registry())
+
+        with caplog.at_level(logging.WARNING, logger=BerachainProcessor.__module__):
+            txs = processor.process(rows)
+
+        assert len(txs) == 1
+        events = _events(txs[0])
+        assert len(events) == 1
+        assert events[0].event_type is EventType.LiquidityDeposit
+        assert events[0].sub_type is SubType.internal_transfer
+        review_msgs = _review_messages(caplog)
+        assert review_msgs, "vault-seller resale must carry a review flag"
+        assert _DEX_PAIR.lower() in review_msgs[0].lower()
+        assert _REGISTRY_MEMBER_RECIPIENT.lower() in review_msgs[0].lower()
+
+    def test_mixed_provenance_position_batch_classifies_deposit_with_review(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Review r5 F1 RED test: a mixed-provenance batch - one position-NFT
+        # in-leg minted from the vault plus a sibling position-NFT in-leg
+        # purchased from a DEX pair in the same tx, all payments non-vault.
+        # On HEAD the single vault-provenanced leg vouches for the whole tx
+        # (review-free LiquidityDeposit); one vault leg must not silently
+        # clean a sibling market-purchased leg, so the event must carry a
+        # review flag.
+        rows = [
+            _row(
+                tx_hash="0xmixbatch",
+                asset="WBERA",
+                direction="out",
+                token_address=_WBERA,
+                from_address=_WALLET,
+                to_address=_DEX_PAIR,  # NOT a registry vault
+                amount_raw=5 * 10**18,
+                fee_asset="BERA",
+                fee_amount_raw=21_000_002_730_000,
+            ),
+            _row(
+                tx_hash="0xmixbatch",
+                asset="ALGB-POS#26874",
+                direction="in",
+                token_address=_POSITION_NFT,  # registry member, kind="position_nft"
+                from_address=_REGISTRY_MEMBER_RECIPIENT,  # the vault (mint provenance)
+                to_address=_WALLET,
+                amount_raw=1,
+                amount_decimals=0,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+            _row(
+                tx_hash="0xmixbatch",
+                asset="ALGB-POS#26870",
+                direction="in",
+                token_address=_POSITION_NFT,  # same registry member contract
+                from_address=_DEX_PAIR,  # market purchase (non-vault provenance)
+                to_address=_WALLET,
+                amount_raw=1,
+                amount_decimals=0,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+        processor = _processor(position_registry=_position_registry())
+
+        with caplog.at_level(logging.WARNING, logger=BerachainProcessor.__module__):
+            txs = processor.process(rows)
+
+        assert len(txs) == 1
+        events = _events(txs[0])
+        assert len(events) == 1
+        assert events[0].event_type is EventType.LiquidityDeposit
+        assert events[0].sub_type is SubType.internal_transfer
+        assert {leg.direction for leg in events[0].legs} == {"in", "out"}
+        assert len(events[0].legs) == 3
+        review_msgs = _review_messages(caplog)
+        assert review_msgs, "mixed-provenance batch must carry a review flag"
+        assert _DEX_PAIR.lower() in review_msgs[0].lower()
+        assert _REGISTRY_MEMBER_RECIPIENT.lower() in review_msgs[0].lower()
+
+    # ------------------------------------------------------------------
+    # Direct unit tests for the position-leg detector helpers (AGENTS.md:
+    # extracted helpers need direct unit tests, not just indirect
+    # integration).
+    # ------------------------------------------------------------------
+
+    def test_receives_position_token_member_by_address(self) -> None:
+        # Membership is keyed on token_address ONLY: an in-leg carrying the
+        # registry-member ERC-721 contract address is detected regardless
+        # of the display asset name.
+        processor = _processor(position_registry=_position_registry())
+        leg = Leg(
+            asset="ALGB-POS#26874",
+            token_address=_POSITION_NFT,
+            amount_raw=1,
+            amount_decimals=0,
+            direction="in",
+            from_address=_REGISTRY_MEMBER_RECIPIENT,
+            to_address=_WALLET,
+        )
+
+        assert processor._receives_position_token([leg]) is True
+
+    def test_receives_position_token_lst_kind_false(self) -> None:
+        # Review r2 F1: an lst-kind member (a tradable staking receipt
+        # token) must NOT fire the receive-side position detector - only
+        # position-NFT-kind members (ERC-721 LP position mints) do. An
+        # ungated membership check here misroutes DEX LST buys to
+        # LiquidityDeposit.
+        processor = _processor(position_registry=_position_registry())
+        lst_leg = Leg(
+            asset="iTEST",
+            token_address=_POSITION_TOKEN,  # registry member, kind="lst"
+            amount_raw=1476177230747713290,
+            amount_decimals=18,
+            direction="in",
+            from_address=_DEX_PAIR,
+            to_address=_WALLET,
+        )
+
+        assert processor._receives_position_token([lst_leg]) is False
+
+    def test_receives_position_token_non_member_and_native_false(self) -> None:
+        # A non-member token and a native leg (token_address None) never
+        # fire the detector.
+        processor = _processor(position_registry=_position_registry())
+        non_member = Leg(
+            asset="HONEY",
+            token_address=_WBERA,
+            amount_raw=10**18,
+            amount_decimals=18,
+            direction="in",
+            from_address=_DEX_ROUTER,
+            to_address=_WALLET,
+        )
+        native = replace(non_member, asset="BERA", token_address=None)
+
+        assert processor._receives_position_token([non_member]) is False
+        assert processor._receives_position_token([native]) is False
+
+    def test_receives_position_token_absent_registry_false(self) -> None:
+        # No position registry loaded -> the detector is inert (fail-closed;
+        # the classifier falls through to the pre-existing shapes).
+        processor = _processor()
+        leg = Leg(
+            asset="ALGB-POS#26874",
+            token_address=_POSITION_NFT,
+            amount_raw=1,
+            amount_decimals=0,
+            direction="in",
+            from_address=_REGISTRY_MEMBER_RECIPIENT,
+            to_address=_WALLET,
+        )
+
+        assert processor._receives_position_token([leg]) is False
+
+    def test_receives_member_receipt_token_combines_lp_and_position(self) -> None:
+        # The shape-7 detector accepts EITHER signal: an LP-snapshot member
+        # in-leg OR a position-registry member in-leg whose economic
+        # out-legs target a registry vault (review r3 F1: the mint shape).
+        processor = _processor(position_registry=_position_registry())
+        lp_leg = Leg(
+            asset="UNI-V2",
+            token_address=_LP_TOKEN,  # LP-snapshot member
+            amount_raw=5 * 10**18,
+            amount_decimals=18,
+            direction="in",
+            from_address=_DEX_ROUTER,
+            to_address=_WALLET,
+        )
+        pos_leg = Leg(
+            asset="ALGB-POS#26874",
+            token_address=_POSITION_NFT,  # position-registry member
+            amount_raw=1,
+            amount_decimals=0,
+            direction="in",
+            from_address=_REGISTRY_MEMBER_RECIPIENT,
+            to_address=_WALLET,
+        )
+        plain_leg = Leg(
+            asset="HONEY",
+            token_address=_WBERA,
+            amount_raw=10**18,
+            amount_decimals=18,
+            direction="in",
+            from_address=_DEX_ROUTER,
+            to_address=_WALLET,
+        )
+        vault_pay_leg = Leg(
+            asset="WBERA",
+            token_address=_WBERA,
+            amount_raw=5 * 10**18,
+            amount_decimals=18,
+            direction="out",
+            from_address=_WALLET,
+            to_address=_REGISTRY_MEMBER_RECIPIENT,  # registry vault
+        )
+        nonvault_pay_leg = replace(vault_pay_leg, to_address=_DEX_PAIR)
+
+        # LP signal needs no vault-target discriminator; the position-NFT
+        # signal additionally requires the mint shape (either an out-leg
+        # pays the vault, r3 F1, or the NFT arrives from the vault, r4 F1).
+        assert processor._receives_member_receipt_token([lp_leg], [nonvault_pay_leg]) is True
+        assert processor._receives_member_receipt_token([pos_leg], [vault_pay_leg]) is True
+        # Review r4 F1: a position-NFT receive whose NFT arrives FROM the
+        # vault fires even when the payer is a non-vault router (the
+        # router-mediated mint shape).
+        assert processor._receives_member_receipt_token([pos_leg], [nonvault_pay_leg]) is True
+        assert processor._receives_member_receipt_token([plain_leg], [vault_pay_leg]) is False
+
+    def test_position_mint_pays_vault_out_leg_payment_true(self) -> None:
+        # Direct unit test for the PAYMENT arm: an economic out-leg whose
+        # recipient is a position_nft-kind registry member (the vault the
+        # mint deposit pays) fires the arm.
+        processor = _processor(position_registry=_position_registry())
+        leg = Leg(
+            asset="WBERA",
+            token_address=_WBERA,
+            amount_raw=5 * 10**18,
+            amount_decimals=18,
+            direction="out",
+            from_address=_WALLET,
+            to_address=_REGISTRY_MEMBER_RECIPIENT,  # kind="position_nft" member
+        )
+
+        assert processor._position_mint_pays_vault([leg]) is True
+
+    def test_position_mint_pays_vault_nonvault_or_native_false(self) -> None:
+        # A non-vault recipient (DEX pair), a native leg (to_address None),
+        # and an absent registry never fire the payment arm (fail-closed).
+        member = _processor(position_registry=_position_registry())
+        pair_leg = Leg(
+            asset="WBERA",
+            token_address=_WBERA,
+            amount_raw=5 * 10**18,
+            amount_decimals=18,
+            direction="out",
+            from_address=_WALLET,
+            to_address=_DEX_PAIR,
+        )
+        native_leg = replace(pair_leg, asset="BERA", token_address=None, to_address=None)
+
+        assert member._position_mint_pays_vault([pair_leg]) is False
+        assert member._position_mint_pays_vault([native_leg]) is False
+        assert member._position_mint_pays_vault([]) is False
+
+        no_registry = _processor()
+        vault_leg = replace(pair_leg, to_address=_REGISTRY_MEMBER_RECIPIENT)
+        assert no_registry._position_mint_pays_vault([vault_leg]) is False
+
+    def test_position_mint_receives_from_vault_provenance_true(self) -> None:
+        # Direct unit test for the PROVENANCE arm: a kind-gated
+        # position-NFT in-leg whose from_address is a registry vault fires
+        # the arm even when no out-leg pays the vault (the router-mediated
+        # mint shape).
+        processor = _processor(position_registry=_position_registry())
+        pos_leg = Leg(
+            asset="ALGB-POS#26874",
+            token_address=_POSITION_NFT,  # kind="position_nft" member
+            amount_raw=1,
+            amount_decimals=0,
+            direction="in",
+            from_address=_REGISTRY_MEMBER_RECIPIENT,  # the vault dispatching the mint
+            to_address=_WALLET,
+        )
+
+        assert processor._position_mint_receives_from_vault([pos_leg]) is True
+
+    def test_position_mint_receives_from_vault_kind_and_sender_gated_false(self) -> None:
+        # The provenance arm is kind-gated (an lst-kind in-leg from a vault
+        # never fires) and sender-gated (an NFT in-leg from a non-vault pair
+        # never fires); an absent registry is inert (fail-closed).
+        member = _processor(position_registry=_position_registry())
+        pos_from_pair = Leg(
+            asset="ALGB-POS#26874",
+            token_address=_POSITION_NFT,
+            amount_raw=1,
+            amount_decimals=0,
+            direction="in",
+            from_address=_DEX_PAIR,  # NOT a vault
+            to_address=_WALLET,
+        )
+        lst_from_vault = Leg(
+            asset="iTEST",
+            token_address=_POSITION_TOKEN,  # kind="lst": not kind-gated
+            amount_raw=1476177230747713290,
+            amount_decimals=18,
+            direction="in",
+            from_address=_REGISTRY_MEMBER_RECIPIENT,
+            to_address=_WALLET,
+        )
+
+        assert member._position_mint_receives_from_vault([pos_from_pair]) is False
+        assert member._position_mint_receives_from_vault([lst_from_vault]) is False
+        assert member._position_mint_receives_from_vault([]) is False
+
+        no_registry = _processor()
+        pos_from_vault = replace(pos_from_pair, from_address=_REGISTRY_MEMBER_RECIPIENT)
+        assert no_registry._position_mint_receives_from_vault([pos_from_vault]) is False
+
+    def test_position_mint_vault_senders_returns_sender_set(self) -> None:
+        # Review r6 F4: the shared set-returning helper behind the
+        # receives-from-vault detector AND the provenance reason builder (the
+        # arm evaluation exists in exactly one body). Direct unit test: the
+        # set names the (lower-cased) vault senders and stays empty for the
+        # gated-out shapes and the absent-registry case.
+        processor = _processor(position_registry=_position_registry())
+        pos_from_vault = Leg(
+            asset="ALGB-POS#26874",
+            token_address=_POSITION_NFT,
+            amount_raw=1,
+            amount_decimals=0,
+            direction="in",
+            from_address=_REGISTRY_MEMBER_RECIPIENT,
+            to_address=_WALLET,
+        )
+        pos_from_pair = replace(pos_from_vault, from_address=_DEX_PAIR)
+        lst_from_vault = replace(pos_from_vault, asset="iTEST", token_address=_POSITION_TOKEN)
+
+        assert processor._position_mint_vault_senders([pos_from_vault]) == {
+            _REGISTRY_MEMBER_RECIPIENT.lower()
+        }
+        assert processor._position_mint_vault_senders([pos_from_pair, lst_from_vault]) == set()
+        assert _processor()._position_mint_vault_senders([pos_from_vault]) == set()
+
+    def test_position_mint_provenance_review_reason_naming(self) -> None:
+        # Direct unit test for the ambiguity reason builder: None when the
+        # payment arm fires (clean deposit) or neither arm fires; a reason
+        # naming the vault-sender leg(s) and the non-vault payment
+        # counterparties when only the provenance arm fires.
+        processor = _processor(position_registry=_position_registry())
+        vault_pay = Leg(
+            asset="WBERA",
+            token_address=_WBERA,
+            amount_raw=5 * 10**18,
+            amount_decimals=18,
+            direction="out",
+            from_address=_WALLET,
+            to_address=_REGISTRY_MEMBER_RECIPIENT,  # registry vault
+        )
+        nonvault_pay = replace(vault_pay, to_address=_DEX_PAIR)
+        pos_from_vault = Leg(
+            asset="ALGB-POS#26874",
+            token_address=_POSITION_NFT,
+            amount_raw=1,
+            amount_decimals=0,
+            direction="in",
+            from_address=_REGISTRY_MEMBER_RECIPIENT,
+            to_address=_WALLET,
+        )
+        pos_from_pair = replace(pos_from_vault, from_address=_DEX_PAIR)
+
+        # Payment arm fires -> clean (no reason).
+        assert (
+            processor._position_mint_provenance_review_reason([vault_pay], [pos_from_vault])
+            is None
+        )
+        # Neither arm -> no reason.
+        assert (
+            processor._position_mint_provenance_review_reason([nonvault_pay], [pos_from_pair])
+            is None
+        )
+        # Provenance-only -> actionable reason naming both counterparties.
+        reason = processor._position_mint_provenance_review_reason(
+            [nonvault_pay], [pos_from_vault]
+        )
+        assert reason is not None
+        assert _REGISTRY_MEMBER_RECIPIENT.lower() in reason.lower()
+        assert _DEX_PAIR.lower() in reason.lower()
+        assert "verify" in reason.lower()
+        # Review r6 F3: a NATIVE gas out-leg carries ``to_address=None``; the
+        # payee list must degrade to the "<missing>" sentinel, not crash or
+        # emit a raw None into the user-facing reason.
+        native_pay = replace(vault_pay, asset="BERA", token_address=None, to_address=None)
+        native_reason = processor._position_mint_provenance_review_reason(
+            [native_pay], [pos_from_vault]
+        )
+        assert native_reason is not None
+        assert "<missing>" in native_reason
+
     def test_lst_send_to_nonvault_recipient_falls_through(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -2521,6 +3394,13 @@ class TestBerachainProcessor:
         assert len(events) == 1
         assert events[0].event_type is EventType.LiquidityWithdraw
         assert _review_messages(caplog), "vault recipient with a router sender is still a counterparty mismatch"
+        # Review r6 F1: EVERY flagged shape persists its reason on the Event
+        # (shape-6 redemption-counterparty mismatch is the second case).
+        reason = events[0].review_reason
+        assert reason is not None, (
+            "r6 F1: the shape-6 redemption review reason must persist on the Event"
+        )
+        assert "mismatch" in reason.lower()
 
     # -- Review r2 follow-ups (code review 2026-08-24, F1/F5) --------------
 

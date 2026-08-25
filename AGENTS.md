@@ -27,7 +27,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Validation that depends on complete state runs post-aggregation, not per-row (mid-accumulation state can be invalid).
 - When reusing a validation/security pattern, inherit the guards but recalibrate exception handling to the cost of silent failure at the new call site.
 - When an aggregator takes `entries[0]` for a field assumed constant across a group, add a heterogeneity guard. Sibling aggregators merging the same type must use byte-identical patterns or a shared helper.
-- Partial or uncertain results must carry an explicit indicator so users cannot mistake them for complete. Review flags must give specific actionable explanations, not bare booleans.
+- Partial or uncertain results must carry an explicit indicator users cannot mistake for complete. Review flags must give specific actionable explanations, not bare booleans. See `development_lessons.md` #149.
 - User-facing output labels use self-explanatory terminology, not terse names from source formats; f-strings interpolating `str | None` must degrade explicitly. See `coding_guidelines.md` #6.
 
 ### 2. Repository Style and Conventions
@@ -48,7 +48,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - For fiscal-year versioned tax decision points, see `docs/maintenance/project-guidelines.md` #2.
 - When AT guidance cites a CIRS paragraph number, verify against the consolidated CIRS/CPPT/CIS PDFs; AT documents may predate renumbering amendments. See `docs/maintenance/project-guidelines.md` #3.
 - For tax/origin web sources, prefer authoritative PDFs or extracted Markdown over raw HTML and reuse local mirrors; a locally-archived official source wins over a conflicting secondary source.
-- Authoritative law portals render the CURRENT version by default; for a prior fiscal year, use the version in force then ("Redações anteriores"), cross-checked against a year-dated secondary source. See `development_lessons.md` #31.
+- Law portals render the CURRENT version by default; for a prior fiscal year, use the version in force then ("Redações anteriores"), cross-checked against a year-dated secondary source. See `development_lessons.md` #31.
 - Before assuming an official source is unavailable, probe the authority's canonical URL with a HEAD request; a web/search MCP tool quota/rate-limit is a tool outage, not a missing source. See `development_lessons.md` #37.
 - Under `docs/maintenance/tax/`, use `laws/<jurisdiction>/crypto-tax/` for tax-law archives and `crypto-origin/` for chain/operator domicile archives.
 - Adding a decision point flag requires the corresponding `TaxJurisdictionConfig` field and type-dispatch support; jurisdiction-specific output must be flag-gated, not country-literal-gated. See `development_lessons.md` #36.
@@ -77,7 +77,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Crypto reward income must be aggregated by `(income_code, source_country)` before inclusion in the IRS-ready filing table. Do not bypass `aggregate_taxable_rewards()`.
 - Reward classification (taxable_now vs deferred_by_law) uses `_classify_reward_tax_status()` (cite CRG-001/002); taxable-now fiat rewards target `Reporting` (SRG-008); `Crypto Supplementary` is support only.
 - The aggregation step fails with `FileProcessingError` if any taxable-now row cannot be assigned all mandatory IRS fields (valid Tabela X country code).
-- When `review_required=True`, `review_reason` must contain a specific, actionable explanation; Excel shows "YES: \<reason\>", not a bare boolean. See PT-C-030.
+- When `review_required=True`, `review_reason` must be a specific, actionable explanation; Excel shows "YES: \<reason\>". See PT-C-030, dev lessons #150.
 - `OperatorOrigin` has two review flags: `review_required` (row-level) and `platform_review_required` (platform-level). Never conflate them. See CRG-016.
 - The Platform Assumptions tab is a complete manifest. Do not filter; use `platform_review_required=True` to highlight.
 - Tests verifying "YES:"/"NO" rendering must set `review_required`/`review_reason` on the fixture entry; do not delegate to `origin.review_required`.
@@ -149,9 +149,9 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Re-run feasibility checks against the mutated post-phase-1 input set.
 - When a task changes data flow semantics (filter/dedup/split), grep ALL `tests/` for assertions on the affected data identity tuple, not just the current task's file.
 - When a plan task changes a function signature OR rendered output text (label cell), grep ALL test tiers for callers and row-locators matching the stale label, including method/function identifiers, not just prose.
-- When renaming fixture paths/filenames, grep ALL test files AND docs for every shape (directory, filename, stem, prose); update conftest constants and scattered refs. See `development_lessons.md` #47.
+- When renaming fixture paths/filenames, grep ALL test files AND docs for every shape (directory, filename, stem, prose); update conftest constants and refs. See `development_lessons.md` #47.
 - When a plan task changes an artifact's DISCOVERY mechanism (glob -> explicit path), grep ALL test tiers for every call to the OLD discovery helper; each re-discover call site must switch to the new explicit result (`development_lessons.md` #121).
-- Before downgrading a per-row `logger.warning` to `logger.debug` (warning-grouping recipe, `project-guidelines.md` #7), verify the site's review surface, sweep ALL `caplog.at_level(WARNING)` substring assertions, and sweep docs for the level phrase. See `development_lessons.md` #69, #70.
+- Before downgrading a per-row `logger.warning` to `logger.debug`, apply the warning-grouping recipe sweeps (review surface, `caplog.at_level(WARNING)` substring assertions, docs for the level phrase): `project-guidelines.md` #7, `development_lessons.md` #69, #70.
 - When a plan task removes dataclass fields, grep test construction sites; shared conftest helpers forwarding `**overrides` must filter removed keys or the suite becomes uncollectable. See `development_lessons.md` #54.
 - A collection-time `NameError` naming a fixture the edited code does not use, after inserting a `class`/`def`, signals an orphaned indented body re-parented onto the new block; remove it. See `development_lessons.md` #57.
 - For verification-only tasks inspecting `git diff <base>..HEAD` with missing expected files, check if a prior same-session commit already applied them.
@@ -199,7 +199,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 ## Testing
 
 - 3-tier: `tests/unit/` (unit-marked), `tests/integration/`, `tests/end_to_end/` (e2e-marked).
-- The suite is hermetic: no ambient env vars (env gate `BERA_CHAIN_API_KEY` pinned off by an autouse fixture); no outbound network (opt-in `@pytest.mark.network`); no gitignored-data opens (audit-hook; opt-out `SKIP_AUDIT_GUARD=1`): inline values, a synthetic fixture, or deterministic generation. See `development_lessons.md` #123, `coding_guidelines.md` #26.
+- The suite is hermetic: no ambient env vars (env gate `BERA_CHAIN_API_KEY` pinned off by an autouse fixture); no outbound network (opt-in `@pytest.mark.network`); no gitignored-data opens (audit-hook; opt-out `SKIP_AUDIT_GUARD=1`): inline values, a synthetic fixture, or deterministic generation. See `development_lessons.md` #123, #147, `coding_guidelines.md` #26.
 - **Per-test timeout ALWAYS ON** (`timeout = 120`, pytest-timeout). A timeout = runaway loop or unbounded accumulation: fix the loop, never the timeout; synthetic external-report fixtures must carry all fields production branches on (`development_lessons.md` #138).
 - Do not import pytest fixtures; they are injected by name (`tmp_path`, `monkeypatch`).
 - Test class names must match `python_classes = ["Test*"]` in `pyproject.toml`; other prefixes are silently deselected.
@@ -217,7 +217,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 
 ## Data Handling
 
-Missing-vs-invalid: see `docs/maintenance/project-guidelines.md` #5 for the full rules. Incremental: internal resolution sentinels must NOT leak to user-facing fields - use the raw input value.
+Missing-vs-invalid: see `project-guidelines.md` #5. Incremental: resolution sentinels must NOT leak to user-facing fields; use the raw input value. Truncated-hash PII in tracked docs: `development_lessons.md` #151.
 
 ## Lessons Learned
 

@@ -159,6 +159,10 @@ class Event:
     that parent tx; downstream consumers key on ``(tx_hash, event_id)`` to tell
     split Events apart. ``legs`` is an immutable tuple. ``sub_type`` is
     optional (``None`` when no decision-driving discriminator applies).
+    ``review_reason`` (review r6 F1) persists the processor's actionable
+    review explanation for flagged Events (``None`` when unflagged) so it can
+    reach a user-facing surface (the bridge TH CSV's ``Description`` cell),
+    not just the build-time WARNING log (PT-C-030 family).
     """
 
     event_id: str
@@ -166,6 +170,7 @@ class Event:
     sub_type: SubType | None
     legs: tuple[Leg, ...]
     parent_tx_hash: str
+    review_reason: str | None = None
 
 
 @dataclass(frozen=True)

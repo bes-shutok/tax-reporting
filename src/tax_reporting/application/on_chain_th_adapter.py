@@ -24,6 +24,18 @@ LOSSY projection:
   emitted row; put ``Fee Amount`` = gas amount (converted from raw via decimals)
   and ``Fee Currency`` = gas asset on the carrier row only.
 
+- **Per-leg-pair rendering (amended 2026-08-24).** One ``Event`` projects to
+  ONE row per **leg pair** (an (out leg, in leg) tuple, zipped by position;
+  unpaired remainder legs emit one-sided rows). A single-pair Event emits
+  exactly ONE row, byte-identical to the legacy single-row projection. When
+  one Event projects to multiple rows, rows 2+ carry an ``event_id`` leg-pair
+  suffix ``.{k}`` (k >= 2) so no two projected rows share
+  ``(tx_hash, event_id)``; the first row carries the processor's ``event_id``
+  verbatim. A leg-bearing Event with NO out/in legs (all legs
+  unknown-direction, the processor's review path) emits ONE review row with
+  both sides empty and the ``event_id`` verbatim, plus a WARNING
+  (fallback; legacy shape).
+
 - **GasBurn exception (B5 double-count prevention).** A GasBurn Event projects
   to ``crypto_withdrawal`` / ``Cost`` and carries the gas as ``Sent Amount``
   (gas IS the value burned). The carrier-row rule therefore SKIPS GasBurn rows:
@@ -56,7 +68,9 @@ import csv
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
+from itertools import zip_longest
 from pathlib import Path
+from typing import NamedTuple
 
 from tax_reporting.domain.on_chain_transaction import (
     Event,
@@ -142,10 +156,29 @@ class ProjectedThRow:
             with gas carries a non-None ``fee``, EXCEPT when the carrier would
             be a GasBurn row (the B5 exception -> no fee payload, gas rides on
             the row's ``Sent Amount`` instead).
+        review_reason: The processor's persisted review explanation for a
+            flagged Event (review r6 F1), or ``None`` for unflagged Events.
+            All rows projected from one Event share it; the CSV bridge
+            serializer writes it into the ``Description`` cell (empty string
+            when ``None``) so the reason reaches the user, not just the log.
     """
 
     row: TransactionHistoryRow
     fee: ProjectedFee | None
+    review_reason: str | None = None
+
+
+class _PendingRow(NamedTuple):
+    """Per-tx accumulator entry: a pending projected row.
+
+    Named fields (not a positional tuple) so a future fifth field cannot
+    silently re-order the unpack sites; consumers read attributes.
+    """
+
+    row_index: int
+    event: Event
+    row: TransactionHistoryRow
+    rep_leg: Leg | None
 
 
 def project_on_chain_transactions(
@@ -153,11 +186,22 @@ def project_on_chain_transactions(
 ) -> list[ProjectedThRow]:
     """Project ``list[OnChainTransaction]`` -> ``list[ProjectedThRow]``.
 
-    One ``Event`` per ``OnChainTransaction`` projects to ONE
-    ``TransactionHistoryRow`` (the split model). Each row carries the
-    processor's ``event_id`` (``f"{tx_hash}#{n}"``) VERBATIM; ``event_id`` is
-    NEVER defaulted to None for on-chain rows (Task 2's amendment would be dead
-    code otherwise). ``row_index`` is adapter-local 0-based ordering, assigned
+    Each ``Event`` projects to ONE ``TransactionHistoryRow`` per **leg pair**
+    (one (out leg, in leg) tuple): the Event's out legs and in legs are zipped
+    by position (``out[0]/in[0]``, ``out[1]/in[1]``, ...); an unpaired
+    remainder leg emits a one-sided row (sending side only, or receiving side
+    only). A single-pair Event (1 out + 1 in, or one-sided single) emits
+    exactly ONE row, byte-identical to the legacy single-row projection. A
+    GasBurn Event with a known gas payload stays single-row regardless of its
+    legs (its ``Sent Amount`` is the gas itself; a gas-less GasBurn falls
+    through to the generic leg-pair path).
+
+    Each row carries the processor's ``event_id`` (``f"{tx_hash}#{n}"``)
+    VERBATIM on the first row of the Event; when one Event projects to
+    multiple rows, rows 2+ carry a leg-pair discriminator suffix
+    ``.{k}`` (k >= 2), so no two projected rows ever share
+    ``(tx_hash, event_id)``. ``event_id`` is NEVER defaulted to None for
+    on-chain rows. ``row_index`` is adapter-local 0-based ordering, assigned
     by enumerating the emitted rows across all input txs in order.
 
     The carrier-row gas rule is applied per tx: the row derived from the native
@@ -170,29 +214,36 @@ def project_on_chain_transactions(
             in any order; each tx's ``events`` tuple drives the per-Event rows.
 
     Returns:
-        ``list[ProjectedThRow]`` in tx-then-event order (input order preserved;
-        rows within a tx share ``tx_hash`` and have distinct ``event_id``).
+        ``list[ProjectedThRow]`` in tx-then-event-then-leg-pair order (input
+        order preserved; rows within a tx share ``tx_hash`` and have distinct
+        ``event_id``).
     """
     projected: list[ProjectedThRow] = []
     row_index = 0
     for tx in txs:
-        tx_rows: list[tuple[int, Event, TransactionHistoryRow]] = []
+        tx_rows: list[_PendingRow] = []
         for event in tx.events:
-            row = _project_event(tx, event, row_index=row_index)
-            tx_rows.append((row_index, event, row))
-            row_index += 1
+            for row, rep_leg in _project_event_rows(tx, event, row_index=row_index):
+                tx_rows.append(_PendingRow(row_index, event, row, rep_leg))
+                row_index += 1
         # Resolve and attach the carrier-row fee payload for this tx.
         carrier_index = _carrier_row_index(tx, tx_rows)
-        for index, _event, row in tx_rows:
+        for pending in tx_rows:
             fee: ProjectedFee | None = None
             if (
-                carrier_index == index
+                carrier_index == pending.row_index
                 and tx.gas is not None
                 # B5 exception: GasBurn rows NEVER carry the fee payload.
-                and _event.event_type is not EventType.GasBurn
+                and pending.event.event_type is not EventType.GasBurn
             ):
                 fee = _to_fee(tx.gas)
-            projected.append(ProjectedThRow(row=row, fee=fee))
+            projected.append(
+                ProjectedThRow(
+                    row=pending.row,
+                    fee=fee,
+                    review_reason=pending.event.review_reason,
+                )
+            )
     return projected
 
 
@@ -201,100 +252,179 @@ def project_on_chain_transactions(
 # --------------------------------------------------------------------------- #
 
 
-def _project_event(
+def _project_event_rows(
     tx: OnChainTransaction, event: Event, *, row_index: int
-) -> TransactionHistoryRow:
-    """Project ONE ``Event`` to a typed ``TransactionHistoryRow``.
+) -> list[tuple[TransactionHistoryRow, Leg | None]]:
+    """Project ONE ``Event`` to one typed row per **leg pair**.
 
-    Carries the processor's ``event_id`` verbatim, picks the Koinly
-    ``Type``/``Tag`` from :data:`EVENT_TYPE_TO_KOINLY`, and populates the
-    sending / receiving sides from the representative legs of the Event.
+    Out legs and in legs are zipped by position; an unpaired remainder leg
+    emits a one-sided row. The first row carries the processor's ``event_id``
+    verbatim; rows 2+ carry the ``.{k}`` leg-pair suffix (k >= 2) so no two
+    projected rows share ``(tx_hash, event_id)``.
+
+    Returns:
+        ``list[(TransactionHistoryRow, representative_leg | None)]`` where the
+        representative leg (the pair's OUT leg if present, else its IN leg)
+        drives the carrier-row gas rule. The GasBurn special case stays
+        single-row (its ``Sent Amount`` is the gas itself).
     """
     koinly_type, koinly_tag = EVENT_TYPE_TO_KOINLY[event.event_type]
-    sending_wallet = tx.wallet_label or "Unknown"
-    receiving_wallet = tx.wallet_label or "Unknown"
 
-    out_leg = _first_leg_by_direction(event.legs, "out")
-    in_leg = _first_leg_by_direction(event.legs, "in")
+    out_legs = [leg for leg in event.legs if leg.direction == "out"]
+    in_legs = [leg for leg in event.legs if leg.direction == "in"]
 
     # GasBurn: gas is the value burned -> Sent Amount = gas, no receiving side.
     # The event carries a zero-value native outflow leg, but the adapter
     # projects the GAS as Sent Amount (the honest on-chain shape). The carrier-
-    # row rule SKIPS this row's fee payload so the gas is counted once.
+    # row rule SKIPS this row's fee payload so the gas is counted once. The
+    # GasBurn row is ALWAYS single-row (no per-leg-pair expansion).
     if event.event_type is EventType.GasBurn and tx.gas is not None:
-        sending_amount = _raw_to_decimal(tx.gas.amount_raw, tx.gas.decimals)
-        sending_currency = tx.gas.asset
         # Use the leg's addresses for tx_src/tx_dest (the wallet paid the gas).
-        addr_leg = out_leg or in_leg
-        tx_src = addr_leg.from_address if addr_leg is not None else None
-        tx_dest = addr_leg.to_address if addr_leg is not None else None
-        return TransactionHistoryRow(
-            utc_instant=tx.timestamp_utc,
-            type=koinly_type,
-            tag=koinly_tag,
-            sending_wallet=sending_wallet,
-            sending_amount=sending_amount,
-            sending_currency=sending_currency,
-            receiving_wallet=receiving_wallet,
+        addr_leg = out_legs[0] if out_legs else (in_legs[0] if in_legs else None)
+        row = _build_th_row(
+            tx,
+            koinly_type,
+            koinly_tag,
+            sending_amount=_raw_to_decimal(tx.gas.amount_raw, tx.gas.decimals),
+            sending_currency=tx.gas.asset,
             receiving_amount=None,
             receiving_currency=None,
-            tx_hash=tx.tx_hash,
-            tx_src=tx_src,
-            tx_dest=tx_dest,
+            rep_leg=addr_leg,
             row_index=row_index,
             event_id=event.event_id,
         )
+        return [(row, addr_leg)]
 
-    # Sending side: from the representative out leg (Koinly convention: the
-    # out leg is the asset disposed/sent).
-    if out_leg is not None:
-        sending_amount = _raw_to_decimal(out_leg.amount_raw, out_leg.amount_decimals)
-        sending_currency = out_leg.asset
-    else:
-        sending_amount = None
-        sending_currency = None
+    # A leg-bearing Event with NO out/in legs (all legs are
+    # direction="unknown", the processor's shape-1 review path) must not
+    # vanish from the projection. Emit the legacy fallback shape - ONE row,
+    # both sides None, event_id verbatim - and log loudly (AGENTS.md data-loss
+    # rule: explicit fallback + WARNING, never silent discard).
+    if not out_legs and not in_legs:
+        if not event.legs:
+            # A legless Event vanishing silently is a
+            # data-loss shape (today the processor always attaches legs, so
+            # this is belt-and-braces with the fallback above); emit a
+            # WARNING so a future processor change cannot hide it.
+            _LOGGER.warning(
+                "Event %s has no legs; emitting no projected row.",
+                event.event_id,
+            )
+            return []
+        _LOGGER.warning(
+            "Event %s has no out/in legs (%d unknown-direction); emitting one review row with both sides empty.",
+            event.event_id,
+            len(event.legs),
+        )
+        row = _build_th_row(
+            tx,
+            koinly_type,
+            koinly_tag,
+            sending_amount=None,
+            sending_currency=None,
+            receiving_amount=None,
+            receiving_currency=None,
+            rep_leg=None,
+            row_index=row_index,
+            event_id=event.event_id,
+        )
+        return [(row, None)]
 
-    # Receiving side: from the representative in leg.
-    if in_leg is not None:
-        receiving_amount = _raw_to_decimal(in_leg.amount_raw, in_leg.amount_decimals)
-        receiving_currency = in_leg.asset
-    else:
-        receiving_amount = None
-        receiving_currency = None
+    results: list[tuple[TransactionHistoryRow, Leg | None]] = []
+    # Zip out/in legs by position; zip_longest leaves the unpaired remainder
+    # (None on the short side) as a one-sided row.
+    for k, (out_leg, in_leg) in enumerate(zip_longest(out_legs, in_legs)):
+        # Sending side: from the pair's out leg (Koinly convention: the
+        # out leg is the asset disposed/sent).
+        sending_amount = (
+            _raw_to_decimal(out_leg.amount_raw, out_leg.amount_decimals)
+            if out_leg is not None
+            else None
+        )
+        sending_currency = out_leg.asset if out_leg is not None else None
 
-    # Representative leg for tx_src / tx_dest: prefer the OUT leg (the
-    # disposal side), else the IN leg. This mirrors the Koinly convention
-    # (TxSrc = the sender's address, TxDest = the receiver's address).
-    rep_leg = out_leg or in_leg
-    tx_src = rep_leg.from_address if rep_leg is not None else None
-    tx_dest = rep_leg.to_address if rep_leg is not None else None
+        # Receiving side: from the pair's in leg.
+        receiving_amount = (
+            _raw_to_decimal(in_leg.amount_raw, in_leg.amount_decimals)
+            if in_leg is not None
+            else None
+        )
+        receiving_currency = in_leg.asset if in_leg is not None else None
 
+        # Representative leg for tx_src / tx_dest: prefer the OUT leg (the
+        # disposal side), else the IN leg. This mirrors the Koinly convention
+        # (TxSrc = the sender's address, TxDest = the receiver's address).
+        rep_leg = out_leg or in_leg
+
+        # First row carries the processor event_id VERBATIM; rows 2+ carry
+        # the ".{k}" leg-pair suffix (k >= 2).
+        row_event_id = event.event_id if k == 0 else f"{event.event_id}.{k + 1}"
+
+        row = _build_th_row(
+            tx,
+            koinly_type,
+            koinly_tag,
+            sending_amount=sending_amount,
+            sending_currency=sending_currency,
+            receiving_amount=receiving_amount,
+            receiving_currency=receiving_currency,
+            rep_leg=rep_leg,
+            row_index=row_index + k,
+            event_id=row_event_id,
+        )
+        results.append((row, rep_leg))
+    return results
+
+
+def _build_th_row(  # noqa: PLR0913 - one shared construction site
+    tx: OnChainTransaction,
+    koinly_type: str,
+    koinly_tag: str,
+    *,
+    sending_amount: Decimal | None,
+    sending_currency: str | None,
+    receiving_amount: Decimal | None,
+    receiving_currency: str | None,
+    rep_leg: Leg | None,
+    row_index: int,
+    event_id: str,
+) -> TransactionHistoryRow:
+    """Build ONE ``TransactionHistoryRow`` for a projected on-chain row.
+
+    Shared construction site for the GasBurn row, the
+    per-leg-pair rows, and the zero-out/zero-in review fallback, so
+    adding or renaming a ``TransactionHistoryRow`` field requires editing ONE
+    construction, not three drifting copies.
+    """
+    wallet = tx.wallet_label or "Unknown"
     return TransactionHistoryRow(
         utc_instant=tx.timestamp_utc,
         type=koinly_type,
         tag=koinly_tag,
-        sending_wallet=sending_wallet,
+        sending_wallet=wallet,
         sending_amount=sending_amount,
         sending_currency=sending_currency,
-        receiving_wallet=receiving_wallet,
+        receiving_wallet=wallet,
         receiving_amount=receiving_amount,
         receiving_currency=receiving_currency,
         tx_hash=tx.tx_hash,
-        tx_src=tx_src,
-        tx_dest=tx_dest,
+        tx_src=rep_leg.from_address if rep_leg is not None else None,
+        tx_dest=rep_leg.to_address if rep_leg is not None else None,
         row_index=row_index,
-        event_id=event.event_id,
+        event_id=event_id,
     )
 
 
 def _carrier_row_index(
-    tx: OnChainTransaction, tx_rows: list[tuple[int, Event, TransactionHistoryRow]]
+    tx: OnChainTransaction,
+    tx_rows: list[_PendingRow],
 ) -> int | None:
     """Return the row_index of the carrier row for ``tx``'s gas.
 
     The carrier row = the row derived from the NATIVE leg
     (``token_address is None``) if the tx has one, else the FIRST emitted row.
-    Returns ``None`` when the tx has no events.
+    Operates over the EXPANDED per-tx row list (a multi-leg Event contributes
+    one entry per leg pair). Returns ``None`` when the tx has no rows.
 
     The GasBurn exception is enforced at payload-attachment time (the carrier
     may be a GasBurn row, in which case no fee payload is attached); this
@@ -307,31 +437,11 @@ def _carrier_row_index(
     if not tx_rows:
         return None
     # Prefer the row whose representative leg is the native leg.
-    for index, event, _row in tx_rows:
-        if _is_native_leg_event(event):
-            return index
+    for pending in tx_rows:
+        if pending.rep_leg is not None and pending.rep_leg.token_address is None:
+            return pending.row_index
     # No native leg -> the first emitted row is the carrier.
-    return tx_rows[0][0]
-
-
-def _is_native_leg_event(event: Event) -> bool:
-    """Return True iff ``event``'s representative leg is the native-chain asset.
-
-    The native asset has ``token_address is None``. The representative leg is
-    the OUT leg if present (the disposal side), else the IN leg.
-    """
-    rep = _first_leg_by_direction(event.legs, "out")
-    if rep is None:
-        rep = _first_leg_by_direction(event.legs, "in")
-    return rep is not None and rep.token_address is None
-
-
-def _first_leg_by_direction(legs: tuple[Leg, ...], direction: str) -> Leg | None:
-    """Return the first leg of ``legs`` matching ``direction``, else None."""
-    for leg in legs:
-        if leg.direction == direction:
-            return leg
-    return None
+    return tx_rows[0].row_index
 
 
 def _raw_to_decimal(amount_raw: int, decimals: int) -> Decimal:
@@ -496,7 +606,10 @@ def serialize_projected_rows_to_th_csv(
                     "TxSrc": row.tx_src or "",
                     "TxDest": row.tx_dest or "",
                     "TxHash": row.tx_hash or "",
-                    "Description": "",
+                    # Review r6 F1: the persisted review reason of a flagged
+                    # Event reaches the user here; unflagged rows keep the
+                    # cell EMPTY (single-pair byte-identity preserved).
+                    "Description": projected.review_reason or "",
                     "event_id": row.event_id or "",
                 }
             )

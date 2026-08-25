@@ -258,6 +258,83 @@ plan) is therefore:
 The validation-harness plan itself does NOT flip the flag; the
 non-opted-in production path stays byte-identical until the user flips it.
 
+## Fetch surface and adapter projection contract
+
+### Fetch endpoints (four)
+
+The collector (`on_chain_fetcher.py` -> `etherscan_client.py`) pulls FOUR Etherscan
+account actions per wallet: `txlist` (native transfers), `tokentx` (ERC-20
+transfers), `txlistinternal` (internal native value transfers, recovered via the
+block-pagination seam), and `nfttx` (ERC-721/1155 transfers; plan
+`2026-08-24-multi-leg-th-projection`). The `nfttx` surface is what makes
+ERC-721 position-NFT legs (Koinly symbol format `SYMBOL#tokenID`, quantity 1)
+reliably visible on-chain - they are not reliably present in the other three
+actions (when `tokentx` duplicates one, the overlap guard below defers to the
+`nfttx` row).
+
+Registry-membership gate on nfttx decode: an `nfttx` row decodes to an
+`OnChainTxRow` (`asset="SYMBOL#tokenID"`, `amount_raw=1`, `amount_decimals=0`)
+ONLY when its `token_address` (contract) is a member of the per-year
+position-token registry (`PositionTokenRegistry.is_position_nft_token`,
+address-keyed and kind-gated to `position_nft` entries; `lst`-kind members
+are ERC-20 tokens - when the nfttx surface nevertheless carries one as an
+ERC-1155 transfer, the kind gate skips it (see the decoder WARNING and the
+C2 registry section). Non-member transfers (spam airdrop mints such as BERA777) are
+skipped with a WARNING and a count, so they stay on-chain-invisible and the
+existing `events=none|koinly=crypto_deposit/` acceptable-difference cluster
+keeps describing them correctly - no content filtering, membership only
+(C8 boundary). An overlap guard keyed `(tx_hash, token_address, direction)`
+drops a tokentx row that duplicates an nfttx-decoded transfer for the same
+registry-member contract (the nft surface is authoritative), accounted PER KEY
+COUNT (review r1 F2): one decoded nfttx row replaces exactly one tokentx row
+of the same key, extra same-key tokentx rows are retained (never silently
+dropped), a match-count WARNING carries the dropped count, and a mismatch
+WARNING fires when the two surfaces disagree per key. ERC-721 quantity-1-only
+(review r1 F3): an `nfttx` row that looks ERC-1155 (batch `tokenID`
+containing `*`, `tokenValue` other than 1, or an empty `tokenID` with an
+empty `tokenValue` - the ERC-1155 batch shape; review r2 F4) is
+WARNING-skipped - ERC-1155 quantity semantics are unsupported and honoring
+`tokenValue` would be a user decision.
+
+### Adapter projection: one TH row per (Event, leg pair)
+
+The adapter (`on_chain_th_adapter.py`) projects ONE `TransactionHistoryRow` per
+(Event, leg pair): out legs and in legs zip by position (`out[0]/in[0]`,
+`out[1]/in[1]`, ...), unpaired remainder legs emit one-sided rows (sending
+side only, or receiving side only), and a single-pair Event (1 out + 1 in, or
+a one-sided single) emits exactly ONE row byte-identical to the earlier
+single-row projection. A `tx_hash` therefore legitimately maps to MULTIPLE
+projected rows (multi-leg swaps, LP deposits/withdraws).
+
+Per-row event-id suffix: the single-pair row carries the processor's
+`event_id` (`f"{tx_hash}#{n}"`) verbatim; when one Event projects to multiple
+rows, rows after the first append the leg-pair discriminator `.{k}` (k >= 2) -
+row 1 `f"{tx_hash}#{n}"`, row 2 `f"{tx_hash}#{n}.2"`, row 3
+`f"{tx_hash}#{n}.3"`. No two projected rows share `(tx_hash, event_id)`, which
+keeps `TxCorrelationKey` (domain Invariant 5) and the FIFO dedup
+(`crypto_fifo/parsing.py:_dedup_by_tx_key`, keep-first-per-key) from silently
+collapsing same-Event leg-pair rows. Gas stays counted exactly once: exactly
+one row per tx (the carrier row - the row whose representative leg is the
+native asset, else the first row; GasBurn rows never) carries the fee payload.
+
+Review r1 F1 fallback: a leg-bearing Event whose legs are ALL
+direction="unknown" (the processor's shape-1 review path, reachable up to the
+1% unknown-leg gate) still emits ONE review row - both sides empty, the
+processor's `event_id` verbatim - plus a WARNING, so review-carrying rows can
+never silently vanish from the projection.
+
+### The multi-leg rendering family and exit 3
+
+The 17 `missing_rule` disposition signatures that held exit 3 on the 2025
+baseline (16 LP-shaped signatures showing "on-chain 0 vs Koinly N" on every
+non-first leg, plus the iBERA two-leg Swap record; two of which also needed
+the `nfttx` fetch) are exactly the gap this per-leg-pair projection family
+closes. The zero-exit on the 2025 full-year run is the P1 flip gate
+prerequisite recorded in the umbrella backlog
+`docs/history/backlog/2026-08-18-koinly-cancellation-program.md` (P1 status:
+landed 2026-08-21; the multi-leg/nfttx slice is its remaining exit-3 closure
+toward the `ON_CHAIN_TH_WALLETS` flip gate).
+
 ## C2 enablement paths (LP-token classification)
 
 `BerachainProcessor` classifies a BIDIRECTIONAL tx receiving an LP token as
@@ -358,8 +435,26 @@ an address-keyed allowlist (loaded by `load_position_token_registry` and
 injected at `_build_processor` in `on_chain_th_substitution.py`): each entry
 carries a non-empty `token_address` plus optional `label`, `kind`
 (`"lst"` for tradable staking receipts vs `"position_nft"` for the vault
-contracts a deposit routes through - `kind` gates the recipient rule), and
-`provenance`. Derive candidate addresses from the FULL set of divergent
+contracts a deposit routes through - `kind` gates the recipient rule and the
+bidirectional-receive position-NFT mint detector (review r2 F1): an
+`lst`-kind member bought on a DEX stays a `Swap`), and
+`provenance`. The bidirectional position-NFT mint detector additionally
+requires the mint shape to touch a registry vault on EITHER side (review
+r3 F1 + r4 F1): the economic out-legs pay the vault OR the position NFT
+arrives FROM the vault (a router/zapper-mediated mint pays an intermediary
+and still receives the NFT from the vault); a market purchase from a
+non-vault pair does neither and stays a `Swap`. A provenance-only mint
+(NFT arrives from the vault but no economic out-leg pays one) keeps the
+`LiquidityDeposit` classification but carries a review flag naming the
+vault sender(s) and non-vault payment counterparties, mirroring the shape-6
+ambiguity pattern: the actionable reason is visible in the merged TH
+(`on_chain_merged_th.csv`) `Description` cell of the projected row and in
+the build-time WARNING log, so the review-flagged-deposit scan below covers
+both surfaces. (Review r7 F1: EVERY review-flagged Event - including spam
+rewards, unknown-direction legs, and the matched-no-pattern `Unknown`
+fallback - persists a specific actionable `review_reason` into that
+`Description` cell, so an EMPTY `Description` on a flagged row is a bug,
+not an accepted state.) Derive candidate addresses from the FULL set of divergent
 records in the validation diff (Unknown clusters whose out-legs send receipt
 tokens or whose tx recipient is the vault), recording the cluster/signature
 as each entry's provenance - never from asset-name matching. When the

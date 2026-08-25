@@ -32,15 +32,22 @@ THAT header would yield a vacuous ``[] == []`` pass).
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from tax_reporting.application.on_chain_config import load_contracts, load_lp_snapshot
-from tax_reporting.application.on_chain_th_adapter import project_on_chain_transactions
+from tax_reporting.application.on_chain_th_adapter import (
+    TH_CSV_COLUMNS,
+    ProjectedThRow,
+    project_on_chain_transactions,
+)
 from tax_reporting.application.on_chain_th_substitution import OnChainThSubstituter
 from tax_reporting.domain.on_chain_transaction import EventType
+from tax_reporting.domain.transaction import TransactionHistoryRow
+from tax_reporting.infrastructure.koinly_parser import read_koinly_rows
 from tax_reporting.infrastructure.on_chain.berachain_processor import BerachainProcessor
 from tax_reporting.infrastructure.on_chain.lp_autodiscovery import LpAutodiscovery
 from tax_reporting.infrastructure.on_chain.on_chain_csv_reader import read_on_chain_rows
@@ -395,3 +402,112 @@ class TestOnChainThSubstituter:
             "0xto00000",
             "0xafter01",
         }
+
+    def test_multi_row_event_rows_all_survive_merge(self, tmp_path: Path) -> None:
+        """Plan 2026-08-24 Task 2: a multi-row Event's projected rows (event_ids
+        ``h#5`` and ``h#5.2``) BOTH survive the Koinly-TH merge with distinct
+        ``TxCorrelationKey`` buckets (no dedup drop on ``(tx_hash, event_id)``).
+
+        Given a synthetic Koinly TH (one opted-in wallet row) and an on-chain
+        projection where one tx emits 2 rows sharing ``tx_hash`` but carrying
+        per-row event ids, the merged TH output must contain BOTH projected
+        rows. The merge is audited through the production seam
+        ``_serialize_and_merge`` (serializer + ``_merge_on_chain_into_koinly_th``),
+        the path a Task-2 RED test is allowed to force a fix in.
+        """
+        tx_hash = "0xmulti0000000000000000000000000000000000000000000000000000000001"
+        instant = datetime(2025, 6, 1, 12, 0, 0, tzinfo=UTC)
+        # Row 1: the iBERA-out[0] leg paired with the BERA-in leg (event_id
+        # verbatim). Row 2: the iBERA-out[1] leg one-sided (".2" suffix).
+        projected = [
+            ProjectedThRow(
+                row=TransactionHistoryRow(
+                    utc_instant=instant,
+                    type="exchange",
+                    tag="",
+                    sending_wallet=_WALLET_LABEL,
+                    sending_amount=Decimal("8.467888513983386625"),
+                    sending_currency="IBERA",
+                    receiving_wallet=_WALLET_LABEL,
+                    receiving_amount=Decimal("9.96222178"),
+                    receiving_currency="BERA",
+                    tx_hash=tx_hash,
+                    tx_src=_BERA_WALLET_ADDR,
+                    tx_dest="0xCounterParty0000000000000000000000000000d",
+                    row_index=0,
+                    event_id=f"{tx_hash}#5",
+                ),
+                fee=None,
+            ),
+            ProjectedThRow(
+                row=TransactionHistoryRow(
+                    utc_instant=instant,
+                    type="exchange",
+                    tag="",
+                    sending_wallet=_WALLET_LABEL,
+                    sending_amount=Decimal("1.494333267173538816"),
+                    sending_currency="IBERA",
+                    receiving_wallet=_WALLET_LABEL,
+                    receiving_amount=None,
+                    receiving_currency=None,
+                    tx_hash=tx_hash,
+                    tx_src=_BERA_WALLET_ADDR,
+                    tx_dest="0xCounterParty0000000000000000000000000000d",
+                    row_index=1,
+                    event_id=f"{tx_hash}#5.2",
+                ),
+                fee=None,
+            ),
+        ]
+
+        # Synthetic Koinly TH: one opted-in wallet row (so the F2 fail-loud
+        # no-match check passes) under the Koinly header (no ``event_id``
+        # column; the merge backfills "" for Koinly rows).
+        koinly_dir = tmp_path / "koinly"
+        koinly_dir.mkdir(parents=True)
+        koinly_header = ",".join(col for col in TH_CSV_COLUMNS if col != "event_id")
+        koinly_th = koinly_dir / "transaction_history.csv"
+        koinly_th.write_text(
+            "\n".join(
+                [
+                    "Transaction report",
+                    "",
+                    koinly_header,
+                    "2025-06-01 12:00:00 UTC,exchange,,"
+                    f"{_WALLET_LABEL},1.0,IBERA,,{_WALLET_LABEL},1.0,BERA,"
+                    ",,,,0,1.0,,src,dst,tx_koinly,",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        substituter = OnChainThSubstituter(
+            contracts_path=_EXAMPLE_CONTRACTS,
+            lp_snapshot_path=_EXAMPLE_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
+        )
+        _merge_stats, merged_path = substituter._serialize_and_merge(
+            projected=projected,
+            koinly_dir=koinly_dir,
+            koinly_th=koinly_th,
+            opted_in_wallets=[_WALLET_LABEL],
+            logger=logging.getLogger(__name__),
+        )
+
+        merged_rows = read_koinly_rows(merged_path)
+        # Both projected rows survive the merge (no dedup drop).
+        on_chain_rows = [r for r in merged_rows if r.get("TxHash") == tx_hash]
+        assert {r.get("event_id") for r in on_chain_rows} == {
+            f"{tx_hash}#5",
+            f"{tx_hash}#5.2",
+        }
+        # The opted-in Koinly row was replaced (dropped), so the merged TH
+        # carries ONLY the two on-chain rows plus nothing else for that wallet.
+        assert len(merged_rows) == 2
+        # Review r2 overflow: the distinct-TxCorrelationKey property (two
+        # rows sharing tx_hash but differing in event_id land in distinct
+        # dedup buckets, domain Invariant 5) is NOT re-derived here with a
+        # hand-built key; the production resolver + FIFO-dedup consumer
+        # behavior is pinned in tests/unit/crypto_fifo/test_parsing_tx_key.py
+        # (test_dedup_keeps_same_event_leg_pair_rows).

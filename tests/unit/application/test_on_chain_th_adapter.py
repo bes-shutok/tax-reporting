@@ -36,12 +36,14 @@ MUST name the carrier-row gas rule as a non-domain accommodation.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 
 from tax_reporting.application.on_chain_th_adapter import (
     EVENT_TYPE_TO_KOINLY,
     project_on_chain_transactions,
+    serialize_projected_rows_to_th_csv,
 )
 from tax_reporting.domain.on_chain_transaction import (
     Event,
@@ -111,6 +113,7 @@ def _event(
     sub_type: SubType | None,
     legs: tuple[Leg, ...] | list[Leg],
     event_id: str,
+    review_reason: str | None = None,
 ) -> Event:
     """Build an Event with an explicit event_id (matches processor minting)."""
     return Event(
@@ -119,6 +122,7 @@ def _event(
         sub_type=sub_type,
         legs=tuple(legs),
         parent_tx_hash=_TX_HASH,
+        review_reason=review_reason,
     )
 
 
@@ -145,21 +149,153 @@ class TestOnChainThAdapter:
     """Eight test clauses pinning the adapter projection."""
 
     # ----------------------------------------------------------------- #
-    # Clause 1: one row per Event                                       #
+    # Clause 1: per-leg-pair projection (multi-leg rendering)           #
     # ----------------------------------------------------------------- #
 
-    def test_one_row_per_event(self) -> None:
-        # An OnChainTransaction with 2 Events -> 2 TransactionHistoryRows
-        # sharing tx_hash, each with a distinct event_id.
-        ev1 = _event(
-            event_id=f"{_TX_HASH}#1",
-            event_type=EventType.Reward,
-            sub_type=SubType.staking,
+    def test_multi_out_single_in_emits_paired_then_one_sided_row(self) -> None:
+        # A Swap Event (event_id #4) with legs [out WBERA 5, out WBTC 0.005,
+        # in KODI-LP 36.65] -> 2 rows: row A pairs out[0] with in[0]
+        # (event_id verbatim), row B carries out[1] one-sided with the
+        # ".2" event-id suffix. Per-(asset, direction) totals preserved.
+        swap = _event(
+            event_id=f"{_TX_HASH}#4",
+            event_type=EventType.Swap,
+            sub_type=None,
             legs=[
-                _erc20_leg(asset="BGT", amount_raw=1_097_000_000_000_000_000, direction="in"),
+                _erc20_leg(asset="WBERA", amount_raw=5, decimals=0, direction="out"),
+                _erc20_leg(
+                    asset="WBTC",
+                    amount_raw=5_000_000_000_000_000,
+                    decimals=18,
+                    direction="out",
+                    token_address="0xTokenWbtc0000000000000000000000000004",
+                ),
+                _erc20_leg(
+                    asset="KODI-LP",
+                    amount_raw=3_665,
+                    decimals=2,
+                    direction="in",
+                    token_address="0xTokenKodiLp000000000000000000000000005",
+                ),
             ],
         )
-        ev2 = _event(
+        tx = _tx(events=[swap])
+
+        projected = project_on_chain_transactions([tx])
+
+        assert len(projected) == 2
+        row_a, row_b = (p.row for p in projected)
+        # Row A: out[0] paired with in[0], event_id verbatim.
+        assert row_a.sending_currency == "WBERA"
+        assert row_a.sending_amount == Decimal(5)
+        assert row_a.receiving_currency == "KODI-LP"
+        assert row_a.receiving_amount == Decimal("36.65")
+        assert row_a.event_id == f"{_TX_HASH}#4"
+        # Row B: out[1] one-sided, ".2" suffix.
+        assert row_b.sending_currency == "WBTC"
+        assert row_b.sending_amount == Decimal("0.005")
+        assert row_b.receiving_amount is None
+        assert row_b.receiving_currency is None
+        assert row_b.event_id == f"{_TX_HASH}#4.2"
+        # Distinct sequential row_index values.
+        assert sorted({row_a.row_index, row_b.row_index}) == [0, 1]
+        # Per-(asset, direction) totals equal the raw legs.
+        totals: dict[tuple[str, str], Decimal] = {}
+        for row in (row_a, row_b):
+            if row.sending_currency is not None:
+                totals[(row.sending_currency, "out")] = (
+                    totals.get((row.sending_currency, "out"), Decimal(0)) + row.sending_amount
+                )
+            if row.receiving_currency is not None:
+                totals[(row.receiving_currency, "in")] = (
+                    totals.get((row.receiving_currency, "in"), Decimal(0)) + row.receiving_amount
+                )
+        assert totals == {
+            ("WBERA", "out"): Decimal(5),
+            ("WBTC", "out"): Decimal("0.005"),
+            ("KODI-LP", "in"): Decimal("36.65"),
+        }
+
+    def test_single_out_multi_in_emits_paired_then_receive_only_row(self) -> None:
+        # Legs [out BERA 1, in HONEY 10, in iBGT 3] -> row A (BERA 1 ->
+        # HONEY 10) and row B (receive-only iBGT 3, no sending side).
+        swap = _event(
+            event_id=f"{_TX_HASH}#3",
+            event_type=EventType.Swap,
+            sub_type=None,
+            legs=[
+                _native_leg(asset="BERA", amount_raw=1, decimals=0, direction="out"),
+                _erc20_leg(asset="HONEY", amount_raw=10, decimals=0, direction="in"),
+                _erc20_leg(
+                    asset="iBGT",
+                    amount_raw=3,
+                    decimals=0,
+                    direction="in",
+                    token_address="0xTokenIbgt000000000000000000000000006",
+                ),
+            ],
+        )
+        tx = _tx(events=[swap])
+
+        projected = project_on_chain_transactions([tx])
+
+        assert len(projected) == 2
+        row_a, row_b = (p.row for p in projected)
+        assert row_a.sending_currency == "BERA"
+        assert row_a.sending_amount == Decimal(1)
+        assert row_a.receiving_currency == "HONEY"
+        assert row_a.receiving_amount == Decimal(10)
+        assert row_a.event_id == f"{_TX_HASH}#3"
+        assert row_b.sending_amount is None
+        assert row_b.sending_currency is None
+        assert row_b.receiving_currency == "iBGT"
+        assert row_b.receiving_amount == Decimal(3)
+        assert row_b.event_id == f"{_TX_HASH}#3.2"
+
+    def test_two_out_two_in_emits_two_paired_rows(self) -> None:
+        # Legs [out A, out B, in C, in D] -> exactly rows (A->C) and (B->D),
+        # no one-sided remainder.
+        swap = _event(
+            event_id=f"{_TX_HASH}#2",
+            event_type=EventType.Swap,
+            sub_type=None,
+            legs=[
+                _erc20_leg(asset="AAA", amount_raw=1, decimals=0, direction="out"),
+                _erc20_leg(
+                    asset="BBB",
+                    amount_raw=2,
+                    decimals=0,
+                    direction="out",
+                    token_address="0xTokenBbb00000000000000000000000000007",
+                ),
+                _erc20_leg(asset="CCC", amount_raw=3, decimals=0, direction="in"),
+                _erc20_leg(
+                    asset="DDD",
+                    amount_raw=4,
+                    decimals=0,
+                    direction="in",
+                    token_address="0xTokenDdd00000000000000000000000000008",
+                ),
+            ],
+        )
+        tx = _tx(events=[swap])
+
+        projected = project_on_chain_transactions([tx])
+
+        assert len(projected) == 2
+        row_a, row_b = (p.row for p in projected)
+        assert (row_a.sending_currency, row_a.receiving_currency) == ("AAA", "CCC")
+        assert (row_b.sending_currency, row_b.receiving_currency) == ("BBB", "DDD")
+        # No one-sided remainder: every side of every leg is represented.
+        for row in (row_a, row_b):
+            assert row.sending_amount is not None
+            assert row.receiving_amount is not None
+
+    def test_single_pair_event_row_unchanged(self) -> None:
+        # Single-pair byte-identity (Design Invariant 1): a single-out
+        # single-in Swap Event projects to ONE row whose field values equal
+        # the pre-multi-leg projection (field-by-field, not object identity).
+        swap = _event(
             event_id=f"{_TX_HASH}#2",
             event_type=EventType.Swap,
             sub_type=None,
@@ -173,18 +309,97 @@ class TestOnChainThAdapter:
                 ),
             ],
         )
-        tx = _tx(events=[ev1, ev2])
+        tx = _tx(events=[swap])
 
         projected = project_on_chain_transactions([tx])
 
-        assert len(projected) == 2
-        rows = [p.row for p in projected]
-        # Both rows share the real tx_hash.
-        assert {row.tx_hash for row in rows} == {_TX_HASH}
-        # Distinct event_ids, carried verbatim from the processor.
-        assert {row.event_id for row in rows} == {f"{_TX_HASH}#1", f"{_TX_HASH}#2"}
-        # row_index is adapter-local ordering, 0-based and unique.
-        assert sorted(row.row_index for row in rows) == [0, 1]
+        assert len(projected) == 1
+        row = projected[0].row
+        assert row.utc_instant == _TIMESTAMP
+        assert row.type == "exchange"
+        assert row.tag == ""
+        assert row.sending_wallet == _WALLET_LABEL
+        assert row.sending_amount == Decimal("1.097")
+        assert row.sending_currency == "BGT"
+        assert row.receiving_wallet == _WALLET_LABEL
+        assert row.receiving_amount == Decimal("4.2")
+        assert row.receiving_currency == "HONEY"
+        assert row.tx_hash == _TX_HASH
+        assert row.tx_src == _WALLET_ADDRESS
+        assert row.tx_dest == "0xCounterParty00000000000000000000000000000b"
+        assert row.row_index == 0
+        # Single-pair row carries the processor event_id VERBATIM.
+        assert row.event_id == f"{_TX_HASH}#2"
+
+    def test_unknown_direction_only_event_emits_review_row(self, caplog) -> None:
+        # Review r1 F1: a leg-bearing Event whose legs are ALL direction
+        # "unknown" (the processor's shape-1 review path, reachable up to the
+        # 1% unknown-leg gate) must still emit ONE projected row (both sides
+        # None, event_id VERBATIM) with a WARNING - it must NOT silently
+        # vanish from the projection.
+        unknown = _event(
+            event_id=f"{_TX_HASH}#7",
+            event_type=EventType.Unknown,
+            sub_type=None,
+            legs=[
+                _erc20_leg(
+                    asset="MYST", amount_raw=2, decimals=0, direction="unknown"
+                ),
+                _erc20_leg(
+                    asset="MYST",
+                    amount_raw=3,
+                    decimals=0,
+                    direction="unknown",
+                    token_address="0xTokenMyst00000000000000000000000000c",
+                ),
+            ],
+        )
+        tx = _tx(events=[unknown])
+
+        with caplog.at_level(
+            logging.WARNING,
+            logger="tax_reporting.application.on_chain_th_adapter",
+        ):
+            projected = project_on_chain_transactions([tx])
+
+        assert len(projected) == 1
+        row = projected[0].row
+        # Legacy shape: one row, both sides None, event_id verbatim.
+        assert row.event_id == f"{_TX_HASH}#7"
+        assert row.sending_amount is None
+        assert row.sending_currency is None
+        assert row.receiving_amount is None
+        assert row.receiving_currency is None
+        assert row.type == "crypto_deposit"
+        assert row.row_index == 0
+        # The fallback is loud: a WARNING names the event.
+        assert any(
+            "no out/in legs" in rec.getMessage() for rec in caplog.records
+        ), "expected a WARNING for the zero-out/zero-in Event fallback"
+
+    def test_legless_event_emits_no_row_with_warning(self, caplog) -> None:
+        # Review r2 F11: a LEGLESS Event (no legs at all - theoretical today,
+        # the processor always attaches legs) must not vanish SILENTLY; the
+        # adapter emits no row but logs a WARNING naming the event.
+        legless = _event(
+            event_id=f"{_TX_HASH}#8",
+            event_type=EventType.Unknown,
+            sub_type=None,
+            legs=[],
+        )
+        tx = _tx(events=[legless])
+
+        with caplog.at_level(
+            logging.WARNING,
+            logger="tax_reporting.application.on_chain_th_adapter",
+        ):
+            projected = project_on_chain_transactions([tx])
+
+        assert projected == []
+        assert any(
+            "has no legs; emitting no projected row" in rec.getMessage()
+            for rec in caplog.records
+        ), "expected a WARNING for the legless-Event drop"
 
     # ----------------------------------------------------------------- #
     # Clause 2: EventType -> Koinly Type/Tag mapping (single dict)      #
@@ -209,6 +424,43 @@ class TestOnChainThAdapter:
             EventType.Transfer: ("transfer", ""),
             EventType.Unknown: ("crypto_deposit", ""),
         }
+
+    def test_review_reason_persists_to_description_cell(self, tmp_path) -> None:
+        # Review r6 F1: an Event flagged upstream carries ``review_reason``;
+        # the adapter must carry it onto ``ProjectedThRow`` and the CSV bridge
+        # serializer must write it into the existing ``Description`` cell
+        # (PT-C-030 family: the reason reaches the user, not just the log).
+        # Unflagged rows keep ``Description`` EMPTY so the flag-off
+        # byte-identity surface is preserved.
+        flagged = _event(
+            event_type=EventType.LiquidityDeposit,
+            sub_type=SubType.internal_transfer,
+            legs=(_erc20_leg(asset="HONEY", amount_raw=10**18, direction="out"),),
+            event_id=f"{_TX_HASH}#1",
+            review_reason="verify mint vs secondary purchase before filing",
+        )
+        unflagged = _event(
+            event_type=EventType.Swap,
+            sub_type=None,
+            legs=(
+                _erc20_leg(asset="HONEY", amount_raw=10**18, direction="out"),
+                _erc20_leg(asset="BGT", amount_raw=10**18, direction="in"),
+            ),
+            event_id=f"{_TX_HASH}#2",
+        )
+        projected = project_on_chain_transactions([_tx(events=[flagged, unflagged])])
+        assert projected[0].review_reason == flagged.review_reason
+        assert projected[1].review_reason is None
+
+        path = tmp_path / "bridge.csv"
+        serialize_projected_rows_to_th_csv(projected, path)
+        # Read the bridge back via the PRODUCTION reader (preamble/header
+        # handling; a raw csv.DictReader mis-detects the header).
+        from tax_reporting.infrastructure.koinly_parser import read_koinly_rows
+
+        data_rows = read_koinly_rows(path)
+        assert data_rows[0]["Description"] == flagged.review_reason
+        assert data_rows[1]["Description"] == ""
 
     # ----------------------------------------------------------------- #
     # Clause 3: carrier-row gas rule (native leg is the carrier)        #
@@ -347,6 +599,148 @@ class TestOnChainThAdapter:
         assert p.fee.currency == "BERA"
 
     # ----------------------------------------------------------------- #
+    # Clause 1b: carrier row over a MULTI-ROW Event's rows               #
+    # ----------------------------------------------------------------- #
+
+    def test_carrier_row_prefers_native_leg_among_multiple_rows(self) -> None:
+        # One Event emits 3 rows (3 one-sided out legs); only row 2's
+        # representative leg is the native asset -> the fee payload rides
+        # row 2 only; rows 1 and 3 carry fee=None.
+        gas = Gas(asset="BERA", amount_raw=20_000_000_000_000, decimals=18)  # 0.00002 BERA
+        swap = _event(
+            event_id=f"{_TX_HASH}#1",
+            event_type=EventType.Swap,
+            sub_type=None,
+            legs=[
+                _erc20_leg(asset="HONEY", amount_raw=1, decimals=0, direction="out"),
+                _native_leg(amount_raw=2, decimals=0, direction="out"),
+                _erc20_leg(
+                    asset="BGT",
+                    amount_raw=3,
+                    decimals=0,
+                    direction="out",
+                    token_address="0xTokenBgt00000000000000000000000000009",
+                ),
+            ],
+        )
+        tx = _tx(events=[swap], gas=gas)
+
+        projected = project_on_chain_transactions([tx])
+
+        assert len(projected) == 3
+        by_index = {p.row.row_index: p for p in projected}
+        assert by_index[0].fee is None
+        assert by_index[1].fee is not None
+        assert by_index[1].fee.amount == Decimal("0.00002")
+        assert by_index[1].fee.currency == "BERA"
+        # Row 2 is the native-leg row.
+        assert by_index[1].row.sending_currency == "BERA"
+        assert by_index[2].fee is None
+
+    def test_gasburn_event_still_single_row_no_fee(self) -> None:
+        # B5 unchanged: a GasBurn Event projects to exactly ONE row with
+        # Sent Amount = gas and NO fee payload, even under the per-leg-pair
+        # contract (the GasBurn special case stays single-row).
+        gas = Gas(asset="BERA", amount_raw=20_000_000_000_000, decimals=18)  # 0.00002 BERA
+        gasburn = _event(
+            event_id=f"{_TX_HASH}#1",
+            event_type=EventType.GasBurn,
+            sub_type=SubType.cost_gas,
+            legs=[_native_leg(amount_raw=0, direction="out")],
+        )
+        tx = _tx(events=[gasburn], gas=gas)
+
+        projected = project_on_chain_transactions([tx])
+
+        assert len(projected) == 1
+        p = projected[0]
+        assert p.row.type == "crypto_withdrawal"
+        assert p.row.tag == "Cost"
+        assert p.row.sending_amount == Decimal("0.00002")
+        assert p.row.sending_currency == "BERA"
+        assert p.fee is None
+
+    def test_multi_row_event_rows_carry_distinct_event_ids(self) -> None:
+        # Design Invariant 5: an Event (event_id #4) projecting to 3 rows
+        # carries event_ids `#4`, `#4.2`, `#4.3` (first verbatim, ".{k}"
+        # suffix k >= 2 for the rest); no two rows share (tx_hash, event_id).
+        swap = _event(
+            event_id=f"{_TX_HASH}#4",
+            event_type=EventType.Swap,
+            sub_type=None,
+            legs=[
+                _erc20_leg(asset="AAA", amount_raw=1, decimals=0, direction="out"),
+                _erc20_leg(
+                    asset="BBB",
+                    amount_raw=2,
+                    decimals=0,
+                    direction="out",
+                    token_address="0xTokenBbb00000000000000000000000000007",
+                ),
+                _erc20_leg(
+                    asset="CCC",
+                    amount_raw=3,
+                    decimals=0,
+                    direction="out",
+                    token_address="0xTokenCcc000000000000000000000000000a",
+                ),
+            ],
+        )
+        tx = _tx(events=[swap])
+
+        projected = project_on_chain_transactions([tx])
+
+        assert len(projected) == 3
+        ids = [p.row.event_id for p in projected]
+        assert ids == [f"{_TX_HASH}#4", f"{_TX_HASH}#4.2", f"{_TX_HASH}#4.3"]
+        keys = [(p.row.tx_hash, p.row.event_id) for p in projected]
+        assert len(set(keys)) == 3
+
+    def test_row_index_sequential_across_multi_row_events(self) -> None:
+        # row_index is adapter-local ordering over the EXPANDED per-tx row
+        # list: tx A's 2 leg pairs -> rows 0,1; tx B's single pair -> row 2.
+        tx_a_hash = "0xaaa000000000000000000000000000000000000000000000000000000000001"
+        swap_a = _event(
+            event_id=f"{tx_a_hash}#1",
+            event_type=EventType.Swap,
+            sub_type=None,
+            legs=[
+                _erc20_leg(asset="AAA", amount_raw=1, decimals=0, direction="out"),
+                _erc20_leg(
+                    asset="BBB",
+                    amount_raw=2,
+                    decimals=0,
+                    direction="out",
+                    token_address="0xTokenBbb00000000000000000000000000007",
+                ),
+                _erc20_leg(asset="CCC", amount_raw=3, decimals=0, direction="in"),
+                _erc20_leg(
+                    asset="DDD",
+                    amount_raw=4,
+                    decimals=0,
+                    direction="in",
+                    token_address="0xTokenDdd00000000000000000000000000008",
+                ),
+            ],
+        )
+        tx_a = _tx(events=[swap_a], tx_hash=tx_a_hash)
+        swap_b = _event(
+            event_id=f"{_TX_HASH}#1",
+            event_type=EventType.Swap,
+            sub_type=None,
+            legs=[
+                _erc20_leg(asset="BGT", amount_raw=1, decimals=0, direction="out"),
+                _erc20_leg(asset="HONEY", amount_raw=2, decimals=0, direction="in"),
+            ],
+        )
+        tx_b = _tx(events=[swap_b])
+
+        projected = project_on_chain_transactions([tx_a, tx_b])
+
+        assert len(projected) == 3
+        assert [p.row.row_index for p in projected] == [0, 1, 2]
+
+    # ----------------------------------------------------------------- #
     # Clause 5: GasBurn row -> Sent Amount=gas, Fee Amount EMPTY (B5)   #
     # ----------------------------------------------------------------- #
 
@@ -381,6 +775,87 @@ class TestOnChainThAdapter:
         # (gas rides on Sent Amount, NOT on Fee Amount -> B5 double-count
         # prevention).
         assert p.fee is None
+
+    def test_gasless_gasburn_falls_through_to_leg_pair_projection(self) -> None:
+        # Review r3 F2: a gas-less GasBurn Event (tx.gas is None) must NOT
+        # emit the r1-F1 both-sides-empty review row or crash; it falls
+        # through to the generic leg-pair path (one paired row from its
+        # out/in legs, event_id verbatim, no fee payload).
+        gasburn = _event(
+            event_id=f"{_TX_HASH}#9",
+            event_type=EventType.GasBurn,
+            sub_type=SubType.cost_gas,
+            legs=[
+                _native_leg(amount_raw=1, decimals=0, direction="out"),
+                _erc20_leg(asset="HONEY", amount_raw=2, decimals=0, direction="in"),
+            ],
+        )
+        tx = _tx(events=[gasburn], gas=None)
+
+        projected = project_on_chain_transactions([tx])
+
+        assert len(projected) == 1
+        p = projected[0]
+        assert p.row.sending_amount == Decimal(1)
+        assert p.row.receiving_amount == Decimal(2)
+        assert p.row.event_id == f"{_TX_HASH}#9"
+        assert p.fee is None
+
+    def test_gasburn_plus_multi_leg_event_gas_counted_once(self) -> None:
+        # Review r3 F3 (B5 interaction): a tx containing BOTH a
+        # GasBurn-with-gas Event and a multi-leg Swap Event counts the gas
+        # exactly once - the GasBurn row carries it as Sent Amount with an
+        # empty fee, and every Swap leg-pair row has fee=None (the B5
+        # exception suppresses the carrier-row fee attachment, preventing a
+        # double count). Event ids stay distinct across the two Events.
+        gas = Gas(asset="BERA", amount_raw=20_000_000_000_000, decimals=18)  # 0.00002 BERA
+        gasburn = _event(
+            event_id=f"{_TX_HASH}#1",
+            event_type=EventType.GasBurn,
+            sub_type=SubType.cost_gas,
+            legs=[_native_leg(amount_raw=0, direction="out")],
+        )
+        swap = _event(
+            event_id=f"{_TX_HASH}#2",
+            event_type=EventType.Swap,
+            sub_type=None,
+            legs=[
+                _erc20_leg(asset="HONEY", amount_raw=1, decimals=0, direction="out"),
+                _erc20_leg(
+                    asset="BGT",
+                    amount_raw=2,
+                    decimals=0,
+                    direction="out",
+                    token_address="0xTokenBgt000000000000000000000000000006",
+                ),
+                _erc20_leg(
+                    asset="WBERA",
+                    amount_raw=3,
+                    decimals=0,
+                    direction="in",
+                    token_address="0xTokenWbera0000000000000000000000000009",
+                ),
+            ],
+        )
+        tx = _tx(events=[gasburn, swap], gas=gas)
+
+        projected = project_on_chain_transactions([tx])
+
+        assert len(projected) == 3
+        # (a) exactly one GasBurn single row: Sent Amount = gas, fee None.
+        gasburn_rows = [p for p in projected if p.row.tag == "Cost"]
+        assert len(gasburn_rows) == 1
+        assert gasburn_rows[0].row.sending_amount == Decimal("0.00002")
+        assert gasburn_rows[0].fee is None
+        # (b) every Swap leg-pair row carries no fee (no double count).
+        swap_rows = [p for p in projected if p.row.tag != "Cost"]
+        assert len(swap_rows) == 2
+        assert all(p.fee is None for p in swap_rows)
+        # (c) event_ids stay distinct across the two Events (the multi-leg
+        # Event's rows carry the ".{k}" suffixes).
+        ids = [p.row.event_id for p in projected]
+        assert len(set(ids)) == 3
+        assert set(ids) == {f"{_TX_HASH}#1", f"{_TX_HASH}#2", f"{_TX_HASH}#2.2"}
 
     # ----------------------------------------------------------------- #
     # Clause 6: tx_src / tx_dest populated from the representative leg  #
@@ -617,3 +1092,72 @@ class TestOnChainThAdapter:
         assert "non-domain accommodation" in doc
         # (c) the GasBurn exception is named.
         assert "gasburn" in doc
+
+    def test_every_row_satisfies_all_three_consumers(self) -> None:
+        # Plan 2026-08-24 Task 2: EVERY row of a multi-row Event (not just the
+        # first) satisfies the three consumer contracts: (a) correlation-key
+        # resolver (non-None tx_hash, populated event_id), (b) token-origin
+        # indexing (non-empty TxHash; non-empty TxSrc/TxDest where the row's
+        # legs populate them), (c) fee-filter (Type present; Fee Amount/Fee
+        # Currency present-or-explicitly-empty via the fee payload or its
+        # absence; Sent Amount present on the sending side).
+        gas = Gas(asset="BERA", amount_raw=20_000_000_000_000, decimals=18)
+        swap = _event(
+            event_id=f"{_TX_HASH}#5",
+            event_type=EventType.Swap,
+            sub_type=None,
+            legs=[
+                _erc20_leg(asset="IBERA", amount_raw=8, decimals=0, direction="out"),
+                _erc20_leg(
+                    asset="IBERA",
+                    amount_raw=1,
+                    decimals=0,
+                    direction="out",
+                    token_address="0xTokenIbera0000000000000000000000000b",
+                ),
+                _native_leg(amount_raw=9, decimals=0, direction="in"),
+            ],
+        )
+        tx = _tx(events=[swap], gas=gas)
+
+        projected = project_on_chain_transactions([tx])
+        assert len(projected) == 2
+
+        seen_pairs: set[tuple[str | None, str | None]] = set()
+        for p in projected:
+            row = p.row
+            # (a) tx_correlation_key_resolver contract.
+            assert row.tx_hash is not None
+            assert row.tx_hash == _TX_HASH
+            assert row.event_id is not None
+            seen_pairs.add((row.tx_hash, row.event_id))
+            # (b) token_origin indexing contract: non-empty TxHash for the
+            # withdrawal index; TxSrc/TxDest populated (both rows' legs carry
+            # from/to addresses).
+            assert row.tx_hash
+            assert row.tx_src is not None
+            assert row.tx_dest is not None
+            # (c) fee-filter contract: Type present and a known Koinly Type;
+            # Fee Amount / Fee Currency present-or-explicitly-empty (the fee
+            # payload carries them, or its absence means explicitly empty);
+            # the sending side carries the disposal asset.
+            assert row.type in {"exchange", "transfer"}
+            assert row.sending_amount is not None
+            assert row.sending_currency == "IBERA"
+            if p.fee is not None:
+                assert p.fee.amount == Decimal("0.00002")
+                assert p.fee.currency == "BERA"
+            # else: Fee Amount/Fee Currency are EXPLICITLY EMPTY on this row.
+
+        # Distinct (tx_hash, event_id) per row (Design Invariant 5).
+        assert seen_pairs == {(_TX_HASH, f"{_TX_HASH}#5"), (_TX_HASH, f"{_TX_HASH}#5.2")}
+        # Exactly one carrier row carries the fee payload (B5 / gas once).
+        fee_rows = [p for p in projected if p.fee is not None]
+        assert len(fee_rows) == 1
+        # Review r1 overflow: NEITHER row here is a native-derived carrier -
+        # the representative leg prefers the pair's OUT leg, and both rows
+        # pair ERC-20 IBERA out legs (row 1's native IN leg never becomes the
+        # representative). The carrier is therefore the FIRST-ROW fallback.
+        # The native-representative mechanism itself is discriminated by
+        # test_carrier_row_prefers_native_leg_among_multiple_rows.
+        assert fee_rows[0].row.event_id == f"{_TX_HASH}#5"

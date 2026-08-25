@@ -49,10 +49,8 @@ from ..infrastructure.on_chain.lp_autodiscovery import LpAutodiscovery
 from ..infrastructure.on_chain.on_chain_csv_reader import read_on_chain_rows
 from ..infrastructure.on_chain.position_token_registry import (
     PositionTokenRegistry,
-    load_position_token_registry,
 )
 from ..infrastructure.on_chain.rpc_client import RpcClient
-from .crypto.classification import _find_repository_root
 from .crypto.entities import (
     OnChainDeltaBlock,
     OnChainReconciliationRecord,
@@ -61,6 +59,7 @@ from .crypto.entities import (
 from .on_chain_config import (
     load_contracts,
     load_lp_snapshot,
+    load_position_token_registry_for_year,
 )
 from .on_chain_fetcher import bera_csv_path
 from .on_chain_th_adapter import (
@@ -69,6 +68,7 @@ from .on_chain_th_adapter import (
     project_on_chain_transactions,
     serialize_projected_rows_to_th_csv,
 )
+from .paths import find_repository_root, resolve_registry_path
 
 
 def normalize_wallet_label(s: str) -> str:
@@ -78,7 +78,7 @@ def normalize_wallet_label(s: str) -> str:
     for printable ASCII, so an exact match today still matches after
     normalization), and drops non-printable characters (control chars that
     could otherwise sneak past a bare ``.lower()`` comparison). Public
-    (review r2 F7): the CLI validation path in :mod:`tax_reporting.main`
+    Public: the CLI validation path in :mod:`tax_reporting.main`
     imports this same normalization instead of reaching for a private
     helper; the reconciliation provenance keeps the RAW label (the user sees
     raw labels in the sheet).
@@ -95,7 +95,7 @@ def matched_wallet_labels(row: dict[str, str], labels: set[str]) -> set[str]:
     actually matched (empty set = no match), so callers that need the matched
     labels (the merge loop's fail-loud no-match check) reuse this single
     normalization instead of re-normalizing the same cells again (review
-    r1 F20: four parallel copies of the same normalization can drift apart).
+    four parallel copies of the same normalization can drift apart).
 
     Args:
         row: A Koinly TH row dict (as returned by ``read_koinly_rows``).
@@ -173,7 +173,10 @@ class OnChainProjection:
     Attributes:
         transactions: The processor's ``OnChainTransaction`` list (one per
             ``tx_hash``; post-classification, post-audit).
-        projected_rows: The adapter's ``ProjectedThRow`` list (one per Event).
+        projected_rows: The adapter's ``ProjectedThRow`` list (one per Event
+            leg pair; a single-pair Event emits one row, multi-leg Events emit
+            one row per (out, in) zipped pair with ``.{k}`` event-id suffixes
+            on rows 2+ - see ``on_chain_th_adapter``).
         registry: The per-year contract registry that drove classification.
         lp_snapshot: The per-year LP-token snapshot used for LP classification.
     """
@@ -190,7 +193,7 @@ _DELTA_SAMPLE_HASH_CAP = 10
 
 #: The Koinly TH discovery glob marker + suffix (the ONE definition shared by
 #: the substituter's merge-side lookup and the validation runner's baseline
-#: lookup - review r1 F17: twin inline literals can drift apart silently).
+#: twin inline literals can drift apart silently).
 TH_MARKER = "transaction_history"
 TH_SUFFIX = ".csv"
 
@@ -200,7 +203,7 @@ def in_window_inclusive(day: date, date_from: date | None, date_to: date | None)
 
     The ONE shared predicate for BOTH sides of the TH validation (the raw-row
     filter in :meth:`OnChainThSubstituter.build_projection` and the runner's
-    Koinly-baseline filter - review r1 F17): the two sides must see the same
+    Koinly-baseline filter): the two sides must see the same
     window or the hash partitions diverge, so the equality is enforced by
     sharing the code, not by parallel literals.
     """
@@ -241,7 +244,7 @@ class OnChainThSubstituter:
         contracts_path: Optional explicit path to ``berachain_contracts.json``.
             Tests inject the committed ``example/`` path so they never read
             gitignored personal data (AGENTS.md crypto-tests rule). ``None``
-            (production) resolves via :meth:`_resolve_registry_path` with an
+            (production) resolves via :func:`resolve_registry_path` with an
             ``example/`` fallback for fresh clones.
         lp_snapshot_path: Optional explicit path to ``berachain_lp_snapshot.json``
             (same resolution contract as ``contracts_path``).
@@ -390,7 +393,7 @@ class OnChainThSubstituter:
         logger.info("Building on-chain TH projection from %s.", bera_csv)
 
         # --- Pipeline (review F10: each stage was inline; now extracted helpers) ---
-        repo_root = _find_repository_root()
+        repo_root = find_repository_root()
         registry, snapshot, position_tokens = self._load_registries(year, repo_root, logger)
         processor, autodiscovery = self._build_processor(
             registry, snapshot, position_tokens
@@ -401,7 +404,7 @@ class OnChainThSubstituter:
             # RAW rows so the processor/audit/projection never see out-of-window
             # transactions (validation-harness Task 1). Production passes no
             # window, so this filter never runs on the substituter path. The
-            # SHARED predicate (review r1 F17): the runner's Koinly-side filter
+            # SHARED predicate: the runner's Koinly-side filter
             # uses the same function, so the two sides cannot drift.
             on_chain_rows = [
                 row for row in on_chain_rows if in_window_inclusive(row.timestamp_utc.date(), date_from, date_to)
@@ -440,28 +443,23 @@ class OnChainThSubstituter:
         ConfigurationError / FileProcessingError on schema/IO failure (fail-loud).
         """
         registry = load_contracts(
-            self._resolve_registry_path(
-                year, "berachain_contracts.json", self._contracts_path, repo_root, logger
+            resolve_registry_path(
+                year, "berachain_contracts.json", self._contracts_path, repo_root
             )
         )
         snapshot = load_lp_snapshot(
-            self._resolve_registry_path(
-                year, "berachain_lp_snapshot.json", self._lp_snapshot_path, repo_root, logger
+            resolve_registry_path(
+                year, "berachain_lp_snapshot.json", self._lp_snapshot_path, repo_root
             )
         )
         # Position-token registry (plan 2026-08-22 Task 3): same resolution
         # contract, but the loader DEGRADES to an empty registry + WARNING
         # when the file is absent (LST outflows then classify Unknown +
         # review; a fresh clone without the personal registry must not
-        # abort the opted-in path).
-        position_tokens = load_position_token_registry(
-            self._resolve_registry_path(
-                year,
-                "bera_position_tokens.json",
-                self._position_tokens_path,
-                repo_root,
-                logger,
-            )
+        # abort the opted-in path). The per-year loader is
+        # the shared facade (filename literal lives once).
+        position_tokens = load_position_token_registry_for_year(
+            year, self._position_tokens_path, repo_root
         )
         return registry, snapshot, position_tokens
 
@@ -547,7 +545,7 @@ class OnChainThSubstituter:
         The bridge filename is ``on_chain_th_bridge.csv`` -- a name that does NOT
         contain ``transaction_history``, so even if a failed run orphans it on
         disk it CANNOT match the ``*transaction_history*.csv`` discovery glob and
-        poison the next opted-in run's Koinly-TH resolution (review r1 F1; the
+        poison the next opted-in run's Koinly-TH resolution (the
         legacy name ``on_chain_transaction_history.csv`` matched the glob and was
         the F7-class collision hazard when the F2 fail-loud raise left it behind
         mid-merge).
@@ -559,7 +557,7 @@ class OnChainThSubstituter:
         F1/F7), so the pipeline reads it via the explicit
         ``transaction_history_override`` instead of re-globbing.
 
-        Review r1 F1 (try/finally): the F2 fail-loud raise (or any merge
+        The try/finally: a fail-loud raise (or any merge
         exception) fires AFTER the bridge CSV was serialized into
         ``koinly_dir``. The success-path unlink inside the merge does NOT run on
         raise, so without this try/finally the bridge would be orphaned. The
@@ -568,7 +566,7 @@ class OnChainThSubstituter:
         (the finally is the only cleanup). Combined with the non-globbing name,
         a leftover bridge can neither remain on disk nor match the glob.
 
-        Review r2 hardening: the bridge WRITE
+        Hardening: the bridge WRITE
         (``serialize_projected_rows_to_th_csv``) is INSIDE this try. A mid-write
         raise (e.g. disk full mid-flush) leaves a PARTIAL bridge file on disk;
         the finally unlinks it so it cannot be orphaned. Pre-r2 the write lived
@@ -585,7 +583,7 @@ class OnChainThSubstituter:
                 logger=logger,
             )
         finally:
-            # Review r2 hardening: wrap the cleanup unlink in its own
+            # Hardening: wrap the cleanup unlink in its own
             # ``try/except OSError`` that logs a WARNING and does NOT re-raise.
             # An unlink failure (e.g. a read-only ``koinly_dir``) must NOT mask
             # the original exception (the F2 ``ReportGenerationError`` or a
@@ -793,7 +791,7 @@ class OnChainThSubstituter:
         order-preserving sample of the on-chain tx hashes.
         """
         # Per-wallet on-chain projected row counts (one projected row per Event).
-        # Review r1 F2: key by NORMALIZED label (``normalize_wallet_label``) so the lookup
+        # Key by NORMALIZED label (``normalize_wallet_label``) so the lookup
         # below tolerates the same case/form mismatch the merge drop already
         # tolerates. The DISPLAYED ``wallet_label`` in the provenance row stays
         # RAW (the user sees what they configured); only the COUNT-lookup key is
@@ -825,7 +823,7 @@ class OnChainThSubstituter:
                     source_kind="on_chain",
                     # Look up the count by NORMALIZED label so a case/form
                     # mismatch between the configured label and the bera CSV
-                    # wallet_label still resolves (review r1 F2).
+                    # wallet_label still resolves.
                     row_count=on_chain_per_wallet.get(normalize_wallet_label(label), 0),
                 )
             )
@@ -872,39 +870,3 @@ class OnChainThSubstituter:
             on_chain_delta=delta,
         )
 
-    def _resolve_registry_path(
-        self,
-        year: int,
-        filename: str,
-        override: Path | None,
-        repo_root: Path,
-        logger: logging.Logger,
-    ) -> Path:
-        """Resolve a per-year on-chain registry file path with example fallback.
-
-        Resolution order (first match wins):
-        1. ``override`` (explicit path injected by tests - points at the committed
-           ``example/`` template so tests never read gitignored personal data,
-           per AGENTS.md crypto-tests rule).
-        2. ``resources/source/<year>/<filename>`` (the per-user override; gitignored,
-           so absent on a fresh clone).
-        3. ``resources/source/example/<year>/<filename>`` (the committed template;
-           always present, so the opted-in path works out of the box).
-
-        Logs INFO when the override or the fallback is used, so the user can see
-        which registry drove classification.
-        """
-        if override is not None:
-            logger.info("Using injected on-chain registry path for %s: %s", filename, override)
-            return override
-        primary = repo_root / "resources" / "source" / str(year) / filename
-        if primary.is_file():
-            return primary
-        fallback = repo_root / "resources" / "source" / "example" / str(year) / filename
-        logger.info(
-            "No per-user %s at %s; falling back to committed example at %s.",
-            filename,
-            primary,
-            fallback,
-        )
-        return fallback

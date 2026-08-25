@@ -38,7 +38,7 @@ naming the missing input and returns :data:`EXIT_VALIDATION_FAILED`:
    ``--from/--to`` window that misses the data, or a bera CSV whose rows
    match no Koinly wallet row). Exit 0 is the acceptance evidence for the
    production flag flip, so a run that compared ZERO transactions must
-   never be readable as a validated pass (review r1 F5).
+   never be readable as a validated pass.
 
 Exit codes: ``0`` gate passed, :data:`EXIT_VALIDATION_FAILED` (1)
 misconfigured inputs, ``3`` validation incomplete (the dispositions gate,
@@ -64,7 +64,6 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Final
 
-from tax_reporting.application.crypto.classification import _find_repository_root
 from tax_reporting.application.koinly_directory import (  # tests patch this symbol HERE (patch seam)
     _resolve_koinly_directory,
 )
@@ -89,6 +88,7 @@ from tax_reporting.application.on_chain_validation.dispositions import (
     evaluate_gate,
     load_dispositions,
 )
+from tax_reporting.application.paths import find_repository_root
 from tax_reporting.domain.on_chain_config import OnChainWalletConfig
 from tax_reporting.infrastructure.koinly_parser import (
     _find_report_path,
@@ -113,8 +113,8 @@ DISPOSITIONS_FILENAME: Final = "on_chain_th_dispositions.toml"
 
 # The TH discovery glob shape and the inclusive-window predicate come from
 # ``on_chain_th_substitution`` (the ONE definition shared with the projection
-# side), and the Berachain chain literal from the wallets loader - review
-# r1 F17: twin literals can drift apart silently.
+# side), and the Berachain chain literal from the wallets loader
+# (twin literals can drift apart silently).
 
 #: Default Koinly base directory (production resolves the Koinly dir under
 #: ``resources/source`` - the same base the report pipeline derives from its
@@ -206,7 +206,7 @@ def run_validation(  # noqa: PLR0913 (plan-fixed collaborator set)
         koinly_dir
         if koinly_dir is not None
         else _resolve_koinly_directory(
-            _find_repository_root().joinpath(*_KOINLY_BASE_DIR),
+            find_repository_root().joinpath(*_KOINLY_BASE_DIR),
             tax_year_hint=year,
             fiscal_year=year,
         )
@@ -216,7 +216,7 @@ def run_validation(  # noqa: PLR0913 (plan-fixed collaborator set)
             "No Koinly directory found for year %d under %s; the validation requires "
             "the Koinly transaction-history baseline (no directory resolved).",
             year,
-            _find_repository_root().joinpath(*_KOINLY_BASE_DIR),
+            find_repository_root().joinpath(*_KOINLY_BASE_DIR),
         )
         return EXIT_VALIDATION_FAILED
     koinly_th = _find_report_path(resolved_koinly_dir, TH_MARKER, TH_SUFFIX)
@@ -243,7 +243,7 @@ def run_validation(  # noqa: PLR0913 (plan-fixed collaborator set)
     # --- compare -> cluster. --------------------------------------------------
     # The SOURCE transactions ride along so each record carries the on-chain
     # legs' token addresses - the authoritative LP discriminator of the
-    # cluster signature (review r1 F1).
+    # cluster signature.
     result = compare_projection(
         koinly_rows,
         projection.projected_rows,
@@ -255,7 +255,7 @@ def run_validation(  # noqa: PLR0913 (plan-fixed collaborator set)
     # rows match no Koinly wallet row leaves both partitions empty; the gate
     # would vacuously pass with exit 0 - the exact evidence the flag-flip
     # acceptance trusts. Fail closed BEFORE any dispositions append (review
-    # r1 F5, blocking).
+    # blocking).
     if not (result.shared_tx_hashes or result.on_chain_only or result.koinly_only):
         logger.error(
             "Nothing to compare for year %d (0 shared and 0 one-sided transaction hashes); "

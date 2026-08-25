@@ -139,6 +139,36 @@ def _bera_csv_rows(
     return "\n".join([header, tx1_in, tx1_out, tx2_in, ""])
 
 
+def _provenance_mint_bera_csv_rows() -> str:
+    """A synthetic ``bera_transactions.csv`` with ONE provenance-only mint tx.
+
+    Review r6 F1: the wallet pays a NON-vault intermediary (the example DEX
+    router) while the position NFT (the example registry's ``position_nft``
+    member ``0x...0ee5``) arrives FROM that same member address acting as the
+    vault. On-chain this is ambiguous with a vault-seller resale, so the
+    processor emits a LiquidityDeposit carrying a review flag with an
+    actionable reason - which must PERSIST to the merged TH's ``Description``
+    cell (PT-C-030 family), not die as a build-time WARNING.
+    """
+    header = (
+        "tx_hash,block_number,timestamp_utc,chain,from_address,to_address,"
+        "asset,token_address,amount_raw,amount_decimals,direction,fee_asset,"
+        "fee_amount_raw,wallet_label,wallet_address"
+    )
+    pos_nft_and_vault = "0x0000000000000000000000000000000000000ee5"
+    pay_out = (
+        f"0xposmint,1000,2025-02-25T13:53:25+00:00,Berachain,"
+        f"{_BERA_WALLET_ADDR},{_DEX_ROUTER},HONEY,0x000000000000000000000000000000000000a111,"
+        f"1000000000000000000,18,out,BERA,2100000000000,{_BERA_WALLET_LABEL},{_BERA_WALLET_ADDR}"
+    )
+    nft_in = (
+        f"0xposmint,1000,2025-02-25T13:53:25+00:00,Berachain,"
+        f"{pos_nft_and_vault},{_BERA_WALLET_ADDR},TEST-POS,{pos_nft_and_vault},"
+        f"1,0,in,,,{_BERA_WALLET_LABEL},{_BERA_WALLET_ADDR}"
+    )
+    return "\n".join([header, pay_out, nft_in, ""])
+
+
 def _synthetic_koinly_th(beara_rows: bool = True) -> str:
     """A synthetic Koinly TH CSV (preamble + header + 2 rows).
 
@@ -482,7 +512,7 @@ class TestOnChainBeraOptedIn:
         # Point the contract-registry / LP-snapshot loaders at the committed
         # EXAMPLE files so no gitignored personal config is read.
         monkeypatch.setattr(
-            "tax_reporting.application.on_chain_th_substitution._find_repository_root", lambda: _PROJECT_ROOT
+            "tax_reporting.application.on_chain_th_substitution.find_repository_root", lambda: _PROJECT_ROOT
         )
         # The helper resolves resources/source/<year>/...; point it at example
         # by overriding the two loader functions to read the example files.
@@ -494,7 +524,7 @@ class TestOnChainBeraOptedIn:
         def _fake_load_lp_snapshot(path):  # type: ignore[no-untyped-def]
             return _oc.load_lp_snapshot(_EXAMPLE_LP_SNAPSHOT)
 
-        def _fake_load_position_tokens(path):  # type: ignore[no-untyped-def]
+        def _fake_load_position_tokens(_year, _override=None, _repo_root=None):  # type: ignore[no-untyped-def]
             from tax_reporting.infrastructure.on_chain.position_token_registry import (
                 load_position_token_registry,
             )
@@ -508,7 +538,7 @@ class TestOnChainBeraOptedIn:
             "tax_reporting.application.on_chain_th_substitution.load_lp_snapshot", _fake_load_lp_snapshot
         )
         monkeypatch.setattr(
-            "tax_reporting.application.on_chain_th_substitution.load_position_token_registry",
+            "tax_reporting.application.on_chain_th_substitution.load_position_token_registry_for_year",
             _fake_load_position_tokens,
         )
         # Point ``_main`` at the synthetic koinly_dir (so the on-chain
@@ -641,7 +671,7 @@ class TestOnChainBeraOptedIn:
         def _fake_load_lp_snapshot(path):  # type: ignore[no-untyped-def]
             return _oc.load_lp_snapshot(_EXAMPLE_LP_SNAPSHOT)
 
-        def _fake_load_position_tokens(path):  # type: ignore[no-untyped-def]
+        def _fake_load_position_tokens(_year, _override=None, _repo_root=None):  # type: ignore[no-untyped-def]
             from tax_reporting.infrastructure.on_chain.position_token_registry import (
                 load_position_token_registry,
             )
@@ -655,11 +685,11 @@ class TestOnChainBeraOptedIn:
             "tax_reporting.application.on_chain_th_substitution.load_lp_snapshot", _fake_load_lp_snapshot
         )
         monkeypatch.setattr(
-            "tax_reporting.application.on_chain_th_substitution.load_position_token_registry",
+            "tax_reporting.application.on_chain_th_substitution.load_position_token_registry_for_year",
             _fake_load_position_tokens,
         )
         monkeypatch.setattr(
-            "tax_reporting.application.on_chain_th_substitution._find_repository_root",
+            "tax_reporting.application.on_chain_th_substitution.find_repository_root",
             lambda: _PROJECT_ROOT,
         )
         # Point ``run_report`` at the synthetic koinly_dir + a 2025 IB year
@@ -1288,6 +1318,103 @@ class TestOnChainBeraOptedIn:
             "check_freshness must NOT emit a WARNING when the snapshot is fresh "
             "(snapshot_as_of_block >= latest tx block); "
             f"got: {freshness_warnings}"
+        )
+
+    def test_provenance_only_mint_review_reason_persists_to_description(
+        self, tmp_path: Path
+    ) -> None:
+        """Review r6 F1: a provenance-only mint's review reason must PERSIST.
+
+        The processor flags the ambiguous mint (NFT arrives from the vault,
+        no economic out-leg pays one) with an actionable reason. The reason
+        must reach the merged TH's ``Description`` cell (PT-C-030 family:
+        uncertain rows carry an explicit user-facing indicator), not die as a
+        build-time WARNING at the processor boundary.
+        """
+        koinly_dir = tmp_path / "koinly"
+        koinly_dir.mkdir()
+        (koinly_dir / "koinly_2025_transaction_history.csv").write_text(
+            _synthetic_koinly_th(beara_rows=True), encoding="utf-8"
+        )
+        bera_csv_dir = tmp_path / "out" / "2025"
+        bera_csv_dir.mkdir(parents=True)
+        (bera_csv_dir / "bera_transactions.csv").write_text(
+            _provenance_mint_bera_csv_rows(), encoding="utf-8"
+        )
+
+        substitution = OnChainThSubstituter(
+            contracts_path=_EXAMPLE_CONTRACTS,
+            lp_snapshot_path=_EXAMPLE_LP_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
+        ).maybe_substitute(
+            koinly_dir=koinly_dir,
+            output_dir=tmp_path / "out",
+            year=2025,
+            opted_in_wallets=[_BERA_WALLET_LABEL],
+            logger=logging.getLogger("test_provenance_reason_persists"),
+        )
+        assert substitution is not None
+        merged_th = substitution.merged_th_path
+        assert merged_th is not None
+        rows = _read_th_data_rows(merged_th)
+
+        on_chain_rows = [
+            r for r in rows
+            if r.get("Sending Wallet") == _BERA_WALLET_LABEL
+            or r.get("Receiving Wallet") == _BERA_WALLET_LABEL
+        ]
+        assert on_chain_rows, "the on-chain rows must be present in the merged TH"
+        descriptions = [r.get("Description", "") for r in on_chain_rows]
+        assert any("registry vault" in d and _DEX_ROUTER.lower() in d.lower() for d in descriptions), (
+            "r6 F1: the provenance-only mint's review reason must persist to the "
+            f"merged TH Description cell (got: {descriptions})"
+        )
+        # Unflagged Koinly rows keep an empty Description (single-pair
+        # byte-identity surface: the serializer writes "" when no reason).
+        other_rows = [r for r in rows if r.get("Receiving Wallet") == _OTHER_WALLET_LABEL]
+        assert other_rows
+        assert all(not r.get("Description") for r in other_rows)
+
+    def test_unflagged_rows_description_stays_empty(self, tmp_path: Path) -> None:
+        """Review r6 F1 (b): unflagged deposits/swaps keep ``Description`` EMPTY.
+
+        The default synthetic bera CSV holds clean swaps + a reward claim
+        (no review flags), so every on-chain row's Description cell must stay
+        empty - preserving the flag-off byte-identity characterization.
+        """
+        koinly_dir = tmp_path / "koinly"
+        koinly_dir.mkdir()
+        (koinly_dir / "koinly_2025_transaction_history.csv").write_text(
+            _synthetic_koinly_th(beara_rows=True), encoding="utf-8"
+        )
+        bera_csv_dir = tmp_path / "out" / "2025"
+        bera_csv_dir.mkdir(parents=True)
+        (bera_csv_dir / "bera_transactions.csv").write_text(_bera_csv_rows(), encoding="utf-8")
+
+        substitution = OnChainThSubstituter(
+            contracts_path=_EXAMPLE_CONTRACTS,
+            lp_snapshot_path=_EXAMPLE_LP_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
+        ).maybe_substitute(
+            koinly_dir=koinly_dir,
+            output_dir=tmp_path / "out",
+            year=2025,
+            opted_in_wallets=[_BERA_WALLET_LABEL],
+            logger=logging.getLogger("test_unflagged_description_empty"),
+        )
+        assert substitution is not None
+        merged_th = substitution.merged_th_path
+        assert merged_th is not None
+        rows = _read_th_data_rows(merged_th)
+        on_chain_rows = [
+            r for r in rows
+            if r.get("Sending Wallet") == _BERA_WALLET_LABEL
+            or r.get("Receiving Wallet") == _BERA_WALLET_LABEL
+        ]
+        assert on_chain_rows, "the on-chain rows must be present in the merged TH"
+        assert all(not r.get("Description") for r in on_chain_rows), (
+            "r6 F1: unflagged rows must keep an EMPTY Description cell "
+            f"(got: {[r.get('Description') for r in on_chain_rows]})"
         )
 
     @pytest.mark.parametrize(

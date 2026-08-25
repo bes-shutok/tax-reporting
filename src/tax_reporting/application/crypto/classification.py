@@ -17,31 +17,10 @@ import pycountry
 
 from ...domain.exceptions import FileProcessingError
 from ...infrastructure.json_loader import DEGRADED, load_guarded_json
+from ..paths import find_repository_root
 from .entities import CryptoCapitalGainEntry, DerivativesClassification, ParsedOgrRow, RewardTaxClassification
 
-
-def _find_repository_root() -> Path:
-    """Find the repository root by searching for .git directory.
-
-    Returns:
-        Path to the repository root directory.
-
-    Raises:
-        RuntimeError: If .git directory cannot be found (not in a git repository).
-    """
-    current = Path(__file__).resolve()
-    # Search up from current file location, max 10 levels to avoid infinite loops
-    for _ in range(10):
-        if (current / ".git").exists():
-            return current
-        current = current.parent
-    raise RuntimeError(
-        "Cannot find repository root (.git directory not found). "
-        "This function must be run within a git repository."
-    )
-
-
-_REPOSITORY_ROOT = _find_repository_root()
+_REPOSITORY_ROOT = find_repository_root()
 
 # Crypto tokens that share tickers with ISO 4217 fiat currency codes.
 # These are known cryptoassets that should be classified as deferred by law (CRG-001),

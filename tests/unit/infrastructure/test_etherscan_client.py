@@ -435,6 +435,43 @@ class TestEtherscanClient:
             f"boundary block 102 must yield all 5 internal rows, got {block_counts}"
         )
 
+    def test_fetch_nft_transfers_uses_nfttx_action(self, monkeypatch):
+        # nfttx must reuse the SAME block-range + boundary-drain machinery as
+        # the other actions: full page (page_size=3 at blocks 100,101,102),
+        # boundary-block drain (block 102 has only its 1 seen row -> partial),
+        # then the advanced call partial (blocks 103, 104).
+        calls: list[tuple[str, dict]] = []
+        responses = [
+            {"status": "1", "message": "OK", "result": _rows(100, 101, 102)},
+            {"status": "1", "message": "OK", "result": _rows(102)},
+            {"status": "1", "message": "OK", "result": _rows(103, 104)},
+        ]
+
+        def fake(url: str, params: dict) -> dict:
+            calls.append((url, params))
+            return responses.pop(0)
+
+        monkeypatch.setattr(
+            "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json", fake
+        )
+        client = EtherscanV2Client(api_key="k", chainid=_CHAINID, page_size=3)
+
+        # When
+        rows = client.fetch_nft_transfers(_ADDRESS)
+
+        # Then - 5 rows, 3 calls, all with action=nfttx; the drain re-queries
+        # the boundary block alone and the outer loop advances to max(block)+1
+        # with page=1 (block-range advance, not page increment).
+        assert len(rows) == 5
+        assert len(calls) == 3
+        assert all(c[1]["action"] == "nfttx" for c in calls)
+        assert calls[1][1]["startblock"] == 102
+        assert calls[1][1]["endblock"] == 102
+        assert calls[1][1]["page"] == 1
+        assert calls[2][1]["startblock"] == 103
+        assert calls[2][1]["endblock"] == 99999999
+        assert calls[2][1]["page"] == 1
+
     def test_malformed_block_number_row_is_skipped_not_fatal(self, monkeypatch, caplog):
         # Review r3 F3: one row on a FULL page missing blockNumber must be
         # WARNING-skipped (never abort the wallet fetch); the boundary block

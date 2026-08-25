@@ -15,6 +15,11 @@ GITIGNORED JSON file carrying provenance metadata, with a committed synthetic
 template under ``resources/source/example/<year>/`` for tests and fresh
 clones. The loader lives here (its own single-concern sibling module, the
 same separation ``lp_autodiscovery.py`` uses) so the processor stays pure.
+Kind-gate decision: the ``kind == "position_nft"`` test lives in exactly one
+private body (``_is_position_nft_kind_member``); both public predicates
+(``is_position_vault``, the recipient rule, and ``is_position_nft_token``,
+the token rule) delegate to it - two intent-bearing names, one gate.
+Do not add further aliases.
 
 Schema::
 
@@ -55,7 +60,7 @@ _LOGGER = logging.getLogger(__name__)
 # the registry is a hand-curated allowlist of a handful of tokens).
 _MAX_REGISTRY_SIZE_BYTES: Final = 256 * 1024
 
-# Closed set of behavioral ``kind`` values (review r2 F1): ``is_position_vault``
+# Closed set of behavioral ``kind`` values: ``is_position_vault``
 # matches only the exact literal ``"position_nft"``, so a spelling variant must
 # fail LOUDLY at load time rather than silently disabling the recipient rule.
 _POSITION_TOKEN_KINDS: Final = ("lst", "position_nft")
@@ -71,8 +76,10 @@ class PositionTokenEntry:
             matching (address-keyed identity).
         kind: Kind tag (``"lst"`` or ``"position_nft"``). BEHAVIORAL for
             the recipient rule: ``is_position_vault`` matches only
-            ``"position_nft"`` entries (review r1 F3); ``is_position_token``
-            (the token rule) accepts any kind.
+            ``"position_nft"`` entries; also behavioral for
+            the receive-side token rule: ``is_position_nft_token`` matches
+            only ``"position_nft"`` entries, while
+            ``is_position_token`` (bare membership) accepts any kind.
         provenance: Per-entry provenance (which cluster/routing decision
             added the token).
     """
@@ -101,7 +108,7 @@ class PositionTokenRegistry:
         Membership of ANY kind: this is the TOKEN-contract predicate (the
         classifier's member-token rule). For the RECIPIENT predicate (the
         position-NFT vault a deposit routes through), use
-        :meth:`is_position_vault` - review r1 F3: one address set must not
+        :meth:`is_position_vault` - one address set must not
         silently serve two different semantics.
         """
         return address.lower() in self.tokens
@@ -109,12 +116,41 @@ class PositionTokenRegistry:
     def is_position_vault(self, address: str) -> bool:
         """Return True iff ``address`` is a ``kind="position_nft"`` member.
 
-        The kind-gated RECIPIENT predicate (review r1 F3): the classifier's
+        The kind-gated RECIPIENT predicate: the classifier's
         recipient rule routes deposits through position-NFT vault contracts,
-        so only vault-kind entries match. An ``kind="lst"`` entry (a
-        tradable staking receipt token, a normal direct-interaction target)
-        or an entry without a ``kind`` never matches here, keeping the token
-        rule and the recipient rule distinct predicates over one address set.
+        so only vault-kind entries match. A ``kind="lst"`` entry (a tradable
+        staking receipt token, a normal direct-interaction target) or an
+        entry without a ``kind`` never matches here, keeping the token rule
+        and the recipient rule distinct predicates over one address set.
+        Delegates to the shared private kind gate
+        (review r6 overflow: ``_is_position_nft_kind_member``) so the
+        ``kind`` literal is evaluated in exactly one body.
+        """
+        return self._is_position_nft_kind_member(address)
+
+    def is_position_nft_token(self, address: str) -> bool:
+        """Return True iff ``address`` is a ``kind="position_nft"`` member.
+
+        The kind-gated TOKEN predicate for the receive side:
+        the classifier's bidirectional-receive (LiquidityDeposit) detector
+        accepts only ERC-721 LP-position mint contracts. A ``kind="lst"``
+        entry (a tradable staking receipt token bought and sold on DEXes)
+        or an entry without a ``kind`` never matches here, so a DEX purchase
+        of a registered LST stays a Swap (the LBGT-family invariant:
+        registry entries are identity data, not per-cluster rules). Same
+        kind discipline as :meth:`is_position_vault` over one address set;
+        delegates to the same shared private kind gate (review r6 overflow:
+        ``_is_position_nft_kind_member``).
+        """
+        return self._is_position_nft_kind_member(address)
+
+    def _is_position_nft_kind_member(self, address: str) -> bool:
+        """The ONE kind gate: ``kind="position_nft"`` membership (r6 overflow).
+
+        Both public predicates (the recipient rule and the token rule)
+        delegate here, so the ``kind == "position_nft"`` literal and the
+        lookup live in exactly one body instead of a token predicate
+        delegating to a recipient predicate.
         """
         entry = self.tokens.get(address.lower())
         return entry is not None and entry.kind == "position_nft"
@@ -187,7 +223,7 @@ def _build_entry(
         optional[field] = value
     kind = optional["kind"]
     if kind is not None and kind not in _POSITION_TOKEN_KINDS:
-        # Review r2 F1: a typo'd kind (e.g. "vault") would load cleanly and
+        # A typo'd kind (e.g. "vault") would load cleanly and
         # silently disable the kind-gated vault-recipient rule; fail instead.
         raise ConfigurationError(
             f"Position-token registry entry at index {index} has an unknown "

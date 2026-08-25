@@ -160,6 +160,37 @@ class TestBuildPositionTokenRegistry:
         assert registry.is_position_token(_TOKEN_A) is True
         assert registry.is_position_vault(_TOKEN_A) is False
 
+    def test_is_position_nft_token_kind_gated(self) -> None:
+        # Review r4 F4: direct pin for the kind-gated TOKEN predicate (the
+        # decoder's nfttx gate and the processor's receive detector both
+        # branch on it). Only kind="position_nft" members match; case is
+        # irrelevant (addresses are lower-cased at load); empty never
+        # matches. A future re-bodying without the kind gate (the r2-F1
+        # regression shape) fails here even when processor-level tests are
+        # shadowed by the vault-target discriminator.
+        registry = build_position_token_registry(
+            _registry_data(), source="<inline-test>"
+        )
+
+        # _TOKEN_A is kind="lst"; _TOKEN_B is kind="position_nft".
+        assert registry.is_position_nft_token(_TOKEN_B) is True
+        assert registry.is_position_nft_token(_TOKEN_A) is False
+        assert registry.is_position_nft_token(_TOKEN_A_UPPER) is False
+        assert registry.is_position_nft_token("") is False
+        assert registry.is_position_nft_token(
+            "0x000000000000000000000000000000000000abcd"
+        ) is False
+
+    def test_is_position_nft_token_kind_absent_is_false(self) -> None:
+        # An entry WITHOUT a kind serves the bare token rule but never the
+        # kind-gated NFT predicate.
+        registry = build_position_token_registry(
+            {"tokens": [{"token_address": _TOKEN_A}]}, source="<inline-test>"
+        )
+
+        assert registry.is_position_token(_TOKEN_A) is True
+        assert registry.is_position_nft_token(_TOKEN_A) is False
+
 
 @pytest.mark.unit
 class TestLoadPositionTokenRegistry:

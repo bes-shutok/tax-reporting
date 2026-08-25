@@ -25,6 +25,9 @@ from tax_reporting.infrastructure.on_chain.bera_decoder import (
     OnChainTxRow,
     decode_rows,
 )
+from tax_reporting.infrastructure.on_chain.position_token_registry import (
+    build_position_token_registry,
+)
 
 # Neutral test-only values. chainid 99999 is fictitious; the wallet addresses
 # are placeholders. None encode real chain identity (DI-2 clean).
@@ -117,6 +120,44 @@ def _tokentx_row(**overrides: object) -> dict:
         "tokenName": "USD Coin",
         "tokenDecimal": "6",
         "contractAddress": "0xcontract123",
+    }
+    base.update(overrides)
+    return base
+
+
+# Synthetic position-token-registry member contract (plan 2026-08-24 Task 3):
+# a clearly fake address; membership is address-keyed, never name-keyed.
+_POS_CONTRACT = "0x0000000000000000000000000000000000007777"
+_NON_MEMBER_CONTRACT = "0x0000000000000000000000000000000000008888"
+
+
+def _position_registry():
+    """Build a synthetic registry with one ``position_nft`` member (hermetic)."""
+    return build_position_token_registry(
+        {
+            "tokens": [
+                {
+                    "token_address": _POS_CONTRACT,
+                    "label": "ALGB-POS",
+                    "kind": "position_nft",
+                }
+            ]
+        },
+        source="<inline-test>",
+    )
+
+
+def _nft_row(**overrides: object) -> dict:
+    """Build a minimal nfttx (ERC-721 transfer) row as the API returns it."""
+    base: dict = {
+        "hash": "0xnft",
+        "blockNumber": "300",
+        "timeStamp": _TS_INSIDE,
+        "from": _WALLET_FROM,
+        "to": _WALLET_TO,
+        "contractAddress": _POS_CONTRACT,
+        "tokenSymbol": "ALGB-POS",
+        "tokenID": "26874",
     }
     base.update(overrides)
     return base
@@ -351,3 +392,319 @@ class TestBeraDecoder:
         # Then - the native asset name flows from config (DI-2; r1 F4).
         assert len(result) == 1
         assert result[0].asset == "EXM"
+
+    def test_decode_nft_row_names_asset_with_token_id(self):
+        # Given - an nfttx row (mint receive: `to` = wallet) whose
+        # contractAddress is a synthetic position-registry member.
+        cfg = _config(address=_WALLET_TO)
+        row = _nft_row()
+
+        # When
+        result = decode_rows(
+            [], [], cfg, raw_nft_rows=[row], position_registry=_position_registry()
+        )
+
+        # Then - Koinly symbol format SYMBOL#tokenID, quantity 1, 0 decimals.
+        assert len(result) == 1
+        decoded = result[0]
+        assert isinstance(decoded, OnChainTxRow)
+        assert decoded.asset == "ALGB-POS#26874"
+        assert decoded.amount_raw == 1
+        assert decoded.amount_decimals == 0
+        assert decoded.direction == "in"
+        assert decoded.token_address == _POS_CONTRACT
+        assert decoded.fee_asset == ""
+        assert decoded.fee_amount_raw == 0
+
+    def test_decode_nft_row_out_direction_and_window(self):
+        # Given - an nfttx send (`from` = wallet) and an out-of-window row.
+        # Review r1 F7: the two rows share from/to addresses, so the survivor
+        # is identified by its fixture-held tx_hash (a date-window inversion
+        # would otherwise pass: both rows would decode with direction "out").
+        cfg = _config(address=_WALLET_FROM)
+        send = _nft_row()  # from=_WALLET_FROM -> out
+        outside = _nft_row(hash="0xnft2", timeStamp=_TS_OUTSIDE)
+
+        # When
+        result = decode_rows(
+            [],
+            [],
+            cfg,
+            raw_nft_rows=[send, outside],
+            position_registry=_position_registry(),
+        )
+
+        # Then - the send decodes with direction "out" (shared `_direction`);
+        # the out-of-window row is skipped by the date filter.
+        assert len(result) == 1
+        assert result[0].direction == "out"
+        assert result[0].tx_hash == "0xnft"
+        assert all(r.tx_hash != "0xnft2" for r in result)
+
+    def test_decode_nft_row_non_member_contract_skips_with_warning(self, caplog):
+        # Given - an nfttx row whose contract is NOT a registry member (a spam
+        # airdrop mint). C8 boundary: membership gating, never content filtering.
+        cfg = _config(address=_WALLET_TO)
+        spam = _nft_row(
+            contractAddress=_NON_MEMBER_CONTRACT, tokenSymbol="BERA777"
+        )
+
+        # When
+        with caplog.at_level(logging.WARNING):
+            result = decode_rows(
+                [],
+                [],
+                cfg,
+                raw_nft_rows=[spam],
+                position_registry=_position_registry(),
+            )
+
+        # Then - no row emitted; a WARNING carries the skipped count.
+        assert result == []
+        skip_warnings = [
+            rec
+            for rec in caplog.records
+            if "not position_nft-kind registry members" in rec.getMessage()
+        ]
+        assert len(skip_warnings) == 1
+        assert "Skipped 1 nfttx row" in skip_warnings[0].getMessage()
+
+    def test_decode_malformed_nft_row_warns_and_skips(self, caplog):
+        # Given - an nfttx row (registry member) missing `tokenID`.
+        cfg = _config(address=_WALLET_TO)
+        malformed = _nft_row()
+        del malformed["tokenID"]
+
+        # When
+        with caplog.at_level(logging.WARNING):
+            result = decode_rows(
+                [],
+                [],
+                cfg,
+                raw_nft_rows=[malformed],
+                position_registry=_position_registry(),
+            )
+
+        # Then - WARNING + skip; the dataset (trivially) continues.
+        assert result == []
+        warning_text = "\n".join(rec.message for rec in caplog.records)
+        assert "malformed nfttx" in warning_text
+        assert "0xnft" in warning_text
+
+    def test_nft_row_overlapping_tokentx_transfer_decoded_once(self, caplog):
+        # Given - the SAME transfer present in BOTH tokentx and nfttx (same
+        # tx_hash, contractAddress, direction); tokentx renders the plain
+        # symbol, nfttx renders SYMBOL#tokenID. The nft surface is
+        # authoritative for registry-member contracts.
+        cfg = _config(address=_WALLET_TO)
+        token = _tokentx_row(
+            hash="0xnft",
+            contractAddress=_POS_CONTRACT,
+            tokenSymbol="ALGB-POS",
+            **{"from": _WALLET_FROM, "to": _WALLET_TO},
+        )
+        nft = _nft_row()  # same hash 0xnft, same contract, to=wallet -> in
+
+        # When
+        with caplog.at_level(logging.WARNING):
+            result = decode_rows(
+                [],
+                [token],
+                cfg,
+                raw_nft_rows=[nft],
+                position_registry=_position_registry(),
+            )
+
+        # Then - ONE row, the nfttx-decoded one; a WARNING carries the count.
+        assert len(result) == 1
+        assert result[0].asset == "ALGB-POS#26874"
+        assert result[0].direction == "in"
+        drop_warnings = [
+            rec for rec in caplog.records if "Dropped" in rec.getMessage()
+        ]
+        assert len(drop_warnings) == 1
+        assert "Dropped 1 tokentx row" in drop_warnings[0].getMessage()
+
+    def test_overlap_drop_is_case_insensitive_on_token_address(self, caplog):
+        # Review r2 F3: Etherscan returns checksummed (mixed-case) addresses
+        # and the two surfaces do not guarantee identical casing. The overlap
+        # key lower-cases token_address on BOTH sides; without that
+        # normalization this same-transfer pair would emit TWO rows (double-
+        # counted disposal leg). Derive the checksummed form from the fixture
+        # constant, never a new literal.
+        cfg = _config(address=_WALLET_TO)
+        checksummed = _POS_CONTRACT.upper()
+        assert checksummed != _POS_CONTRACT  # the case variant is real
+        token = _tokentx_row(
+            hash="0xnft",
+            contractAddress=checksummed,
+            tokenSymbol="ALGB-POS",
+            **{"from": _WALLET_FROM, "to": _WALLET_TO},
+        )
+        nft = _nft_row()  # same hash 0xnft, lowercase contract, to=wallet -> in
+
+        # When
+        with caplog.at_level(logging.WARNING):
+            result = decode_rows(
+                [],
+                [token],
+                cfg,
+                raw_nft_rows=[nft],
+                position_registry=_position_registry(),
+            )
+
+        # Then - exactly ONE row, the nfttx-decoded one (the checksummed
+        # tokentx duplicate was dropped despite the case mismatch).
+        assert len(result) == 1
+        assert result[0].asset == "ALGB-POS#26874"
+        drop_warnings = [
+            rec for rec in caplog.records if "Dropped" in rec.getMessage()
+        ]
+        assert len(drop_warnings) == 1
+        assert "Dropped 1 tokentx row" in drop_warnings[0].getMessage()
+
+    def test_partial_nft_decode_keeps_extra_tokentx_row_and_warns(self, caplog):
+        # Review r1 F2: a same-key multi-transfer batch (two tokentx rows with
+        # the same (tx_hash, contract, direction)) where ONE nfttx row is
+        # malformed. The overlap drop must account PER INSTANCE, not per key:
+        # exactly one tokentx row is dropped (replaced by the decoded nft row)
+        # and the second tokentx row is RETAINED; the surface imbalance
+        # surfaces as a mismatch WARNING.
+        cfg = _config(address=_WALLET_TO)
+        token_a = _tokentx_row(
+            hash="0xbatch",
+            contractAddress=_POS_CONTRACT,
+            tokenSymbol="ALGB-POS",
+            **{"from": _WALLET_FROM, "to": _WALLET_TO},
+        )
+        token_b = _tokentx_row(
+            hash="0xbatch",
+            blockNumber="201",
+            contractAddress=_POS_CONTRACT,
+            tokenSymbol="ALGB-POS",
+            **{"from": _WALLET_FROM, "to": _WALLET_TO},
+        )
+        nft_ok = _nft_row(hash="0xbatch")  # tokenID 26874
+        nft_bad = _nft_row(hash="0xbatch")  # same key, malformed
+        del nft_bad["tokenID"]
+
+        # When
+        with caplog.at_level(logging.WARNING):
+            result = decode_rows(
+                [],
+                [token_a, token_b],
+                cfg,
+                raw_nft_rows=[nft_ok, nft_bad],
+                position_registry=_position_registry(),
+            )
+
+        # Then - 1 decoded nft row + 1 RETAINED tokentx row (no silent loss).
+        assert len(result) == 2
+        assets = sorted(r.asset for r in result)
+        assert assets == ["ALGB-POS", "ALGB-POS#26874"]
+        warning_text = "\n".join(rec.message for rec in caplog.records)
+        # The malformed nfttx row and the surface imbalance are both loud.
+        assert "malformed nfttx" in warning_text
+        assert "Overlap mismatch" in warning_text
+        # Review r2 F5: pin the exact drop count (per-instance accounting).
+        drop_warnings = [
+            rec for rec in caplog.records if "Dropped" in rec.getMessage()
+        ]
+        assert len(drop_warnings) == 1
+        assert "Dropped 1 tokentx row" in drop_warnings[0].getMessage()
+
+    def test_erc1155_nft_row_skipped_with_warning(self, caplog):
+        # Review r1 F3: nfttx carries ERC-1155 rows too (tokenID "*" batch
+        # ids; tokenValue = quantity). Only ERC-721 quantity-1 semantics are
+        # decoded; an ERC-1155-looking row must be SKIPPED with a WARNING
+        # (never silently recorded as quantity 1).
+        cfg = _config(address=_WALLET_TO)
+        batch_id = _nft_row(tokenID="*", tokenValue="500")
+        quantity_row = _nft_row(tokenID="26875", tokenValue="500")
+
+        # When
+        with caplog.at_level(logging.WARNING):
+            result = decode_rows(
+                [],
+                [],
+                cfg,
+                raw_nft_rows=[batch_id, quantity_row],
+                position_registry=_position_registry(),
+            )
+
+        # Then - both rows skipped with the ERC-1155 WARNING naming the hash.
+        assert result == []
+        warning_text = "\n".join(rec.message for rec in caplog.records)
+        assert "ERC-1155" in warning_text
+        assert "0xnft" in warning_text
+        # One skip WARNING per row (each message mentions ERC-1155 twice).
+        erc1155_warnings = [
+            rec for rec in caplog.records if "ERC-1155" in rec.getMessage()
+        ]
+        assert len(erc1155_warnings) == 2
+
+    @pytest.mark.parametrize("bad_token_id", ["", "   "])
+    def test_empty_token_id_nft_row_skipped_with_warning(
+        self, caplog, bad_token_id
+    ):
+        # Review r1 F5 + r2 F4: an empty or whitespace-only tokenID must
+        # WARNING-skip, never decode to "SYMBOL#" with quantity 1. An empty
+        # tokenID with an EMPTY tokenValue is the ERC-1155 batch shape on the
+        # nfttx surface, so the skip is reported via the ERC-1155-class
+        # message, NOT the generic malformed-row message (review r2 F4:
+        # correct review-signal attribution).
+        cfg = _config(address=_WALLET_TO)
+        row = _nft_row(tokenID=bad_token_id, tokenValue="")
+
+        # When
+        with caplog.at_level(logging.WARNING):
+            result = decode_rows(
+                [],
+                [],
+                cfg,
+                raw_nft_rows=[row],
+                position_registry=_position_registry(),
+            )
+
+        # Then - skipped with the ERC-1155-class message; NOT the malformed
+        # generic message.
+        assert result == []
+        skip_warnings = [
+            rec
+            for rec in caplog.records
+            if "lacks a token ID" in rec.getMessage()
+        ]
+        assert len(skip_warnings) == 1
+        assert "0xnft" in skip_warnings[0].getMessage()
+        assert not any(
+            "malformed nfttx" in rec.getMessage() for rec in caplog.records
+        )
+
+    def test_int_token_value_quantity_one_nft_row_decodes(self):
+        # Review r3 F8: a tokenValue arriving as a JSON NUMBER (int 1)
+        # instead of the string "1" (cached/re-serialized JSON or a future
+        # non-Etherscan producer) is still ERC-721 quantity-1 semantics and
+        # must decode, not trip the string-only ERC-1155 guard.
+        cfg = _config(address=_WALLET_TO)
+        row = _nft_row(tokenValue=1)
+
+        # When
+        result = decode_rows(
+            [], [], cfg, raw_nft_rows=[row], position_registry=_position_registry()
+        )
+
+        # Then - the row decodes with the normal ERC-721 shape.
+        assert len(result) == 1
+        decoded = result[0]
+        assert isinstance(decoded, OnChainTxRow)
+        assert decoded.asset == "ALGB-POS#26874"
+        assert decoded.amount_raw == 1
+        assert decoded.amount_decimals == 0
+
+    def test_nft_rows_without_registry_raise_value_error(self):
+        # Review r1 F8: nft rows with a None registry must fail fast (the
+        # membership gate cannot run); the ValueError names position_registry.
+        cfg = _config(address=_WALLET_TO)
+
+        with pytest.raises(ValueError, match="position_registry"):
+            decode_rows([], [], cfg, raw_nft_rows=[_nft_row()], position_registry=None)

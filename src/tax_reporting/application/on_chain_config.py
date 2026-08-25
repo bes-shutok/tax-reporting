@@ -18,9 +18,9 @@ Design notes
   guard kind (``symlink``, ``oversize``, ``stat_error``, ``invalid_json``)
   raises :class:`FileProcessingError` embedding the path.
 - **DI-8 (repo-root resolution; no private-symbol import):** the loader
-  resolves the repo root itself via :func:`_find_repository_root`
-  imported from :mod:`application.crypto.classification` (the public
-  helper, NOT the private ``_REPOSITORY_ROOT`` binding).
+  resolves the repo root itself via
+  :func:`tax_reporting.application.paths.find_repository_root` (the PUBLIC
+  shared helper; no cross-feature private import).
 - **DI-2 (registry-derived chain facts):** chain facts (chainid,
   native ticker, launch date) live in the trusted chain registry in
   :mod:`application.crypto.chain_derivation` (the ``_CHAIN_TO_CHAINID``,
@@ -44,12 +44,21 @@ from pathlib import Path
 
 from ..domain.exceptions import ConfigurationError, FileProcessingError
 from ..infrastructure.json_loader import DEGRADED, load_guarded_json
+from ..infrastructure.on_chain.position_token_registry import (
+    PositionTokenRegistry,
+    load_position_token_registry,
+)
 from .crypto.chain_derivation import (
     chain_launch_date,
     chainid_for,
     native_ticker_for,
 )
-from .crypto.classification import _find_repository_root
+from .paths import find_repository_root, resolve_registry_path
+
+# Per-year position-token registry filename: the literal lives
+# HERE once; both the fetcher and the TH substituter load via
+# :func:`load_position_token_registry_for_year`).
+_POSITION_TOKEN_REGISTRY_FILENAME = "bera_position_tokens.json"
 
 # Max size of a chains.json config file (1 MiB). Bound for the JSON read
 # performed by infrastructure.json_loader.load_guarded_json.
@@ -66,8 +75,8 @@ _UNPINNED_SUBGRAPH_VERSION = "latest"
 
 # The only chain the on-chain TH path validates/substitutes (plan Terms).
 # ONE definition shared by the validation runner's wallet filter and the
-# composition root's ON_CHAIN_TH_WALLETS precedence filter (review r1 F17:
-# two independently written copies of the literal could drift apart and
+# composition root's ON_CHAIN_TH_WALLETS precedence filter
+# (two independently written copies of the literal could drift apart and
 # silently change the validated wallet set at the production flip).
 BERACHAIN_CHAIN = "Berachain"
 
@@ -290,9 +299,9 @@ def load_on_chain_wallets(
 ) -> list[OnChainWalletConfig]:
     """Load the on-chain wallet config for ``year``.
 
-    Resolves the repo root itself via :func:`_find_repository_root`
-    (DI-8: imports the public helper, not the private ``_REPOSITORY_ROOT``
-    binding) and reads ``<repo_root>/resources/source/<year>/chains.json``.
+    Resolves the repo root itself via :func:`find_repository_root`
+    (DI-8: the public shared helper from ``application.paths``) and reads
+    ``<repo_root>/resources/source/<year>/chains.json``.
 
     Args:
         year: Four-digit fiscal year (e.g. ``2025``).
@@ -307,7 +316,7 @@ def load_on_chain_wallets(
         FileProcessingError: If the resolved config file is malformed
             (see :func:`_load_on_chain_wallets_from_path`).
     """
-    repo_root = _find_repository_root()
+    repo_root = find_repository_root()
     path = repo_root / "resources" / "source" / str(year) / "chains.json"
     return _load_on_chain_wallets_from_path(path, year, today=today)
 
@@ -814,3 +823,56 @@ def load_contracts(path: Path) -> ContractRegistry:
             f"Contract registry not found (expected at {path})"
         )
     return build_contract_registry(data, source=str(path))
+
+
+# ---------------------------------------------------------------------------
+# Position-token registry per-year loader
+# ---------------------------------------------------------------------------
+#
+# Single construction site for the per-year ``bera_position_tokens.json``
+# filename + resolution block. Both the on-chain fetcher (nfttx decode
+# gating) and the TH substituter (processor wiring) call this facade, so a
+# rename or relocation of the registry file edits ONE literal (the drift
+# class ``application.paths`` already removed for the root/resolve helpers).
+
+
+def load_position_token_registry_for_year(
+    year: int,
+    override: Path | None = None,
+    repo_root: Path | None = None,
+) -> PositionTokenRegistry:
+    """Resolve + load the per-year position-token registry.
+
+    Resolution order (first match wins), via
+    :func:`tax_reporting.application.paths.resolve_registry_path`:
+    ``override`` (tests inject the committed ``example/`` template so they
+    never read gitignored personal data), then
+    ``resources/source/<year>/bera_position_tokens.json`` (the per-user
+    gitignored override), then the committed
+    ``resources/source/example/<year>/`` template. The underlying loader
+    (:func:`tax_reporting.infrastructure.on_chain.position_token_registry.load_position_token_registry`)
+    DEGRADES to an empty registry + WARNING when the resolved file is absent
+    (a fresh clone must not abort); every other failure raises.
+
+    Args:
+        year: Four-digit fiscal year (e.g. ``2025``).
+        override: Explicit registry path (the substituter's ctor kwarg;
+            ``None`` in production).
+        repo_root: Repository root (the caller's resolved root when it
+            already holds one; resolved here when ``None``).
+
+    Returns:
+        The validated :class:`PositionTokenRegistry`.
+
+    Raises:
+        FileProcessingError: Symlink / oversize / invalid JSON.
+        ConfigurationError: Schema validation failure.
+    """
+    return load_position_token_registry(
+        resolve_registry_path(
+            year,
+            _POSITION_TOKEN_REGISTRY_FILENAME,
+            override,
+            repo_root if repo_root is not None else find_repository_root(),
+        )
+    )

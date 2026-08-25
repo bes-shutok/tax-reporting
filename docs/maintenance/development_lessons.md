@@ -2781,3 +2781,130 @@ The same immunity applies to prose inside the guarded files: a docstring or comm
 **Example (2026-08-24 bera-unknown-followups r4 F6):** extracting a shared non-vault-recipient predicate used by two dispatch branches, the first draft narrowed `self.position_registry` with `assert ... is not None` (Ruff S101); replaced with an early `return []`, byte-identical behavior under both callers' `is not None` gates.
 
 **See also:** AGENTS.md Ruff section (full ruleset, unenforced); #132/#72 (check the HEAD blob before formatter/noqa decisions on the same files).
+
+## 144. Derive Role-Polarity Test Expectations From the Production Helper
+
+**Principle:** Family H (Verification discipline: intuition about sender/recipient polarity is an abstraction; the production direction helper is the real thing)
+
+**Witness (2026-08-24, multi-leg projection plan review r3):** two nfttx decode test bullets in the plan asserted `from`=wallet -> `direction="in"` and `to`=wallet -> `direction="out"`, exactly inverted vs `bera_decoder._direction` (from=wallet -> out, to=wallet -> in). The bullets were drafted from mental polarity intuition while writing the plan; the helper that defines the mapping was one grep away and already had the answer.
+
+1. When a plan's RED tests assert a role-polarity mapping (from/to, sender/recipient, source/target -> out/in, debit/credit), open the production helper that defines the mapping and transcribe its branches into the given/expects text before the review round does.
+2. Add "reuse the shared helper" to the implement clause so the implementation and the tests cannot drift from the same source (Family D: one definition of the polarity).
+
+## 145. A New Production Gitignored-Data Load Extends the Audit Guard's Reach Into Existing Real-Path Test Modules
+
+**Principle:** Family H (verify the real thing). The always-on audit-hook guard scopes to whatever production code a test actually executes; adding a NEW production load of a gitignored per-user file silently re-scopes previously-clean test modules into the guarded set. The unit-tier patch fixtures of the task's own tests do not cover sibling integration modules that reach the same call via real (unmocked) paths.
+
+**Trigger:** A task adds or wires a new production call that opens a gitignored data file (per-year registry, wallet config, personal export) into a module that existing tests already exercise for other behaviors.
+
+**Rule:**
+1. When wiring a new gitignored-file load into production, grep the test tree for modules that call the enclosing entry point via real paths (not patched), and add an autouse fixture in each patching the loader to an inline synthetic registry.
+2. Never treat a green targeted-tier run as sufficient; the full-suite run is what fires the audit-hook guard and reveals the new reach.
+
+**Why:** The 2026-08-24 multi-leg projection Task 3 added a per-year position-token registry load to the on-chain fetcher; `tests/integration/test_on_chain_fetch_integration.py` then opened the gitignored real registry through the real fetch path and the always-on audit guard failed the full suite (unit fetcher tests were clean because they patched the loader via the fake HTTP install). Fixed with an autouse hermetic-registry fixture in that integration module.
+
+**Shape:** Full-suite failure in `test_on_chain_modules_do_not_open_personal_data` after a task that only added a data load, while the task's own targeted test set stays green.
+
+**See also:** #123 (env-gated paths make tests machine-dependent; the guard family), #38 (tests must not read gitignored data directly), AGENTS.md Testing section (no gitignored-data opens; audit-hook).
+
+## 146. Registry Membership Predicates Must Gate on the Registry's Kind Discriminator
+
+**Principle:** Family F (classifier discriminators). A registry lookup that answers "is this token a member?" is an abstraction over the registry's real question, which is "is this token a member OF THE KIND the caller branches on?" Membership and kind are two predicates; conflating them lets entries of a sibling kind (here: LSTs in a position-token registry) route through a branch meant only for the gated kind.
+
+**Trigger:** Any detector/classifier that branches on registry membership where the registry entries carry a kind/type field and the caller's semantics apply to only one kind.
+
+**Rule:**
+1. Registry accessor predicates must be kind-gated (`is_position_nft_token` checking `kind == "position_nft"`, mirroring the same discipline as `is_position_vault`), and callers use the kind-gate, never bare membership.
+2. When review finds an overbroad predicate, add a RED test that drives a sibling-kind entry through the caller (a DEX receive of a registered LST) and asserts it stays on the un-gated path (Swap, not LiquidityDeposit).
+3. Sweep prose (module docstring tables, detector docstrings, validation docs) in the same commit: "registry member" wording becomes "position-NFT-kind member".
+
+**Why:** 2026-08-24 multi-leg projection review r2 F1: `_receives_position_token` gated on bare `is_position_token`, so DEX buys of registered LSTs (iBGT/LBGT) classified as LiquidityDeposit. The existing test covered only the OUT leg, hiding the receive-side gap. Fix: kind-gated `PositionTokenRegistry.is_position_nft_token` + 2 RED tests + prose sweep; deviation from the plan's literal "registry member by token_address" wording recorded (the plan's own Terms defined kind="position_nft").
+
+**Shape:** A classifier test matrix where every fixture is the same kind as the branch under test; no sibling-kind row exercises the negative path.
+
+**See also:** AGENTS.md Rule 1 (branch on the discriminator the upstream sets; UL #91), #144 (derive expectations from the production helper), the withholding-tax literal-match rule (same family: too-broad string/predicate match).
+
+## 147. Degrade-Path Tests Must Pin Environment-Dependent Inputs, Not Rely on Absent Real Files
+
+**Principle:** Family H (hermetic verification). A degrade/fallback test that lets production resolve a real environment path (repo root, per-year user file) is green only by accident of the machine: on a machine where the real file exists for that year, the degrade branch never runs and the test silently verifies nothing (or fails). Hermeticity here is about pinning the resolution input, not just the env var.
+
+**Trigger:** A test exercises a "file missing -> warn and degrade" path whose file path is derived from the real repository root or another environment-dependent resolver, especially with a hardcoded year that may exist as a real gitignored file on some machines.
+
+**Rule:**
+1. In degrade-path tests, monkeypatch the path resolver (e.g. `find_repository_root`) to the test's `tmp_path` so the target file is provably absent, keeping the degrade branch deterministic on every machine.
+2. Assert the WARNING text (unaffected), but never let the test's greenness depend on the real filesystem state of the developer's checkout.
+
+**Why:** 2026-08-24 review r2 F2: `test_load_position_registry_degrades_with_warning` pinned year 2024 but let `find_repository_root` resolve the real repo root; green only because no 2024 registry existed locally while a 2025 one did (gitignored). Fixed by pinning the root to the empty `tmp_path`.
+
+**Shape:** A fallback test that passes on the CI/agent shell and would take a different branch on a machine holding the real per-user file for the hardcoded year.
+
+**See also:** #123 (env-gated paths make tests machine-dependent), #145 (audit-guard reach), AGENTS.md Testing section (hermetic suite contract).
+
+## 148. Counterparty Classification Shapes Must Discriminate on the Counterparty Leg
+
+**Principle:** Family F (classifier discriminators). An event-shape rule that routes to a counterparty-specific classification (deposit vs market trade) is an abstraction over the real question: WHO the counterparty is. Keying the shape only on the received asset conflates "received a position NFT" with "received it FROM the position vault"; the first is also true of an open-market purchase.
+
+**Trigger:** A shape rule classifies an event by inspecting only the receipt legs (asset kind, amount pattern) while the target classification depends on the identity/kind of the paying counterparty.
+
+**Rule:**
+1. When a shape rule's classification encodes a counterparty relationship, add an explicit named helper that discriminates on the OUT (payer) leg (e.g. `_position_mint_pays_vault(out_legs)` keys on the counterparty being the vault), and gate the shape on it; absent registry entries fail closed (fall through to the review-bearing generic path, not the specialized one).
+2. Add a RED integration test driving the same receipt asset through a NON-vault payer and assert the generic path (Swap), plus direct unit tests of the helper for both payer kinds.
+3. When an external tool already labels the event, prefer the authority-settled invariant over the tool label when they conflict (here: settled LBGT out-side rule outrouted the shape-only shortcut).
+
+**Why:** 2026-08-24 multi-leg projection review r3 F1: the shape-7 position-NFT signal keyed only on the receipt leg, so a market PURCHASE of a position NFT from a non-vault payer routed to the review-free LiquidityDeposit branch instead of Swap. Empirically verified on HEAD before fixing; fix mirrors the user-confirmed LBGT out-side rule (settled 2026-08-23).
+
+**Shape:** A shape-rule test matrix whose every fixture has the same counterparty kind as the branch under test; no non-vault payer row exercises the fall-through.
+
+**Scope confirmation (2026-08-24 r4 of the 2026-08-24 multi-leg projection plan):** the payer-leg discriminator itself had a mediation hole: a router/zapper-mediated mint pays a ROUTER (non-vault out-leg recipient) while the vault delivers the position NFT on the in-leg. Gating only on "out-leg pays the vault" misrouted those deposits to Swap. When a counterparty check fails on mediated flows, extend the helper to the counterpart leg's PROVENANCE (NFT received FROM the vault), not just the payment direction; name the helper for the disjunction (e.g. `_position_mint_touches_vault(out_legs, in_legs)`) and keep the residual (non-vault payment AND non-vault provenance) on the generic path as a legitimate market purchase, with no review flag. Fix also updated the shape table, shape-rule list, and validation-doc prose in the same pass.
+
+**See also:** #146 (kind-gated registry predicates, same family), UL #91 (branch on the discriminator the upstream sets), AGENTS.md Rule 1 (discriminator branching).
+
+## 149. Review Flags Must Persist Through Every Projection Boundary
+
+**Principle:** Family D (indicator persistence). A review flag computed at an inner processing layer is only as good as its LAST persisted surface. If a downstream projection (adapter row, bridge CSV, merged report) reconstructs its own field set from scratch instead of carrying the reason, the flag dies at that boundary: the log ages out and the user-facing artifact shows an unexplained ambiguous row (PT-C-030 family).
+
+**Trigger:** A domain object sets a review flag/reason, and a later layer serializes or re-projects that object into a user-facing artifact (row type, CSV, Excel) using a hand-built field list.
+
+**Rule:**
+1. When adding a review flag to a domain event, trace every projection boundary to the final user-facing surface and add the reason field to EACH layer's field set (domain dataclass -> projected row -> serializer cell), not just the layer that computes it.
+2. Persist the reason for ALL flagged rows uniformly, not per-flag; empty string / None only for unflagged rows, preserving flag-off byte identity.
+3. Reuse an existing user-facing cell (e.g. a free-text Description column) when one exists, rather than adding a column the downstream merge does not know.
+4. Test at the outermost boundary: read the serialized artifact back via the production reader (not `csv.DictReader`; see UL #45) and assert the reason appears on flagged rows and absent on unflagged rows.
+
+**Why:** 2026-08-24 multi-leg projection review r6 F1: `Event` carried no review fields; the processor logged the provenance-review reason then dropped it; the bridge CSV hardcoded an empty Description; ambiguous rows entered the substituted TH with no persistent indicator. Fix threaded `review_reason` (Event -> ProjectedThRow -> bridge/merged TH Description).
+
+**Shape:** A processor method that computes a review reason inline in a `logger.warning` call while the row it emits has no corresponding field.
+
+**See also:** PT-C-030 (review flags must be specific, not bare booleans), UL #45 (production reader for external-report CSVs), AGENTS.md Rule 1 (explicit indicators for partial/uncertain results).
+
+## 150. Every Flagged Construction Site Must Pass a Reason
+
+**Principle:** Family D (indicator persistence), producer side. A "flagged rows carry an actionable reason" guarantee is per-construction-site, not per-type: when several sites build the same object with the review flag set, fixing only the sites that already pass a reason leaves the flag-only sites persisting `review_reason=None`, rendering the flag indistinguishable from a clean row on the user surface.
+
+**Trigger:** A dataclass has an optional `review_reason`, a review-fix guarantees flagged rows carry reasons, and grep shows multiple construction sites set the flag.
+
+**Rule:**
+1. Enumerate every site that constructs the object with the flag set (grep the builder and all its callers), not only sites already passing a reason.
+2. Add a property-level test at the producing layer: every flagged instance carries a non-empty reason (a caplog-driven invariant pairs each flag WARNING with a reason-bearing row).
+3. Collapse sibling flagged constructions over the same type into one shared helper so wording cannot drift.
+4. Reasons name the concrete discriminator (addresses, missing gate, unverified sender) plus an action verb ("verify ... before filing").
+
+**Why:** 2026-08-24 multi-leg projection review r7 F1: after r6 threaded `review_reason` through `Event`, four flagged construction sites (matched-no-pattern fallback, unknown-direction per-leg fallback, ungated multi-leg deposit, spam rewards) still built Events without `reason=`, so those flagged rows rendered an empty merged-TH Description.
+
+**Shape:** grep of the builder call sites shows a mix of flagged constructions with and without a `reason` kwarg.
+
+**See also:** lesson #149 (persistence through projection boundaries, downstream side), UL #91 (consumer-side reason synthesis: branch on the discriminator), PT-C-030.
+
+## 151. Truncated personal tx-hash prefixes in tracked doc prose defeat full-width-hex PII scans
+
+**Principle:** Family D (single source of truth: the purge set the standard; tracked prose must uphold it) x Family H (verify the real leak surface, not the convenient grep).
+
+**Trigger:** A plan or other tracked document quotes "worked examples" from gitignored real-baseline artifacts (dispositions, registries, exports), and the diff is about to land on master via archive or squash.
+
+**Rule:** PII scans for personal transaction hashes must ALSO match truncated forms (`0x` + 6-12 hex + `...`), not only full-width 40-hex literals; a truncated prefix of a personal tx is still the identifier class the history purge removed. Plan authors quoting real-baseline examples must withhold personal hashes at authoring time ("tx hash withheld, see the gitignored dispositions file") rather than relying on a later scrub. Before any archive/squash of a doc that quotes real baseline data, grep the diff for `0x[0-9a-fA-F]{6,12}\.\.\.` and check each hit against the gitignored sources and pre-existence on the base commit (public contracts like the BGT Distributor pre-exist and are fine).
+
+**Why:** The multi-leg projection plan's worked examples quoted `0x...` truncated hashes from the gitignored dispositions; every full-width-hex scan passed clean, and the truncation also defeats prefix greps tuned to longer literals. The leak survived plan review, seven code-review rounds, and the archive commit; only the pre-squash recipe scan (cross-checking known-hash references) caught it, as new-to-master content the 2026-08-16 purge had specifically removed.
+
+**Example:** `docs/history/plans/completed/2026-08-24-multi-leg-th-projection.md` quoted "tx `0xbc0d9b42...`" and "tx `0x377d40db...`" in its Gist worked examples. Neither existed on master; the squash would have reintroduced the purged identifier class. Fixed by replacing both with "tx hash withheld, see the gitignored dispositions file" (commit scrubbed pre-squash). The only remaining truncated hash in that diff (`0xd2f19a79...`) is the public BGT Distributor contract, pre-existing on master in three docs.
+
+**See also:** the PII pre-push diff scan recipe (session memory), `coding_guidelines.md` hygiene patterns.

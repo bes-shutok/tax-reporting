@@ -6,9 +6,13 @@ Koinly-based crypto tax pipeline). It:
 
 1. Loads the per-year wallet config via :func:`load_on_chain_wallets`.
 2. For each wallet, drives an :class:`EtherscanV2Client` to fetch the raw
-   ``txlist`` (native), ``tokentx`` (ERC-20), and ``txlistinternal``
-   (internal native receives) rows.
-3. Decodes the raw rows via :func:`decode_rows`.
+   ``txlist`` (native), ``tokentx`` (ERC-20), ``txlistinternal`` (internal
+   native receives), and ``nfttx`` (position-NFT legs) rows. The nfttx
+   endpoint returns ERC-721 AND ERC-1155 transfers, but only ERC-721
+   quantity-1 semantics are decoded (ERC-1155-looking rows are
+   WARNING-skipped by the decoder).
+3. Decodes the raw rows via :func:`decode_rows`; nfttx decoding is gated on
+   the per-year position-token registry (see :func:`decode_rows`).
 4. Writes a single consolidated CSV at the path resolved by
    :func:`bera_csv_path` (``output_dir / str(year) / <_CSV_FILENAME>``).
 
@@ -49,6 +53,7 @@ from pathlib import Path
 from tax_reporting.application.on_chain_config import (
     OnChainWalletConfig,
     load_on_chain_wallets,
+    load_position_token_registry_for_year,
 )
 from tax_reporting.application.persisting.excel_utils import safe_remove_file
 from tax_reporting.infrastructure.on_chain.bera_decoder import (
@@ -56,6 +61,9 @@ from tax_reporting.infrastructure.on_chain.bera_decoder import (
     decode_rows,
 )
 from tax_reporting.infrastructure.on_chain.etherscan_client import EtherscanV2Client
+from tax_reporting.infrastructure.on_chain.position_token_registry import (
+    PositionTokenRegistry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +73,7 @@ _CSV_FILENAME = "bera_transactions.csv"
 
 
 def bera_csv_path(output_dir: Path, year: int) -> Path:
-    """Resolve the on-chain bera CSV path for ``year`` (review r2 F11).
+    """Resolve the on-chain bera CSV path for ``year``.
 
     Single construction site: the fetcher (this module, the CSV's producer),
     the TH substitution service, and the validation harness all resolve the
@@ -91,15 +99,27 @@ def _client_for_wallet(
 def _decode_wallet(
     wallet: OnChainWalletConfig,
     client: EtherscanV2Client,
+    position_registry: PositionTokenRegistry,
 ) -> list[OnChainTxRow]:
     """Fetch + decode all rows for a single ``wallet``.
 
-    Propagates :class:`FileProcessingError` from the client (DI-1).
+    Propagates :class:`FileProcessingError` from the client (DI-1). nfttx
+    rows are fetched after the tokentx surface and decoded after it too
+    (provenance order; the decoder's overlap guard keeps the nfttx row when
+    both surfaces carry the same registry-member transfer).
     """
     txlist_rows = client.fetch_normal_txs(wallet.address)
     tokentx_rows = client.fetch_token_transfers(wallet.address)
     internal_rows = client.fetch_internal_txs(wallet.address)
-    return decode_rows(txlist_rows, tokentx_rows, wallet, raw_internal_rows=internal_rows)
+    nft_rows = client.fetch_nft_transfers(wallet.address)
+    return decode_rows(
+        txlist_rows,
+        tokentx_rows,
+        wallet,
+        raw_internal_rows=internal_rows,
+        raw_nft_rows=nft_rows,
+        position_registry=position_registry,
+    )
 
 
 def _write_csv(path: Path, rows: list[OnChainTxRow]) -> None:
@@ -159,10 +179,13 @@ def run_on_chain_fetch(
         return None
 
     decoded: list[OnChainTxRow] = []
+    # Single per-year registry loader shared with the TH
+    # substituter (the filename literal lives once, in on_chain_config).
+    position_registry = load_position_token_registry_for_year(year)
     for wallet in wallets:
         client = _client_for_wallet(wallet, api_key)
         # DI-1: FileProcessingError from the client propagates unchanged.
-        decoded.extend(_decode_wallet(wallet, client))
+        decoded.extend(_decode_wallet(wallet, client, position_registry))
 
     # Stable sort by numeric block_number ascending. block_number is a string
     # in the row but ordered numerically; Python's sort is stable, so rows

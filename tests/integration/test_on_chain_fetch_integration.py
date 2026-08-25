@@ -42,8 +42,30 @@ from tax_reporting.application.on_chain_config import OnChainWalletConfig
 _LOADER = "tax_reporting.application.on_chain_fetcher.load_on_chain_wallets"
 # Module path of the DI-3 HTTP seam. The client resolves its transport via this
 # module-level name, so the seam is monkeypatched directly (NEVER the low-level
-# transport module). This is the network-free contract shared with the unit tests.
+# transport). This is the network-free contract shared with the unit tests.
 _HTTP_SEAM = "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json"
+# Module path of the per-year position-token registry loader (the shared
+# facade, review r4 F7). run_on_chain_fetch loads the per-year registry for
+# nfttx decode gating; patching keeps these tests off the gitignored
+# per-user registry file (AGENTS.md crypto-tests rule).
+_REGISTRY_LOADER = (
+    "tax_reporting.application.on_chain_fetcher.load_position_token_registry_for_year"
+)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_position_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Serve an EMPTY synthetic position-token registry to every test here."""
+    from tax_reporting.infrastructure.on_chain.position_token_registry import (
+        build_position_token_registry,
+    )
+
+    monkeypatch.setattr(
+        _REGISTRY_LOADER,
+        lambda _year, _override=None, _repo_root=None: build_position_token_registry(
+            {"tokens": []}, source="<inline-test>"
+        ),
+    )
 
 # Artificial test-only values (DI-2 clean: no real chain identity).
 _CHAINID = 99999
@@ -357,11 +379,10 @@ class TestOnChainFetchIntegration:
                 "tokentx": tokentx_rows,
                 "txlistinternal": internal_rows,
             }
-            if action in payloads:
-                if payloads[action]:
-                    consumed = payloads[action][:]
-                    payloads[action].clear()
-                    return {"status": "1", "message": "OK", "result": consumed}
+            if action in payloads and payloads[action]:
+                consumed = payloads[action][:]
+                payloads[action].clear()
+                return {"status": "1", "message": "OK", "result": consumed}
             return {"status": "0", "message": "No transactions found", "result": []}
 
         monkeypatch.setattr(_HTTP_SEAM, fake_http)

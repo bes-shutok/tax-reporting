@@ -377,3 +377,83 @@ class TestParsingTxKey:
         assert receiver.acq.review_required is False, (
             "A fully-resolved transfer must not be flagged for review."
         )
+
+    # ------------------------------------------------------------------
+    # Plan 2026-08-24 Task 2: the multi-leg per-row event ids (".{k}"
+    # suffixes from the on-chain adapter's per-leg-pair projection) must
+    # BOTH survive `_dedup_by_tx_key`; a GENUINE duplicate (same
+    # (tx_hash, event_id) twice) must still drop the second with a review
+    # entry. This PINS the dedup consumer against the adapter's per-row
+    # event-id design (parsing.py is not modified by the plan).
+    # ------------------------------------------------------------------
+    def test_dedup_keeps_same_event_leg_pair_rows(self) -> None:
+        """Two TH consumption rows sharing tx_hash AND asset (the iBERA
+        worked example: two iBERA out legs of one Swap, event_ids ``h#5`` and
+        ``h#5.2``) are BOTH retained after ``_dedup_by_tx_key``; a genuine
+        duplicate (same tx_hash AND same event_id twice) drops the second
+        with a review entry (existing behavior pinned)."""
+        from tax_reporting.application.crypto.entities import CryptoReviewEntry
+
+        tx_hash = "0xdupleg000000000000000000000000000000000000000000000000000001"
+        # Columns: Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,
+        # Sent Cost Basis,Receiving Wallet,Received Amount,Received Currency,
+        # Received Cost Basis,Fee Amount,Fee Currency,Gain,Net Value,Fee Value,
+        # TxSrc,TxDest,TxHash,event_id,Description
+        leg_pair_rows = _rows_from_csv(
+            [
+                "2025-06-01 12:00:00 UTC,exchange,,Koinly Wallet,8.467888513983386625,IBERA,"
+                "0,Koinly Wallet,9.96222178,BERA,0,,,0,9.96,,src,dst,"
+                f"{tx_hash},{tx_hash}#5,",
+                "2025-06-01 12:00:05 UTC,exchange,,Koinly Wallet,1.494333267173538816,IBERA,"
+                "0,Koinly Wallet,0.1,BERA,0,,,0,0.1,,src,dst,"
+                f"{tx_hash},{tx_hash}#5.2,",
+            ]
+        )
+        review_entries: list[CryptoReviewEntry] = []
+        _acqs, cons, _phantom, failures = _classify_rows_for_loan_affected_assets(
+            leg_pair_rows,
+            loan_affected_assets=frozenset({"IBERA"}),
+            review_entries=review_entries,
+        )
+
+        ibera_cons = cons.get("IBERA", [])
+        assert len(ibera_cons) == 2, (
+            f"Same-event leg-pair rows (distinct event_id via the .{{k}} suffix) must "
+            f"BOTH survive _dedup_by_tx_key; got {len(ibera_cons)}. Dropping one would "
+            "silently lose that leg's disposal proceeds."
+        )
+        assert sorted(repr(c.tx_key) for c in ibera_cons) == sorted(
+            repr(k) for k in [(tx_hash, f"{tx_hash}#5"), (tx_hash, f"{tx_hash}#5.2")]
+        )
+        # No rows dropped -> no review entries, no parse failures.
+        assert review_entries == []
+        assert failures == {}
+
+        # Genuine duplicate: same tx_hash AND same event_id twice -> the
+        # second consumption is dropped with a review entry (pin the existing
+        # keep-first-per-key behavior).
+        duplicate_rows = _rows_from_csv(
+            [
+                "2025-06-01 12:00:00 UTC,exchange,,Koinly Wallet,8.46,IBERA,"
+                "0,Koinly Wallet,9.96,BERA,0,,,0,9.96,,src,dst,"
+                f"{tx_hash},{tx_hash}#5,",
+                "2025-06-01 12:00:05 UTC,exchange,,Koinly Wallet,8.46,IBERA,"
+                "0,Koinly Wallet,9.96,BERA,0,,,0,9.96,,src,dst,"
+                f"{tx_hash},{tx_hash}#5,",
+            ]
+        )
+        dup_review: list[CryptoReviewEntry] = []
+        _acqs2, cons2, _phantom2, failures2 = _classify_rows_for_loan_affected_assets(
+            duplicate_rows,
+            loan_affected_assets=frozenset({"IBERA"}),
+            review_entries=dup_review,
+        )
+        dup_cons = cons2.get("IBERA", [])
+        assert len(dup_cons) == 1, (
+            f"A genuine duplicate (same tx_hash AND same event_id) must drop the "
+            f"second consumption; got {len(dup_cons)}."
+        )
+        assert dup_cons[0].tx_key == (tx_hash, f"{tx_hash}#5")
+        assert len(dup_review) == 1
+        assert "Duplicate tx_key dropped" in dup_review[0].review_reason
+        assert failures2 == {"IBERA": [2]}

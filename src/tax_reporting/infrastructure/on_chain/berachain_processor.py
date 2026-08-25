@@ -13,7 +13,7 @@ and returns ``list[OnChainTransaction]``. It performs NO I/O - no RPC, no
 filesystem reads. Classification is a pure function of the rows + the two
 injected registries. The I/O (CSV read, contract-registry load,
 LP-snapshot load, position-token-registry load, RPC fallback) lives in its
-own modules. KNOWN DEBT (review r1 F5): the module is OVER the 1000-line
+own modules. KNOWN DEBT: the module is OVER the 1000-line
 guideline (AGENTS.md) after the 2026-08-22 unknown-classifier shapes; the
 pure leg/gas helpers should be extracted to a sibling module in a planned
 follow-up (kept here for now to bound this round's blast radius on the
@@ -37,6 +37,12 @@ the legs are classified into Events:
 | recipient carry a review flag)    | disposal)                     |                     |
 +-----------------------------------+-------------------------------+---------------------+
 | BIDIRECTIONAL receiving LP token  | LiquidityDeposit              | internal_transfer   |
+| or position-NFT-kind registry     | (+ review when only the       |                     |
+| member token whose mint shape     | receives-from-vault arm       |                     |
+| touches a registry vault (payment | fired - a provenance-only     |                     |
+| to the vault OR NFT arriving from | mint, ambiguous with a vault- |                     |
+| the vault; non-vault market       | seller resale)                |                     |
+| purchases stay Swap)              |                               |                     |
 +-----------------------------------+-------------------------------+---------------------+
 | PURE outflow of LP-snapshot /     | LiquidityDeposit              | internal_transfer   |
 | position-registry member tokens,  |                               | (+ review when no   |
@@ -334,7 +340,10 @@ class BerachainProcessor:
            vault (or is missing) carries a review WARNING naming it
            (possible disposal); a batch with no vault-target leg keeps the
            Swap fall-through.
-        7. BIDIRECTIONAL receiving an LP token -> LiquidityDeposit.
+        7. BIDIRECTIONAL receiving an LP token, or a position-NFT-kind
+           registry member whose mint shape touches a registry vault
+           (payment to the vault OR NFT arriving from the vault) ->
+           LiquidityDeposit.
         8. BIDIRECTIONAL 1 in-asset <-> 1 out-asset -> Swap.
         9. PURE outflow whose single recipient is a registered
            ``self_wallet`` -> Transfer/internal_transfer (C3b; keeps
@@ -353,7 +362,7 @@ class BerachainProcessor:
             deposit shapes) -> LiquidityDeposit with ALL non-gas out-legs
             economic (a NON-ZERO native out-leg is economic, not a gas
             carrier - only zero-value native legs are carriers). Carries a
-            review flag when NO member signal is present (review r1 F2).
+            review flag when NO member signal is present.
         12. Fallback -> one Unknown Event + review (never silently dropped).
 
         Before shapes 3-8, zero-value NATIVE outflow legs (gas carriers,
@@ -374,7 +383,7 @@ class BerachainProcessor:
         # Unfiltered direction split - consumed ONLY by the GAS_ONLY shape
         # below (its Event must carry the unfiltered carrier leg). Every
         # later shape partitions the ECONOMIC legs (C1 exclusion below), so
-        # the two partitions below carry distinct names (review r1 F18: the
+        # the two partitions below carry distinct names (the
         # old rebinding made the same names mean different things above and
         # below the C1 exclusion).
         unfiltered_out_legs = [leg for leg in legs if leg.direction == "out"]
@@ -450,7 +459,7 @@ class BerachainProcessor:
         #    sentinel cannot provide coverage); otherwise the same Event
         #    carries a review WARNING naming the mismatched counterparty (the
         #    receive side may be a third-party sale, not a vault redemption).
-        #    Review r3 F1: in a same-tx LP+registry mix this branch folds
+        #    In a same-tx LP+registry mix this branch folds
         #    the registry-member out-legs into its review computation - the
         #    tx is clean ONLY when the LP subset predicate holds AND every
         #    registry-member out-leg targets a registry vault.
@@ -460,7 +469,7 @@ class BerachainProcessor:
         #    at least one vault-target leg fires LiquidityWithdraw, and
         #    every registry-member leg whose recipient is NOT a registry
         #    vault (or is missing) carries a review WARNING naming it
-        #    (review r2 F1: one vault leg must not silently clean a
+        #    (one vault leg must not silently clean a
         #    sibling disposal leg). Everything else (a single DEX-pair
         #    counterparty included) falls through to Swap with NO review
         #    warning: registry entries are identity data, not per-cluster
@@ -469,7 +478,7 @@ class BerachainProcessor:
             # Full evaluation (no `any()` short-circuit) is intentional: the
             # recipient set below needs EVERY member out-leg, so later legs
             # must still be probed after the first snapshot member is found
-            # (deliberate deviation from the plan's any() wording; review r1 F9).
+            # (deliberate deviation from the plan's any() wording).
             lp_member_legs = [
                 leg
                 for leg in out_legs
@@ -477,17 +486,17 @@ class BerachainProcessor:
                 and self.lp_autodiscovery.is_lp_token(leg.token_address).is_lp
             ]
             if lp_member_legs:
-                # Review r1 F2: EVERY member out-leg recipient must be covered
+                # EVERY member out-leg recipient must be covered
                 # by an in-leg sender (subset, not ANY-match) - in a mixed
                 # batch tx one covered leg must not clean an uncovered sale
-                # leg. Review r1 F3: a MISSING recipient keeps a "<missing>"
+                # leg. A MISSING recipient keeps a "<missing>"
                 # marker (never coverable, fails closed into review) while
                 # missing in-leg senders are excluded, so the empty-string
                 # sentinel cannot self-collide into a clean match.
                 member_recipients = {
                     (leg.to_address or "<missing>").lower() for leg in lp_member_legs
                 }
-                # Review r2 F2: a from_address cell holding the literal
+                # A from_address cell holding the literal
                 # "<missing>" marker (hand-edited CSV) must not spoof
                 # coverage of the recipient sentinel - senders equal to the
                 # sentinel are excluded, so the check stays fail-closed.
@@ -497,8 +506,8 @@ class BerachainProcessor:
                     if (leg.from_address or "").lower() not in ("", "<missing>")
                 }
                 unmatched = member_recipients - in_senders
-                # Review r3 F1: branch (a) must not shadow the registry-side
-                # review condition (review r2 F1) in a same-tx LP+registry
+                # Branch (a) must not shadow the registry-side
+                # review condition in a same-tx LP+registry
                 # mix: the (a) block returns before the registry arm below,
                 # so the registry-member out-legs whose recipients are NOT
                 # registry vaults (or are missing) are folded into THIS
@@ -509,7 +518,7 @@ class BerachainProcessor:
                 # registry legs.
                 registry_nonvault_recipients: set[str] = set()
                 if self.position_token_registry is not None:
-                    # Review r4 F6: shared with the registry-only arm below so
+                    # Shared with the registry-only arm below so
                     # the two branches cannot drift apart (sibling shapes, one
                     # predicate).
                     registry_nonvault_recipients = {
@@ -556,7 +565,7 @@ class BerachainProcessor:
                         ),
                     )
                 ]
-            # Review r2 F1: mirror the (a) subset semantics on the registry
+            # Mirror the (a) subset semantics on the registry
             # side. A SINGLE registry-member out-leg keeps the plan's
             # vault-target rule (no vault target -> Swap fall-through, the
             # LBGT single-leg invariant); a batch with at least one
@@ -579,7 +588,7 @@ class BerachainProcessor:
                     and self.position_token_registry.is_position_vault(leg.to_address)
                 ]
                 if registry_vault_legs:
-                    # Review r4 F6: shared with the branch (a) fold above so
+                    # Shared with the branch (a) fold above so
                     # the two branches cannot drift apart.
                     non_vault_recipients = {
                         (leg.to_address or "<missing>").lower()
@@ -614,14 +623,34 @@ class BerachainProcessor:
                         )
                     ]
 
-        # 7. BIDIRECTIONAL receiving an LP token -> LiquidityDeposit.
-        if in_legs and out_legs and self._receives_lp_token(in_legs):
+        # 7. BIDIRECTIONAL receiving an LP token or a position-NFT-kind
+        #    registry member token (an ERC-721 LP position mint; plan
+        #    2026-08-24 Task 4 - the nfttx fetch makes those legs VISIBLE,
+        #    so the receive-side detector accepts the kind-gated registry
+        #    signal in addition to the LP snapshot; kind-gated
+        #    so a DEX purchase of a registered LST stays a Swap; the
+        #    position-NFT signal additionally requires the
+        #    mint shape to touch a registry vault on EITHER side - the
+        #    economic out-legs pay the vault OR the NFT arrives FROM the
+        #    vault (a router-mediated mint pays an intermediary) - so a
+        #    market purchase of a position NFT from a non-vault pair keeps
+        #    the Swap fall-through - the LBGT receive-side invariant) ->
+        #    LiquidityDeposit.
+        if in_legs and out_legs and self._receives_member_receipt_token(in_legs, out_legs):
+            # A provenance-only mint shape (the NFT arrives from the vault
+            # but no economic out-leg pays one) is ambiguous with a
+            # vault-seller resale or a mixed-provenance batch, so the event
+            # carries a review flag with an actionable reason (PT-C-030
+            # family), mirroring the shape-6 ambiguity pattern.
+            provenance_reason = self._position_mint_provenance_review_reason(out_legs, in_legs)
             return [
                 _event(
                     tx_hash,
                     EventType.LiquidityDeposit,
                     SubType.internal_transfer,
                     economic_legs,
+                    review=provenance_reason is not None,
+                    reason=provenance_reason,
                 )
             ]
 
@@ -640,9 +669,9 @@ class BerachainProcessor:
 
         # 10. PURE-outflow DEPOSIT rules (plan 2026-08-22 Task 3, routing
         #     targets 1/4 + the Task-5 residual sig-2 fix). Two predicates,
-        #     one shared Event builder (``_deposit_event``, review r2 F9:
-        #     "two shapes, one builder" - twin constructions drift; review r1
-        #     F19 collapsed three copies of the same body):
+        #     one shared Event builder (``_deposit_event`` -
+        #     "two shapes, one builder": twin constructions drift; three
+        #     copies of the same body were collapsed into it):
         #     (a) member tokens: EVERY economic out-leg token is an
         #         LP-snapshot member (island/vault re-staking) or a
         #         position-registry member (LST deposit);
@@ -650,7 +679,7 @@ class BerachainProcessor:
         #         NOT a member, but SOME out-direction leg - including the
         #         zero-value native gas carrier, whose ``to`` is the
         #         tx-level recipient - targets a position-registry VAULT
-        #         (kind-gated, review r1 F3): the wallet deposits into a
+        #         (kind-gated): the wallet deposits into a
         #         registered vault and receives an ERC-721 position mint
         #         that txlist/tokentx/txlistinternal cannot serve.
         #     Both are gated ADDRESS-KEYED (never by asset name); a
@@ -663,7 +692,7 @@ class BerachainProcessor:
                 len(out_legs) == 1
                 # Predicate (a) already established non-membership for a
                 # single leg (``or`` short-circuit), so no re-check here
-                # (review r2 F8: the re-check was a dead conjunct).
+                # (the re-check was a dead conjunct).
                 and self._any_out_leg_recipient_is_registry_member(legs)
             )
         ):
@@ -674,7 +703,7 @@ class BerachainProcessor:
         #     with ALL non-gas out-legs economic. The C1 carrier exclusion
         #     above already dropped zero-value native legs, so a NON-ZERO
         #     native out-leg (e.g. the economic BERA leg of the BERA+iBGT
-        #     family) stays economic here. Review r1 F2 gate: the clean
+        #     family) stays economic here. The clean
         #     (no-review) classification is limited to txs carrying a
         #     member signal (a member token on any out-leg, or a
         #     registry-member recipient); a member-signal-less multi-leg
@@ -686,7 +715,22 @@ class BerachainProcessor:
             gated = any(self._is_member_token(leg) for leg in out_legs) or (
                 self._any_out_leg_recipient_is_registry_member(legs)
             )
-            return [self._deposit_event(tx_hash, out_legs, review=not gated)]
+            ungated_reason = (
+                None
+                if gated
+                else (
+                    f"multi-leg deposit received no LP/position-NFT member "
+                    f"gate (no member token on any out-leg and no "
+                    f"registry-member recipient; out-leg recipients: "
+                    f"{sorted((leg.to_address or '<missing>').lower() for leg in out_legs)}); "
+                    f"verify it is a genuine liquidity deposit before filing"
+                )
+            )
+            return [
+                self._deposit_event(
+                    tx_hash, out_legs, review=not gated, reason=ungated_reason
+                )
+            ]
 
         # 12. Fallback: nothing matched (e.g. only outflow legs with no
         #    in-legs and not GAS_ONLY). Emit one Unknown Event + review
@@ -703,20 +747,39 @@ class BerachainProcessor:
             len(out_legs),
             len(legs),
         )
-        return [_event(tx_hash, EventType.Unknown, None, legs, review=True)]
+        return [
+            _event(
+                tx_hash,
+                EventType.Unknown,
+                None,
+                legs,
+                review=True,
+                reason=(
+                    "no classification shape matched; verify the legs "
+                    "manually before filing"
+                ),
+            )
+        ]
 
     # ------------------------------------------------------------------
     # Shape detectors / event builders
     # ------------------------------------------------------------------
 
     def _deposit_event(
-        self, tx_hash: str, out_legs: list[Leg], *, review: bool = False
+        self,
+        tx_hash: str,
+        out_legs: list[Leg],
+        *,
+        review: bool = False,
+        reason: str | None = None,
     ) -> Event:
         """Build the shapes-10/11 ``LiquidityDeposit`` Event (one construction).
 
-        Review r2 F9: shapes 10 and 11 previously carried twin ``_event``
+        Shapes 10 and 11 previously carried twin ``_event``
         constructions that a future SubType edit could silently diverge;
-        both now share this builder (two shapes, one builder).
+        both now share this builder (two shapes, one builder). ``reason``
+        (review r7 F1) persists the actionable review explanation so the
+        merged-TH Description cell keeps the review indicator.
         """
         return _event(
             tx_hash,
@@ -724,6 +787,7 @@ class BerachainProcessor:
             SubType.internal_transfer,
             out_legs,
             review=review,
+            reason=reason,
         )
 
     def _receives_lp_token(self, in_legs: list[Leg]) -> bool:
@@ -739,6 +803,138 @@ class BerachainProcessor:
             if self.lp_autodiscovery.is_lp_token(leg.token_address).is_lp:
                 return True
         return False
+
+    def _receives_position_token(self, in_legs: list[Leg]) -> bool:
+        """Return True iff any in-leg's token is a position-NFT-kind member.
+
+        Plan 2026-08-24 Task 4: the nfttx fetch makes ERC-721 position mints
+        (e.g. an ``ALGB-POS#26874`` receive) VISIBLE as in-legs. Membership
+        is keyed on ``token_address`` ONLY (address-keyed identity) and is
+        KIND-GATED (only ``kind="position_nft"`` entries fire;
+        an ``lst``-kind member is a tradable receipt token whose DEX purchase
+        must stay a Swap per the LBGT invariant). The ``SYMBOL#tokenID``
+        asset name is display/comparator-only and never feeds this decision.
+        An absent registry is inert (fail-closed: the classifier falls
+        through to the pre-existing shapes).
+        """
+        if self.position_token_registry is None:
+            return False
+        for leg in in_legs:
+            if leg.token_address is None:
+                continue
+            if self.position_token_registry.is_position_nft_token(leg.token_address):
+                return True
+        return False
+
+    def _receives_member_receipt_token(self, in_legs: list[Leg], out_legs: list[Leg]) -> bool:
+        """Return True iff any in-leg carries a member receipt token.
+
+        The bidirectional-receive (LiquidityDeposit) detector: accepts
+        EITHER membership signal - an LP-snapshot member (via
+        :meth:`_receives_lp_token`) OR a position-NFT-kind registry member
+        (via :meth:`_receives_position_token`, plan 2026-08-24 Task 4;
+        kind-gated per the LBGT invariant) that touches a registry vault on
+        either side of the mint shape (the payment arm
+        :meth:`_position_mint_pays_vault` OR the provenance arm
+        :meth:`_position_mint_receives_from_vault`: a router-mediated mint
+        pays an intermediary and still receives the NFT from the vault; a
+        position NFT bought from a non-vault pair keeps the Swap
+        fall-through per the LBGT receive-side invariant).
+        One named detector so the dispatcher's shape-7 predicate stays a
+        single call (the module's branch budget).
+        """
+        return self._receives_lp_token(in_legs) or (
+            self._receives_position_token(in_legs)
+            and (
+                self._position_mint_pays_vault(out_legs)
+                or self._position_mint_receives_from_vault(in_legs)
+            )
+        )
+
+    def _position_mint_pays_vault(self, out_legs: list[Leg]) -> bool:
+        """Return True iff any economic out-leg PAYS a registry vault (payment arm).
+
+        The mint deposit's payment touchpoint: the wallet sends tokens TO
+        the pool/vault (the deposit fixture shape). Matching keys on the
+        out-leg ``to_address`` via
+        :meth:`PositionTokenRegistry.is_position_vault` ONLY (address-keyed
+        identity). An absent registry is inert (fail-closed).
+        """
+        if self.position_token_registry is None:
+            return False
+        for leg in out_legs:
+            if leg.to_address and self.position_token_registry.is_position_vault(leg.to_address):
+                return True
+        return False
+
+    def _position_mint_vault_senders(self, in_legs: list[Leg]) -> set[str]:
+        """Return the lower-cased vault sender addresses of the provenance arm.
+
+        Shared set-returning helper (review r6 F4) for the receives-from-vault
+        detector and the provenance review-reason builder, so the arm
+        evaluation exists in exactly ONE body and the reason cannot drift
+        from the predicate that fired the classification. KIND-GATED (only
+        ``kind="position_nft"`` token contracts via
+        :meth:`PositionTokenRegistry.is_position_nft_token`) and
+        sender-gated (the sender must be a registry vault via
+        :meth:`PositionTokenRegistry.is_position_vault`). An absent registry
+        is inert (fail-closed, empty set).
+        """
+        if self.position_token_registry is None:
+            return set()
+        return {
+            leg.from_address.lower()
+            for leg in in_legs
+            if leg.token_address is not None
+            and leg.from_address is not None
+            and self.position_token_registry.is_position_nft_token(leg.token_address)
+            and self.position_token_registry.is_position_vault(leg.from_address)
+        }
+
+    def _position_mint_receives_from_vault(self, in_legs: list[Leg]) -> bool:
+        """Return True iff a kind-gated position-NFT in-leg arrives FROM a registry vault.
+
+        The mint deposit's provenance touchpoint (a router/zapper-mediated
+        mint: the wallet pays the intermediary, and the vault still
+        dispatches the NFT). Delegates to the shared
+        :meth:`_position_mint_vault_senders` set helper (review r6 F4: the
+        arm evaluation lives in exactly one body). An absent registry is
+        inert (fail-closed).
+        """
+        return bool(self._position_mint_vault_senders(in_legs))
+
+    def _position_mint_provenance_review_reason(
+        self, out_legs: list[Leg], in_legs: list[Leg]
+    ) -> str | None:
+        """Return an actionable review reason for a provenance-only mint shape.
+
+        When the payment arm did NOT fire but the provenance arm did, the
+        on-chain data cannot distinguish a router-mediated mint from a
+        vault-seller resale (escrow release, liquidated-position resale) or
+        a mixed-provenance batch: keep the LiquidityDeposit classification
+        but flag for review, naming the vault-sender leg(s) and the
+        non-vault payment counterparties (PT-C-030 family: specific,
+        actionable explanations). Returns None when the shape is clean
+        (payment arm fired) or no mint shape fired.
+        """
+        if self.position_token_registry is None:
+            return None
+        if self._position_mint_pays_vault(out_legs):
+            return None
+        vault_senders = self._position_mint_vault_senders(in_legs)
+        if not vault_senders:
+            return None
+        # No out-leg pays a vault here, so every payee is a non-vault
+        # payment counterparty.
+        non_vault_payees = sorted(
+            {(leg.to_address or "<missing>").lower() for leg in out_legs}
+        )
+        return (
+            f"position-NFT received from registry vault sender(s) "
+            f"{sorted(vault_senders)} but no economic out-leg pays a registry "
+            f"vault (non-vault payment counterparties: {non_vault_payees}); "
+            f"verify mint vs secondary purchase before filing"
+        )
 
     def _is_member_token(self, leg: Leg) -> bool:
         """Return True iff ``leg`` sends a registry-member token (address-keyed).
@@ -761,7 +957,7 @@ class BerachainProcessor:
         """Return the registry-member out-legs NOT targeting a registry vault.
 
         Shared predicate for the shape-6 branch (a) fold and the registry-only
-        branch (b) (review r4 F6: sibling shapes over the same type must use
+        branch (b) (sibling shapes over the same type must use
         one helper, not duplicated copies that can drift). A leg qualifies
         when its token is a position-registry member AND its recipient is
         missing or not a registry vault. Returns an empty list when no
@@ -786,8 +982,8 @@ class BerachainProcessor:
         Scans the UNFILTERED legs (the full tx, not the C1-filtered economic
         partition): the registry-member vault is frequently the tx-level
         ``to`` - i.e. the recipient of the zero-value native GAS-CARRIER leg
-        - while the economic leg's own recipient is the AMM pool. Review r1
-        F3: recipient matching is kind-gated (``kind="position_nft"`` via
+        - while the economic leg's own recipient is the AMM pool.
+        Recipient matching is kind-gated (``kind="position_nft"`` via
         :meth:`PositionTokenRegistry.is_position_vault`) so the registry's
         one address set cannot silently serve two different predicates -
         adding an LST (``kind="lst"``) entry widens the TOKEN rule (shape
@@ -820,8 +1016,8 @@ class BerachainProcessor:
         reward branch of :meth:`_classify_events`; a DEX-router exchange
         alone is the Swap branch. Only their co-occurrence triggers the
         split. (Branch names are used instead of shape numbers so these
-        second-source references cannot drift when shapes are inserted -
-        review r1 F7.)
+        second-source references cannot drift when shapes are
+        inserted.)
         """
         from_addresses = {(r.from_address or "").lower() for r in rows}
         has_distributor = any(
@@ -866,15 +1062,7 @@ class BerachainProcessor:
         for asset_legs in _group_legs_by_asset(reward_inflows, tx_hash).values():
             for summed_leg in asset_legs:
                 sub_type = self._reward_sub_type([summed_leg])
-                events.append(
-                    _event(
-                        tx_hash,
-                        EventType.Reward,
-                        sub_type,
-                        [summed_leg],
-                        review=(sub_type is SubType.spam),
-                    )
-                )
+                events.append(self._reward_event(tx_hash, summed_leg, sub_type))
         # The Swap Event carries the DEX-router exchange legs.
         events.append(_event(tx_hash, EventType.Swap, None, swap_legs))
         return events
@@ -893,16 +1081,34 @@ class BerachainProcessor:
         for asset_legs in _group_legs_by_asset(in_legs, tx_hash).values():
             for summed_leg in asset_legs:
                 sub_type = self._reward_sub_type([summed_leg])
-                events.append(
-                    _event(
-                        tx_hash,
-                        EventType.Reward,
-                        sub_type,
-                        [summed_leg],
-                        review=(sub_type is SubType.spam),
-                    )
-                )
+                events.append(self._reward_event(tx_hash, summed_leg, sub_type))
         return events
+
+    def _reward_event(self, tx_hash: str, summed_leg: Leg, sub_type: SubType) -> Event:
+        """Build one Reward Event (review r7 F1: spam always carries a reason).
+
+        Shared by the reward-claim-then-swap split and the multi-token
+        reward builder (sibling sites, one helper so the review plumbing
+        cannot drift). A spam Reward is review-flagged with an actionable
+        reason naming the unverified sender (PT-C-030 family), so the
+        merged-TH Description cell keeps the review indicator.
+        """
+        spam = sub_type is SubType.spam
+        return _event(
+            tx_hash,
+            EventType.Reward,
+            sub_type,
+            [summed_leg],
+            review=spam,
+            reason=(
+                f"reward classified as spam (sender "
+                f"{(summed_leg.from_address or '<missing>').lower()} is not a "
+                f"registered reward distributor); verify it is not taxable "
+                f"income before filing"
+            )
+            if spam
+            else None,
+        )
 
     def _reward_sub_type(self, asset_legs: list[Leg]) -> SubType:
         """Return the Reward SubType for an asset's legs (F4 verification).
@@ -936,7 +1142,19 @@ class BerachainProcessor:
             sum(1 for leg in legs if leg.direction == "unknown"),
         )
         return [
-            _event(tx_hash, EventType.Unknown, None, [leg], review=True)
+            _event(
+                tx_hash,
+                EventType.Unknown,
+                None,
+                [leg],
+                review=True,
+                reason=(
+                    f"leg direction could not be derived (neither from "
+                    f"{(leg.from_address or '<missing>').lower()} nor to "
+                    f"{(leg.to_address or '<missing>').lower()} is the "
+                    f"wallet); verify the counterparty before filing"
+                ),
+            )
             for leg in legs
             if leg.direction == "unknown"
         ]
@@ -1105,9 +1323,8 @@ def _transfer_event(tx_hash: str, legs: list[Leg]) -> Event:
     :meth:`BerachainProcessor._classify_events`) emit the byte-identical
     ``Transfer/internal_transfer`` Event, so the construction lives HERE
     once (the file's builder idiom) rather than inline twice in the
-    dispatcher (review r1 F18: two copies can drift apart; branch names are
-    used instead of shape numbers so this reference cannot drift - review
-    r1 F7).
+    dispatcher (two copies can drift apart; branch names are
+    used instead of shape numbers so this reference cannot drift).
     """
     return _event(
         tx_hash,
@@ -1220,6 +1437,7 @@ def _event(  # noqa: PLR0913 - module-level Event builder; the plan's frozen sig
         sub_type=sub_type,
         legs=tuple(legs),
         parent_tx_hash=tx_hash,
+        review_reason=reason if review else None,
     )
 
 

@@ -102,7 +102,13 @@ executed 2026-08-24 after six blocking-clean review rounds:
 `docs/history/plans/completed/2026-08-23-bera-unknown-followups.md` (backlog archived at
 `docs/history/backlog/completed/2026-08-23-bera-unknown-followups.md`). The flip gate stays open per
 Ship-when: exit 3 is now held only by the multi-row rendering gap, the nfttx (ERC-721) fetch gap, and
-one undispositioned Swap residual.
+one undispositioned Swap residual. Promotion 2026-08-24: the residue is now a reviewed plan,
+`docs/history/plans/2026-08-24-multi-leg-th-projection.md` (ready=yes after 4 review rounds).
+EXECUTED 2026-08-25 at commit `8a65582` (all 6 tasks; 7 review rounds, 54 findings + 4 overflow
+items fixed, zero unresolved; archived at
+`docs/history/plans/completed/2026-08-24-multi-leg-th-projection.md`). Code-side work is done;
+the flip gate now waits only on the user-run Ship-when step (re-fetch the 2025 CSV incl. nfttx
+rows, `--validate-on-chain-th 2025` zero-exit, then flip `ON_CHAIN_TH_WALLETS`).
 
 - Committed, user-runnable validation command (e.g. `uv run tax-reporting --validate-on-chain-th <year>`)
   that runs the production path (registry load → reader → processor → integrity/freshness audit →

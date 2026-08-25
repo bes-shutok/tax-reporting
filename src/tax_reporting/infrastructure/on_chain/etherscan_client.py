@@ -81,7 +81,7 @@ _BACKOFF_BASE_SECONDS = 0.1
 def _parse_block_number(row: dict) -> int | None:
     """Parse ``row['blockNumber']``, WARNING + skip on a malformed value.
 
-    Mirrors the decoder layer's malformed-row guard (review r1 F9): an
+    Mirrors the decoder layer's malformed-row guard: an
     unguarded ``int()`` here turned one bad row into a whole-wallet fetch
     abort. Returns ``None`` for malformed rows; callers treat ``None`` as
     "not in this block / not a boundary candidate".
@@ -176,10 +176,24 @@ class EtherscanV2Client:
         calls) that never appear in ``txlist``. Reuses the same block-range +
         boundary-drain pagination loop as the other actions; the endpoint's
         pagination semantics are identical. ERC-721 NFT mint receipts are NOT
-        recovered by this endpoint (they need a tokentx ERC-721 surface, which
-        is out of scope for this task).
+        recovered by this endpoint; use :meth:`fetch_nft_transfers` (``nfttx``).
         """
         return self._fetch_with_block_pagination("txlistinternal", address)
+
+    def fetch_nft_transfers(self, address: str) -> list[dict]:
+        """Fetch ERC-721/1155 (``nfttx``) transfers for ``address``.
+
+        Recovers position-NFT mint/send legs that are invisible to the
+        ``txlist``/``tokentx``/``txlistinternal`` triple. Reuses the same
+        block-range + boundary-drain pagination loop as the other actions;
+        the endpoint's pagination semantics are identical. The endpoint
+        returns BOTH ERC-721 and ERC-1155 transfers, but only ERC-721
+        quantity-1 semantics are decoded downstream (registry-gated;
+        ERC-1155-looking rows are WARNING-skipped by the decoder). Whether
+        a decoded nfttx row becomes a pipeline row is gated
+        downstream by the position-token registry (decoder), not here.
+        """
+        return self._fetch_with_block_pagination("nfttx", address)
 
     def _fetch_with_block_pagination(self, action: str, address: str) -> list[dict]:
         """Drive the block-range pagination loop for one ``action``.
@@ -262,7 +276,7 @@ class EtherscanV2Client:
         duplicated or dropped at the page boundary. This relies on the
         documented assumption that server row order for an immutable block
         range is stable (module docstring); an identity-based reconciliation
-        was attempted for review r1 F9 and reverted - not because the
+        was attempted and reverted - not because the
         endpoint's rows are unidentifiable, but because the synthetic TEST
         rows carried no per-row identity fields (all rows collapsed to one
         identity and the drain made no progress); see
@@ -284,7 +298,7 @@ class EtherscanV2Client:
                 take = result[skip:]
                 if not take:
                     if len(result) == skip:
-                        # Review r2 F6: the NORMAL end-of-block path - the
+                        # The NORMAL end-of-block path - the
                         # page carried exactly the already-held rows (the
                         # block's total equals ``held``), so there is nothing
                         # unseen. DEBUG, not WARNING (a WARNING here fired on
@@ -302,8 +316,8 @@ class EtherscanV2Client:
                     # repeats only already-held rows (or returns fewer than
                     # already held) leaves ``held`` (and therefore
                     # ``page_num``) unchanged; stop the drain loudly rather
-                    # than re-requesting the same page forever. Review r2
-                    # F15: name the potential row loss explicitly.
+                    # than re-requesting the same page forever. Name the potential
+                    # row loss explicitly.
                     _LOGGER.warning(
                         "Boundary-block drain made no progress for action=%s "
                         "address=%s block=%d page=%d: the page carried no "
@@ -425,7 +439,7 @@ class EtherscanV2Client:
         """Return the maximum ``blockNumber`` across ``rows`` (all strings).
 
         Malformed ``blockNumber`` values are WARNING-skipped via
-        :func:`_parse_block_number` (review r1 F9) rather than aborting the
+        :func:`_parse_block_number` rather than aborting the
         whole wallet fetch with a raw ``ValueError``.
         """
         blocks = [
