@@ -78,6 +78,7 @@ from tax_reporting.domain.on_chain_transaction import (
     Gas,
     Leg,
     OnChainTransaction,
+    SubType,
 )
 from tax_reporting.domain.transaction import TransactionHistoryRow
 
@@ -98,6 +99,8 @@ _LOGGER = logging.getLogger(__name__)
 # This is a SINGLE DICT so it is trivial to audit against the design record.
 # SubType is deliberately NOT consulted here: Koinly has no SubType equivalent
 # (design record §9.1), and the per-shape tag is fixed by the EventType alone.
+# The ONE sanctioned exception is SUB_TYPE_TAG_OVERRIDES below (a named,
+# auditable override vocabulary, not scattered conditionals).
 #
 # Mapping rationale (design record §9.1 table + plan):
 #   Swap            -> exchange          / ""          (the canonical swap row)
@@ -119,6 +122,34 @@ EVENT_TYPE_TO_KOINLY: dict[EventType, tuple[str, str]] = {
     EventType.Transfer: ("transfer", ""),
     EventType.Unknown: ("crypto_deposit", ""),
 }
+
+# Narrow SubType tag-override vocabulary (user direction 2026-08-26): the ONLY
+# place SubType influences a projected row's Koinly rendering. A Reward whose
+# tokens were MINTED from the zero address (bridge issuance - real case: the
+# wallet's bridged WBTC deposits) renders its Tag as "Bridge" instead of
+# "Reward", so merged-TH consumers (and the future P2 rewards-from-on-chain
+# split) cannot mistake a bridge/CEX transfer-in for reward income. The
+# validation comparator imports this dict to extend its reverse combo lookup;
+# a combo it produces that is NOT registered there reverse-maps to Unknown
+# and fails the validation gate loudly.
+SUB_TYPE_TAG_OVERRIDES: dict[tuple[EventType, SubType], str] = {
+    (EventType.Reward, SubType.bridge): "Bridge",
+}
+
+
+def koinly_combo(event_type: EventType, sub_type: SubType | None) -> tuple[str, str]:
+    """Apply the override rule ONCE for every consumer (review r1 F12).
+
+    Returns the projected ``(type, tag)`` pair for an Event: the base pair
+    from :data:`EVENT_TYPE_TO_KOINLY` with the tag replaced when the
+    ``(EventType, SubType)`` pair has a sanctioned override. The adapter's
+    row projection and the validation comparator's reverse map both derive
+    their combos from THIS function, so the application rule ("an override
+    keeps the base combo's type and replaces only the tag") has a single
+    owner and cannot drift between the two sites.
+    """
+    base_type, base_tag = EVENT_TYPE_TO_KOINLY[event_type]
+    return (base_type, SUB_TYPE_TAG_OVERRIDES.get((event_type, sub_type), base_tag))
 
 
 @dataclass(frozen=True)
@@ -268,7 +299,7 @@ def _project_event_rows(
         drives the carrier-row gas rule. The GasBurn special case stays
         single-row (its ``Sent Amount`` is the gas itself).
     """
-    koinly_type, koinly_tag = EVENT_TYPE_TO_KOINLY[event.event_type]
+    koinly_type, koinly_tag = koinly_combo(event.event_type, event.sub_type)
 
     out_legs = [leg for leg in event.legs if leg.direction == "out"]
     in_legs = [leg for leg in event.legs if leg.direction == "in"]

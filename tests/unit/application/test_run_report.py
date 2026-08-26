@@ -174,6 +174,17 @@ class TestRunReport:
             if record.levelno == logging.WARNING
         ), f"expected soft-fail WARNING, got: {[r.message for r in caplog.records]}"
         assert (output_dir / "extract.xlsx").exists()
+        # Review r1 F6: the soft-fail must also write the staleness marker
+        # next to where the CSV would live and name the stale-CSV
+        # consequence in the WARNING text.
+        from tax_reporting.application.on_chain_fetcher import fetch_failed_marker_path
+
+        marker = fetch_failed_marker_path(output_dir, 2025)
+        assert marker.is_file(), f"expected fetch-failure marker at {marker}"
+        assert "On-chain fetch failed: boom" in marker.read_text(encoding="utf-8")
+        assert any(
+            "STALE" in record.getMessage() for record in caplog.records
+        ), "expected the WARNING to name the stale-CSV consequence"
 
     def test_fetch_skipped_when_none(self, empty_source: Path, tmp_path: Path, monkeypatch, caplog) -> None:
         """``on_chain_fetch=None`` means skip: no fetch attempt, no failure log."""

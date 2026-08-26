@@ -40,7 +40,9 @@ Termination guards (DI-5):
 Failure-mode translation:
     Known failure modes (``URLError``/``TimeoutError`` after retries exhausted,
     ``JSONDecodeError``, "Missing/Invalid API Key", persistent "Max rate limit
-    reached") are translated into ``FileProcessingError`` carrying the chainid
+    reached", and status:"0" API-error strings that are not the documented
+    empty response (e.g. an invalid module/action name)) are translated into
+    ``FileProcessingError`` carrying the chainid
     and address for clean attribution. The main.py wiring catch is a broad
     ``except Exception`` (DI-1), so an unexpected type still cannot escape.
 
@@ -75,6 +77,7 @@ _ENDBLOCK_SENTINEL = 99999999
 # modes in the ``result``/``message`` fields. Kept generic; no chain identity.
 _RATE_LIMIT_MARKER = "max rate limit reached"
 _API_KEY_MARKER = "invalid api key"
+_NO_ROWS_MARKER = "no transactions found"
 _BACKOFF_BASE_SECONDS = 0.1
 
 
@@ -176,24 +179,28 @@ class EtherscanV2Client:
         calls) that never appear in ``txlist``. Reuses the same block-range +
         boundary-drain pagination loop as the other actions; the endpoint's
         pagination semantics are identical. ERC-721 NFT mint receipts are NOT
-        recovered by this endpoint; use :meth:`fetch_nft_transfers` (``nfttx``).
+        recovered by this endpoint; use :meth:`fetch_nft_transfers` (``tokennfttx``).
         """
         return self._fetch_with_block_pagination("txlistinternal", address)
 
     def fetch_nft_transfers(self, address: str) -> list[dict]:
-        """Fetch ERC-721/1155 (``nfttx``) transfers for ``address``.
+        """Fetch ERC-721/1155 (``tokennfttx``) transfers for ``address``.
 
         Recovers position-NFT mint/send legs that are invisible to the
-        ``txlist``/``tokentx``/``txlistinternal`` triple. Reuses the same
-        block-range + boundary-drain pagination loop as the other actions;
-        the endpoint's pagination semantics are identical. The endpoint
-        returns BOTH ERC-721 and ERC-1155 transfers, but only ERC-721
-        quantity-1 semantics are decoded downstream (registry-gated;
+        ``txlist``/``tokentx``/``txlistinternal`` triple. The Etherscan V2
+        account action is ``tokennfttx`` - the ``nfttx`` name used earlier
+        was rejected by the live API with "Error! Missing Or invalid Action
+        name" and, before the fail-loud status:"0" guard, silently looked
+        like an empty wallet (found on real data 2026-08-25). Reuses the
+        same block-range + boundary-drain pagination loop as the other
+        actions; the endpoint's pagination semantics are identical. The
+        endpoint returns BOTH ERC-721 and ERC-1155 transfers, but only
+        ERC-721 quantity-1 semantics are decoded downstream (registry-gated;
         ERC-1155-looking rows are WARNING-skipped by the decoder). Whether
-        a decoded nfttx row becomes a pipeline row is gated
-        downstream by the position-token registry (decoder), not here.
+        a decoded row becomes a pipeline row is gated downstream by the
+        position-token registry (decoder), not here.
         """
-        return self._fetch_with_block_pagination("nfttx", address)
+        return self._fetch_with_block_pagination("tokennfttx", address)
 
     def _fetch_with_block_pagination(self, action: str, address: str) -> list[dict]:
         """Drive the block-range pagination loop for one ``action``.
@@ -235,18 +242,15 @@ class EtherscanV2Client:
                 return accumulated
 
             if status == "0":
-                text = self._failure_text(payload)
-                # API key / config problem -> raise immediately (not transient).
-                if _API_KEY_MARKER in text:
-                    raise FileProcessingError(
-                        f"Etherscan API key rejected for action={action} "
-                        f"chainid={self.chainid} address={address}: {text}"
-                    )
-                # Persistent rate limit is handled inside _call_with_retries; if
-                # it slips through here, treat as end-of-stream only when empty.
-                if isinstance(result, list) and len(result) == 0:
-                    return accumulated
-                # Any other status:"0" (e.g. "No transactions found") ends the stream.
+                # API-key errors raise inside the guard below (hoisted there
+                # so the boundary drain gets the same pre-check). Rate-limit
+                # payloads never reach this branch (the retry
+                # layer consumes every rate-limit-marked payload, raising on
+                # exhaustion); every other status:"0" payload goes through
+                # the fail-loud guard below (the old catch-all treated ANY
+                # status:"0" as end-of-stream, which made an invalid action
+                # name look like an empty wallet).
+                self._raise_unless_end_of_stream(payload, action, address, context="pagination")
                 return accumulated
 
             # Unknown shape - log and stop rather than spin forever.
@@ -342,7 +346,12 @@ class EtherscanV2Client:
 
             if status == "0":
                 # Includes the beyond-data empty page that ends an
-                # exact-multiple block (accepted extra request, r1 F8 analog).
+                # exact-multiple block (accepted extra request, r1 F8 analog);
+                # an API ERROR string here fails loud instead of silently
+                # dropping the boundary block's remaining rows.
+                self._raise_unless_end_of_stream(
+                    payload, action, address, context="boundary-block drain"
+                )
                 return False
 
             _LOGGER.warning(
@@ -454,6 +463,72 @@ class EtherscanV2Client:
                 "than guessing the block range to advance to."
             )
         return max(blocks)
+
+    def _raise_unless_end_of_stream(
+        self, payload: dict, action: str, address: str, *, context: str
+    ) -> None:
+        """Raise on a status:"0" payload that is not a benign empty shape.
+
+        Benign end-of-stream shapes: an empty ``result`` list; an empty
+        failure text (no ``result`` string and no ``message``); or the
+        "No transactions found" text variant in either field (review r3:
+        the message can carry the error, so the check reads the FULL
+        concatenated text, never the result cell alone). A NON-EMPTY list arriving with
+        status:"0" is anomalous (status 1 normally accompanies lists): the
+        page is dropped to end the stream, but a WARNING names it so the
+        drop is never silent (review r1 F2). Anything else is an API error
+        string - an invalid module/action name, a proxy refusal, and so on -
+        that must not be silently read as an empty wallet
+        (silent-data-loss guard; see the ``tokennfttx`` fix, 2026-08-25).
+        Rate-limit payloads never reach this guard: ``_call_with_retries``
+        consumes every payload whose failure text carries the rate-limit
+        marker (retrying, then raising on exhaustion), so no slipped-through
+        rate limit can terminate a stream here (review r1 F10 correction of
+        the earlier comment).
+        """
+        # API-key/config errors raise FIRST, before any benign-empty
+        # return (review r2 overflow: an error payload whose result is an
+        # empty string or None must not slip past the marker inspection -
+        # the boundary drain has no separate pre-check).
+        text = self._failure_text(payload)
+        if _API_KEY_MARKER in text:
+            raise FileProcessingError(
+                f"Etherscan API key rejected for action={action} "
+                f"chainid={self.chainid} address={address}: {text}"
+            )
+        result = payload.get("result")
+        if isinstance(result, list):
+            if result:
+                _LOGGER.warning(
+                    "Etherscan status=0 with %d result row(s) for action=%s "
+                    "address=%s chainid=%s (%s); dropping the anomalous page "
+                    "and ending the stream",
+                    len(result),
+                    action,
+                    address,
+                    self.chainid,
+                    context,
+                )
+            return
+        # Review r3: benign iff the FULL failure text (result + message) is
+        # empty or carries the no-rows marker - the message field can carry
+        # an error string even when the result cell is empty (an earlier
+        # empty-result-first rule would have read a message-borne error as
+        # a benign empty page in BOTH loops). Review r4 (risk): a result of
+        # an UNRECOGNIZED type (neither str, list, nor None) is anomalous
+        # and fails loud rather than reading as an empty text.
+        if result is not None and not isinstance(result, str):
+            raise FileProcessingError(
+                f"Etherscan returned an unrecognized result type "
+                f"({type(result).__name__}) for action={action} "
+                f"chainid={self.chainid} address={address} ({context}): {text!r}"
+            )
+        if not text.strip() or _NO_ROWS_MARKER in text:
+            return
+        raise FileProcessingError(
+            f"Etherscan error for action={action} chainid={self.chainid} "
+            f"address={address} ({context}): {text}"
+        )
 
     @staticmethod
     def _failure_text(payload: dict) -> str:

@@ -27,6 +27,8 @@ design record §9.1 and the 11 plan clauses:
 | BIDIRECTIONAL receiving LP token  | LiquidityDeposit                  | internal_transfer       |
 +-----------------------------------+-----------------------------------+-------------------------+
 | MULTI inflow (rewards), no outflow| Reward (one per (tx, asset))      | staking | spam          |
+|                                   |                                   | | bridge (mint    |
+|                                   |                                   | | from 0x0)      |
 +-----------------------------------+-----------------------------------+-------------------------+
 | reward-claim-then-swap (distrib + | Reward + Swap (linked by          | staking/spam (reward)   |
 | DEX router both touched)          | parent_event_id)                  |                         |
@@ -113,6 +115,9 @@ _WALLET_UPPER = "0xABCABCABCABCABCABCABCABCABCABCABCABCABCA"  # checksummed form
 _DEX_ROUTER = "0x000000000000000000000000000000000000dead"  # in example registry
 _REWARD_DISTRIBUTOR_VERIFIED = "0x000000000000000000000000000000000000beef"
 _REWARD_DISTRIBUTOR_UNVERIFIED = "0x0000000000000000000000000000000000009999"
+# ERC-20 mint sentinel: a Transfer event FROM the zero address is new token
+# issuance (bridge deposit / airdrop mint) - no external sender exists.
+_ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 _LP_TOKEN = "0x000000000000000000000000000000000000dead"  # matches example LP snapshot
 # C3: synthetic second own wallet (matches the committed example registry's
 # ``self_wallet`` entry; tests MUST read committed synthetic data, so the
@@ -1213,6 +1218,232 @@ class TestBerachainProcessor:
         # discriminable signal since Event has no review field.
         review_msgs = _review_messages(caplog)
         assert review_msgs, "expected a review-flag WARNING for the spam Event"
+
+    def test_pure_inflow_mint_from_zero_is_bridge_not_spam(self) -> None:
+        # Bridge issuance shape (real 2025 data: the wallet's 3 WBTC mints -
+        # bridged BTC arriving on Berachain): the only in-leg is MINTED from
+        # the zero address, so there is NO external sender and the F4
+        # unverified-sender premise does not apply. Must classify
+        # SubType=bridge with a review reason naming the possible
+        # bridge/CEX transfer-in and the acquisition-basis verification
+        # (user direction 2026-08-26), NOT spam.
+        rows = [
+            _row(
+                tx_hash="0xbridgemint",
+                asset="WBTC",
+                direction="in",
+                token_address="0x0000000000000000000000000000000000000btc",
+                from_address=_ZERO_ADDRESS,
+                to_address=_WALLET,
+                amount_raw=10**8,
+                amount_decimals=8,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+        processor = _processor()
+
+        txs = processor.process(rows)
+
+        assert len(txs) == 1
+        events = _events(txs[0])
+        assert len(events) == 1
+        assert events[0].event_type is EventType.Reward
+        assert events[0].sub_type is SubType.bridge
+        assert events[0].sub_type is not SubType.spam
+        reason = events[0].review_reason
+        assert reason is not None, "a bridge mint must stay review-flagged"
+        assert "bridge" in reason.lower()
+        assert "zero address" in reason.lower()
+        assert "basis" in reason.lower()
+
+    def test_mint_from_zero_with_gas_carrier_still_bridge(self) -> None:
+        # The same bridge mint carrying the C1 zero-value native gas-carrier
+        # out-leg: the carrier is excluded from the in/out partition, so the
+        # tx stays a PURE inflow and must still classify Reward/bridge.
+        rows = [
+            _row(
+                tx_hash="0xbridgegas",
+                asset="WBERA",
+                direction="in",
+                token_address="0x0000000000000000000000000000000000000wber",
+                from_address=_ZERO_ADDRESS,
+                to_address=_WALLET,
+                amount_raw=10**18,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+            _row(
+                tx_hash="0xbridgegas",
+                asset="BERA",
+                direction="out",
+                token_address=None,
+                from_address=_WALLET,
+                to_address="0x0000000000000000000000000000000000000router",
+                amount_raw=0,
+                fee_asset="BERA",
+                fee_amount_raw=21_000_002_730_000,
+            ),
+        ]
+        processor = _processor()
+
+        txs = processor.process(rows)
+
+        events = _events(txs[0])
+        assert len(events) == 1
+        assert events[0].event_type is EventType.Reward
+        assert events[0].sub_type is SubType.bridge
+
+    def test_mixed_mint_and_sender_inflow_classifies_per_asset(self) -> None:
+        # Multi-token pure inflow where ONE asset is minted from the zero
+        # address (bridge) and ONE arrives from an unregistered sender: the
+        # per-(tx, asset) grouping keeps the discriminators independent -
+        # mint asset -> bridge, sender asset -> spam.
+        rows = [
+            _row(
+                tx_hash="0xmixed",
+                asset="WBTC",
+                direction="in",
+                token_address="0x0000000000000000000000000000000000000btc",
+                from_address=_ZERO_ADDRESS,
+                to_address=_WALLET,
+                amount_raw=10**8,
+                amount_decimals=8,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+            _row(
+                tx_hash="0xmixed",
+                asset="HONEY",
+                direction="in",
+                token_address="0x000000000000000000000000000000000000abcd",
+                from_address=_REWARD_DISTRIBUTOR_UNVERIFIED,
+                to_address=_WALLET,
+                amount_raw=10**18,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+        processor = _processor()
+
+        txs = processor.process(rows)
+
+        events = _events(txs[0])
+        by_asset = {
+            next(leg.asset for leg in event.legs if leg.direction == "in"): event
+            for event in events
+        }
+        assert by_asset["WBTC"].sub_type is SubType.bridge
+        assert by_asset["HONEY"].sub_type is SubType.spam
+
+    def test_reward_then_swap_routes_mint_leg_to_bridge_reward(self) -> None:
+        # Review r1 F3: inside the reward-claim-then-swap split, a
+        # zero-address mint in-leg must route to the REWARD side (classified
+        # bridge + review by _reward_sub_type), never be absorbed into the
+        # Swap legs.
+        rows = [
+            _row(
+                tx_hash="0xsplitmint",
+                asset="BGT",
+                direction="in",
+                from_address=_REWARD_DISTRIBUTOR_VERIFIED,
+                to_address=_WALLET,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+            _row(
+                tx_hash="0xsplitmint",
+                asset="WBTC",
+                direction="in",
+                token_address="0x0000000000000000000000000000000000000btc",
+                from_address=_ZERO_ADDRESS,
+                to_address=_WALLET,
+                amount_raw=10**8,
+                amount_decimals=8,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+            _row(
+                tx_hash="0xsplitmint",
+                asset="BGT",
+                direction="out",
+                token_address="0x0000000000000000000000000000000000000bgt",
+                from_address=_WALLET,
+                to_address=_DEX_ROUTER,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+            _row(
+                tx_hash="0xsplitmint",
+                asset="HONEY",
+                direction="in",
+                token_address="0x0000000000000000000000000000000000000hny",
+                from_address=_DEX_ROUTER,
+                to_address=_WALLET,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+        processor = _processor()
+
+        txs = processor.process(rows)
+
+        events = _events(txs[0])
+        by_type = {}
+        for event in events:
+            for leg in event.legs:
+                if leg.direction == "in":
+                    by_type[leg.asset] = (event.event_type, event.sub_type)
+        assert by_type["BGT"] == (EventType.Reward, SubType.staking)
+        assert by_type["WBTC"] == (EventType.Reward, SubType.bridge)
+        assert by_type["HONEY"] == (EventType.Swap, None)
+        bridge_event = next(e for e in events if e.sub_type is SubType.bridge)
+        assert bridge_event.review_reason is not None
+
+    def test_swap_absorbing_mint_leg_warns(self, caplog) -> None:
+        # Review r1 F3 residual: a bidirectional mint+out tx with NO
+        # distributor/router split classifies as a Swap; the zero-address
+        # mint in-leg must at least WARN that a bridge/CEX transfer-in may
+        # be hidden inside the exchange shape.
+        rows = [
+            _row(
+                tx_hash="0xswapmint",
+                asset="WBTC",
+                direction="in",
+                token_address="0x0000000000000000000000000000000000000btc",
+                from_address=_ZERO_ADDRESS,
+                to_address=_WALLET,
+                amount_raw=10**8,
+                amount_decimals=8,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+            _row(
+                tx_hash="0xswapmint",
+                asset="HONEY",
+                direction="out",
+                token_address="0x0000000000000000000000000000000000000hny",
+                from_address=_WALLET,
+                to_address="0x0000000000000000000000000000000000000pair",
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+        processor = _processor()
+
+        with caplog.at_level(logging.WARNING, logger=BerachainProcessor.__module__):
+            txs = processor.process(rows)
+
+        events = _events(txs[0])
+        assert len(events) == 1
+        assert events[0].event_type is EventType.Swap
+        assert any(
+            "zero-address mint in-leg" in rec.getMessage() for rec in caplog.records
+        ), "expected the Swap-absorbs-mint WARNING"
+        # Review r5 (risk): the indicator must also live ON the Event so it
+        # survives into the merged-TH Description, not only the log.
+        assert events[0].review_reason is not None
+        assert "zero-address mint in-leg" in events[0].review_reason
 
     def test_same_asset_multi_sender_reward_splits_per_sender(self) -> None:
         # Given - a tx with TWO same-asset reward in-legs from DIFFERENT

@@ -75,7 +75,9 @@ from decimal import Decimal
 
 import pytest
 
-from tax_reporting.application.on_chain_th_adapter import project_on_chain_transactions
+from tax_reporting.application.on_chain_th_adapter import (
+    project_on_chain_transactions,
+)
 from tax_reporting.application.on_chain_validation.comparator import (
     Presence,
     Surface,
@@ -97,6 +99,7 @@ _TX_HASH_KOINLY_ONLY = "0x222222222222222222222222222222222222222222222222222222
 _WALLET_ADDRESS = "0xWallet0000000000000000000000000000000000a"
 _COUNTERPARTY = "0xCounterParty00000000000000000000000000000b"
 _BGT_TOKEN = "0xToken0000000000000000000000000000000001"
+_WBTC_TOKEN = "0xToken0000000000000000000000000000000007"
 _LP_TOKEN = "0xToken0000000000000000000000000000000002"
 _WALLET_LABEL = "Ledger Berachain (BERA)"
 _TIMESTAMP = datetime(2025, 3, 1, 12, 0, 0, tzinfo=UTC)
@@ -437,6 +440,76 @@ class TestOnChainThComparator:
         assert record.type_mismatch is not None
         assert record.type_mismatch.on_chain_combos == {("exchange", "")}
         assert record.type_mismatch.koinly_combos == {("crypto_deposit", "Reward")}
+
+    def test_bridge_tag_combo_reverse_maps_to_reward(self) -> None:
+        # The adapter's SubType bridge-tag override renders Reward/bridge
+        # (zero-address mint, e.g. bridged WBTC) as ("crypto_deposit",
+        # "Bridge"); the comparator's reverse lookup must recover
+        # EventType.Reward for that combo instead of the fail-loud Unknown
+        # fallback - otherwise every bridge mint lands in a spurious
+        # Unknown cluster (found on the live 2025 baseline 2026-08-26).
+        event = Event(
+            event_id=f"{_TX_HASH}#1",
+            event_type=EventType.Reward,
+            sub_type=SubType.bridge,
+            legs=(_in_leg(asset="WBTC", amount=Decimal("0.01"), token_address=_WBTC_TOKEN),),
+            parent_tx_hash=_TX_HASH,
+        )
+        projected = project_on_chain_transactions([_tx(_TX_HASH, [event], gas=None)])
+        koinly_rows = [
+            _koinly_row(type_="exchange", tag="", sent="0.01", sent_cur="WBTC"),
+        ]
+
+        result = compare_projection(koinly_rows, projected)
+
+        record = result.divergent[0]
+        # Recovered type is Reward (the unknown-fallback path would read
+        # {EventType.Unknown}); the exchange row stays an EXPLAINABLE
+        # Koinly-side divergence, not an unknown-vocabulary error.
+        assert record.on_chain_event_types == {EventType.Reward}
+        uncovered = record.type_mismatch.uncovered_koinly_combos if record.type_mismatch else frozenset()
+        assert ("exchange", "") in uncovered
+
+    @pytest.mark.parametrize(
+        "colliding_overrides",
+        [
+            # Override tag equals a BASE combo tag: (Reward, bridge) -> "Reward"
+            # collides with the base (crypto_deposit, "Reward") combo.
+            {(EventType.Reward, SubType.bridge): "Reward"},
+            # Two overrides colliding on one combo (both keep base type
+            # crypto_deposit, same tag).
+            {(EventType.Reward, SubType.bridge): "Bridge", (EventType.Reward, SubType.spam): "Bridge"},
+        ],
+    )
+    def test_colliding_override_fails_loud(self, monkeypatch, colliding_overrides) -> None:
+        # Review r1 F4: the reverse-map injectivity guard is the only barrier
+        # between a future override edit and silent EventType mis-mapping in
+        # the validation gate; each collision mode must raise at build time
+        # naming the colliding combo (not merely fail a length arithmetic
+        # check). The builder derives combos via the adapter's koinly_combo,
+        # so the colliding vocabulary is injected by patching the adapter
+        # dict it reads.
+        import tax_reporting.application.on_chain_th_adapter as adapter_module
+        from tax_reporting.application.on_chain_validation.comparator import _build_reverse_combo_map
+
+        monkeypatch.setattr(adapter_module, "SUB_TYPE_TAG_OVERRIDES", dict(colliding_overrides))
+        with pytest.raises(RuntimeError, match="claimed twice"):
+            _build_reverse_combo_map()
+
+    def test_base_map_collision_fails_loud(self, monkeypatch) -> None:
+        # Review r4 (and the corrected r3 note): the restored BASE-map
+        # injectivity guard must raise when two EventTypes share one combo -
+        # the exact master-era regression the r2 rewrite introduced
+        # (last-writer-wins comprehension).
+        import tax_reporting.application.on_chain_th_adapter as adapter_module
+        from tax_reporting.application.on_chain_validation.comparator import _build_reverse_combo_map
+
+        bad = dict(adapter_module.EVENT_TYPE_TO_KOINLY)
+        bad[EventType.Unknown] = bad[EventType.Reward]  # two EventTypes, one combo
+        monkeypatch.setattr(adapter_module, "EVENT_TYPE_TO_KOINLY", bad)
+
+        with pytest.raises(RuntimeError, match="combos collide"):
+            _build_reverse_combo_map()
 
     def test_koinly_zero_display_cost_flagged(self) -> None:
         # Given - the C7 accepted-gap shape: Koinly renders the gas-only burn

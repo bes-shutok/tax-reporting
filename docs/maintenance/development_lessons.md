@@ -2908,3 +2908,19 @@ The same immunity applies to prose inside the guarded files: a docstring or comm
 **Example:** `docs/history/plans/completed/2026-08-24-multi-leg-th-projection.md` quoted "tx `0xbc0d9b42...`" and "tx `0x377d40db...`" in its Gist worked examples. Neither existed on master; the squash would have reintroduced the purged identifier class. Fixed by replacing both with "tx hash withheld, see the gitignored dispositions file" (commit scrubbed pre-squash). The only remaining truncated hash in that diff (`0xd2f19a79...`) is the public BGT Distributor contract, pre-existing on master in three docs.
 
 **See also:** the PII pre-push diff scan recipe (session memory), `coding_guidelines.md` hygiene patterns.
+
+## 152. Narrating real-data findings in tracked docs is a PII surface
+
+**Principle:** Family H (hygiene/PII guards cover every authored surface, not just code).
+
+**Trigger:** writing validation/report narrative that references real personal transactions (hashes, amounts+dates, counterparties) into any TRACKED doc.
+
+**Rule:** When narrating real-data findings in tracked docs, write identifiers withheld-by-default at authoring time ("tx hash withheld - see the gitignored dispositions file"), and run the pre-commit PII sweep over your PROSE edits, not just code/tests. The sweep for 6-12-hex truncated prefixes applies to doc text exactly as to source.
+
+**Why:** The 2026-08-16 purge removed personal tx-hash identifiers from history; a review-loop narrative commit reintroduced an 8-hex prefix into the tracked backlog (caught by the r1 review panel, scrubbed same day). Amount+date+prefix jointly re-identify a purged tx even when no single field looks identifying.
+
+**Shape:** you are editing docs/history or docs/maintenance text that summarizes a real-baseline run; the convenience of naming the tx feels harmless because the full hash is not present.
+
+**Example:** Backlog FLIP-TIME WATCH prose cited a personal withdrawal by an 8-hex tx-hash prefix; the fix replaced it with a withheld-by-default phrase (the literal is intentionally not reproduced here). Lesson #151's purge precedent covers truncated prefixes; this lesson adds that NARRATIVE edits are the recurring entry path.
+
+**See also:** #151 (truncated prefixes defeat full-width scans), #128 (self-match-immune greps).

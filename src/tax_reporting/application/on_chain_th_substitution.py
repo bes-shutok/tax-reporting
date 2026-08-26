@@ -61,7 +61,7 @@ from .on_chain_config import (
     load_lp_snapshot,
     load_position_token_registry_for_year,
 )
-from .on_chain_fetcher import bera_csv_path
+from .on_chain_fetcher import bera_csv_path, fetch_failed_marker_path
 from .on_chain_th_adapter import (
     TH_CSV_COLUMNS,
     ProjectedThRow,
@@ -389,6 +389,29 @@ class OnChainThSubstituter:
                 bera_csv,
             )
             return None
+
+        # Review r1 F6: a fetch failure after the CSV's last successful write
+        # leaves a stale marker newer than the CSV; building the opted-in TH
+        # projection on it would quietly under-report on-chain activity. Loud
+        # ERROR (not a refusal: the collection fetch is deliberately
+        # non-blocking, and a valid prior CSV remains usable for review).
+        marker = fetch_failed_marker_path(output_dir, year)
+        try:
+            marker_newer = marker.is_file() and marker.stat().st_mtime > bera_csv.stat().st_mtime
+        except FileNotFoundError:
+            # Review r4 (risk): the marker's documented manual clear is
+            # deletion; a deletion racing this check reads as absent.
+            marker_newer = False
+        if marker_newer:
+            logger.error(
+                "On-chain CSV %s is STALE: the fetch-failure marker %s is "
+                "newer than the CSV (a later refresh failed). The projection "
+                "below may be missing on-chain activity after the CSV's last "
+                "successful fetch - re-run the fetch before relying on the "
+                "output.",
+                bera_csv,
+                marker.name,
+            )
 
         logger.info("Building on-chain TH projection from %s.", bera_csv)
 

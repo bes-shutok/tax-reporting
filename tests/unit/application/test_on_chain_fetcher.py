@@ -191,7 +191,7 @@ def _install_fake_http(
             rows = txlist_by_addr.get(address, default_txlist)
         elif action == "tokentx":
             rows = tokentx_by_addr.get(address, default_tokentx)
-        elif action == "nfttx":
+        elif action == "tokennfttx":
             rows = nfttx_by_addr.get(address, default_nfttx)
         else:
             rows = []
@@ -208,6 +208,76 @@ def _read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
         fieldnames = list(reader.fieldnames or [])
         rows = [dict(r) for r in reader]
     return fieldnames, rows
+
+
+class TestEmptyConfigMarker:
+    """Review r3 (risk): an empty wallet config with a prior CSV writes the
+    staleness marker, so a config regression cannot silently leave the TH
+    substitution on a stale CSV with no signal."""
+
+    def test_empty_wallets_with_prior_csv_writes_marker(self, monkeypatch, tmp_path):
+        from tax_reporting.application import on_chain_fetcher as fetcher_module
+        from tax_reporting.application.on_chain_fetcher import (
+            fetch_failed_marker_path,
+            run_on_chain_fetch,
+        )
+
+        monkeypatch.setattr(fetcher_module, "load_on_chain_wallets", lambda _year: [])
+        csv = tmp_path / "2025" / "bera_transactions.csv"
+        csv.parent.mkdir(parents=True)
+        csv.write_text("tx_hash\n", encoding="utf-8")
+
+        result = run_on_chain_fetch(year=2025, output_dir=tmp_path, api_key="k")
+
+        assert result is None
+        marker = fetch_failed_marker_path(tmp_path, 2025)
+        assert marker.is_file()
+        assert "empty wallet config" in marker.read_text(encoding="utf-8")
+
+    def test_empty_wallets_without_prior_csv_writes_no_marker(self, monkeypatch, tmp_path):
+        from tax_reporting.application import on_chain_fetcher as fetcher_module
+        from tax_reporting.application.on_chain_fetcher import (
+            fetch_failed_marker_path,
+            run_on_chain_fetch,
+        )
+
+        monkeypatch.setattr(fetcher_module, "load_on_chain_wallets", lambda _year: [])
+
+        result = run_on_chain_fetch(year=2025, output_dir=tmp_path, api_key="k")
+
+        assert result is None
+        assert not fetch_failed_marker_path(tmp_path, 2025).exists()
+
+
+class TestWriteFetchFailedMarker:
+    """Review r2 F2: the marker write is best-effort by contract."""
+
+    def test_os_error_swallowed_with_warning(self, monkeypatch, tmp_path, caplog) -> None:
+        from pathlib import Path as _Path
+
+        from tax_reporting.application.on_chain_fetcher import write_fetch_failed_marker
+
+        def boom(self, content, encoding=None):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(_Path, "write_text", boom)
+        with caplog.at_level(logging.WARNING, logger="tax_reporting.application.on_chain_fetcher"):
+            write_fetch_failed_marker(tmp_path, 2025, "On-chain fetch failed: x")
+
+        assert any(
+            "fetch-failure marker" in rec.getMessage() for rec in caplog.records
+        ), "expected the best-effort WARNING"
+
+    def test_writes_message_next_to_csv(self, tmp_path) -> None:
+        from tax_reporting.application.on_chain_fetcher import (
+            fetch_failed_marker_path,
+            write_fetch_failed_marker,
+        )
+
+        write_fetch_failed_marker(tmp_path, 2025, "On-chain fetch failed: y")
+        marker = fetch_failed_marker_path(tmp_path, 2025)
+        assert marker.is_file()
+        assert "On-chain fetch failed: y" in marker.read_text(encoding="utf-8")
 
 
 class TestBeraCsvPath:

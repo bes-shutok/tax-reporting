@@ -109,6 +109,36 @@ items fixed, zero unresolved; archived at
 `docs/history/plans/completed/2026-08-24-multi-leg-th-projection.md`). Code-side work is done;
 the flip gate now waits only on the user-run Ship-when step (re-fetch the 2025 CSV incl. nfttx
 rows, `--validate-on-chain-th 2025` zero-exit, then flip `ON_CHAIN_TH_WALLETS`).
+2026-08-25 Ship-when progress: the re-fetch exposed that the nfttx action name was wrong
+(`nfttx` is rejected by Etherscan V2; the real account action is `tokennfttx`, and the client's
+status:"0" catch-all had silently read the API error as an empty wallet) - fixed TDD-first on
+branch `2026-08-25-nfttx-wire-action-fix` with a fail-loud guard for non-empty-stream error
+strings. Re-fetch then landed the 3 Kodiak position-NFT rows (CSV 5046 -> 5049). Post-fix
+validation: 381/424 shared hashes matched; 17 missing_rule signatures reduced to 9 occurring +
+1 NEW, and every remaining divergence is Koinly-side lossy rendering (same-tx dust-refund
+netting into the paired out leg - net matches on-chain gross exactly at the 8-decimal
+tolerance; gas omission on exchange rows; vault interactions Koinly renders as Cost-only;
+Koinly's pool abstraction virtualizing the KODI LP token). Same day the user delegated the
+rulings ("analyze the clusters yourself; only leave unclear items"): all 20 occurrences
+verified per tx (both sides' rows + Etherscan receipt logs for the pool/stake txs; every
+exchange row proved to be balance-delta netted with sent = gross + gas exact per tx, refund
+legs dropped by Koinly) and all 10 clusters ruled `acceptable_difference` in the gitignored
+dispositions file with agent-decided markers and per-cluster evidence. `--validate-on-chain-th
+2025` now EXITS 0 (19/19 clusters acceptable, 0 NEW). Flip gate fully open: the only remaining
+Ship-when action is the user flipping `ON_CHAIN_TH_WALLETS` (plan invariant: the flip is the
+user's step). FLIP-TIME WATCH items recorded in the dispositions: the 69.094 KODI LP stake
+(tx hash withheld - see the gitignored dispositions file; zero-proceeds wallet-scope
+disposal, position returned May 20) and the
+Koinly-dropped refund legs (up to 20.39 AIBERA) will surface via the zero-basis review
+machinery once on-chain feeds the pipeline - by design, not errors.
+2026-08-26 addition (user direction): bridge-mint inflows (pure inflow whose leg is
+minted from the zero address - the wallet's bridged WBTC deposits, future CEX->bridge
+transfers) classify `Reward`+`SubType.bridge` (NOT spam) with a review reason naming the
+acquisition-basis verification, and render merged-TH Tag `Bridge` via the adapter's
+`SUB_TYPE_TAG_OVERRIDES` (the comparator's reverse map derives from that dict automatically). This is
+the on-chain-side marker for the P4 cross-chain legs guard: the tag makes bridge/CEX
+transfer-ins identifiable in the merged TH, but the MATCHING to the originating CEX
+acquisition still needs the P2/P4 ingestion work.
 
 - Committed, user-runnable validation command (e.g. `uv run tax-reporting --validate-on-chain-th <year>`)
   that runs the production path (registry load → reader → processor → integrity/freshness audit →
@@ -164,6 +194,13 @@ rows, `--validate-on-chain-th 2025` zero-exit, then flip `ON_CHAIN_TH_WALLETS`).
   existing `aggregate_taxable_rewards()` + IRS-table aggregation stay the consumers.
 - Read `docs/maintenance/crypto_rules.md` + `decision_points/` before touching classification.
 
+### P2 follow-up candidates (from the 2026-08-26 review loop)
+
+Three deferred-with-record findings live in their own backlog doc for later
+plan promotion: `docs/history/backlog/2026-08-26-on-chain-review-followups.md`
+(staleness hard-refusal + in-artifact indicator; comparator module
+extraction; bridge-asset registry gate).
+
 ### P3 - Capital gains fully pipeline-side
 
 - `crypto_fifo` becomes the sole CG engine over the (on-chain) TH; the Koinly CG report parse
@@ -176,6 +213,15 @@ rows, `--validate-on-chain-th 2025` zero-exit, then flip `ON_CHAIN_TH_WALLETS`).
   numbers (the strongest acceptance test available).
 - Relax `load_koinly_crypto_report`'s three-file hard requirement (on-chain-only mode).
 - Cancel the subscription; run TY2026 for real.
+- **Cross-chain legs guard (user directive 2026-08-25)**: Koinly is currently the ONLY source
+  recording where funds entered Berachain from (bridge/CEX deposits on other chains and venues)
+  and where they left to (withdrawals to exchanges). The Berachain on-chain fetcher sees only
+  Berachain, so flipping `ON_CHAIN_TH_WALLETS` replaces the Berachain TH alone - the cross-chain
+  acquisition/disposal legs vanish with the Koinly subscription unless a replacement lands first.
+  Do NOT cancel (or archive the 2025 exports away from the pipeline) until either the Etherscan V2
+  client is extended to the origin/destination chains of those transfers, exchange exports are
+  ingested, or the Koinly exports are consciously retained as the permanent record of those legs.
+  Cost basis for cross-chain acquisitions depends on this (P3's rollover state needs those bases).
 
 ## Open confirmations (session tail, default-accepted unless overridden)
 

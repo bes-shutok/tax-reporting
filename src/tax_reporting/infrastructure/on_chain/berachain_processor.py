@@ -138,6 +138,20 @@ _NATIVE_DEFAULT_DECIMALS: Final = 18
 # deposit shape: a zap routes one input through several deposits/ swaps at once.
 _MIN_MULTI_LEG_OUTLEGS: Final = 2
 
+# ERC-20 mint sentinel: a Transfer event FROM the zero address is new token
+# issuance (bridge deposit, e.g. bridged WBTC, or an on-chain mint/airdrop) -
+# no external sender exists. Protocol constant, not chain identity; the
+# BRIDGE reading is a classification choice in _reward_sub_type, not part of
+# the sentinel's meaning (review r1 F14).
+_ZERO_ADDRESS: Final = "0x0000000000000000000000000000000000000000"
+
+
+def _is_zero_address(address: str | None) -> bool:
+    """True iff ``address`` is the ERC-20 mint sentinel (review r5: single
+    owner for the None-coalesce + lowercase normalization so the three
+    classification sites cannot drift)."""
+    return (address or "").lower() == _ZERO_ADDRESS
+
 # The native-leg asset is the one with no token_address (it is the chain's
 # native coin, not an ERC-20). Used to (a) detect GAS_ONLY txs and (b) source
 # the gas decimals when the fee is on the native leg.
@@ -318,7 +332,11 @@ class BerachainProcessor:
            ``self_wallet`` -> Transfer/internal_transfer (C3a; before the
            reward branch, which would otherwise consume the shape).
         5. PURE inflow with no outflow (multi-token reward claim) -> one
-           Reward Event per (asset, sender), summed.
+           Reward Event per (asset, sender), summed. A leg MINTED from the
+           zero address (bridge issuance, no external sender - e.g. bridged
+           WBTC) yields SubType=bridge + review with a bridge-specific
+           reason instead of the F4 spam rule (user direction 2026-08-26:
+           CEX->bridge transfers must not read as rewards).
         6. BIDIRECTIONAL SENDING a member token, split by member source
            (plan 2026-08-23 Task 1). BEFORE shape 7: the deposit read
            would otherwise classify the receive side of the same tx as the
@@ -656,6 +674,33 @@ class BerachainProcessor:
 
         # 8. BIDIRECTIONAL 1 in-asset <-> 1 out-asset -> Swap.
         if in_legs and out_legs:
+            # Review r1 F3: a minted (zero-address) in-leg classified inside
+            # a Swap hides a possible bridge/CEX transfer-in behind an
+            # exchange shape (no distributor/router split applied). Warn; the
+            # review workflow carries it from here. (r2 F4: the mint
+            # predicate is computed ONCE.)
+            minted_assets = sorted(
+                {
+                    leg.asset
+                    for leg in in_legs
+                    if _is_zero_address(leg.from_address)
+                }
+            )
+            if minted_assets:
+                # Review r5 (risk): the indicator must survive into the
+                # artifact, not just the log - flag the Event so the merged-TH
+                # Description carries the verification demand (repo rule:
+                # partial/uncertain results carry an explicit indicator).
+                reason = (
+                    "swap contains a zero-address mint in-leg "
+                    f"(asset(s) {', '.join(minted_assets)}); a bridge/CEX "
+                    "transfer-in may be hidden inside the exchange shape - "
+                    "verify source and cost basis before filing"
+                )
+                _LOGGER.warning("tx_hash=%s %s", tx_hash, reason)
+                return [
+                    _event(tx_hash, EventType.Swap, None, economic_legs, review=True, reason=reason)
+                ]
             return [_event(tx_hash, EventType.Swap, None, economic_legs)]
 
         # 9. C3b self-wallet outbound: a pure outflow whose single recipient
@@ -1031,10 +1076,15 @@ class BerachainProcessor:
 
         reward_legs: list[Leg] = []
         swap_legs: list[Leg] = []
-        # Pair each leg with its source row to read from_address.
+        # Pair each leg with its source row to read from_address. A
+        # zero-address mint in-leg routes to the reward side too (review r1
+        # F3): _reward_sub_type classifies it bridge + review, the same
+        # treatment a pure-inflow mint gets, instead of silently absorbing
+        # the bridge transfer-in into the Swap legs.
         for row, leg in zip(rows, legs, strict=True):
-            if leg.direction == "in" and self._is_reward_distributor(
-                (row.from_address or "").lower()
+            sender = (row.from_address or "").lower()
+            if leg.direction == "in" and (
+                _is_zero_address(row.from_address) or self._is_reward_distributor(sender)
             ):
                 reward_legs.append(leg)
             else:
@@ -1061,7 +1111,7 @@ class BerachainProcessor:
         # guard produces one summed leg per sender (F3).
         for asset_legs in _group_legs_by_asset(reward_inflows, tx_hash).values():
             for summed_leg in asset_legs:
-                sub_type = self._reward_sub_type([summed_leg])
+                sub_type = self._reward_sub_type(summed_leg)
                 events.append(self._reward_event(tx_hash, summed_leg, sub_type))
         # The Swap Event carries the DEX-router exchange legs.
         events.append(_event(tx_hash, EventType.Swap, None, swap_legs))
@@ -1080,47 +1130,67 @@ class BerachainProcessor:
         events: list[Event] = []
         for asset_legs in _group_legs_by_asset(in_legs, tx_hash).values():
             for summed_leg in asset_legs:
-                sub_type = self._reward_sub_type([summed_leg])
+                sub_type = self._reward_sub_type(summed_leg)
                 events.append(self._reward_event(tx_hash, summed_leg, sub_type))
         return events
 
     def _reward_event(self, tx_hash: str, summed_leg: Leg, sub_type: SubType) -> Event:
-        """Build one Reward Event (review r7 F1: spam always carries a reason).
+        """Build one Reward Event (review r7 F1: spam/bridge always carry a reason).
 
         Shared by the reward-claim-then-swap split and the multi-token
         reward builder (sibling sites, one helper so the review plumbing
         cannot drift). A spam Reward is review-flagged with an actionable
         reason naming the unverified sender (PT-C-030 family), so the
-        merged-TH Description cell keeps the review indicator.
+        merged-TH Description cell keeps the review indicator. A bridge
+        mint (zero-address issuance) carries its own actionable reason: the
+        workflow cannot match the inflow to the originating acquisition
+        (e.g. a CEX withdrawal), so the source and cost basis must be
+        verified before filing (user direction 2026-08-26).
         """
-        spam = sub_type is SubType.spam
-        return _event(
-            tx_hash,
-            EventType.Reward,
-            sub_type,
-            [summed_leg],
-            review=spam,
-            reason=(
+        if sub_type is SubType.spam:
+            reason = (
                 f"reward classified as spam (sender "
                 f"{(summed_leg.from_address or '<missing>').lower()} is not a "
                 f"registered reward distributor); verify it is not taxable "
                 f"income before filing"
             )
-            if spam
-            else None,
+        elif sub_type is SubType.bridge:
+            reason = (
+                "inflow classified as a possible bridge transfer-in (tokens "
+                "minted from the zero address - no external sender, e.g. "
+                "bridged WBTC); the current workflow cannot match it to the "
+                "originating acquisition (e.g. a CEX withdrawal) - verify "
+                "source and cost basis before filing"
+            )
+        else:
+            reason = None
+        return _event(
+            tx_hash,
+            EventType.Reward,
+            sub_type,
+            [summed_leg],
+            review=reason is not None,
+            reason=reason,
         )
 
-    def _reward_sub_type(self, asset_legs: list[Leg]) -> SubType:
-        """Return the Reward SubType for an asset's legs (F4 verification).
+    def _reward_sub_type(self, summed_leg: Leg) -> SubType:
+        """Return the Reward SubType for one summed (asset, sender) leg (F4).
 
-        - staking: the from_address of the representative leg is a
-          registered reward-distributor (the verified case).
+        - bridge: the leg's from_address is the zero address - the tokens
+          were MINTED (new issuance: a bridge deposit, e.g. bridged WBTC,
+          or an on-chain mint). No external sender exists, so the F4
+          unverified-sender premise does not apply; the Event carries
+          review + a bridge-specific reason instead (user direction
+          2026-08-26: CEX->bridge transfers must not read as rewards).
+        - staking: the leg's from_address is a registered
+          reward-distributor (the verified case).
         - spam: the from_address is NOT in the contract registry
           (Attacker F4: unverified-sender rewards are spam + review, never a
           clean staking).
         """
-        # Use the first leg's from_address as the representative sender.
-        sender = (asset_legs[0].from_address or "").lower() if asset_legs else ""
+        sender = (summed_leg.from_address or "").lower()
+        if _is_zero_address(summed_leg.from_address):
+            return SubType.bridge
         if self._is_reward_distributor(sender):
             return SubType.staking
         # F4: unverified sender -> spam (never clean staking).

@@ -142,7 +142,7 @@ def decode_rows(  # noqa: PLR0913 - the optional row-surface kwargs (internal, n
             attributed to these rows (the parent tx's gas already lives on
             its ``txlist`` row - attributing it here would double-count).
         raw_nft_rows: Optional ERC-721/1155-transfer row dicts
-            (``action=nfttx``). Decoding is POSITION-REGISTRY-GATED and
+            (wire ``action=tokennfttx``). Decoding is POSITION-REGISTRY-GATED and
             ERC-721 QUANTITY-1-ONLY: only transfers whose ``contractAddress``
             is a ``position_nft``-kind registry member
             (:meth:`PositionTokenRegistry.is_position_nft_token`;

@@ -32,6 +32,7 @@ THAT header would yield a vacuous ``[] == []`` pass).
 from __future__ import annotations
 
 import logging
+import time
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -39,6 +40,7 @@ from pathlib import Path
 import pytest
 
 from tax_reporting.application.on_chain_config import load_contracts, load_lp_snapshot
+from tax_reporting.application.on_chain_fetcher import fetch_failed_marker_path
 from tax_reporting.application.on_chain_th_adapter import (
     TH_CSV_COLUMNS,
     ProjectedThRow,
@@ -319,6 +321,92 @@ class TestOnChainThSubstituter:
         assert [
             e.event_type for t in unregistered_txs for e in t.events
         ] == [EventType.Unknown]
+
+    def test_build_projection_warns_on_stale_fetch_marker(self, tmp_path, caplog) -> None:
+        """Review r1 F6: when a fetch-failure marker is NEWER than the CSV, the
+        projection still builds (the collection fetch is non-blocking) but
+        logs an ERROR naming the staleness, so a post-flip report on a stale
+        on-chain TH cannot be mistaken for fresh data."""
+        import os
+
+        bera_csv = _write_bera_csv(
+            tmp_path,
+            [_claim_row("0xccc333", block_number=1002, timestamp_utc="2025-03-01T10:00:00+00:00")],
+        )
+        # Marker NEWER than the CSV (backdate the CSV, then write the marker).
+        old = time.time() - 3600
+        os.utime(bera_csv, (old, old))
+        marker = fetch_failed_marker_path(tmp_path, 2025)
+        marker.write_text("On-chain fetch failed: simulated", encoding="utf-8")
+
+        substituter = OnChainThSubstituter(
+            contracts_path=_EXAMPLE_CONTRACTS,
+            lp_snapshot_path=_EXAMPLE_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
+        )
+        with caplog.at_level(logging.ERROR, logger="tax_reporting.application.on_chain_th_substitution"):
+            projection = substituter.build_projection(
+                year=2025, output_dir=tmp_path, logger=logging.getLogger(__name__)
+            )
+
+        assert projection is not None  # non-blocking: the projection still builds
+        assert any("STALE" in rec.getMessage() for rec in caplog.records), (
+            "expected the stale-CSV ERROR when the fetch-failure marker is newer"
+        )
+
+        # Control 1: removing the marker removes the warning (same fixture).
+        marker.unlink()
+        caplog.clear()
+        with caplog.at_level(logging.ERROR, logger="tax_reporting.application.on_chain_th_substitution"):
+            substituter.build_projection(
+                year=2025, output_dir=tmp_path, logger=logging.getLogger(__name__)
+            )
+        assert not any("STALE" in rec.getMessage() for rec in caplog.records)
+
+        # Control 3 (review r5): a FileNotFoundError racing the stat pair
+        # (the marker deleted between is_file() and stat()) reads as absent,
+        # never crashes the projection.
+        from pathlib import Path as _Path
+
+        real_stat = _Path.stat
+
+        def stat_or_vanish(self):
+            if self.name.endswith(".fetch-failed"):
+                raise FileNotFoundError("racing deletion")
+            return real_stat(self)
+
+        marker.write_text("On-chain fetch failed: simulated", encoding="utf-8")
+        os.utime(marker, (time.time(), time.time()))
+        monkeypatch_stat = True
+        caplog.clear()
+        import pytest as _pytest
+
+        with _pytest.MonkeyPatch.context() as mp:
+            mp.setattr(_Path, "stat", stat_or_vanish)
+            with caplog.at_level(
+                logging.ERROR, logger="tax_reporting.application.on_chain_th_substitution"
+            ):
+                projection = substituter.build_projection(
+                    year=2025, output_dir=tmp_path, logger=logging.getLogger(__name__)
+                )
+        assert projection is not None
+        assert not any("STALE" in rec.getMessage() for rec in caplog.records)
+
+        # Control 2 (review r2 F1): a marker OLDER than the CSV (the normal
+        # steady state after a recovered failure - production never removes
+        # the marker, a later successful fetch just rewrites the CSV newer)
+        # must NOT warn; a presence-only regression fails here.
+        marker.write_text("On-chain fetch failed: simulated", encoding="utf-8")
+        m_old = time.time() - 7200
+        os.utime(marker, (m_old, m_old))
+        csv_new = m_old + 3600
+        os.utime(bera_csv, (csv_new, csv_new))
+        caplog.clear()
+        with caplog.at_level(logging.ERROR, logger="tax_reporting.application.on_chain_th_substitution"):
+            substituter.build_projection(
+                year=2025, output_dir=tmp_path, logger=logging.getLogger(__name__)
+            )
+        assert not any("STALE" in rec.getMessage() for rec in caplog.records)
 
     def test_build_projection_missing_bera_csv_returns_none(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture

@@ -236,7 +236,7 @@ Proposed `EventType` enum (7 values, covering every observed shape + obvious fut
 | `internal_transfer` | own-wallet movement, non-taxable; fee-filter and review logic both branch on it |
 | `bridge` | cross-border movement; review-flag-relevant even though PT treatment = transfer |
 
-SubType is OPTIONAL (an Event may have SubType=None when no discriminator applies). The processor picks the value; the adapter ignores SubType for Koinly Type/Tag mapping (Koinly has no equivalent).
+SubType is OPTIONAL (an Event may have SubType=None when no discriminator applies). The processor picks the value; the adapter ignores SubType for Koinly Type/Tag mapping (Koinly has no equivalent) - with ONE sanctioned exception (user direction 2026-08-26): `Reward`+`bridge` (zero-address mint, e.g. bridged WBTC) renders its Tag as `Bridge` instead of `Reward`, via the adapter's named `SUB_TYPE_TAG_OVERRIDES` vocabulary, so merged-TH consumers (and the future P2 rewards-from-on-chain split) cannot mistake a bridge/CEX transfer-in for reward income. The validation comparator's reverse map derives automatically from that vocabulary at import (raising on a colliding combo); a tag override applied anywhere other than the single `SUB_TYPE_TAG_OVERRIDES` dict reverse-maps to `Unknown` and fails the gate loudly.
 
 **Confirm:** the 7 EventTypes + the SubType vocabulary. Note `GasBurn` is the one exception to "no separate fee row" - it only fires for the 139 GAS_ONLY txs that have no other Event, so the gas isn't silently lost.
 

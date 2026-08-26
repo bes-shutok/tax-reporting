@@ -7,7 +7,9 @@ Koinly-based crypto tax pipeline). It:
 1. Loads the per-year wallet config via :func:`load_on_chain_wallets`.
 2. For each wallet, drives an :class:`EtherscanV2Client` to fetch the raw
    ``txlist`` (native), ``tokentx`` (ERC-20), ``txlistinternal`` (internal
-   native receives), and ``nfttx`` (position-NFT legs) rows. The nfttx
+   native receives), and ``tokennfttx`` (position-NFT legs; the Etherscan
+   V2 account action - an earlier ``nfttx`` name was rejected by the live
+   API as an invalid action) rows. The tokennfttx
    endpoint returns ERC-721 AND ERC-1155 transfers, but only ERC-721
    quantity-1 semantics are decoded (ERC-1155-looking rows are
    WARNING-skipped by the decoder).
@@ -141,6 +143,37 @@ def _write_csv(path: Path, rows: list[OnChainTxRow]) -> None:
             writer.writerow(dataclasses.asdict(row))
 
 
+def fetch_failed_marker_path(output_dir: Path, year: int) -> Path:
+    """Resolve the fetch-failure staleness marker path for ``year`` (review r1 F6).
+
+    The CSV is written only after every wallet and action succeeds, so a
+    failed refresh leaves the PREVIOUS run's CSV on disk with no signal. The
+    marker (written next to the CSV by the run_report soft-fail catch and by the fetcher's empty-config path) lets
+    the TH substitution stage detect that the CSV predates a failed fetch
+    and warn loudly instead of quietly building on stale data.
+    """
+    return bera_csv_path(output_dir, year).with_name(_CSV_FILENAME + ".fetch-failed")
+
+
+def write_fetch_failed_marker(output_dir: Path, year: int, message: str) -> None:
+    """Write (or refresh) the fetch-failure marker; never raises (best effort).
+
+    Marker failures must not mask the fetch failure itself: the marker is an
+    observability aid, so its own IO problems are swallowed after a WARNING.
+    """
+    marker = fetch_failed_marker_path(output_dir, year)
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(message + "\n", encoding="utf-8")
+    except OSError:
+        logger.warning(
+            "Could not write the fetch-failure marker at %s; the stale-CSV "
+            "detection in the TH substitution will have no signal for this "
+            "failure.",
+            marker,
+        )
+
+
 def run_on_chain_fetch(
     *,
     year: int,
@@ -170,6 +203,14 @@ def run_on_chain_fetch(
     """
     wallets = load_on_chain_wallets(year)
     if not wallets:
+        # Review r3 (risk): an empty wallet config with a PRIOR CSV on disk
+        # is a failed refresh in disguise (a config regression would else
+        # leave the TH substitution consuming a silently stale CSV); write
+        # the staleness marker so the mtime contract still fires.
+        if bera_csv_path(output_dir, year).is_file():
+            write_fetch_failed_marker(
+                output_dir, year, "On-chain fetch skipped: empty wallet config"
+            )
         # DI-6: the orchestrator owns the single WARNING for an empty /
         # missing config. The loader returned [] silently.
         logger.warning(

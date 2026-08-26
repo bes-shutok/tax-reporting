@@ -78,9 +78,10 @@ from decimal import Decimal
 from enum import Enum
 from typing import Final
 
+from tax_reporting.application import on_chain_th_adapter as _adapter
 from tax_reporting.application.on_chain_th_adapter import (
-    EVENT_TYPE_TO_KOINLY,
     ProjectedThRow,
+    koinly_combo,
 )
 from tax_reporting.domain.on_chain_transaction import EventType, OnChainTransaction
 from tax_reporting.infrastructure.koinly_parser import parse_koinly_decimal
@@ -169,16 +170,45 @@ _KOINLY_TAG_COST: Final = "Cost"
 #: currency (never a valid ticker, so it cannot alias a real asset bucket).
 _MISSING_CURRENCY: Final = "MISSING"
 
-#: Reverse of the adapter's ``EVENT_TYPE_TO_KOINLY``: recovering the
-#: ``EventType`` behind a projected row from its ``(type, tag)`` combo. The
-#: forward mapping is injective (verified at import - a future adapter change
-#: that collides two EventTypes on one combo must fail loudly here, not
-#: silently mis-classify validation records).
-_KOINLY_COMBO_TO_EVENT_TYPE: Final[dict[tuple[str, str], EventType]] = {
-    combo: event_type for event_type, combo in EVENT_TYPE_TO_KOINLY.items()
-}
-if len(_KOINLY_COMBO_TO_EVENT_TYPE) != len(EVENT_TYPE_TO_KOINLY):
-    raise RuntimeError(f"EVENT_TYPE_TO_KOINLY is not injective; cannot invert for validation: {EVENT_TYPE_TO_KOINLY}")
+#: Reverse of the adapter's ``EVENT_TYPE_TO_KOINLY`` PLUS the adapter's
+#: ``SUB_TYPE_TAG_OVERRIDES`` vocabulary: recovering the ``EventType``
+#: behind a projected row from its ``(type, tag)`` combo. Built by
+#: :func:`_build_reverse_combo_map`, which fails loudly (naming the
+#: colliding combo) when a future adapter change collides two EventTypes on
+#: one combo - base-vs-override or override-vs-override - instead of
+#: silently mis-classifying validation records.
+def _build_reverse_combo_map() -> dict[tuple[str, str], EventType]:
+    # Both halves derive through the adapter's koinly_combo (review r2 F3):
+    # the base half asks for the no-override rendering, the override half
+    # iterates the adapter module's live vocabulary, so a future vocabulary
+    # change flows through the one application-rule owner on both sides.
+    # The maps are read through the MODULE ATTRIBUTE (not from-imported
+    # names) deliberately: collision tests monkeypatch the adapter module's
+    # dicts, and a from-import binding in this module would keep seeing the
+    # original objects.
+    forward = _adapter.EVENT_TYPE_TO_KOINLY
+    reverse = {koinly_combo(event_type, None): event_type for event_type in forward}
+    if len(reverse) != len(forward):
+        # Review r3 (restored master guard): a base-vs-base collision in the
+        # forward map must fail loudly at build time, not silently keep the
+        # last EventType (last-writer-wins would misclassify validation
+        # records for one of the two colliding types).
+        raise RuntimeError(
+            f"EVENT_TYPE_TO_KOINLY combos collide; cannot invert for "
+            f"validation: {forward}"
+        )
+    for event_type, sub_type in _adapter.SUB_TYPE_TAG_OVERRIDES:
+        override_combo = koinly_combo(event_type, sub_type)
+        if override_combo in reverse:
+            raise RuntimeError(
+                f"Koinly combo {override_combo} is claimed twice; cannot invert "
+                f"for validation (base map: {forward}; overrides: {_adapter.SUB_TYPE_TAG_OVERRIDES})"
+            )
+        reverse[override_combo] = event_type
+    return reverse
+
+
+_KOINLY_COMBO_TO_EVENT_TYPE: Final[dict[tuple[str, str], EventType]] = _build_reverse_combo_map()
 
 
 class Surface(Enum):
@@ -455,7 +485,7 @@ def _norm_asset(symbol: str | None) -> str:
     return _ISSUER_TICKER_ALIASES.get(folded, folded)
 
 
-def _koinly_combo(row: dict[str, str]) -> tuple[str, str]:
+def _row_combo(row: dict[str, str]) -> tuple[str, str]:
     return (_koinly_text(row, "Type"), _koinly_tag(row))
 
 
@@ -754,7 +784,7 @@ def _type_mismatch(
     surface on both sides) is compatible.
     """
     event_types = frozenset(_event_type_of(projected) for projected in projected_event_rows)
-    koinly_combos = frozenset(_koinly_combo(row) for row in koinly_event_rows)
+    koinly_combos = frozenset(_row_combo(row) for row in koinly_event_rows)
     allowed: set[tuple[str, str]] = set()
     for event_type in event_types:
         allowed.update(EVENT_COMPATIBILITY[event_type])
@@ -821,7 +851,7 @@ def _koinly_context(
     counterparties: set[str] = set()
     assets: set[str] = set()
     for row in koinly_rows:
-        combos.add(_koinly_combo(row))
+        combos.add(_row_combo(row))
         for address in (_koinly_text(row, "TxSrc"), _koinly_text(row, "TxDest")):
             if address:
                 counterparties.add(address)

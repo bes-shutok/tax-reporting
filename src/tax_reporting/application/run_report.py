@@ -33,6 +33,7 @@ from .koinly_directory import (  # tests patch _resolve_koinly_directory on THIS
     _is_koinly_year_mismatch,
     _resolve_koinly_directory,
 )
+from .on_chain_fetcher import write_fetch_failed_marker
 from .on_chain_th_substitution import OnChainThSubstituter
 from .persisting import export_rollover_file, generate_tax_report
 from .transformation import calculate_fifo_gains
@@ -366,8 +367,20 @@ def _run_optional_on_chain_fetch(
         try:
             on_chain_fetch(year=on_chain_year, output_dir=validated_output_dir)
         except Exception as exc:  # noqa: BLE001
+            # Review r1 F6: a failed refresh leaves the PREVIOUS run's
+            # bera_transactions.csv in place; write the staleness marker next
+            # to it so the TH substitution stage (and the user) cannot mistake
+            # the old CSV for fresh data once ON_CHAIN_TH_WALLETS is flipped.
+            write_fetch_failed_marker(
+                validated_output_dir,
+                on_chain_year,
+                f"On-chain fetch failed: {exc}",
+            )
             logger.warning(
-                "On-chain fetch failed: %s. Continuing without on-chain transaction data.",
+                "On-chain fetch failed: %s. Continuing without on-chain "
+                "transaction data; the previous bera_transactions.csv (if "
+                "any) is now STALE - a .fetch-failed marker was written "
+                "next to it; the on-chain TH substitution will log an error if a prior bera_transactions.csv exists.",
                 exc,
             )
 

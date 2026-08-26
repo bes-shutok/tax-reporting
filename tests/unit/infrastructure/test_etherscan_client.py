@@ -435,11 +435,15 @@ class TestEtherscanClient:
             f"boundary block 102 must yield all 5 internal rows, got {block_counts}"
         )
 
-    def test_fetch_nft_transfers_uses_nfttx_action(self, monkeypatch):
-        # nfttx must reuse the SAME block-range + boundary-drain machinery as
-        # the other actions: full page (page_size=3 at blocks 100,101,102),
-        # boundary-block drain (block 102 has only its 1 seen row -> partial),
-        # then the advanced call partial (blocks 103, 104).
+    def test_fetch_nft_transfers_uses_tokennfttx_action(self, monkeypatch):
+        # The NFT surface must reuse the SAME block-range + boundary-drain
+        # machinery as the other actions: full page (page_size=3 at blocks
+        # 100,101,102), boundary-block drain (block 102 has only its 1 seen
+        # row -> partial), then the advanced call partial (blocks 103, 104).
+        # Etherscan V2's account action for ERC-721 transfers is
+        # ``tokennfttx``; the ``nfttx`` name used earlier is rejected with
+        # "Error! Missing Or invalid Action name" (verified against the live
+        # V2 API 2026-08-25), which the client silently read as end-of-stream.
         calls: list[tuple[str, dict]] = []
         responses = [
             {"status": "1", "message": "OK", "result": _rows(100, 101, 102)},
@@ -459,18 +463,197 @@ class TestEtherscanClient:
         # When
         rows = client.fetch_nft_transfers(_ADDRESS)
 
-        # Then - 5 rows, 3 calls, all with action=nfttx; the drain re-queries
+        # Then - 5 rows, 3 calls, all with action=tokennfttx; the drain re-queries
         # the boundary block alone and the outer loop advances to max(block)+1
         # with page=1 (block-range advance, not page increment).
         assert len(rows) == 5
         assert len(calls) == 3
-        assert all(c[1]["action"] == "nfttx" for c in calls)
+        assert all(c[1]["action"] == "tokennfttx" for c in calls)
         assert calls[1][1]["startblock"] == 102
         assert calls[1][1]["endblock"] == 102
         assert calls[1][1]["page"] == 1
         assert calls[2][1]["startblock"] == 103
         assert calls[2][1]["endblock"] == 99999999
         assert calls[2][1]["page"] == 1
+
+    def test_status0_error_text_raises_instead_of_silent_empty(self, monkeypatch):
+        # A status:"0" payload whose result is an ERROR STRING (e.g. the
+        # live-verified "Error! Missing Or invalid Action name" the V2 API
+        # returns for a bad action) is NOT end-of-stream: silently treating
+        # it as such made an invalid action name look like an empty wallet
+        # (the nfttx no-op bug, found on real data 2026-08-25). It must
+        # raise FileProcessingError (DI-1 fail-loud), not return [].
+        def fake(url: str, params: dict) -> dict:
+            return {
+                "status": "0",
+                "message": "NOTOK",
+                "result": "Error! Missing Or invalid Action name",
+            }
+
+        monkeypatch.setattr(
+            "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json", fake
+        )
+        client = EtherscanV2Client(api_key="k", chainid=_CHAINID)
+
+        with pytest.raises(FileProcessingError, match=r"(?i)missing or invalid action name"):
+            client.fetch_nft_transfers(_ADDRESS)
+
+    def test_status0_no_rows_string_result_still_terminates(self, monkeypatch):
+        # The string-result variant of the documented empty response ("No
+        # transactions found" in BOTH message and result) stays a legitimate
+        # end-of-stream: rows fetched so far are returned, nothing raises.
+        responses = [
+            {"status": "1", "message": "OK", "result": _rows(100)},
+            {"status": "0", "message": "No transactions found", "result": "No transactions found"},
+        ]
+
+        def fake(url: str, params: dict) -> dict:
+            return responses.pop(0)
+
+        monkeypatch.setattr(
+            "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json", fake
+        )
+        client = EtherscanV2Client(api_key="k", chainid=_CHAINID, page_size=3)
+
+        rows = client.fetch_token_transfers(_ADDRESS)
+
+        assert len(rows) == 1
+
+    def test_status0_nonempty_list_warns_and_terminates(self, monkeypatch, caplog):
+        # Review r1 F2: a status:"0" payload carrying a NON-EMPTY result list
+        # is an anomalous shape the old catch-all silently dropped; the guard
+        # must still terminate the stream (rows are already accumulated) but
+        # WARNING, naming the dropped page - never a silent loss.
+        responses = [
+            {"status": "1", "message": "OK", "result": _rows(100, 101)},
+            {"status": "0", "message": "NOTOK", "result": _rows(101, 102)},
+            {"status": "0", "message": "No transactions found", "result": []},
+        ]
+
+        def fake(url: str, params: dict) -> dict:
+            return responses.pop(0)
+
+        monkeypatch.setattr(
+            "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json", fake
+        )
+        client = EtherscanV2Client(api_key="k", chainid=_CHAINID, page_size=2)
+
+        with caplog.at_level(logging.WARNING, logger=EtherscanV2Client.__module__):
+            rows = client.fetch_token_transfers(_ADDRESS)
+
+        assert len(rows) == 2  # the accumulated page survives; the anomalous page ends the stream
+        assert any(
+            "status=0" in rec.getMessage() and "2 result row" in rec.getMessage()
+            for rec in caplog.records
+        ), "expected a WARNING naming the dropped status-0 non-empty page"
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"status": "0", "message": "No transactions found", "result": ""},
+            {"status": "0", "message": "NOTOK", "result": "No transactions found"},
+            {"status": "0", "message": "No transactions found"},  # result key absent -> None
+            {"status": "0", "message": "", "result": ""},  # empty text everywhere
+            {"status": "0"},  # no message key, no result key
+        ],
+    )
+    def test_status0_benign_empty_shapes_terminate(self, monkeypatch, payload):
+        # Review r1 F5/F7 (benign-empty rule refined r3): each benign shape
+        # terminates on its OWN signal - marker in result only, marker in
+        # message only (with an absent result), or an EMPTY failure text
+        # (no result string and no message). A single-field regression in
+        # the marker check fails the result-only case; a narrowing of the
+        # benign-empty rule fails the last two.
+        monkeypatch.setattr(
+            "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json",
+            lambda _url, _params: payload,
+        )
+        client = EtherscanV2Client(api_key="k", chainid=_CHAINID)
+
+        assert client.fetch_token_transfers(_ADDRESS) == []
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            # Review r3 (risk): an error string carried by MESSAGE with an
+            # EMPTY result cell - the earlier empty-result-first rule would
+            # have read this as a benign empty page in BOTH loops.
+            {"status": "0", "message": "Error! Missing Or invalid Action name", "result": ""},
+            # r2's former benign case, reversed by the r3 rule: a non-marker
+            # message with an empty result is NOT provably empty -> fail loud.
+            {"status": "0", "message": "NOTOK", "result": ""},
+        ],
+    )
+    def test_status0_message_borne_error_with_empty_result_raises(self, monkeypatch, payload):
+        monkeypatch.setattr(
+            "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json",
+            lambda _url, _params: payload,
+        )
+        client = EtherscanV2Client(api_key="k", chainid=_CHAINID)
+
+        with pytest.raises(FileProcessingError, match=r"(?i)action name|notok"):
+            client.fetch_token_transfers(_ADDRESS)
+
+    def test_status0_api_key_marker_with_empty_result_raises_before_benign(self, monkeypatch):
+        # Review r3 (testing): the API-key hoist must precede the benign
+        # empty-text return; this payload shape would slip through a
+        # reordered guard.
+        monkeypatch.setattr(
+            "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json",
+            lambda _url, _params: {
+                "status": "0",
+                "message": "Missing/Invalid API Key",
+                "result": "",
+            },
+        )
+        client = EtherscanV2Client(api_key="k", chainid=_CHAINID)
+
+        with pytest.raises(FileProcessingError, match=r"(?i)api key"):
+            client.fetch_internal_txs(_ADDRESS)  # drain-reachable action
+
+    def test_status0_unrecognized_result_type_raises(self, monkeypatch):
+        # Review r4 (risk): a status-0 payload whose result is neither a
+        # string, a list, nor absent is anomalous; it must fail loud rather
+        # than read as an empty text.
+        monkeypatch.setattr(
+            "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json",
+            lambda _url, _params: {"status": "0", "message": "NOTOK", "result": {"err": 1}},
+        )
+        client = EtherscanV2Client(api_key="k", chainid=_CHAINID)
+
+        with pytest.raises(FileProcessingError, match="unrecognized result type"):
+            client.fetch_token_transfers(_ADDRESS)
+
+    def test_boundary_drain_status0_error_text_raises(self, monkeypatch):
+        # Same fail-loud contract inside the boundary-block drain: a NOTOK
+        # error string during the drain must raise, not silently end the
+        # block (which would drop the block's remaining rows).
+        responses: dict[tuple[int, int, int], dict] = {
+            (0, 99999999, 1): {
+                "status": "1",
+                "message": "OK",
+                "result": _rows(102, 102, 102),
+            },
+            # The outer page consumed all of block 102's page-1 rows, so the
+            # drain's first request is page 2 (held // page_size + 1).
+            (102, 102, 2): {
+                "status": "0",
+                "message": "NOTOK",
+                "result": "Error! Missing Or invalid Action name",
+            },
+        }
+
+        def fake(url: str, params: dict) -> dict:
+            key = (int(params["startblock"]), int(params["endblock"]), int(params["page"]))
+            return responses[key]
+
+        monkeypatch.setattr(
+            "tax_reporting.infrastructure.on_chain.etherscan_client._http_get_json", fake
+        )
+        client = EtherscanV2Client(api_key="k", chainid=_CHAINID, page_size=3)
+
+        with pytest.raises(FileProcessingError, match=r"(?i)missing or invalid action name"):
+            client.fetch_internal_txs(_ADDRESS)
 
     def test_malformed_block_number_row_is_skipped_not_fatal(self, monkeypatch, caplog):
         # Review r3 F3: one row on a FULL page missing blockNumber must be

@@ -265,8 +265,12 @@ non-opted-in production path stays byte-identical until the user flips it.
 The collector (`on_chain_fetcher.py` -> `etherscan_client.py`) pulls FOUR Etherscan
 account actions per wallet: `txlist` (native transfers), `tokentx` (ERC-20
 transfers), `txlistinternal` (internal native value transfers, recovered via the
-block-pagination seam), and `nfttx` (ERC-721/1155 transfers; plan
-`2026-08-24-multi-leg-th-projection`). The `nfttx` surface is what makes
+block-pagination seam), and `tokennfttx` (ERC-721/1155 transfers; plan
+`2026-08-24-multi-leg-th-projection`). The wire action is `tokennfttx`: an
+earlier `nfttx` name was rejected by the live V2 API ("Error! Missing Or
+invalid Action name") and, before the fail-loud status:"0" guard, silently
+looked like an empty wallet (found on real data 2026-08-25); "nfttx" survives
+only as the surface label in prose and code. The `nfttx` surface is what makes
 ERC-721 position-NFT legs (Koinly symbol format `SYMBOL#tokenID`, quantity 1)
 reliably visible on-chain - they are not reliably present in the other three
 actions (when `tokentx` duplicates one, the overlap guard below defers to the
@@ -322,6 +326,47 @@ direction="unknown" (the processor's shape-1 review path, reachable up to the
 1% unknown-leg gate) still emits ONE review row - both sides empty, the
 processor's `event_id` verbatim - plus a WARNING, so review-carrying rows can
 never silently vanish from the projection.
+
+### Fetch-failure staleness marker (2026-08-26)
+
+The bera CSV is written only after every wallet and action succeeds, so a
+failed refresh leaves the PREVIOUS run's `bera_transactions.csv` in place.
+When that happens the run_report soft-fail catch writes a best-effort
+`bera_transactions.csv.fetch-failed` marker next to the CSV (also written
+when the wallet config resolves empty while a prior CSV exists); the TH
+substitution stage then compares mtimes and logs a loud ERROR when the
+marker is newer, naming the possible missing activity. By design this does
+NOT refuse (the collection fetch is non-blocking; a valid prior CSV stays
+reviewable), and a later successful fetch rewrites the CSV newer than the
+marker, self-healing without any explicit cleanup; deleting the marker is
+the documented manual clear. Promoting to a hard refusal and surfacing the
+staleness inside the report artifacts are recorded P2 candidates in the
+umbrella backlog.
+
+### Bridge-mint classification (Reward/bridge, 2026-08-26)
+
+A PURE inflow whose leg is MINTED from the zero address has no external
+sender, so the F4 unverified-sender (spam) premise does not apply: the
+processor classifies it `Reward` + `SubType.bridge` with review and a
+bridge-specific reason (source and cost basis must be verified - the workflow
+cannot match the inflow to the originating acquisition, e.g. a CEX withdrawal
+routed through a bridge; real case: the wallet's bridged WBTC deposits).
+The adapter renders such Events with Tag `Bridge` (not `Reward`) via the
+named `SUB_TYPE_TAG_OVERRIDES` vocabulary, so merged-TH consumers and the
+future P2 rewards-from-on-chain split cannot mistake a bridge/CEX transfer-in
+for reward income. The comparator's reverse map is derived AUTOMATICALLY from that vocabulary at
+import (`_build_reverse_combo_map` iterates `SUB_TYPE_TAG_OVERRIDES` and
+raises on a colliding combo), so there is no manual registration step; a tag
+override applied anywhere OTHER than the single `SUB_TYPE_TAG_OVERRIDES` dict
+reverse-maps to `Unknown` and fails the gate loudly (observed once, 2026-08-26,
+before the lookup was extended).
+
+Discriminator gap (review r1 F8): the zero-address marker does NOT distinguish
+a trusted bridge mint from a spam airdrop mint - ANY token minted directly to
+the wallet classifies `Reward`/`SubType.bridge` and renders Tag `Bridge`, with
+the review flag the only guard. Note (review r4): the frozen `EVENT_COMPATIBILITY` table deliberately does NOT accept a Koinly-side `Bridge` tag for `Reward` - only the ON-CHAIN projection renders `crypto_deposit/Bridge` (recovered by the reverse map). A manually Bridge-tagged baseline row would fail the gate loudly (type mismatch); widening the table is a PD-010 amendment to plan with the P2 rewards split. The P2 rewards-from-on-chain split must therefore key on the Tag (and the review flag), never on `EventType.Reward` alone; a registry-gated bridge-asset allowlist (mirroring the C8 position-NFT
+membership boundary) is the recorded follow-up option if junk-mint noise
+grows.
 
 ### The multi-leg rendering family and exit 3
 

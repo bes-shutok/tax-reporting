@@ -42,6 +42,7 @@ from decimal import Decimal
 
 from tax_reporting.application.on_chain_th_adapter import (
     EVENT_TYPE_TO_KOINLY,
+    SUB_TYPE_TAG_OVERRIDES,
     project_on_chain_transactions,
     serialize_projected_rows_to_th_csv,
 )
@@ -424,6 +425,48 @@ class TestOnChainThAdapter:
             EventType.Transfer: ("transfer", ""),
             EventType.Unknown: ("crypto_deposit", ""),
         }
+
+    def test_sub_type_overrides_vocabulary_is_pinned(self) -> None:
+        # Review r1 F13: the design record (amended 2026-08-26) sanctions
+        # exactly ONE SubType tag exception. Any addition to this vocabulary
+        # requires amending the design record with an explicit user
+        # direction; this pin forces that conscious edit.
+        assert SUB_TYPE_TAG_OVERRIDES == {(EventType.Reward, SubType.bridge): "Bridge"}  # noqa: SIM300
+
+    def test_bridge_reward_renders_bridge_tag(self) -> None:
+        # Narrow SubType exception (user direction 2026-08-26): a Reward
+        # whose tokens were MINTED from the zero address (bridge issuance -
+        # real case: the wallet's bridged WBTC deposits) renders its Tag as
+        # "Bridge" instead of "Reward", so merged-TH consumers (and the
+        # future P2 rewards-from-on-chain split) cannot mistake a
+        # bridge/CEX transfer-in for reward income. Every other SubType
+        # keeps the §9.1 rule: tag fixed by EventType alone.
+        gas = Gas(asset="BERA", amount_raw=20_000_000_000_000, decimals=18)
+        bridge = _event(
+            event_id=f"{_TX_HASH}#1",
+            event_type=EventType.Reward,
+            sub_type=SubType.bridge,
+            legs=[
+                _erc20_leg(asset="WBTC", amount_raw=10**8, decimals=8, direction="in"),
+            ],
+        )
+        staking = _event(
+            event_id=f"{_TX_HASH}#2",
+            event_type=EventType.Reward,
+            sub_type=SubType.staking,
+            legs=[
+                _erc20_leg(asset="BGT", amount_raw=10**18, direction="in"),
+            ],
+        )
+        tx = _tx(events=[bridge, staking], gas=gas)
+
+        projected = project_on_chain_transactions([tx])
+        by_event = {p.row.event_id: p for p in projected}
+
+        assert by_event[f"{_TX_HASH}#1"].row.type == "crypto_deposit"
+        assert by_event[f"{_TX_HASH}#1"].row.tag == "Bridge"
+        # The non-bridge Reward keeps the plain §9.1 tag.
+        assert by_event[f"{_TX_HASH}#2"].row.tag == "Reward"
 
     def test_review_reason_persists_to_description_cell(self, tmp_path) -> None:
         # Review r6 F1: an Event flagged upstream carries ``review_reason``;
