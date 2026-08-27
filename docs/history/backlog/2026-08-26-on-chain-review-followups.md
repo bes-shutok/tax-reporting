@@ -58,15 +58,19 @@ its own plan (or fold into P2/P4 planning) when taken.
   (the P2 rewards-from-on-chain split must key on the Tag and the review
   flag, NEVER on `EventType.Reward` alone).
 - **Why deferred**: distinguishing a trusted bridge mint (bridged WBTC) from
-  a junk airdrop mint needs user-owned registry data (which tokens are
-  bridge-issued) - not derivable in-session; and the review flag already
-  forces human verification on the filing path, so nothing is silent today.
+  a junk airdrop mint needs a curated per-year registry + membership gate;
+  which tokens are bridge-issued is public and derivable in-session from the
+  archived origin documents, but the curation had not been built; and the
+  review flag already forces human verification on the filing path, so
+  nothing is silent today.
 - **Plan sketch**: mirror the C8 position-NFT membership boundary - a
   per-year registry entry kind (e.g. `bridged_asset`) keyed by token address;
   `_reward_sub_type` returns `SubType.bridge` only for registry members,
   falling through to `spam` for unregistered zero-address mints (both stay
-  review-flagged). Register the wallet's actual bridged assets from the
-  archived origin documents per the crypto-origin rules.
+  review-flagged). The committed registry holds the PUBLIC bridged-token
+  contracts, provenance-cited per the crypto-origin rules (2026-08-27 user
+  amendment: canonical curated public data, not user-maintained; a gitignored
+  user override is an optional escape hatch only).
 - **Acceptance**: an unregistered zero-address mint classifies spam + review
   (not bridge); registered bridged assets keep the Bridge tag; the
   validation-gate clusters for the 2025 baseline are unchanged for registered

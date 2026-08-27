@@ -2924,3 +2924,19 @@ The same immunity applies to prose inside the guarded files: a docstring or comm
 **Example:** Backlog FLIP-TIME WATCH prose cited a personal withdrawal by an 8-hex tx-hash prefix; the fix replaced it with a withheld-by-default phrase (the literal is intentionally not reproduced here). Lesson #151's purge precedent covers truncated prefixes; this lesson adds that NARRATIVE edits are the recurring entry path.
 
 **See also:** #151 (truncated prefixes defeat full-width scans), #128 (self-match-immune greps).
+
+## 153. Public-fact registries are committed, user files stay personal
+
+**Principle:** Family D (single source of truth: duplicating public registry entries into a user file creates twin authorities that drift).
+
+**Trigger:** designing any on-chain/address registry (bridged assets, CEX funding wallets, contract allowlists) and deciding committed vs gitignored user-owned.
+
+**Rule:** Membership that is a public fact (canonical token/contract addresses, documented by the issuing protocols and archivable in crypto-origin) lives in the committed registry, provenance-cited (registry-level `source` plus per-entry note naming the origin document), and is agent-curated. The gitignored `resources/source/<year>/` file is an optional shadow override for entries not yet committed, never a duplicate of public entries. User-owned data stays the personal layer: chains.json wallets, the dispositions TOML, Koinly exports. A provenance rule (crypto-origin: archived documents, no auto-discovered guesses) bans unsourced data; it does not require user ownership.
+
+**Why:** Citing a provenance rule to justify user ownership conflates curation with ownership (the 2026-08-27 user challenge on the bridge-asset registry plan). Public addresses duplicated into a user file shadow newer committed entries under first-match-wins resolution and rot silently; the user should maintain nothing derivable in-session.
+
+**Shape:** a plan or loader that asks the user to supply addresses of widely known public protocols; a user-file population task whose entries are all public.
+
+**Example:** The bridged-asset registry gate plan: the committed example file is the canonical production registry (fresh clones classify registered mints out of the box), and the gitignored user-registry population task was deleted (amended design confirmed by a full review panel plus a clean focused confirmation round).
+
+**See also:** AGENTS.md §3 crypto-origin rules; #151/#152 (public contracts committable; self wallets and tx hashes never).
