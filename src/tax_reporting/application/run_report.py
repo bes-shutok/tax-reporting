@@ -8,8 +8,9 @@ the fetch callable.
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
-from typing import NamedTuple, Protocol
+from typing import TYPE_CHECKING, NamedTuple
 
 from ..domain.collections import (
     CapitalGainLinesPerCompany,
@@ -33,16 +34,28 @@ from .koinly_directory import (  # tests patch _resolve_koinly_directory on THIS
     _is_koinly_year_mismatch,
     _resolve_koinly_directory,
 )
-from .on_chain_fetcher import write_fetch_failed_marker
+from .on_chain_fetcher import fetch_failed_marker_path, write_fetch_failed_marker
+from .on_chain_retry import describe_retry_consequence, retry_stale_on_chain_fetch
+
+if TYPE_CHECKING:
+    # Annotation-only; defining home is on_chain_fetcher.
+    from .on_chain_fetcher import OnChainFetch
 from .on_chain_th_substitution import OnChainThSubstituter
 from .persisting import export_rollover_file, generate_tax_report
 from .transformation import calculate_fifo_gains
 
+#: Retry ladder backoff delays (plan 2026-08-26, user decision 2026-08-27):
+#: when the opted-in TH substitution detects a stale fetch-failure marker AND a
+#: fetch callable is injected, sleep FIRST (the short initial delay avoids
+#: hammering an API that failed on a PRIOR run; r10-F2), then re-attempt the
+#: fetch, once per delay. Six attempts = 63 s of backoff sleep plus each
+#: attempt's own transfer time.
+_STALE_FETCH_RETRY_DELAYS_S: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0, 16.0, 32.0)
 
-class OnChainFetch(Protocol):
-    """Keyword-only fetch seam matching ``run_on_chain_fetch``."""
-
-    def __call__(self, *, year: int, output_dir: Path) -> Path | None: ...
+#: Sleep seam for the retry ladder: tests monkeypatch this module attribute so
+#: no test sleeps the backoff window for real (hermetic suite, per-test 120 s
+#: timeout).
+_retry_sleep = time.sleep
 
 
 class KoinlyStage(NamedTuple):
@@ -124,6 +137,7 @@ def run_report(
             tax_year_hint=tax_year_hint,
             tax_jurisdiction=tax_jurisdiction,
             logger=logger,
+            on_chain_fetch=on_chain_fetch,
         )
         crypto_tax_report: CryptoTaxReport | None = None
         if koinly_dir is not None:
@@ -152,12 +166,14 @@ def run_report(
             validated_output_dir=validated_output_dir,
             logger=logger,
         )
-    except ConfigurationError:
-        # A config problem (e.g. crypto data present but the jurisdiction timezone
-        # cannot be resolved) must surface as a ConfigurationError, not be wrapped
-        # into a ReportGenerationError, so callers can distinguish config problems
-        # from data/generation problems. Mirrors the unwrapped-propagation contract
-        # of the config-loading block in the composition root.
+    except (ConfigurationError, ReportGenerationError):
+        # Config problems (e.g. an unresolvable jurisdiction timezone) must
+        # surface unwrapped so callers distinguish them from generation
+        # problems (mirrors the composition root's contract). By design ALL
+        # self-explanatory ReportGenerationErrors in this block - the M1
+        # staleness refusals, rollover/crypto/Excel failures - propagate
+        # verbatim; re-wrapping would double-prefix
+        # "Failed to generate report:" over actionable text.
         raise
     except Exception as e:
         raise ReportGenerationError(f"Failed to generate report: {e}") from e
@@ -202,12 +218,13 @@ def _resolve_tax_year_hint(
     return tax_year_hint
 
 
-def _resolve_koinly_stage(
+def _resolve_koinly_stage(  # noqa: PLR0913 (new arg from retry-ladder plan; refactor out of scope)
     koinly_base_dir: Path,
     output_dir: Path,
     tax_year_hint: int | None,
     tax_jurisdiction: TaxJurisdictionConfig | None,
     logger: logging.Logger,
+    on_chain_fetch: OnChainFetch | None,
 ) -> KoinlyStage:
     """Resolve the Koinly directory and run the on-chain TH substitution (config-decided block).
 
@@ -245,16 +262,18 @@ def _resolve_koinly_stage(
             on_chain_year_for_th,
             tax_jurisdiction,
             logger,
+            on_chain_fetch,
         )
     return KoinlyStage(koinly_dir, on_chain_reconciliation, transaction_history_override)
 
 
-def _substitute_on_chain_th(
+def _substitute_on_chain_th(  # noqa: PLR0913 (new arg from retry-ladder plan; refactor out of scope)
     koinly_dir: Path,
     output_dir: Path,
     year: int,
     tax_jurisdiction: TaxJurisdictionConfig,
     logger: logging.Logger,
+    on_chain_fetch: OnChainFetch | None,
 ) -> tuple[OnChainReconciliationRecord | None, Path | None]:
     """Run the on-chain TH substitution for opted-in wallets.
 
@@ -291,6 +310,20 @@ def _substitute_on_chain_th(
     # ``None`` (no bera CSV / flag unset) preserves the glob (flag-off path
     # byte-identical).
     transaction_history_override: Path | None = None
+    # Retry ladder (plan 2026-08-26): runs BEFORE ``maybe_substitute`` so
+    # known-stale data never reaches the substitution unchecked. The backoff
+    # schedule and the sleep seam stay HERE (plan freeze; tests patch
+    # ``run_report._retry_sleep``); the contract (staleness decided by the
+    # shared ``fetch_marker_is_stale`` predicate) lives in
+    # ``on_chain_retry.retry_stale_on_chain_fetch``.
+    retry_stale_on_chain_fetch(
+        output_dir=output_dir,
+        year=year,
+        on_chain_fetch=on_chain_fetch,
+        logger=logger,
+        delays=_STALE_FETCH_RETRY_DELAYS_S,
+        sleep=_retry_sleep,
+    )
     try:
         # Wiring seam: thread the config-derived ON_CHAIN_RPC_URL
         # to the OnChainThSubstituter ctor (the FIRST pair of parens),
@@ -358,7 +391,11 @@ def _run_optional_on_chain_fetch(
     """Run the optional, non-blocking on-chain transaction fetch (injected callable).
 
     None means skip; the year is resolved defensively (DI-9); the broad
-    ``except Exception`` soft-fail (DI-1) covers ONLY this collection fetch call.
+    ``except Exception`` soft-fail (DI-1) covers ONLY this collection fetch
+    call. On failure the WARNING names the retry-then-refuse consequence of
+    the fresh marker (the next opted-in run retries and refuses the run when
+    the attempts cannot clear the stale marker; the message body lives in
+    :func:`on_chain_retry.describe_retry_consequence`).
     """
     on_chain_year = tax_jurisdiction.fiscal_year if tax_jurisdiction is not None else tax_year_hint
     if on_chain_year is None:
@@ -380,8 +417,12 @@ def _run_optional_on_chain_fetch(
                 "On-chain fetch failed: %s. Continuing without on-chain "
                 "transaction data; the previous bera_transactions.csv (if "
                 "any) is now STALE - a .fetch-failed marker was written "
-                "next to it; the on-chain TH substitution will log an error if a prior bera_transactions.csv exists.",
+                "next to it. Consequence: %s",
                 exc,
+                describe_retry_consequence(
+                    _STALE_FETCH_RETRY_DELAYS_S,
+                    fetch_failed_marker_path(validated_output_dir, on_chain_year).name,
+                ),
             )
 
 

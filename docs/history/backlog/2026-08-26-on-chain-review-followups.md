@@ -7,28 +7,38 @@ Each was a valid, non-blocking finding whose fix was judged larger than the
 round warranted; none blocks the `ON_CHAIN_TH_WALLETS` flip. Promote each as
 its own plan (or fold into P2/P4 planning) when taken.
 
-## 1. Staleness handling: hard refusal + in-artifact indicator
+## 1. Staleness handling: hard refusal + in-artifact indicator (PROMOTED)
+
+**Status (2026-08-27): promoted** to plan
+`docs/history/plans/completed/2026-08-26-on-chain-staleness-refusal.md` (landed:
+retry-then-refuse contract). The in-artifact indicator half stays a P2
+candidate; this backlog doc is not archived yet because items 2-3 await
+their own plans.
 
 - **Discovered**: review r1 F6 (risk; stale-CSV failure mode), extended r2 F5
   (risk; artifact-side indicator) and hardened through r3-r5 (empty-config
   marker, TOCTOU guard, unrecognized-type raise).
 - **Current state (landed)**: a failed or skipped on-chain refresh writes
-  `bera_transactions.csv.fetch-failed` next to the CSV; the TH substitution
-  compares mtimes and logs a loud ERROR when the marker is newer; a later
-  successful fetch self-heals (the CSV is rewritten newer); deleting the
-  marker is the documented manual clear (see
-  `docs/maintenance/on_chain_validation.md` "Fetch-failure staleness marker").
+  `bera_transactions.csv.fetch-failed` next to the CSV; on the next opted-in
+  run the retry ladder (`on_chain_retry.retry_stale_on_chain_fetch`, threaded
+  through `run_report`) re-fetches automatically with exponential backoff
+  (six attempts over 63 s of backoff sleep plus transfer time) and, if every
+  attempt fails (or no fetch callable is wired), the run is REFUSED with a
+  `ReportGenerationError` (fail-loud, mirroring M1). A later successful fetch
+  self-heals (the CSV is rewritten newer); deleting the marker is the
+  documented manual clear (see `docs/maintenance/on_chain_validation.md`
+  "Fetch-failure staleness marker").
 - **Why deferred**: the collection fetch is deliberately non-blocking (DI-1)
-  and pre-flip the substituted TH is not yet consumed by report generation,
-  so a refusal would have changed a documented design contract mid-review-loop
-  for a failure mode not yet reachable in production. The in-artifact
-  indicator needs a home on the report surfaces (review_reason plumbing
-  exists for Events, but staleness is projection-wide, not per-Event).
-- **Plan sketch**: for opted-in wallets, either refuse the run (fail-loud,
-  mirroring the M1 parse-failure contract) or attach a projection-level
-  review indicator that reaches the Excel review surfaces (Crypto
-  Reconciliation / Platform Assumptions) naming the stale window. Decide the
-  contract first (that is the real work); the plumbing is small.
+  and pre-flip the substituted TH is not yet consumed by report generation.
+  The refusal half of the original sketch is now LANDED (above); what remains
+  open is the in-artifact indicator half only: it needs a home on the report
+  surfaces (review_reason plumbing exists for Events, but staleness is
+  projection-wide, not per-Event).
+- **Plan sketch (remaining half)**: attach a projection-level review
+  indicator that reaches the Excel review surfaces (Crypto Reconciliation /
+  Platform Assumptions) naming the stale window, for the cases where the
+  marker was manually cleared and the run proceeded on stale data for review
+  only.
 - **Acceptance**: a run whose on-chain refresh failed cannot produce output a
   user can mistake for complete (refusal, or a visible in-artifact flag).
 
@@ -76,9 +86,69 @@ its own plan (or fold into P2/P4 planning) when taken.
   validation-gate clusters for the 2025 baseline are unchanged for registered
   assets.
 
+## 4. Fetcher CSV atomic write (staleness-review residual r1-F14)
+
+- **Origin**: staleness plan review r1 finding F14 (risk lens; merged verdict
+  across r1-r5 panels; see
+  `docs/history/reviews/2026-08-26-on-chain-staleness-refusal-code-review-r1.md`
+  F14 and r5 pass).
+- **Problem**: `on_chain_fetcher.py` (~line 139, `_write_csv`/fetch path) writes
+  the bera CSV via truncate-then-write (`path.open("w", newline=...)`), no
+  temp-file rename. A concurrent process reading mid-write observes a partial
+  CSV. Usual outcome: truncated row fails the CSV parse and M1 raises a spurious
+  `ReportGenerationError` (rerun succeeds). Edge outcome: truncation lands on a
+  row boundary, the shortened file still parses, and the projection silently
+  under-reports on-chain activity.
+- **Reachability**: requires two simultaneous runs of the same fiscal year
+  against the same output dir with a fetch in flight during the other's read.
+  Single-user local CLI makes this rare, and `docs/maintenance/on_chain_validation.md`
+  documents concurrent runs as unsupported; the retry ladder only slightly
+  widens the window by doubling fetch frequency in the broken state
+  (r10-F2 "harmless duplicate fetch" reasoning holds for single-process
+  sequential runs only).
+- **Why deferred**: root cause lives in `on_chain_fetcher.py` internals, which
+  the staleness plan's Review Scope explicitly put out of scope (ladder CALLS
+  the fetch callable; marker write mechanics stay as landed).
+- **Fix sketch**: write to a temp file in the same directory plus
+  `os.replace(tmp, csv_path)` in the fetcher; consider the same treatment for
+  the `.fetch-failed` marker write if it is not already atomic (single small
+  write). After landing, drop the "concurrent runs unsupported" caveat from
+  `on_chain_validation.md` or narrow it.
+- **Acceptance**: a reader-loop racing a fetch write never observes a partial
+  CSV (test: spawn writer + reader threads, or monkeypatch to interleave);
+  staleness predicate mtimes still behave (os.replace preserves the new write
+  time); full suite green.
+
+## 5. Staleness-suite structural residuals (staleness-review r1/r4 drops)
+
+Small, settled-at-review items recorded here so they are not lost; do them
+opportunistically when next touching these modules, not as standalone work
+unless they compound:
+
+- **r1-F9 (kept debt)**: two load-bearing `# noqa: PLR0913` on
+  `_resolve_koinly_stage` and `_substitute_on_chain_th` in
+  `src/tax_reporting/application/run_report.py` (6 kwargs each after the
+  `on_chain_fetch` threading). If a third argument ever lands on either,
+  bundle the stage parameters (`output_dir`/`year`/`tax_jurisdiction`/`logger`)
+  into a small stage-context object instead of a third noqa.
+- **r1-F11 (placement note)**: `fetch_marker_is_stale` lives in
+  `on_chain_th_substitution.py` next to its last-resort consumer, while the
+  marker it interprets is created by `on_chain_fetcher.write_fetch_failed_marker`
+  and the primary runtime caller is the ladder in `on_chain_retry.py`. Cohesion
+  would be slightly cleaner beside the marker owner; the plan's
+  single-definition invariant is satisfied as-is, so move only alongside other
+  fetcher-side work (e.g. item 4) to avoid churn.
+- **r4/r5 residual (531→527 lines)**: `run_report.py` sits ~27 lines over the
+  ~500 orchestration ceiling; the overage is almost entirely plan-frozen
+  comments (seam freeze, carve-out rationale). If a future change adds logic
+  rather than prose, extract or condense then; do not cut frozen comments just
+  to hit the number.
+
 ## Cross-references
 
 - Umbrella program: `docs/history/backlog/2026-08-18-koinly-cancellation-program.md`
   (P2 follow-up candidates section points here).
 - Maintenance context: `docs/maintenance/on_chain_validation.md` (bridge-mint
   classification + discriminator gap; fetch-failure staleness marker).
+- Staleness plan reviews: `docs/history/reviews/2026-08-26-on-chain-staleness-refusal-code-review-r{1..5}.md`
+  (items 4-5 above are their dispositioned residuals).

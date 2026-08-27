@@ -198,6 +198,46 @@ TH_MARKER = "transaction_history"
 TH_SUFFIX = ".csv"
 
 
+#: Manual-clear instruction for a stale fetch marker (review r1 F10: ONE
+#: definition shared verbatim by every refusal / soft-fail message that names
+#: the remediation - this module's ``build_projection`` refusal and the retry
+#: ladder (``on_chain_retry``) + fetch soft-fail in ``run_report`` - so the
+#: shared action clause
+#: cannot drift while the refusal causes stay distinct). Public (review r2
+#: F9): imported cross-module by ``run_report`` / ``on_chain_retry``.
+STALE_MARKER_MANUAL_CLEAR = "Delete the marker {marker_name} to proceed with the stale CSV for review only."
+
+
+def fetch_marker_is_stale(bera_csv: Path, marker: Path) -> bool:
+    """Shared staleness predicate: is ``marker`` NEWER than ``bera_csv``?
+
+    The ONE definition of staleness (plan 2026-08-26): both the retry ladder
+    (``on_chain_retry.retry_stale_on_chain_fetch``, threaded through
+    ``run_report``) and the refusal in :meth:`OnChainThSubstituter
+    .build_projection` call this function, so no second mtime comparison can
+    drift apart from it. A marker newer than the CSV means a refresh failed
+    AFTER the CSV's last successful write (known-stale data).
+
+    TOCTOU guard (review r4): a marker deleted between ``is_file()`` and
+    ``stat()`` reads as ABSENT (deletion is the documented manual clear) and
+    must NOT count as stale. The same ``except`` arm also covers a ``bera_csv``
+    vanishing or not yet present mid-check (``bera_csv.stat()`` sits in the
+    same ``try``): that also reads as NOT stale (review r2 F3). This is safe
+    because single-process callers are protected by the upstream
+    ``bera_csv.is_file()`` check in ``build_projection`` (an absent CSV takes
+    the absence WARNING path there); only the documented-unsupported
+    concurrent-writer window can reach it.
+    """
+    try:
+        return marker.is_file() and marker.stat().st_mtime > bera_csv.stat().st_mtime
+    except FileNotFoundError:
+        # Review r4 (risk): the marker's documented manual clear is
+        # deletion; a deletion racing this check reads as absent. A vanishing
+        # bera CSV hits the same arm and also reads as not-stale (r2 F3;
+        # handled downstream by the absence WARNING path).
+        return False
+
+
 def in_window_inclusive(day: date, date_from: date | None, date_to: date | None) -> bool:
     """Inclusive window check (both bounds participate when set).
 
@@ -390,27 +430,29 @@ class OnChainThSubstituter:
             )
             return None
 
-        # Review r1 F6: a fetch failure after the CSV's last successful write
-        # leaves a stale marker newer than the CSV; building the opted-in TH
-        # projection on it would quietly under-report on-chain activity. Loud
-        # ERROR (not a refusal: the collection fetch is deliberately
-        # non-blocking, and a valid prior CSV remains usable for review).
+        # Plan 2026-08-26, backlog item 1 (contract decision provenance): on
+        # 2026-08-26 the user chose hard refusal mirroring M1; on 2026-08-27
+        # the user SUPERSEDED it with a retry-first ladder (automatic refetch
+        # with exponential backoff in ``on_chain_retry``, threaded through
+        # ``run_report``), so this refusal is the
+        # LAST resort: it fires when the automatic refetch attempts have
+        # already failed upstream, were unavailable (no fetch callable), OR
+        # could not clear the stale marker (a Path-returning attempt left the
+        # marker newer than the CSV; review r2 F1). A
+        # stale marker newer than the CSV means building the opted-in TH
+        # projection would quietly under-report on-chain activity in a filing
+        # artifact, so the run refuses. The race arm (a marker deleted
+        # mid-check reads as absent) is preserved in the shared predicate
+        # (review r4).
         marker = fetch_failed_marker_path(output_dir, year)
-        try:
-            marker_newer = marker.is_file() and marker.stat().st_mtime > bera_csv.stat().st_mtime
-        except FileNotFoundError:
-            # Review r4 (risk): the marker's documented manual clear is
-            # deletion; a deletion racing this check reads as absent.
-            marker_newer = False
-        if marker_newer:
-            logger.error(
-                "On-chain CSV %s is STALE: the fetch-failure marker %s is "
-                "newer than the CSV (a later refresh failed). The projection "
-                "below may be missing on-chain activity after the CSV's last "
-                "successful fetch - re-run the fetch before relying on the "
-                "output.",
-                bera_csv,
-                marker.name,
+        if fetch_marker_is_stale(bera_csv, marker):
+            raise ReportGenerationError(
+                f"Refusing to build the on-chain TH projection: {bera_csv} is "
+                f"STALE - the fetch-failure marker {marker.name} is newer than "
+                f"the CSV (a later refresh failed), and the automatic refetch "
+                f"could not clear the stale marker (attempts failed, were "
+                f"unavailable, or the marker stayed newer than the CSV). "
+                f"{STALE_MARKER_MANUAL_CLEAR.format(marker_name=marker.name)}"
             )
 
         logger.info("Building on-chain TH projection from %s.", bera_csv)

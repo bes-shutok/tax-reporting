@@ -25,7 +25,7 @@ Plan review: `docs/history/reviews/2026-08-26-plan-review-on-chain-staleness-ref
   in `on_chain_th_substitution.py` encapsulating the landed mtime comparison plus the
   r4 TOCTOU arm; both the retry ladder and the refusal call it (single definition,
   no drift).
-- **Retry ladder**: in `run_report.py`, when the opted-in substitution detects a
+- **Retry ladder**: threaded through `run_report.py`, when the opted-in substitution detects a
   stale marker AND a fetch callable is injected, re-run the fetch with exponential
   backoff `_STALE_FETCH_RETRY_DELAYS_S = (1.0, 2.0, 4.0, 8.0, 16.0, 32.0)`: one
   attempt per delay, sleep BEFORE each attempt (the short initial delay avoids
@@ -37,9 +37,16 @@ Plan review: `docs/history/reviews/2026-08-26-plan-review-on-chain-staleness-ref
   63 s of backoff sleep PLUS the six attempts' own transport time (typically a bit
   over a minute; r8-F5). A success rewrites the CSV newer than the marker (landed
   self-heal) and the run proceeds.
+  Amendment (review r2 F2 / r3 F12): the ladder BODY lives in
+  `on_chain_retry.py` (`retry_stale_on_chain_fetch`); the delays constant and
+  the `_retry_sleep` seam remain in `run_report.py` per the frozen Validation
+  Commands and are threaded in as `delays` / `sleep` on every call.
 - **OnChainFetch seam**: the existing injected keyword-only fetch callable
   (`run_report.py` line 43); `None` (no API key wired in `main.py`) means no retry is
   possible and the refusal fires immediately.
+  Amendment (review r5 F10): the Protocol's defining home is `on_chain_fetcher.py`;
+  `run_report.py` imports it under `TYPE_CHECKING` for annotation only (no runtime
+  re-export).
 - **Sleep seam**: `run_report.py` module attribute `_retry_sleep = time.sleep`,
   called by the ladder; tests monkeypatch it (hermetic suite, per-test 120 s timeout;
   the ladder must never really sleep in tests).
@@ -54,6 +61,11 @@ Plan review: `docs/history/reviews/2026-08-26-plan-review-on-chain-staleness-ref
   pass `--session-id "$SID"` (marker session = `sha1(value)[:16]`).
 
 ## Gist & Examples
+
+Amendment (review r5 F12): pre-execution line anchors in this plan (e.g. `lines
+393-414`, `run_report.py:374-385`, `run_report.py:148`, `run_report.py` line 43)
+reflect the master baseline; the r2/r3 module extractions shifted line numbers in
+the shipped files.
 
 Today a failed on-chain refresh writes the marker next to the previous run's bera
 CSV, and the opted-in TH substitution (`src/tax_reporting/application/on_chain_th_substitution.py`,
@@ -71,8 +83,10 @@ refusal mirroring M1:
   after every attempt.
   - Any attempt succeeds → the CSV is rewritten newer than the marker (landed
     self-heal), an INFO names the recovery, and the run proceeds normally.
-  - All attempts fail → the ladder in `run_report.py` raises `ReportGenerationError`
-    itself (r8-F2: the attempt count lives in the ladder, not in `build_projection`),
+  - All attempts fail → the ladder (body in `on_chain_retry.retry_stale_on_chain_fetch`,
+    threaded from `_substitute_on_chain_th` in `run_report.py`; r4-F1 amendment) raises
+    `ReportGenerationError` itself (r8-F2: the attempt count lives in the ladder, not
+    in `build_projection`),
     naming the CSV path, the marker name, "6 automatic refetch attempts failed", and
     the manual clear ("delete the marker to proceed with the stale CSV for review
     only"); `maybe_substitute` is never reached.
@@ -80,6 +94,12 @@ refusal mirroring M1:
   is impossible) → the ladder is skipped and `build_projection` raises
   `ReportGenerationError` immediately (message states no automatic refetch was
   possible; nothing to retry; true last resort).
+  Amendment (review r5 F9): the shipped refusal message is the widened
+  three-disjunct wording (review r2 F1) - the automatic refetch attempts failed,
+  were unavailable (no fetch callable), or could not clear the stale marker (a
+  Path-returning attempt left the marker newer than the CSV); it does not carry a
+  "nothing to retry" clause. Task 2 and `docs/maintenance/on_chain_validation.md`
+  match the code.
 - Marker older than CSV (a later successful fetch rewrote the CSV; self-heal) →
   proceeds, unchanged; the ladder is not entered.
 - No marker → proceeds, unchanged; the ladder is not entered.
@@ -228,6 +248,13 @@ grep -q "def fetch_marker_is_stale" src/tax_reporting/application/on_chain_th_su
   || { echo "shared staleness predicate missing from on_chain_th_substitution.py"; exit 1; }
 grep -q "fetch_marker_is_stale" src/tax_reporting/application/run_report.py \
   || { echo "retry ladder does not use the shared staleness predicate"; exit 1; }
+# r4-F2 amendment: since the r2/r3 extraction the LADDER BODY lives in
+# on_chain_retry.py, where the actual predicate call sites are; the run_report.py
+# probe above is retained for the plan freeze but is comment-satisfied there, so
+# the OWNING probe below is the real backstop (fail-closed on the module that
+# branches on staleness; pins BOTH call sites, entry gate + post-attempt re-check).
+test "$(grep -c "fetch_marker_is_stale" src/tax_reporting/application/on_chain_retry.py)" -ge 2 \
+  || { echo "retry ladder does not use the shared staleness predicate"; exit 1; }
 
 uv run pytest -q
 ```
@@ -241,45 +268,51 @@ Files:
 - `tests/unit/application/test_on_chain_th_substitution.py`
 - `tests/unit/application/test_run_report.py`
 
-- [ ] DELETE the superseded old-contract test `TestOnChainThSubstitution#test_build_projection_warns_on_stale_fetch_marker` (line 325: asserts the projection BUILDS plus an ERROR log on a stale marker); the refusal test below replaces it, and its three control scenarios become the retained-control tests below (r1-F1)
-- [ ] `TestOnChainThSubstitution#test_build_projection_refuses_on_stale_fetch_marker`; given the bera CSV present and a `.fetch-failed` marker written after it (marker mtime newer), expects `build_projection` to raise `ReportGenerationError` whose message names the CSV path, the marker filename, states that any automatic refetch attempts have failed or were unavailable (the ladder, when it ran, lives upstream in `run_report`; r8-F2), and the clear paths (delete the marker to proceed with the stale CSV for review only)
-- [ ] `TestOnChainThSubstitution#test_build_projection_proceeds_when_marker_older_than_csv`; given a marker older than the CSV (self-heal state), expects the projection to build and no exception (retain the existing r2-F1 control)
-- [ ] `TestOnChainThSubstitution#test_build_projection_proceeds_when_marker_absent`; given no marker file, expects the projection to build (retain the existing control)
-- [ ] `TestOnChainThSubstitution#test_build_projection_marker_deletion_race_proceeds`; given the marker vanishing mid-check; monkeypatch `Path.is_file` to return True while `Path.stat` raises `FileNotFoundError`, so the `except FileNotFoundError` arm on `marker.stat()` is actually reached (`is_file()` alone swallows the error internally; deleting that arm must fail this test; r1-F3); scope BOTH patches to the marker path only; a class-wide `Path.stat` patch breaks `find_repository_root()` (:419) and later path checks (r5-F1; a miss fails loudly in RED/GREEN, so this is authoring guidance, not a behavior risk); expects the build to proceed without refusal
-- [ ] `TestOnChainThSubstitution#test_maybe_substitute_propagates_staleness_refusal`; given the stale-marker state, expects `maybe_substitute` (the production entry) to raise the same `ReportGenerationError` uncaught
-- [ ] `TestOnChainThSubstitution#test_fetch_marker_is_stale_shared_predicate`; given (newer marker → True; older marker → False; absent marker → False; marker path whose `stat` raises `FileNotFoundError` after `is_file` True → False), expects the predicate to return exactly these values (direct unit coverage of the extracted helper, TOCTOU arm included)
-- [ ] `TestRunReportStalenessRetry#test_retry_ladder_recovers_mid_way`; given a stale marker and an injected fake fetch callable that fails twice then rewrites the bera CSV newer, expects `_substitute_on_chain_th` (with `on_chain_fetch` threaded) to proceed to a successful substitution, three fetch invocations, two WARNING logs, one recovery INFO, and `_retry_sleep` called with the sleep BEFORE each of the three attempts (1.0, 2.0, 4.0; r8-F1)
-- [ ] `TestRunReportStalenessRetry#test_retry_ladder_exhaustion_refuses`; given a stale marker and a fake fetch that always raises, expects the LADDER in `_substitute_on_chain_th` to raise the M1-boundary `ReportGenerationError` itself (r8-F2: the raise happens in `run_report`, before `maybe_substitute` is called) naming "6 automatic refetch attempts failed", exactly six fetch invocations, and `_retry_sleep` called with the full sequence (1.0, 2.0, 4.0, 8.0, 16.0, 32.0)
-- [ ] `TestRunReportStalenessRetry#test_no_fetch_callable_refuses_immediately`; given a stale marker and `on_chain_fetch=None`, expects the `build_projection` `ReportGenerationError` (no attempt count in the message; it must NOT contain "6 automatic refetch attempts failed"; the two refusal causes stay discriminable; r9-F1) to propagate out of `_substitute_on_chain_th`, with zero fetch invocations and zero `_retry_sleep` calls
-- [ ] `TestRunReportStalenessRetry#test_healthy_state_skips_ladder`; given no marker (or marker older than CSV) and an injected fake fetch, expects the substitution to proceed with ZERO fetch invocations (the ladder is entered only on a stale marker)
-- [ ] `TestRunReportStalenessRetry#test_retry_ladder_does_not_delete_marker`; given exhaustion, expects the marker file to still exist after the refusal (no new cleanup path; invariant)
-- [ ] `TestRunReportStalenessRetry#test_retry_ladder_treats_none_return_as_failed_attempt`; given a stale marker and a fake fetch that always returns `None` (the empty-wallet-config branch: rewrites nothing), expects six attempts each with a WARNING naming the None return, then the exhaustion `ReportGenerationError`, and no CSV rewrite (r11-F1)
-- [ ] All `TestRunReportStalenessRetry` tests monkeypatch `run_report._retry_sleep` to a recording fake; no test sleeps for real
-- [ ] Run → expect RED: `uv run pytest tests/unit/application/test_on_chain_th_substitution.py tests/unit/application/test_run_report.py -q`
-- [ ] Commit: `test(on-chain): staleness retry-then-refuse RED (ladder + M1 mirror refusal)`
+- [x] DELETE the superseded old-contract test `TestOnChainThSubstitution#test_build_projection_warns_on_stale_fetch_marker` (line 325: asserts the projection BUILDS plus an ERROR log on a stale marker); the refusal test below replaces it, and its three control scenarios become the retained-control tests below (r1-F1)
+- [x] `TestOnChainThSubstitution#test_build_projection_refuses_on_stale_fetch_marker`; given the bera CSV present and a `.fetch-failed` marker written after it (marker mtime newer), expects `build_projection` to raise `ReportGenerationError` whose message names the CSV path, the marker filename, states that any automatic refetch attempts have failed or were unavailable (the ladder, when it ran, lives upstream in `run_report`; r8-F2), and the clear paths (delete the marker to proceed with the stale CSV for review only)
+- [x] `TestOnChainThSubstitution#test_build_projection_proceeds_when_marker_older_than_csv`; given a marker older than the CSV (self-heal state), expects the projection to build and no exception (retain the existing r2-F1 control)
+- [x] `TestOnChainThSubstitution#test_build_projection_proceeds_when_marker_absent`; given no marker file, expects the projection to build (retain the existing control)
+- [x] `TestOnChainThSubstitution#test_build_projection_marker_deletion_race_proceeds`; given the marker vanishing mid-check; monkeypatch `Path.is_file` to return True while `Path.stat` raises `FileNotFoundError`, so the `except FileNotFoundError` arm on `marker.stat()` is actually reached (`is_file()` alone swallows the error internally; deleting that arm must fail this test; r1-F3); scope BOTH patches to the marker path only; a class-wide `Path.stat` patch breaks `find_repository_root()` (:419) and later path checks (r5-F1; a miss fails loudly in RED/GREEN, so this is authoring guidance, not a behavior risk); expects the build to proceed without refusal
+- [x] `TestOnChainThSubstitution#test_maybe_substitute_propagates_staleness_refusal`; given the stale-marker state, expects `maybe_substitute` (the production entry) to raise the same `ReportGenerationError` uncaught
+- [x] `TestOnChainThSubstitution#test_fetch_marker_is_stale_shared_predicate`; given (newer marker → True; older marker → False; absent marker → False; marker path whose `stat` raises `FileNotFoundError` after `is_file` True → False), expects the predicate to return exactly these values (direct unit coverage of the extracted helper, TOCTOU arm included)
+- [x] `TestRunReportStalenessRetry#test_retry_ladder_recovers_mid_way`; given a stale marker and an injected fake fetch callable that fails twice then rewrites the bera CSV newer, expects `_substitute_on_chain_th` (with `on_chain_fetch` threaded) to proceed to a successful substitution, three fetch invocations, two WARNING logs, one recovery INFO, and `_retry_sleep` called with the sleep BEFORE each of the three attempts (1.0, 2.0, 4.0; r8-F1)
+- [x] `TestRunReportStalenessRetry#test_retry_ladder_exhaustion_refuses`; given a stale marker and a fake fetch that always raises, expects the LADDER in `_substitute_on_chain_th` to raise the M1-boundary `ReportGenerationError` itself (r8-F2: the raise happens in `run_report`, before `maybe_substitute` is called) naming "6 automatic refetch attempts failed", exactly six fetch invocations, and `_retry_sleep` called with the full sequence (1.0, 2.0, 4.0, 8.0, 16.0, 32.0)
+- [x] `TestRunReportStalenessRetry#test_no_fetch_callable_refuses_immediately`; given a stale marker and `on_chain_fetch=None`, expects the `build_projection` `ReportGenerationError` (no attempt count in the message; it must NOT contain "6 automatic refetch attempts failed"; the two refusal causes stay discriminable; r9-F1) to propagate out of `_substitute_on_chain_th`, with zero fetch invocations and zero `_retry_sleep` calls
+- [x] `TestRunReportStalenessRetry#test_healthy_state_skips_ladder`; given no marker (or marker older than CSV) and an injected fake fetch, expects the substitution to proceed with ZERO fetch invocations (the ladder is entered only on a stale marker)
+- [x] `TestRunReportStalenessRetry#test_retry_ladder_does_not_delete_marker`; given exhaustion, expects the marker file to still exist after the refusal (no new cleanup path; invariant)
+- [x] `TestRunReportStalenessRetry#test_retry_ladder_treats_none_return_as_failed_attempt`; given a stale marker and a fake fetch that always returns `None` (the empty-wallet-config branch: rewrites nothing), expects six attempts each with a WARNING naming the None return, then the exhaustion `ReportGenerationError`, and no CSV rewrite (r11-F1)
+- [x] All `TestRunReportStalenessRetry` tests monkeypatch `run_report._retry_sleep` to a recording fake; no test sleeps for real
+- [x] Run → expect RED: `uv run pytest tests/unit/application/test_on_chain_th_substitution.py tests/unit/application/test_run_report.py -q`
+- [x] Commit: `test(on-chain): staleness retry-then-refuse RED (ladder + M1 mirror refusal)`
 
 ### Task 2: GREEN; shared predicate + the refusal
 
 Files:
 - `src/tax_reporting/application/on_chain_th_substitution.py`
 
-- [ ] Extract the lines 398-404 mtime+TOCTOU check into module-level `fetch_marker_is_stale(bera_csv: Path, marker: Path) -> bool` (r4 race arm preserved verbatim); `build_projection` calls it
-- [ ] In `build_projection` (lines 393-414): replace the `logger.error` branch with a raise; `ReportGenerationError` (already imported at line 42) whose f-string message names `bera_csv`, `marker.name`, and the manual clear; the message states that automatic refetch attempts have failed or were unavailable (no attempt count: the ladder and its count live in `run_report`; r8-F2)
-- [ ] Replace the r1-F6 "(not a refusal: ...)" comment with the new contract + user-decision provenance (2026-08-27 retry-first supersession over the 2026-08-26 hard refusal; backlog item 1); keep citing r4 for the race arm
-- [ ] Run → expect GREEN for the substitution-module tests: `uv run pytest tests/unit/application/test_on_chain_th_substitution.py -q`
-- [ ] Grep-verify both callers share `build_projection` (no second staleness site): `grep -rn "build_projection" src/`
-- [ ] Commit: `feat(on-chain): refuse the opted-in TH substitution on a stale fetch marker (M1 mirror)`
+- [x] Extract the lines 398-404 mtime+TOCTOU check into module-level `fetch_marker_is_stale(bera_csv: Path, marker: Path) -> bool` (r4 race arm preserved verbatim); `build_projection` calls it
+- [x] In `build_projection` (lines 393-414): replace the `logger.error` branch with a raise; `ReportGenerationError` (already imported at line 42) whose f-string message names `bera_csv`, `marker.name`, and the manual clear; the message states that automatic refetch attempts have failed or were unavailable (no attempt count: the ladder and its count live in `run_report`; r8-F2)
+- [x] Replace the r1-F6 "(not a refusal: ...)" comment with the new contract + user-decision provenance (2026-08-27 retry-first supersession over the 2026-08-26 hard refusal; backlog item 1); keep citing r4 for the race arm
+- [x] Run → expect GREEN for the substitution-module tests: `uv run pytest tests/unit/application/test_on_chain_th_substitution.py -q`
+- [x] Grep-verify both callers share `build_projection` (no second staleness site): `grep -rn "build_projection" src/`
+- [x] Commit: `feat(on-chain): refuse the opted-in TH substitution on a stale fetch marker (M1 mirror)`
 
 ### Task 3: GREEN; the retry ladder in run_report
 
 Files:
 - `src/tax_reporting/application/run_report.py`
 
-- [ ] Add module constants: `_STALE_FETCH_RETRY_DELAYS_S: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0, 16.0, 32.0)` and the sleep seam `_retry_sleep = time.sleep` (import `time`)
-- [ ] Plumb the fetch callable down (r8-F3): `_substitute_on_chain_th` (called at line 242 inside `_resolve_koinly_stage`, def line 205) gains `on_chain_fetch: OnChainFetch | None`; `_resolve_koinly_stage` gains the same parameter and passes it through; the `run_report` caller (line 121) passes its existing `on_chain_fetch` argument. Grep-verify every `_resolve_koinly_stage` and `_substitute_on_chain_th` call site passes the new argument: `grep -rn "_resolve_koinly_stage\|_substitute_on_chain_th" src/ tests/`
-- [ ] Implement the ladder as a dedicated helper `_retry_stale_on_chain_fetch(...)` in `run_report.py` (delays, sleep seam, per-attempt catch, predicate re-check, recovery INFO, exhaustion ERROR + raise; r10-overflow: keeps `_substitute_on_chain_th` small and gives the ladder a direct seam), called from `_substitute_on_chain_th` before the `maybe_substitute` call: resolve `bera_csv`/marker via `bera_csv_path`/`fetch_failed_marker_path` and the shared `fetch_marker_is_stale` predicate; if stale AND `on_chain_fetch is not None`, run the ladder: for each delay in `_STALE_FETCH_RETRY_DELAYS_S`: `_retry_sleep(delay)` FIRST (the short initial delay avoids hammering an API that failed on a prior run; r10-F2), then attempt `on_chain_fetch(year=year, output_dir=output_dir)` in its own `try/except Exception` (WARNING per failure, DI-1-style broad catch scoped to the attempt only), then re-check the predicate; predicate false → log the recovery INFO and fall through to a normal substitution. If the ladder exhausts all six attempts, log an ERROR and raise `ReportGenerationError` inside the helper `_retry_stale_on_chain_fetch` (r11-F2: the raise lives in the HELPER, which `_substitute_on_chain_th` calls before `maybe_substitute`; r8-F2: `maybe_substitute` is never reached in this case) whose f-string names `bera_csv`, the marker name, "6 automatic refetch attempts failed" (len(_STALE_FETCH_RETRY_DELAYS_S)), and the manual clear; the raise must sit OUTSIDE every per-attempt `except` so the M1 boundary propagates it. An attempt whose callable returns `None` (the fetcher's empty-wallet-config branch: no CSV rewrite, a NEW marker written) counts as a FAILED attempt with its own WARNING naming the None return (r11-F1); the post-attempt predicate re-check keeps the outcome honest either way. If stale and `on_chain_fetch is None`, fall through to `maybe_substitute` directly (immediate `build_projection` refusal). Not stale → no ladder
-- [ ] Run → expect GREEN: `uv run pytest tests/unit/application/test_on_chain_th_substitution.py tests/unit/application/test_run_report.py -q`
-- [ ] Commit: `feat(on-chain): auto-retry stale on-chain fetch with exponential backoff before refusing`
+- [x] Add module constants: `_STALE_FETCH_RETRY_DELAYS_S: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0, 16.0, 32.0)` and the sleep seam `_retry_sleep = time.sleep` (import `time`)
+- [x] Plumb the fetch callable down (r8-F3): `_substitute_on_chain_th` (called at line 242 inside `_resolve_koinly_stage`, def line 205) gains `on_chain_fetch: OnChainFetch | None`; `_resolve_koinly_stage` gains the same parameter and passes it through; the `run_report` caller (line 121) passes its existing `on_chain_fetch` argument. Grep-verify every `_resolve_koinly_stage` and `_substitute_on_chain_th` call site passes the new argument: `grep -rn "_resolve_koinly_stage\|_substitute_on_chain_th" src/ tests/`
+- [x] Implement the ladder as a dedicated helper `_retry_stale_on_chain_fetch(...)` in `run_report.py`
+  Amendment (review r2 F2 / r3 F12 / r4 F1): the ladder shipped as the module-level
+  function `retry_stale_on_chain_fetch` in `src/tax_reporting/application/on_chain_retry.py`
+  (orchestration thin-layer ceiling); `_substitute_on_chain_th` calls it with the
+  delays constant and the `_retry_sleep` seam, which stay in `run_report.py` per the
+  frozen Validation Commands.
+  Original body text (delays, sleep seam, per-attempt catch, predicate re-check, recovery INFO, exhaustion ERROR + raise; r10-overflow: keeps `_substitute_on_chain_th` small and gives the ladder a direct seam), called from `_substitute_on_chain_th` before the `maybe_substitute` call: resolve `bera_csv`/marker via `bera_csv_path`/`fetch_failed_marker_path` and the shared `fetch_marker_is_stale` predicate; if stale AND `on_chain_fetch is not None`, run the ladder: for each delay in `_STALE_FETCH_RETRY_DELAYS_S`: `_retry_sleep(delay)` FIRST (the short initial delay avoids hammering an API that failed on a prior run; r10-F2), then attempt `on_chain_fetch(year=year, output_dir=output_dir)` in its own `try/except Exception` (WARNING per failure, DI-1-style broad catch scoped to the attempt only), then re-check the predicate; predicate false → log the recovery INFO and fall through to a normal substitution. If the ladder exhausts all six attempts, log an ERROR and raise `ReportGenerationError` inside the helper `_retry_stale_on_chain_fetch` (r11-F2: the raise lives in the HELPER, which `_substitute_on_chain_th` calls before `maybe_substitute`; r8-F2: `maybe_substitute` is never reached in this case) whose f-string names `bera_csv`, the marker name, "6 automatic refetch attempts failed" (len(_STALE_FETCH_RETRY_DELAYS_S)), and the manual clear; the raise must sit OUTSIDE every per-attempt `except` so the M1 boundary propagates it. An attempt whose callable returns `None` (the fetcher's empty-wallet-config branch: no CSV rewrite, a NEW marker written) counts as a FAILED attempt with its own WARNING naming the None return (r11-F1); the post-attempt predicate re-check keeps the outcome honest either way. If stale and `on_chain_fetch is None`, fall through to `maybe_substitute` directly (immediate `build_projection` refusal). Not stale → no ladder
+- [x] Run → expect GREEN: `uv run pytest tests/unit/application/test_on_chain_th_substitution.py tests/unit/application/test_run_report.py -q`
+- [x] Commit: `feat(on-chain): auto-retry stale on-chain fetch with exponential backoff before refusing`
 
 ### Task 4: fetch soft-fail message points at the ladder + refusal
 
@@ -287,10 +320,10 @@ Files:
 - `src/tax_reporting/application/run_report.py`
 - `tests/unit/application/test_run_report.py`
 
-- [ ] Grep `tests/` for assertions pinning the current soft-fail message text (`grep -rn "STALE" tests/`); if pinned, extend the assertion, else add a caplog assertion
-- [ ] REWRITE (not extend) the soft-fail log at `run_report.py:374-385` (r4-F1: the `logger.warning` statement spans 379-385; the cited range covers it plus the marker-write call, and the stale clause sits on line 383): drop any clause claiming a later ERROR log (false under the new contract; r1-F2); the message must state the consequence; the next opted-in run will retry the fetch automatically (63 s of backoff sleep plus each attempt's own transfer time: rate-limited exhaustion can block for several minutes, since each attempt drives per-wallet Etherscan calls with their own internal retries; r12-F2) and refuse if every attempt fails (or the marker is deleted for review-only use)
-- [ ] Run → expect GREEN: `uv run pytest tests/unit/application/test_run_report.py -q`
-- [ ] Commit: `feat(on-chain): fetch soft-fail message names the retry ladder and refusal`
+- [x] Grep `tests/` for assertions pinning the current soft-fail message text (`grep -rn "STALE" tests/`); if pinned, extend the assertion, else add a caplog assertion
+- [x] REWRITE (not extend) the soft-fail log at `run_report.py:374-385` (r4-F1: the `logger.warning` statement spans 379-385; the cited range covers it plus the marker-write call, and the stale clause sits on line 383): drop any clause claiming a later ERROR log (false under the new contract; r1-F2); the message must state the consequence; the next opted-in run will retry the fetch automatically (63 s of backoff sleep plus each attempt's own transfer time: rate-limited exhaustion can block for several minutes, since each attempt drives per-wallet Etherscan calls with their own internal retries; r12-F2) and refuse if every attempt fails (or the marker is deleted for review-only use)
+- [x] Run → expect GREEN: `uv run pytest tests/unit/application/test_run_report.py -q`
+- [x] Commit: `feat(on-chain): fetch soft-fail message names the retry ladder and refusal`
 
 ### Task 5: documentation + backlog promotion
 
@@ -299,12 +332,12 @@ Files:
 - `docs/history/backlog/2026-08-26-on-chain-review-followups.md`
 - `docs/history/backlog/2026-08-18-koinly-cancellation-program.md`
 
-- [ ] Rewrite the "Fetch-failure staleness marker (2026-08-26)" section (line 330): the opted-in substitution first retries the fetch automatically (six attempts, exponential backoff, 63 s of backoff sleep plus fetch time) and then refuses the run; deletion remains the manual clear; the validation harness refuses identically but never retries (no fetch seam) and its refusal surfaces as `EXIT_VALIDATION_CRASH` (exit 2, fail-loud with traceback; r10-F1); record the user's 2026-08-27 contract decision superseding the 2026-08-26 hard refusal. The rewrite must contain the literal phrases "refuses the run" and "automatic refetch" (the Validation Commands probe them; r2-F3)
-- [ ] Mark backlog item 1 promoted (link this plan); do not archive the backlog doc yet (items 2-3 have their own plans)
-- [ ] Update the umbrella backlog line 201 P2-candidate mention of "staleness hard-refusal" to point at this plan
-- [ ] Commit: `docs(on-chain): staleness retry-then-refuse contract; backlog item 1 promoted`
+- [x] Rewrite the "Fetch-failure staleness marker (2026-08-26)" section (line 330): the opted-in substitution first retries the fetch automatically (six attempts, exponential backoff, 63 s of backoff sleep plus fetch time) and then refuses the run; deletion remains the manual clear; the validation harness refuses identically but never retries (no fetch seam) and its refusal surfaces as `EXIT_VALIDATION_CRASH` (exit 2, fail-loud with traceback; r10-F1); record the user's 2026-08-27 contract decision superseding the 2026-08-26 hard refusal. The rewrite must contain the literal phrases "refuses the run" and "automatic refetch" (the Validation Commands probe them; r2-F3)
+- [x] Mark backlog item 1 promoted (link this plan); do not archive the backlog doc yet (items 2-3 have their own plans)
+- [x] Update the umbrella backlog line 201 P2-candidate mention of "staleness hard-refusal" to point at this plan
+- [x] Commit: `docs(on-chain): staleness retry-then-refuse contract; backlog item 1 promoted`
 
 ### Task 6: full validation
 
-- [ ] Run the Validation Commands block end-to-end; all green
-- [ ] `uv run pytest -q` full suite green
+- [x] Run the Validation Commands block end-to-end; all green
+- [x] `uv run pytest -q` full suite green

@@ -51,6 +51,7 @@ import csv
 import dataclasses
 import logging
 from pathlib import Path
+from typing import Protocol
 
 from tax_reporting.application.on_chain_config import (
     OnChainWalletConfig,
@@ -66,6 +67,29 @@ from tax_reporting.infrastructure.on_chain.etherscan_client import EtherscanV2Cl
 from tax_reporting.infrastructure.on_chain.position_token_registry import (
     PositionTokenRegistry,
 )
+
+
+class OnChainFetch(Protocol):
+    """Keyword-only fetch seam matching ``run_on_chain_fetch``.
+
+    Defined HERE (the fetcher's own module) so ``run_report`` and
+    ``on_chain_retry`` share ONE import direction (both already import this
+    module); ``run_report`` imports it under ``TYPE_CHECKING`` for
+    annotations only (there is no runtime re-export).
+    """
+
+    def __call__(self, *, year: int, output_dir: Path) -> Path | None: ...
+
+
+#: Operator-facing narrative about ONE fetch invocation's cost (review r4 F7):
+#: this module OWNS the knowledge of what a single attempt does internally
+#: (per-wallet Etherscan calls, each with client-level retries), so downstream
+#: messaging (the retry-ladder consequence text) sources it here instead of
+#: embedding fetcher internals.
+FETCH_ATTEMPT_NARRATIVE = (
+    "each attempt drives per-wallet Etherscan calls with their own internal retries"
+)
+
 
 logger = logging.getLogger(__name__)
 

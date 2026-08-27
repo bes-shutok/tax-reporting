@@ -327,21 +327,62 @@ direction="unknown" (the processor's shape-1 review path, reachable up to the
 processor's `event_id` verbatim - plus a WARNING, so review-carrying rows can
 never silently vanish from the projection.
 
-### Fetch-failure staleness marker (2026-08-26)
+### Fetch-failure staleness marker (2026-08-26; retry-then-refuse since 2026-08-27)
 
 The bera CSV is written only after every wallet and action succeeds, so a
 failed refresh leaves the PREVIOUS run's `bera_transactions.csv` in place.
 When that happens the run_report soft-fail catch writes a best-effort
 `bera_transactions.csv.fetch-failed` marker next to the CSV (also written
-when the wallet config resolves empty while a prior CSV exists); the TH
-substitution stage then compares mtimes and logs a loud ERROR when the
-marker is newer, naming the possible missing activity. By design this does
-NOT refuse (the collection fetch is non-blocking; a valid prior CSV stays
-reviewable), and a later successful fetch rewrites the CSV newer than the
-marker, self-healing without any explicit cleanup; deleting the marker is
-the documented manual clear. Promoting to a hard refusal and surfacing the
-staleness inside the report artifacts are recorded P2 candidates in the
-umbrella backlog.
+when the wallet config resolves empty while a prior CSV exists).
+
+Contract (plan `docs/history/plans/completed/2026-08-26-on-chain-staleness-refusal.md`,
+backlog item 1): on the opted-in path (`ON_CHAIN_TH_WALLETS` set and the
+fiscal-year CSV present), a marker newer than the CSV first triggers an
+automatic refetch - the retry ladder (in `application/on_chain_retry.py`,
+invoked from `run_report.py`) re-runs the fetch once per delay in
+`_STALE_FETCH_RETRY_DELAYS_S` (defined in `run_report.py`; currently six
+attempts with 1-32 s exponential backoff, 63 s of backoff sleep in total,
+plus each attempt's own transfer time, which per-wallet Etherscan retries
+can push to several minutes). Any
+attempt whose fetch returns a path rewrites the CSV newer than the marker
+(self-heal, no explicit cleanup) and the run proceeds - unless the marker is
+STILL newer afterwards (clock skew, or a fetch that returns without
+rewriting the CSV), in which case the ladder stops retrying after that one
+attempt and the shared `build_projection` staleness refusal decides (no
+attempt count in its message). When every attempt fails (raised or returned
+`None`), the ladder itself refuses the run with a `ReportGenerationError`
+naming the CSV, the marker, the attempt count (currently "6 automatic
+refetch attempts failed", derived from `len(_STALE_FETCH_RETRY_DELAYS_S)`),
+and the
+manual clear; when no fetch callable is wired (`on_chain_fetch=None`, no
+API key: nothing to retry), the ladder returns immediately and the shared
+`build_projection` refusal in `on_chain_th_substitution.py` fires instead
+(no attempt count in its message). Deleting the marker remains the documented
+manual clear: it lets the run proceed with the stale CSV for review only.
+
+Concurrent runs against the same output directory are unsupported: the
+fetcher writes the CSV by truncate-then-write (no temp-file rename), so a
+simultaneous run's read can observe a partial file. The window predates the
+retry ladder (any two concurrent runs already raced); the atomic-write fix
+(temp file + `os.replace`) belongs to the fetcher's own backlog
+(`on_chain_fetcher.py`, out of this plan's scope).
+
+Decision provenance: on 2026-08-26 the user chose a hard refusal mirroring
+M1; on 2026-08-27 the user superseded that with the retry-first ladder so
+refusal is the last resort when the data cannot be re-fetched automatically.
+
+The validation harness shares the same `build_projection`, so
+`--validate-on-chain-th` on a stale marker refuses identically - but it has
+no fetch seam, so it never retries. Its refusal propagates uncaught and
+surfaces as `EXIT_VALIDATION_CRASH` (exit 2, fail-loud with traceback;
+r10-F1): presentation only, the fail-loud intent and the actionable message
+are preserved.
+
+The collection-phase fetch itself stays non-blocking (DI-1): a missing CSV
+still warns and continues on Koinly; only the opted-in substitution refuses
+on known-stale data it could not refresh. Surfacing the staleness inside
+the report artifacts remains a recorded P2 candidate in the umbrella
+backlog.
 
 ### Bridge-mint classification (Reward/bridge, 2026-08-26)
 

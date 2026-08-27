@@ -60,8 +60,8 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Chain derivation uses deterministic normalization and validates against trusted sources in `docs/maintenance/tax/crypto-origin/`.
 - Wallet labels are discovery hints only; final chain/country mappings come from archived operator origin documents, not asset symbols; use `Unknown` when labels don't allow derivation.
 - Test-side per-row platform attribution must mirror `wallet_kind._row_platform` (skip empty OR case-insensitive `"unknown"`); bare `tr.sending_wallet or tr.receiving_wallet` misattributes. See `development_lessons.md` #44.
-- Throwaway shadow/verification scripts re-parsing an external-report CSV must call the production reader, not `csv.DictReader` (preamble/header handling diverges). See `development_lessons.md` #45.
-- Doc-drift grep backstops scan `docs/maintenance/`, `docs/architecture/`, `README.md` prose; sweep NEW value at each rendered-text site. See `development_lessons.md` #55, #58, #70.
+- Throwaway shadow/verification scripts re-parsing an external-report CSV must call the production reader, not `csv.DictReader`. See `development_lessons.md` #45.
+- Doc-drift grep backstops scan `docs/maintenance/`, `docs/architecture/`, `README.md` prose; sweep NEW value at each rendered-text site. See `development_lessons.md` #55, #58, #70, #157.
 - Operator mapping temporal validity: `service_start_date` (matching) vs `valid_from` (audit-only); set `service_start_date <= valid_from`, leave `valid_from` null when unknown.
 - Module size: when a module exceeds 1,000 lines or 50 functions/classes, extract cohesive responsibilities into separate modules.
 - Orchestration layers stay thin (~500 lines max); extract sub-orchestrators or move domain logic to dedicated services when coordination grows.
@@ -98,7 +98,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - When one numeric value drives both a branch decision and a user-facing display, both must use the same precision (rounded, not raw), or two rows with identical visible text can route oppositely. See `development_lessons.md` #60.
 - When plan pseudocode compares two same-unit fields by name across domain objects, confirm they represent the same economic quantity before implementing; set them to DIFFERENT values in RED fixtures so a conflation fails visibly.
 - Plan wiring steps enabling a code path via a new kwarg/flag must trace the entry-point guard, grep-verify caller identity, and verify Validation Commands actually validate. See `development_lessons.md` #48.
-- When a plan body clause edits a file a plan invariant freezes, the freeze wins; scope the edit and test to the invariant-safe subset. See `development_lessons.md` #53.
+- When a plan body clause edits a file a plan invariant freezes, the freeze wins; scope the edit and test to the invariant-safe subset; review-driven extractions keep plan-grep-anchored symbols in the anchored file. See `development_lessons.md` #53, #156.
 - Cross-asset FIFO carry-over matches by TH transaction identifier, never by day-level date.
 - Any excluded asset yielding zero FIFO output must log at warning+.
 - Crypto derivatives/futures liquidations reporting losses are disposals of collateral even at a loss; this is correct tax treatment, not an error. See `development_lessons.md` #26.
@@ -149,7 +149,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Re-run feasibility checks against the mutated post-phase-1 input set.
 - When a task changes data flow semantics (filter/dedup/split), grep ALL `tests/` for assertions on the affected data identity tuple, not just the current task's file.
 - When a plan task changes a function signature OR rendered output text (label cell), grep ALL test tiers for callers and row-locators matching the stale label, including method/function identifiers, not just prose.
-- When renaming fixture paths/filenames, grep ALL test files AND docs for every shape (directory, filename, stem, prose); update conftest constants and refs. See `development_lessons.md` #47.
+- When renaming fixture paths/filenames, grep ALL test files AND docs for every shape; update conftest refs. See `development_lessons.md` #47.
 - When a plan task changes an artifact's DISCOVERY mechanism (glob -> explicit path), grep ALL test tiers for every call to the OLD discovery helper; each re-discover call site must switch to the new explicit result (`development_lessons.md` #121).
 - Before downgrading a per-row `logger.warning` to `logger.debug`, apply the warning-grouping recipe sweeps (review surface, `caplog.at_level(WARNING)` substring assertions, docs for the level phrase): `project-guidelines.md` #7, `development_lessons.md` #69, #70.
 - When a plan task removes dataclass fields, grep test construction sites; shared conftest helpers forwarding `**overrides` must filter removed keys or the suite becomes uncollectable. See `development_lessons.md` #54.

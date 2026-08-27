@@ -32,6 +32,7 @@ THAT header would yield a vacuous ``[] == []`` pass).
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -47,6 +48,7 @@ from tax_reporting.application.on_chain_th_adapter import (
     project_on_chain_transactions,
 )
 from tax_reporting.application.on_chain_th_substitution import OnChainThSubstituter
+from tax_reporting.domain.exceptions import ReportGenerationError
 from tax_reporting.domain.on_chain_transaction import EventType
 from tax_reporting.domain.transaction import TransactionHistoryRow
 from tax_reporting.infrastructure.koinly_parser import read_koinly_rows
@@ -55,6 +57,16 @@ from tax_reporting.infrastructure.on_chain.lp_autodiscovery import LpAutodiscove
 from tax_reporting.infrastructure.on_chain.on_chain_csv_reader import read_on_chain_rows
 from tax_reporting.infrastructure.on_chain.position_token_registry import (
     load_position_token_registry,
+)
+from tests.unit.application.conftest import (  # shared plain helpers (review r2 F10)
+    BERA_CSV_HEADER as _BERA_CSV_HEADER,
+)
+from tests.unit.application.conftest import (
+    backdate as _backdate,
+)
+from tests.unit.application.conftest import (
+    patch_marker_vanishes,
+    stale_marker_state,
 )
 
 
@@ -77,12 +89,8 @@ _REWARD_DISTRIBUTOR = "0x000000000000000000000000000000000000beef"  # in example
 
 # The FULL 15-column header the reader's OnChainTxRow contract requires (same
 # shape as the e2e ``_bera_csv_rows`` header; missing columns make the reader
-# warn-and-skip every data row).
-_BERA_CSV_HEADER = (
-    "tx_hash,block_number,timestamp_utc,chain,from_address,to_address,"
-    "asset,token_address,amount_raw,amount_decimals,direction,fee_asset,"
-    "fee_amount_raw,wallet_label,wallet_address"
-)
+# warn-and-skip every data row). Defined ONCE in the shared conftest helpers
+# (review r2 F10) so both on-chain test modules use the same header.
 
 
 def _make_bera_csv(output_dir: Path, year: int) -> Path:
@@ -117,6 +125,45 @@ def _write_bera_csv(output_dir: Path, data_rows: list[str], year: int = 2025) ->
     bera.parent.mkdir(parents=True, exist_ok=True)
     bera.write_text("\n".join([_BERA_CSV_HEADER, *data_rows, ""]), encoding="utf-8")
     return bera
+
+
+def _stale_marker_state(output_dir: Path, year: int = 2025) -> tuple[Path, Path]:
+    """Known-stale state with ONE parseable claim row, via the shared conftest
+    helper (review r2 F10): the backdated CSV + newer marker construction has
+    a single definition across both on-chain test modules."""
+    return stale_marker_state(
+        output_dir,
+        year=year,
+        data_rows=[_claim_row("0xstale01", block_number=1002, timestamp_utc="2025-03-01T10:00:00+00:00")],
+    )
+
+
+def _assert_staleness_refusal_message(message: str, bera_csv: Path, marker: Path) -> None:
+    """Assert the stale-marker refusal message is actionable and HONEST (plan
+    Task 1; review r2 F1).
+
+    Must name the CSV path, the marker filename, enumerate the refusal causes
+    (the refetch could not clear the stale marker: attempts failed, were
+    unavailable, or the marker stayed newer than the CSV - no attempt count:
+    the ladder lives upstream; r8-F2), and give the manual clear (delete the
+    marker to proceed with the stale CSV for review only). All three cause
+    disjuncts are pinned so a message naming only a subset (the r2-F1
+    dishonesty: "failed or were unavailable" in the terminal-stays-newer
+    branch) fails the suite.
+    """
+    assert str(bera_csv) in message, f"refusal must name the CSV path; got: {message}"
+    assert marker.name in message, f"refusal must name the marker file; got: {message}"
+    low = message.lower()
+    assert "refetch" in low, f"refusal must state the refetch situation; got: {message}"
+    assert "could not clear the stale marker" in low, (
+        f"refusal must state the refetch could not clear the stale marker; got: {message}"
+    )
+    assert "failed" in low, f"refusal must enumerate the failed-attempts cause; got: {message}"
+    assert "unavailable" in low, f"refusal must enumerate the unavailable cause; got: {message}"
+    assert "stayed newer" in low, (
+        f"refusal must enumerate the marker-stayed-newer cause; got: {message}"
+    )
+    assert "delete the marker" in low, f"refusal must give the manual clear; got: {message}"
 
 
 def _run_and_capture_autodiscovery_kwargs(monkeypatch, tmp_path, on_chain_rpc_url):
@@ -322,91 +369,170 @@ class TestOnChainThSubstituter:
             e.event_type for t in unregistered_txs for e in t.events
         ] == [EventType.Unknown]
 
-    def test_build_projection_warns_on_stale_fetch_marker(self, tmp_path, caplog) -> None:
-        """Review r1 F6: when a fetch-failure marker is NEWER than the CSV, the
-        projection still builds (the collection fetch is non-blocking) but
-        logs an ERROR naming the staleness, so a post-flip report on a stale
-        on-chain TH cannot be mistaken for fresh data."""
-        import os
-
-        bera_csv = _write_bera_csv(
-            tmp_path,
-            [_claim_row("0xccc333", block_number=1002, timestamp_utc="2025-03-01T10:00:00+00:00")],
+    def test_build_projection_refuses_on_stale_fetch_marker(self, tmp_path) -> None:
+        """Plan 2026-08-26 Task 1 (superseding review r1 F6): a fetch-failure
+        marker NEWER than the CSV means the CSV is known-stale; building the
+        opted-in TH projection on it would quietly under-report on-chain
+        activity in a filing artifact. ``build_projection`` must REFUSE with
+        ``ReportGenerationError`` naming the CSV, the marker, the refetch
+        state (the retry ladder, when it ran, lives upstream in
+        ``run_report``; r8-F2 - no attempt count here), and the manual clear.
+        """
+        bera_csv, marker = _stale_marker_state(tmp_path)
+        substituter = OnChainThSubstituter(
+            contracts_path=_EXAMPLE_CONTRACTS,
+            lp_snapshot_path=_EXAMPLE_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
         )
-        # Marker NEWER than the CSV (backdate the CSV, then write the marker).
-        old = time.time() - 3600
-        os.utime(bera_csv, (old, old))
-        marker = fetch_failed_marker_path(tmp_path, 2025)
-        marker.write_text("On-chain fetch failed: simulated", encoding="utf-8")
+
+        with pytest.raises(ReportGenerationError, match=r"fetch-failed") as excinfo:
+            substituter.build_projection(
+                year=2025, output_dir=tmp_path, logger=logging.getLogger(__name__)
+            )
+
+        _assert_staleness_refusal_message(str(excinfo.value), bera_csv, marker)
+
+    def test_build_projection_proceeds_when_marker_older_than_csv(self, tmp_path) -> None:
+        """Retained control (review r2 F1): a marker OLDER than the CSV (the
+        normal steady state after a recovered failure - production never
+        removes the marker, a later successful fetch rewrites the CSV newer;
+        landed self-heal) must NOT refuse; a presence-only regression that
+        ignores the mtime comparison fails here.
+        """
+        bera_csv, marker = _stale_marker_state(tmp_path)
+        # Self-heal: the CSV was rewritten AFTER the marker was written.
+        m_old = time.time() - 7200
+        os.utime(marker, (m_old, m_old))
+        csv_new = m_old + 3600
+        os.utime(bera_csv, (csv_new, csv_new))
 
         substituter = OnChainThSubstituter(
             contracts_path=_EXAMPLE_CONTRACTS,
             lp_snapshot_path=_EXAMPLE_SNAPSHOT,
             position_tokens_path=_EXAMPLE_POSITION_TOKENS,
         )
-        with caplog.at_level(logging.ERROR, logger="tax_reporting.application.on_chain_th_substitution"):
-            projection = substituter.build_projection(
-                year=2025, output_dir=tmp_path, logger=logging.getLogger(__name__)
-            )
-
-        assert projection is not None  # non-blocking: the projection still builds
-        assert any("STALE" in rec.getMessage() for rec in caplog.records), (
-            "expected the stale-CSV ERROR when the fetch-failure marker is newer"
+        projection = substituter.build_projection(
+            year=2025, output_dir=tmp_path, logger=logging.getLogger(__name__)
         )
 
-        # Control 1: removing the marker removes the warning (same fixture).
-        marker.unlink()
-        caplog.clear()
-        with caplog.at_level(logging.ERROR, logger="tax_reporting.application.on_chain_th_substitution"):
-            substituter.build_projection(
-                year=2025, output_dir=tmp_path, logger=logging.getLogger(__name__)
-            )
-        assert not any("STALE" in rec.getMessage() for rec in caplog.records)
-
-        # Control 3 (review r5): a FileNotFoundError racing the stat pair
-        # (the marker deleted between is_file() and stat()) reads as absent,
-        # never crashes the projection.
-        from pathlib import Path as _Path
-
-        real_stat = _Path.stat
-
-        def stat_or_vanish(self):
-            if self.name.endswith(".fetch-failed"):
-                raise FileNotFoundError("racing deletion")
-            return real_stat(self)
-
-        marker.write_text("On-chain fetch failed: simulated", encoding="utf-8")
-        os.utime(marker, (time.time(), time.time()))
-        monkeypatch_stat = True
-        caplog.clear()
-        import pytest as _pytest
-
-        with _pytest.MonkeyPatch.context() as mp:
-            mp.setattr(_Path, "stat", stat_or_vanish)
-            with caplog.at_level(
-                logging.ERROR, logger="tax_reporting.application.on_chain_th_substitution"
-            ):
-                projection = substituter.build_projection(
-                    year=2025, output_dir=tmp_path, logger=logging.getLogger(__name__)
-                )
         assert projection is not None
-        assert not any("STALE" in rec.getMessage() for rec in caplog.records)
+        assert projection.transactions, "self-heal control fixture must parse to >=1 transaction"
 
-        # Control 2 (review r2 F1): a marker OLDER than the CSV (the normal
-        # steady state after a recovered failure - production never removes
-        # the marker, a later successful fetch just rewrites the CSV newer)
-        # must NOT warn; a presence-only regression fails here.
-        marker.write_text("On-chain fetch failed: simulated", encoding="utf-8")
+    def test_build_projection_proceeds_when_marker_absent(self, tmp_path) -> None:
+        """Retained control: no marker file at all -> the projection builds
+        (the healthy steady state; the ladder and the refusal are never
+        entered)."""
+        _write_bera_csv(
+            tmp_path,
+            [_claim_row("0xnoMark1", block_number=1003, timestamp_utc="2025-03-02T10:00:00+00:00")],
+        )
+        assert not fetch_failed_marker_path(tmp_path, 2025).exists()
+
+        substituter = OnChainThSubstituter(
+            contracts_path=_EXAMPLE_CONTRACTS,
+            lp_snapshot_path=_EXAMPLE_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
+        )
+        projection = substituter.build_projection(
+            year=2025, output_dir=tmp_path, logger=logging.getLogger(__name__)
+        )
+
+        assert projection is not None
+        assert projection.transactions
+
+    def test_build_projection_marker_deletion_race_proceeds(self, tmp_path, monkeypatch) -> None:
+        """TOCTOU guard (review r4 / r1-F3): a marker deleted between the
+        ``is_file()`` and ``stat()`` calls reads as ABSENT (deletion is the
+        documented manual clear) and must NOT refuse. Both patches are scoped
+        to the marker path ONLY (a class-wide ``Path.stat`` patch would break
+        ``find_repository_root()`` and later path checks; r5-F1). Deleting the
+        ``except FileNotFoundError`` arm on ``marker.stat()`` must fail this
+        test (``is_file`` here returns True, so the patched stat raise IS
+        reached). The shared patch pair lives in the conftest helpers (r2 F10)."""
+        _bera_csv, marker = _stale_marker_state(tmp_path)
+        patch_marker_vanishes(monkeypatch, marker)
+
+        substituter = OnChainThSubstituter(
+            contracts_path=_EXAMPLE_CONTRACTS,
+            lp_snapshot_path=_EXAMPLE_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
+        )
+        projection = substituter.build_projection(
+            year=2025, output_dir=tmp_path, logger=logging.getLogger(__name__)
+        )
+
+        assert projection is not None
+        assert projection.transactions
+
+    def test_maybe_substitute_propagates_staleness_refusal(self, tmp_path) -> None:
+        """The production entry ``maybe_substitute`` must let the stale-marker
+        ``ReportGenerationError`` from ``build_projection`` propagate uncaught
+        (no new try/except on this path may swallow it)."""
+        bera_csv, marker = _stale_marker_state(tmp_path)
+        substituter = OnChainThSubstituter(
+            contracts_path=_EXAMPLE_CONTRACTS,
+            lp_snapshot_path=_EXAMPLE_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
+        )
+
+        with pytest.raises(ReportGenerationError, match=r"fetch-failed") as excinfo:
+            substituter.maybe_substitute(
+                koinly_dir=tmp_path / "koinly",
+                output_dir=tmp_path,
+                year=2025,
+                opted_in_wallets=[_WALLET_LABEL],
+                logger=logging.getLogger(__name__),
+            )
+
+        _assert_staleness_refusal_message(str(excinfo.value), bera_csv, marker)
+
+    def test_fetch_marker_is_stale_shared_predicate(self, tmp_path, monkeypatch) -> None:
+        """Direct unit coverage of the extracted shared predicate
+        ``fetch_marker_is_stale(bera_csv, marker)`` (single staleness
+        definition for the ladder AND the refusal), TOCTOU arm included:
+        newer marker -> True; older marker -> False; absent -> False;
+        ``is_file`` True but ``stat`` raising ``FileNotFoundError`` -> False.
+        """
+        from tax_reporting.application.on_chain_th_substitution import fetch_marker_is_stale
+
+        bera_csv = _write_bera_csv(tmp_path, [])
+        marker = fetch_failed_marker_path(tmp_path, 2025)
+
+        # Absent marker -> False.
+        assert fetch_marker_is_stale(bera_csv, marker) is False
+
+        # Marker newer than the CSV -> True.
+        _backdate(bera_csv, seconds_ago=3600)
+        marker.write_text("On-chain fetch failed: simulated\n", encoding="utf-8")
+        assert fetch_marker_is_stale(bera_csv, marker) is True
+
+        # Marker older than the CSV (self-heal) -> False.
         m_old = time.time() - 7200
         os.utime(marker, (m_old, m_old))
         csv_new = m_old + 3600
         os.utime(bera_csv, (csv_new, csv_new))
-        caplog.clear()
-        with caplog.at_level(logging.ERROR, logger="tax_reporting.application.on_chain_th_substitution"):
-            substituter.build_projection(
-                year=2025, output_dir=tmp_path, logger=logging.getLogger(__name__)
-            )
-        assert not any("STALE" in rec.getMessage() for rec in caplog.records)
+        assert fetch_marker_is_stale(bera_csv, marker) is False
+
+        # TOCTOU: is_file True, stat raises FileNotFoundError -> False.
+        patch_marker_vanishes(monkeypatch, marker)
+        assert fetch_marker_is_stale(bera_csv, marker) is False
+
+        # Bera CSV vanishing mid-check (same except arm; review r2 F3, pinned
+        # r5 F4): marker present and NEWER than the CSV on disk, but
+        # ``bera_csv.stat()`` raises FileNotFoundError -> False. The stat
+        # patch is scoped to ``bera_csv`` ONLY (a class-wide patch would
+        # break later path checks; mirrors ``patch_marker_vanishes``).
+        _backdate(bera_csv, seconds_ago=3600)
+        marker.write_text("On-chain fetch failed: simulated\n", encoding="utf-8")
+        real_stat = Path.stat
+
+        def stat_vanishes_for_bera(self: Path, *args, **kwargs):
+            if self == bera_csv:
+                raise FileNotFoundError("bera csv deleted between the two stat() calls")
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", stat_vanishes_for_bera)
+        assert fetch_marker_is_stale(bera_csv, marker) is False
 
     def test_build_projection_missing_bera_csv_returns_none(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture

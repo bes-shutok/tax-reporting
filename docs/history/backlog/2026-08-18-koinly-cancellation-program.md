@@ -198,8 +198,10 @@ acquisition still needs the P2/P4 ingestion work.
 
 Three deferred-with-record findings live in their own backlog doc for later
 plan promotion: `docs/history/backlog/2026-08-26-on-chain-review-followups.md`
-(staleness hard-refusal + in-artifact indicator; comparator module
-extraction; bridge-asset registry gate).
+(staleness handling promoted 2026-08-27 to plan
+`docs/history/plans/completed/2026-08-26-on-chain-staleness-refusal.md`, landed as the
+retry-then-refuse contract; in-artifact indicator, comparator module
+extraction, and bridge-asset registry gate remain open).
 
 ### P3 - Capital gains fully pipeline-side
 

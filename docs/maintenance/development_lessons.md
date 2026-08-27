@@ -2940,3 +2940,81 @@ The same immunity applies to prose inside the guarded files: a docstring or comm
 **Example:** The bridged-asset registry gate plan: the committed example file is the canonical production registry (fresh clones classify registered mints out of the box), and the gitignored user-registry population task was deleted (amended design confirmed by a full review panel plus a clean focused confirmation round).
 
 **See also:** AGENTS.md §3 crypto-origin rules; #151/#152 (public contracts committable; self wallets and tx hashes never).
+
+## 154. A RED test importing a not-yet-existing symbol imports it inside the test body
+
+**Principle:** Family H (verify the real thing, not the abstraction) - the RED signal for a missing production symbol is an `ImportError` attributed to the one test that needs it; a module-level import turns that same signal into a whole-file collection failure that also fails every pre-existing passing test in the file.
+
+**Trigger:** writing a RED-window test whose GREEN deliverable (later task in the same plan) introduces a new module/function (e.g. a shared predicate), where the test file must be committed before the symbol exists.
+
+**Rule:** Import the missing symbol inside the test function (function-level import), not at module top. The per-test `ImportError` is the clean RED signal; pre-existing tests in the same file keep passing, satisfying the execute-plan Rule 1 invariant (pre-existing passing tests must keep passing during RED). A collection-level ImportError produces zero per-test signal and masks which contracts are already RED for the right reasons.
+
+**Why:** During the staleness-refusal plan Task 1, importing the new predicate at module top would have made both target test files uncollectable, hiding that only 9 of 24 tests were the intended RED and the other 15 were retained controls.
+
+**Shape:** any RED test file that also hosts retained-control tests; any plan where the symbol under test lands in a later task than the test.
+
+**Example:** `test_fetch_marker_is_stale_shared_predicate` imports `fetch_marker_is_stale` inside the test; the file's 15 pre-existing tests (marker-older-than-CSV, marker-absent, TOCTOU race) stayed green in the RED run.
+
+**See also:** #62 (RED drafts are abstractions over the spec; verify the RED mechanism); AGENTS.md §4 (committed RED tests must fail via the intended signal).
+
+## 155. A log-message substring assertion can false-match when the message interpolates a path containing the test's own name
+
+**Principle:** Family H (verify the real thing, not the abstraction) - a substring membership check on a log message (`"<fragment>" in rec.getMessage()`) asserts against the RENDERED text, which includes every interpolated value; a tmp path (pytest `tmp_path`) embeds the test function's name, so a short fragment that also appears in the test name matches an unrelated record.
+
+**Trigger:** a caplog assertion of the form `"<word>" in msg` where (a) the production log call interpolates a file path (or any fixture-derived string) into the message, and (b) the chosen fragment is a word that also occurs in the test function's name (test names routinely embed behavior verbs like "recovers").
+
+**Rule:** Prefer a fragment unique to the intended message (a quoted phrase from the literal template, not a single word). When rewording a production log message that interpolates a path, re-check every existing substring assertion on that message: a previously-safe word can start false-matching once the path (containing the test name) enters the rendered text. A flake of this shape is a test-predicate defect, not a production logging bug.
+
+**Why:** During the staleness-refusal plan r1 fixes (finding F4), rewording a per-attempt INFO to interpolate the fetched path made the mid-way test's `"recover" in msg` check match a per-attempt record, because the tmp path contained the test name `recovers_mid0`. The assertion was pinned to a unique recovery phrase instead.
+
+**Shape:** any `in msg` / `in rec.getMessage()` assertion paired with a log call that interpolates `tmp_path`-derived values; any message-rewording change that adds path interpolation.
+
+**Example:** The recovery assertion changed from `"recover" in msg` to the literal recovery phrase (`"no longer newer than"`), which cannot occur in the per-attempt record regardless of path content.
+
+**See also:** #68 (`rec.name` filter false-zero; the opposite-direction Family H sibling where the test filter selects nothing), #69 (sweep ALL `caplog.at_level` substring assertions when changing message levels or text), #66 (caplog bypasses production logging config).
+
+## 156. A review-driven extraction must keep plan-grep-anchored symbols in the anchored file
+
+**Principle:** Family D (single source of truth) - a plan's frozen Validation Commands (grep assertions on symbol NAMES in a specific file) and tests' monkeypatch seams (`module.symbol`) constitute a freeze on symbol LOCATION, not just on file editability. Relocating an anchored symbol breaks the plan's verification gate and every test that patches the seam, even when the extraction itself is behavior-identical.
+
+**Trigger:** a code-review finding requires extracting logic out of file X into a new module, AND the (uneditable) plan contains validation greps asserting symbols are defined in X, or existing tests monkeypatch `X.symbol`.
+
+**Rule:** Extract the logic BODY to the new module with the anchored constants and patch seams passed in as parameters; keep the anchored definitions in the original file and thread them in from a thin wrapper. Before the move, grep-sweep all test tiers for every anchored name; after the move, re-run the plan's Validation Commands verbatim.
+
+**Why:** During the staleness-refusal plan r2 fixes (finding F2, module-size extraction), moving the retry ladder wholesale would have relocated `_STALE_FETCH_RETRY_DELAYS_S` and `_retry_sleep` out of `run_report.py`, failing the plan's frozen validation greps and orphaning every test that patches `run_report._retry_sleep`. The body moved to `on_chain_retry.py` as `retry_stale_on_chain_fetch(..., delays, sleep)`; the constant and sleep seam stayed in `run_report.py` and a thin wrapper threads them in.
+
+**Shape:** any execute-plan review/fix iteration whose finding demands extraction or file splits in a file the plan's Validation Commands pin by grep; any refactor where tests patch a module-level seam rather than a function parameter.
+
+**Distinguishing from #53 (freeze wins over body clause):** #53 resolves plan-INTERNAL contradictions (body clause vs invariant freeze list) in favor of the freeze. This lesson resolves a review-finding-vs-plan-grep conflict: the finding's exact shape (full extraction) is over-construed when anchors pin symbol locations; satisfy it with the anchored-subset extraction instead of rejecting or deferring the finding.
+
+**See also:** #53, `src/tax_reporting/application/on_chain_retry.py`, `docs/history/plans/completed/2026-08-26-on-chain-staleness-refusal.md` (Validation Commands).
+
+## 157. A grep probe can key on comment text; comment trims must keep the probe token
+
+**Principle:** Family D (single source of truth) - a plan's frozen Validation Commands can `grep -c` on token counts that include COMMENT text, not just code. A cosmetic "trim the comment" fix can silently lower the count and fail the probe, or force re-inlining prose the trim was supposed to remove.
+
+**Trigger:** a review finding asks to shorten or remove a comment in a file whose plan Validation Commands (or doc-drift grep backstops) count occurrences of a phrase via `grep -c`, and the probe range covers comments.
+
+**Rule:** Before trimming a comment in a grep-probed file, re-read the probe; if its count includes the comment's tokens, keep a minimal one-line mention carrying the probe token inside the trimmed comment (pointer, not full contract prose). After the trim, run the amended Validation Commands block end-to-end, not just the touched test files.
+
+**Why:** Staleness-refusal plan r4: finding F6 trimmed a 10-line call-site comment in `run_report.py`, which dropped the token that a frozen `grep -c` probe (F2 amendment) counted; the fix restored a one-line predicate pointer inside the trimmed comment so the freeze holds without the old prose.
+
+**Shape:** any review/fix iteration combining a "comment too long / redundant comment" finding with grep-based validation gates over the same file; any hygiene guard whose `grep -f` pattern can match comment text.
+
+**Distinguishing from #156 (keep anchored symbols in the anchored file):** #156 pins symbol LOCATION via grep; this pins token PRESENCE in comment text. #156's fix is parameter-threading; this fix is keeping one probe-bearing line of comment.
+
+**See also:** #156, `docs/history/plans/completed/2026-08-26-on-chain-staleness-refusal.md` (Validation Commands), AGENTS.md "Doc-drift grep backstops" rule.
+
+## 158. Out-of-scope review findings worth fixing become detailed backlog items at drop time
+
+**Principle:** Family D (single source of truth). A review finding dropped as out-of-scope is only dispositioned, not resolved; if it is worth fixing, its full known details must move to a durable backlog item in the same session, or they survive only inside a gitignored staging doc nobody re-reads.
+
+**Trigger:** any `receiving-review`/review-loop triage that marks a finding `drop` (out-of-scope/deferred) while the finding itself describes a real, fixable defect (not a false positive or a note-only observation).
+
+**Rule:** when dropping an out-of-scope finding that is worth fixing, add a backlog item (or extend the owning backlog doc) the same session containing: origin (review doc + finding id), problem, reachability, why it was out of scope, fix sketch, and acceptance criteria. Cross-reference the review docs so the item traces back to its findings. Pure false-positive drops and reviewer "note only, no action requested" items do not need backlog entries; recording them as settled notes inside a structural-residuals backlog section is enough (see 2026-08-27 staleness-review followups items 4-5).
+
+**Why:** user correction 2026-08-27 after the staleness plan: r1's out-of-scope fetcher atomic-write finding and the structural notes lived only as drop footnotes in review docs; the user expected backlog items "with all known details". Review staging docs are ephemeral history, not a backlog (doing-code-review already forbids relying on them as the only record of tech debt).
+
+**Shape:** any fix-all review pipeline; also applies to execute-plan Phase 3 rounds that stage findings whose fix belongs to a different module than the plan's frozen scope.
+
+**See also:** #53 (plan freeze wins), #156 (symbol-location pins), doing-code-review Step 5.1 (high-level tasks follow-up), receiving-review drop guidance.
