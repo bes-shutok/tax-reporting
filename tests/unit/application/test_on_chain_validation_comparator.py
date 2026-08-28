@@ -470,47 +470,6 @@ class TestOnChainThComparator:
         uncovered = record.type_mismatch.uncovered_koinly_combos if record.type_mismatch else frozenset()
         assert ("exchange", "") in uncovered
 
-    @pytest.mark.parametrize(
-        "colliding_overrides",
-        [
-            # Override tag equals a BASE combo tag: (Reward, bridge) -> "Reward"
-            # collides with the base (crypto_deposit, "Reward") combo.
-            {(EventType.Reward, SubType.bridge): "Reward"},
-            # Two overrides colliding on one combo (both keep base type
-            # crypto_deposit, same tag).
-            {(EventType.Reward, SubType.bridge): "Bridge", (EventType.Reward, SubType.spam): "Bridge"},
-        ],
-    )
-    def test_colliding_override_fails_loud(self, monkeypatch, colliding_overrides) -> None:
-        # Review r1 F4: the reverse-map injectivity guard is the only barrier
-        # between a future override edit and silent EventType mis-mapping in
-        # the validation gate; each collision mode must raise at build time
-        # naming the colliding combo (not merely fail a length arithmetic
-        # check). The builder derives combos via the adapter's koinly_combo,
-        # so the colliding vocabulary is injected by patching the adapter
-        # dict it reads.
-        import tax_reporting.application.on_chain_th_adapter as adapter_module
-        from tax_reporting.application.on_chain_validation.comparator import _build_reverse_combo_map
-
-        monkeypatch.setattr(adapter_module, "SUB_TYPE_TAG_OVERRIDES", dict(colliding_overrides))
-        with pytest.raises(RuntimeError, match="claimed twice"):
-            _build_reverse_combo_map()
-
-    def test_base_map_collision_fails_loud(self, monkeypatch) -> None:
-        # Review r4 (and the corrected r3 note): the restored BASE-map
-        # injectivity guard must raise when two EventTypes share one combo -
-        # the exact master-era regression the r2 rewrite introduced
-        # (last-writer-wins comprehension).
-        import tax_reporting.application.on_chain_th_adapter as adapter_module
-        from tax_reporting.application.on_chain_validation.comparator import _build_reverse_combo_map
-
-        bad = dict(adapter_module.EVENT_TYPE_TO_KOINLY)
-        bad[EventType.Unknown] = bad[EventType.Reward]  # two EventTypes, one combo
-        monkeypatch.setattr(adapter_module, "EVENT_TYPE_TO_KOINLY", bad)
-
-        with pytest.raises(RuntimeError, match="combos collide"):
-            _build_reverse_combo_map()
-
     def test_koinly_zero_display_cost_flagged(self) -> None:
         # Given - the C7 accepted-gap shape: Koinly renders the gas-only burn
         # as a Cost row DISPLAYING "0,00000000" (European decimal comma) while

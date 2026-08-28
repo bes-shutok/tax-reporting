@@ -44,6 +44,10 @@ their own plans.
 
 ## 2. Comparator module extraction (module-size rule)
 
+**Status (2026-08-28): landed** via plan
+`docs/history/plans/2026-08-26-comparator-combo-extraction.md` (branch
+`2026-08-27-comparator-combo-extraction`).
+
 - **Discovered**: review r2 overflow (design; god-module) - the branch pushed
   `on_chain_validation/comparator.py` past the repo's 1000-line module-size
   rule (~990 on master at branch point; ~1023 after).

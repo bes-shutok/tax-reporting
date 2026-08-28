@@ -163,7 +163,7 @@ literal itself.)
 
 ### Task 1: characterization baseline
 
-- [ ] Run → expect GREEN (characterization: captures existing behavior before the
+- [x] Run → expect GREEN (characterization: captures existing behavior before the
   refactor): `uv run pytest tests/unit/application/test_on_chain_validation_comparator.py tests/unit/application/test_on_chain_validation_clustering.py tests/unit/application/test_on_chain_validation_artifacts.py -q`
 
 ### Task 2: extract the module
@@ -172,23 +172,23 @@ Files:
 - `src/tax_reporting/application/koinly_combo_map.py` *(new)*
 - `src/tax_reporting/application/on_chain_validation/comparator.py`
 
-- [ ] Create `koinly_combo_map.py` with the moved block: the reverse-map `#:` docs,
+- [x] Create `koinly_combo_map.py` with the moved block: the reverse-map `#:` docs,
   `build_reverse_combo_map`, `KOINLY_COMBO_TO_EVENT_TYPE` (import-time `Final` built
   via `build_reverse_combo_map()`), `event_type_of`, `row_combo`, and the row-field
   readers `koinly_text`/`koinly_tag` it depends on; public names, module docstring
   stating the adapter is the single vocabulary source and that the builder
   deliberately reads the adapter module attributes at call time (test-patch
   visibility)
-- [ ] In `comparator.py`: import the six names from the new module and update all
+- [x] In `comparator.py`: import the six names from the new module and update all
   call sites (`event_type_of` :682/:786/:833/:917; `row_combo` :787/:854; the other
   `koinly_text`/`koinly_tag` uses stay via the import); remove the moved definitions
   and the now-unused `koinly_combo` import + `_adapter` alias (verify with
   `git show HEAD:src/tax_reporting/application/on_chain_validation/comparator.py | ruff check -` first, per repo ruff rule); keep everything else byte-identical
-- [ ] Verify the import graph is acyclic (new module imports only
+- [x] Verify the import graph is acyclic (new module imports only
   `on_chain_th_adapter` + the domain enum): `uv run python -c "from tax_reporting.application.koinly_combo_map import KOINLY_COMBO_TO_EVENT_TYPE, build_reverse_combo_map, event_type_of, row_combo, koinly_text, koinly_tag"`
-- [ ] Run → expect GREEN (characterization still passes):
+- [x] Run → expect GREEN (characterization still passes):
   `uv run pytest tests/unit/application/test_on_chain_validation_comparator.py tests/unit/application/test_on_chain_validation_clustering.py tests/unit/application/test_on_chain_validation_artifacts.py -q`
-- [ ] Commit: `refactor(on-chain): extract the Koinly combo vocabulary into koinly_combo_map`
+- [x] Commit: `refactor(on-chain): extract the Koinly combo vocabulary into koinly_combo_map`
 
 ### Task 3: retarget the collision + vocabulary-pin tests
 
@@ -196,7 +196,7 @@ Files:
 - `tests/unit/application/test_koinly_combo_map.py` *(new)*
 - `tests/unit/application/test_on_chain_validation_comparator.py`
 
-- [ ] Move the collision tests; the WHOLE tests including their
+- [x] Move the collision tests; the WHOLE tests including their
   `@pytest.mark.parametrize` decorators and params (~`test_on_chain_validation_comparator.py:478-512`,
   the two `_build_reverse_combo_map` imports); into `test_koinly_combo_map.py` AS
   `TestKoinlyComboMap#test_reverse_map_collision_raises` (given a patched
@@ -209,22 +209,22 @@ Files:
   `monkeypatch.setattr` sites stay pointed at `on_chain_th_adapter` (r1-F3: the
   move unit is whole tests, not statements; r2-F1: these two names DESCRIBE the
   moved tests; do not also add fresh duplicates)
-- [ ] ADD the one net-new vocabulary-pin test (r1-F2; none exists today):
+- [x] ADD the one net-new vocabulary-pin test (r1-F2; none exists today):
   `TestKoinlyComboMap#test_reverse_map_tracks_adapter_vocabulary`; given the real
   adapter vocabulary, expects every override combo in `KOINLY_COMBO_TO_EVENT_TYPE`
   to invert `koinly_combo()` exactly
-- [ ] Symbol-move patch audit: `grep -rn "_event_type_of\|_row_combo\|_build_reverse_combo_map\|_KOINLY_COMBO_TO_EVENT_TYPE\|_koinly_text\|_koinly_tag" src/ tests/`; every remaining hit is either the renamed old-name reference being updated or an unrelated string; list each in the task log (r2-F2: the audit covers the two reader names too)
-- [ ] Run → expect GREEN: `uv run pytest tests/unit/application/test_koinly_combo_map.py tests/unit/application/test_on_chain_validation_comparator.py -q`
-- [ ] Commit: `test(on-chain): collision + vocabulary-pin tests move to koinly_combo_map home`
+- [x] Symbol-move patch audit: `grep -rn "_event_type_of\|_row_combo\|_build_reverse_combo_map\|_KOINLY_COMBO_TO_EVENT_TYPE\|_koinly_text\|_koinly_tag" src/ tests/`; every remaining hit is either the renamed old-name reference being updated or an unrelated string; list each in the task log (r2-F2: the audit covers the two reader names too)
+- [x] Run → expect GREEN: `uv run pytest tests/unit/application/test_koinly_combo_map.py tests/unit/application/test_on_chain_validation_comparator.py -q`
+- [x] Commit: `test(on-chain): collision + vocabulary-pin tests move to koinly_combo_map home`
 
 ### Task 4: size rule + docs + full validation
 
 Files:
 - `docs/maintenance/on_chain_validation.md`
 
-- [ ] Update the moved-name mention in `on_chain_validation.md` (~:358 names
+- [x] Update the moved-name mention in `on_chain_validation.md` (~:358 names
   `_build_reverse_combo_map` and the comparator as owner) to the new public name and
   the `koinly_combo_map` owner (r1-F4; repo doc-drift rule)
-- [ ] Run the Validation Commands block end-to-end; all green (incl. `wc -l` < 1000
+- [x] Run the Validation Commands block end-to-end; all green (incl. `wc -l` < 1000
   and both fail-closed stale-name sweeps)
-- [ ] `uv run pytest -q` full suite green
+- [x] `uv run pytest -q` full suite green

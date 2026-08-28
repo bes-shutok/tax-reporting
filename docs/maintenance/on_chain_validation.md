@@ -395,9 +395,11 @@ routed through a bridge; real case: the wallet's bridged WBTC deposits).
 The adapter renders such Events with Tag `Bridge` (not `Reward`) via the
 named `SUB_TYPE_TAG_OVERRIDES` vocabulary, so merged-TH consumers and the
 future P2 rewards-from-on-chain split cannot mistake a bridge/CEX transfer-in
-for reward income. The comparator's reverse map is derived AUTOMATICALLY from that vocabulary at
-import (`_build_reverse_combo_map` iterates `SUB_TYPE_TAG_OVERRIDES` and
-raises on a colliding combo), so there is no manual registration step; a tag
+for reward income. The reverse map is derived AUTOMATICALLY from that vocabulary at
+import (`build_reverse_combo_map` in `src/tax_reporting/application/koinly_combo_map.py`
+iterates `SUB_TYPE_TAG_OVERRIDES` and raises on a colliding combo; the
+comparator consumes the derived map via `koinly_combo_map` lookups - `event_type_of`,
+`row_combo`, `koinly_text`, `koinly_tag`), so there is no manual registration step; a tag
 override applied anywhere OTHER than the single `SUB_TYPE_TAG_OVERRIDES` dict
 reverse-maps to `Unknown` and fails the gate loudly (observed once, 2026-08-26,
 before the lookup was extended).

@@ -65,8 +65,8 @@ pass is the harness's failure mode).
 Records carry the full per-tx context (event types, Koinly combos, gas-surface
 class, zero-display flag, counterparties, assets) so the clustering step
 (validation-harness Task 3) can build PII-free cluster signatures from the
-records alone; the adapter and this module stay the only Koinly-vocabulary
-surfaces.
+records alone; the adapter and the ``koinly_combo_map`` vocabulary module stay
+the only (Type, Tag) combo-vocabulary surfaces.
 
 Plan: ``docs/history/plans/2026-08-18-on-chain-validation-harness.md`` (Task 2).
 """
@@ -78,11 +78,13 @@ from decimal import Decimal
 from enum import Enum
 from typing import Final
 
-from tax_reporting.application import on_chain_th_adapter as _adapter
-from tax_reporting.application.on_chain_th_adapter import (
-    ProjectedThRow,
-    koinly_combo,
+from tax_reporting.application.koinly_combo_map import (
+    event_type_of,
+    koinly_tag,
+    koinly_text,
+    row_combo,
 )
+from tax_reporting.application.on_chain_th_adapter import ProjectedThRow
 from tax_reporting.domain.on_chain_transaction import EventType, OnChainTransaction
 from tax_reporting.infrastructure.koinly_parser import parse_koinly_decimal
 
@@ -169,46 +171,6 @@ _KOINLY_TAG_COST: Final = "Cost"
 #: Type-safe sentinel for an amount cell that is present but carries no
 #: currency (never a valid ticker, so it cannot alias a real asset bucket).
 _MISSING_CURRENCY: Final = "MISSING"
-
-#: Reverse of the adapter's ``EVENT_TYPE_TO_KOINLY`` PLUS the adapter's
-#: ``SUB_TYPE_TAG_OVERRIDES`` vocabulary: recovering the ``EventType``
-#: behind a projected row from its ``(type, tag)`` combo. Built by
-#: :func:`_build_reverse_combo_map`, which fails loudly (naming the
-#: colliding combo) when a future adapter change collides two EventTypes on
-#: one combo - base-vs-override or override-vs-override - instead of
-#: silently mis-classifying validation records.
-def _build_reverse_combo_map() -> dict[tuple[str, str], EventType]:
-    # Both halves derive through the adapter's koinly_combo (review r2 F3):
-    # the base half asks for the no-override rendering, the override half
-    # iterates the adapter module's live vocabulary, so a future vocabulary
-    # change flows through the one application-rule owner on both sides.
-    # The maps are read through the MODULE ATTRIBUTE (not from-imported
-    # names) deliberately: collision tests monkeypatch the adapter module's
-    # dicts, and a from-import binding in this module would keep seeing the
-    # original objects.
-    forward = _adapter.EVENT_TYPE_TO_KOINLY
-    reverse = {koinly_combo(event_type, None): event_type for event_type in forward}
-    if len(reverse) != len(forward):
-        # Review r3 (restored master guard): a base-vs-base collision in the
-        # forward map must fail loudly at build time, not silently keep the
-        # last EventType (last-writer-wins would misclassify validation
-        # records for one of the two colliding types).
-        raise RuntimeError(
-            f"EVENT_TYPE_TO_KOINLY combos collide; cannot invert for "
-            f"validation: {forward}"
-        )
-    for event_type, sub_type in _adapter.SUB_TYPE_TAG_OVERRIDES:
-        override_combo = koinly_combo(event_type, sub_type)
-        if override_combo in reverse:
-            raise RuntimeError(
-                f"Koinly combo {override_combo} is claimed twice; cannot invert "
-                f"for validation (base map: {forward}; overrides: {_adapter.SUB_TYPE_TAG_OVERRIDES})"
-            )
-        reverse[override_combo] = event_type
-    return reverse
-
-
-_KOINLY_COMBO_TO_EVENT_TYPE: Final[dict[tuple[str, str], EventType]] = _build_reverse_combo_map()
 
 
 class Surface(Enum):
@@ -402,11 +364,6 @@ def _bucket_tolerance(koinly_rows_in_bucket: int) -> Decimal:
     return DISPLAY_TOLERANCE_PER_ROW * max(1, koinly_rows_in_bucket)
 
 
-def _koinly_text(row: dict[str, str], key: str) -> str:
-    """Stripped cell text; ``""`` for absent cells (type-safe sentinel)."""
-    return (row.get(key) or "").strip()
-
-
 def _koinly_amount(row: dict[str, str], key: str) -> Decimal | None:
     """Parse a Koinly amount cell, or ``None`` when the cell is ABSENT.
 
@@ -417,7 +374,7 @@ def _koinly_amount(row: dict[str, str], key: str) -> Decimal | None:
     from "not rendered at all". Non-empty cells go through the production
     ``parse_koinly_decimal`` (European decimal comma included).
     """
-    text = _koinly_text(row, key)
+    text = koinly_text(row, key)
     if not text:
         return None
     return parse_koinly_decimal(text)
@@ -431,14 +388,10 @@ def _koinly_currency(row: dict[str, str], key: str, *, amount: Decimal) -> str |
     mismatch, never silently vanish), or ``None`` when there is no amount to
     bucket at all.
     """
-    currency = _koinly_text(row, key)
+    currency = koinly_text(row, key)
     if not currency:
         return _MISSING_CURRENCY if amount is not None else None
     return currency
-
-
-def _koinly_tag(row: dict[str, str]) -> str:
-    return _koinly_text(row, "Tag")
 
 
 #: Issuer ticker aliases (PD-010 amendment #3, 2026-08-22, user-delegated):
@@ -485,23 +438,6 @@ def _norm_asset(symbol: str | None) -> str:
     return _ISSUER_TICKER_ALIASES.get(folded, folded)
 
 
-def _row_combo(row: dict[str, str]) -> tuple[str, str]:
-    return (_koinly_text(row, "Type"), _koinly_tag(row))
-
-
-def _event_type_of(projected: ProjectedThRow) -> EventType:
-    """Recover the ``EventType`` behind a projected row.
-
-    The adapter stamps each row with its ``EVENT_TYPE_TO_KOINLY`` combo, so
-    the (injective, import-guarded) reverse lookup recovers the event type
-    without the comparator re-deriving classification. A combo outside the
-    mapping (future adapter vocabulary) maps to ``EventType.Unknown``, which
-    :data:`EVENT_COMPATIBILITY` holds incompatible - it flags divergence
-    instead of silently passing.
-    """
-    return _KOINLY_COMBO_TO_EVENT_TYPE.get((projected.row.type, projected.row.tag), EventType.Unknown)
-
-
 def _group_koinly_by_hash(rows: list[dict[str, str]]) -> dict[str, list[dict[str, str]]]:
     """Group raw Koinly rows by their ``TxHash`` cell (stripped).
 
@@ -512,7 +448,7 @@ def _group_koinly_by_hash(rows: list[dict[str, str]]) -> dict[str, list[dict[str
     """
     grouped: dict[str, list[dict[str, str]]] = {}
     for row in rows:
-        grouped.setdefault(_koinly_text(row, "TxHash"), []).append(row)
+        grouped.setdefault(koinly_text(row, "TxHash"), []).append(row)
     return grouped
 
 
@@ -679,12 +615,12 @@ def _collect_gas_buckets(
     buckets: dict[tuple[str, ...], _AmountBucket] = {}
     for projected in projected_rows:
         row = projected.row
-        if _event_type_of(projected) is EventType.GasBurn:
+        if event_type_of(projected) is EventType.GasBurn:
             _add_on_chain(buckets, (_norm_asset(row.sending_currency),), row.sending_amount)
         if projected.fee is not None:
             _add_on_chain(buckets, (_norm_asset(projected.fee.currency),), projected.fee.amount)
     for row_index, row in enumerate(koinly_rows):
-        if _koinly_tag(row) == _KOINLY_TAG_COST:
+        if koinly_tag(row) == _KOINLY_TAG_COST:
             sent = _koinly_amount(row, "Sent Amount")
             if sent is not None:
                 _add_koinly(buckets, (_norm_asset(_koinly_currency(row, "Sent Currency", amount=sent)),), sent, row_index)
@@ -783,8 +719,8 @@ def _type_mismatch(
     at least one observed combo. Empty-vs-empty (all rows routed to the gas
     surface on both sides) is compatible.
     """
-    event_types = frozenset(_event_type_of(projected) for projected in projected_event_rows)
-    koinly_combos = frozenset(_row_combo(row) for row in koinly_event_rows)
+    event_types = frozenset(event_type_of(projected) for projected in projected_event_rows)
+    koinly_combos = frozenset(row_combo(row) for row in koinly_event_rows)
     allowed: set[tuple[str, str]] = set()
     for event_type in event_types:
         allowed.update(EVENT_COMPATIBILITY[event_type])
@@ -804,8 +740,8 @@ def _type_mismatch(
 
 def _fee_surface(koinly_rows: list[dict[str, str]]) -> KoinlyFeeSurface:
     """Classify how the Koinly side rendered the gas (signature vocabulary)."""
-    has_cost_rows = any(_koinly_tag(row) == _KOINLY_TAG_COST for row in koinly_rows)
-    has_fee_column = any(_koinly_text(row, "Fee Amount") for row in koinly_rows)
+    has_cost_rows = any(koinly_tag(row) == _KOINLY_TAG_COST for row in koinly_rows)
+    has_fee_column = any(koinly_text(row, "Fee Amount") for row in koinly_rows)
     if has_cost_rows and has_fee_column:
         return KoinlyFeeSurface.MIXED
     if has_cost_rows:
@@ -830,7 +766,7 @@ def _projected_context(
     assets: set[str] = set()
     for projected in projected_rows:
         row = projected.row
-        event_types.add(_event_type_of(projected))
+        event_types.add(event_type_of(projected))
         combos.add((row.type, row.tag))
         for address in (row.tx_src, row.tx_dest):
             if address:
@@ -851,12 +787,12 @@ def _koinly_context(
     counterparties: set[str] = set()
     assets: set[str] = set()
     for row in koinly_rows:
-        combos.add(_row_combo(row))
-        for address in (_koinly_text(row, "TxSrc"), _koinly_text(row, "TxDest")):
+        combos.add(row_combo(row))
+        for address in (koinly_text(row, "TxSrc"), koinly_text(row, "TxDest")):
             if address:
                 counterparties.add(address)
         for key in ("Sent Currency", "Received Currency", "Fee Currency"):
-            currency = _koinly_text(row, key)
+            currency = koinly_text(row, key)
             if currency:
                 assets.add(currency)
     return frozenset(combos), frozenset(counterparties), frozenset(assets)
@@ -912,9 +848,9 @@ def _compare_shared(
     token_addresses: frozenset[str],
 ) -> ThComparisonRecord:
     """Full PD-010 comparison for one tx hash present on both sides."""
-    koinly_event_rows = [row for row in koinly_rows if _koinly_tag(row) != _KOINLY_TAG_COST]
+    koinly_event_rows = [row for row in koinly_rows if koinly_tag(row) != _KOINLY_TAG_COST]
     projected_event_rows = [
-        projected for projected in projected_rows if _event_type_of(projected) is not EventType.GasBurn
+        projected for projected in projected_rows if event_type_of(projected) is not EventType.GasBurn
     ]
 
     type_mismatch = _type_mismatch(projected_event_rows, koinly_event_rows)
