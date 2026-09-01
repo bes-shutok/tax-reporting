@@ -40,7 +40,11 @@ from pathlib import Path
 
 import pytest
 
-from tax_reporting.application.on_chain_config import load_contracts, load_lp_snapshot
+from tax_reporting.application.on_chain_config import (
+    LpSnapshot,
+    load_contracts,
+    load_lp_snapshot,
+)
 from tax_reporting.application.on_chain_fetcher import fetch_failed_marker_path
 from tax_reporting.application.on_chain_th_adapter import (
     TH_CSV_COLUMNS,
@@ -48,14 +52,20 @@ from tax_reporting.application.on_chain_th_adapter import (
     project_on_chain_transactions,
 )
 from tax_reporting.application.on_chain_th_substitution import OnChainThSubstituter
+from tax_reporting.application.paths import find_repository_root
 from tax_reporting.domain.exceptions import ReportGenerationError
-from tax_reporting.domain.on_chain_transaction import EventType
+from tax_reporting.domain.on_chain_config import ContractRegistry
+from tax_reporting.domain.on_chain_transaction import EventType, SubType
 from tax_reporting.domain.transaction import TransactionHistoryRow
 from tax_reporting.infrastructure.koinly_parser import read_koinly_rows
 from tax_reporting.infrastructure.on_chain.berachain_processor import BerachainProcessor
+from tax_reporting.infrastructure.on_chain.bridged_asset_registry import (
+    BridgedAssetRegistry,
+)
 from tax_reporting.infrastructure.on_chain.lp_autodiscovery import LpAutodiscovery
 from tax_reporting.infrastructure.on_chain.on_chain_csv_reader import read_on_chain_rows
 from tax_reporting.infrastructure.on_chain.position_token_registry import (
+    PositionTokenRegistry,
     load_position_token_registry,
 )
 from tests.unit.application.conftest import (  # shared plain helpers (review r2 F10)
@@ -79,6 +89,7 @@ _EXAMPLE_2025_DIR = _REPO_ROOT / "resources" / "source" / "example" / "2025"
 _EXAMPLE_CONTRACTS = _EXAMPLE_2025_DIR / "berachain_contracts.json"
 _EXAMPLE_SNAPSHOT = _EXAMPLE_2025_DIR / "berachain_lp_snapshot.json"
 _EXAMPLE_POSITION_TOKENS = _EXAMPLE_2025_DIR / "bera_position_tokens.json"
+_EXAMPLE_BRIDGED_ASSETS = _EXAMPLE_2025_DIR / "bera_bridged_assets.json"
 
 # Synthetic wallet label + addresses (Design Invariant #1; never real mainnet).
 # The reward distributor is registered in the committed example registry, so a
@@ -86,6 +97,12 @@ _EXAMPLE_POSITION_TOKENS = _EXAMPLE_2025_DIR / "bera_position_tokens.json"
 _WALLET_LABEL = "Ledger Berachain (BERA)"
 _BERA_WALLET_ADDR = "0xabcabcabcabcabcabcabcabcabcabcabcabcabca"
 _REWARD_DISTRIBUTOR = "0x000000000000000000000000000000000000beef"  # in example registry
+_ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+# The committed canonical registry's REAL public WBTC contract (the only real
+# mainnet value allowed here per the review instructions; the committed
+# addresses ARE the production data under test).
+_COMMITTED_WBTC = "0x0555e30da8f98308edb960aa94c0db47230d2b9c"
+_COMMITTED_WBERA = "0x6969696969696969696969696969696969696969"
 
 # The FULL 15-column header the reader's OnChainTxRow contract requires (same
 # shape as the e2e ``_bera_csv_rows`` header; missing columns make the reader
@@ -208,6 +225,103 @@ class TestOnChainThSubstituter:
 
     Plus ``build_projection`` extraction pins (validation-harness Task 1).
     """
+
+    def test_load_registries_resolves_bridged_assets(self) -> None:
+        """Plan 2026-08-26 Task 1: ``_load_registries`` must resolve and
+        return the bridged-asset registry ALONGSIDE the existing three
+        (contract registry, LP snapshot, position-token registry) - a 4-tuple.
+
+        The substituter is constructed with the committed ``example/``
+        template paths (including the bridged-assets path the plan's Task 2
+        creates), so the resolution never reads gitignored personal data
+        (AGENTS.md crypto-tests rule)."""
+        substituter = OnChainThSubstituter(
+            contracts_path=_EXAMPLE_CONTRACTS,
+            lp_snapshot_path=_EXAMPLE_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
+            bridged_assets_path=_EXAMPLE_BRIDGED_ASSETS,
+        )
+
+        loaded = substituter._load_registries(
+            2025, find_repository_root(), logging.getLogger(__name__)
+        )
+
+        assert isinstance(loaded, tuple)
+        assert len(loaded) == 4
+        registry, snapshot, position_tokens, bridged_assets = loaded
+        assert isinstance(registry, ContractRegistry)
+        assert isinstance(snapshot, LpSnapshot)
+        assert isinstance(position_tokens, PositionTokenRegistry)
+        assert isinstance(bridged_assets, BridgedAssetRegistry)
+        # The bridged-asset registry was resolved from the example template
+        # (the committed canonical file Task 2 creates; a fresh clone must
+        # load it so registered assets classify bridge out of the box).
+        assert _EXAMPLE_BRIDGED_ASSETS.is_file()
+        assert bridged_assets.source.endswith("bera_bridged_assets.json")
+        # Review r1 F3: pin the committed canonical ADDRESSES themselves (the
+        # production data that decides bridge vs spam; a typo'd or wrong-key
+        # registry would otherwise load cleanly and every test stays green).
+        assert bridged_assets.is_bridged_asset(_COMMITTED_WBTC)
+        assert bridged_assets.is_bridged_asset(_COMMITTED_WBERA)
+
+    def test_build_projection_routes_registered_bridge_mint_via_registry(
+        self, tmp_path: Path
+    ) -> None:
+        """Review r1 F1 (blocking): the bridged-asset registry injection at
+        ``_build_processor`` is verifiable through the PRODUCTION wiring.
+
+        Given a bera CSV whose single tx is a pure zero-address mint of the
+        COMMITTED canonical registry's WBTC token, a ``build_projection`` run
+        with the example registry paths injected must classify the Reward
+        Event ``SubType.bridge``. Relevance guard: the same rows through a
+        registry-LESS processor classify ``SubType.spam``, so the assertion
+        is NOT invariant to the injection - dropping the
+        ``bridged_asset_registry=`` kwarg in ``_build_processor`` fails this
+        test instead of the whole suite staying green while the feature
+        ships disabled (development_lessons #48 wiring clause; mirrors
+        ``test_build_projection_routes_position_token_deposit_via_registry``).
+        """
+        mint_row = (
+            f"0xbrmint1,1000,2025-02-25T13:53:25+00:00,Berachain,"
+            f"{_ZERO_ADDRESS},{_BERA_WALLET_ADDR},WBTC,"
+            f"{_COMMITTED_WBTC},100000000,8,in,,,"
+            f"{_WALLET_LABEL},{_BERA_WALLET_ADDR}"
+        )
+        bera_csv = _write_bera_csv(tmp_path, [mint_row])
+        substituter = OnChainThSubstituter(
+            contracts_path=_EXAMPLE_CONTRACTS,
+            lp_snapshot_path=_EXAMPLE_SNAPSHOT,
+            position_tokens_path=_EXAMPLE_POSITION_TOKENS,
+            bridged_assets_path=_EXAMPLE_BRIDGED_ASSETS,
+        )
+
+        projection = substituter.build_projection(
+            year=2025, output_dir=tmp_path, logger=logging.getLogger(__name__)
+        )
+
+        assert projection is not None
+        assert projection.transactions, "fixture must parse to >=1 transaction"
+        reward_events = [
+            e for t in projection.transactions for e in t.events if e.event_type is EventType.Reward
+        ]
+        assert len(reward_events) == 1
+        assert reward_events[0].sub_type is SubType.bridge
+
+        # Relevance guard: without the bridged-asset registry the SAME rows
+        # classify spam, so the bridge assertion above pins the INJECTION.
+        processor_without_registry = BerachainProcessor(
+            chain="Berachain",
+            contract_registry=load_contracts(_EXAMPLE_CONTRACTS),
+            lp_autodiscovery=LpAutodiscovery(
+                snapshot=load_lp_snapshot(_EXAMPLE_SNAPSHOT), rpc_client=None
+            ),
+        )
+        unregistered_txs = processor_without_registry.process(read_on_chain_rows(bera_csv))
+        unregistered_rewards = [
+            e for t in unregistered_txs for e in t.events if e.event_type is EventType.Reward
+        ]
+        assert len(unregistered_rewards) == 1
+        assert unregistered_rewards[0].sub_type is SubType.spam
 
     def test_rpc_url_none_yields_snapshot_only_substituter(self, tmp_path, monkeypatch):
         # Given - OnChainThSubstituter(on_chain_rpc_url=None) and a bera CSV in

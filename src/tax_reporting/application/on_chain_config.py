@@ -44,6 +44,10 @@ from pathlib import Path
 
 from ..domain.exceptions import ConfigurationError, FileProcessingError
 from ..infrastructure.json_loader import DEGRADED, load_guarded_json
+from ..infrastructure.on_chain.bridged_asset_registry import (
+    BridgedAssetRegistry,
+    load_bridged_asset_registry,
+)
 from ..infrastructure.on_chain.position_token_registry import (
     PositionTokenRegistry,
     load_position_token_registry,
@@ -59,6 +63,10 @@ from .paths import find_repository_root, resolve_registry_path
 # HERE once; both the fetcher and the TH substituter load via
 # :func:`load_position_token_registry_for_year`).
 _POSITION_TOKEN_REGISTRY_FILENAME = "bera_position_tokens.json"
+
+# Per-year bridged-asset registry filename (plan 2026-08-26): the literal
+# lives HERE once, mirroring the position facade above.
+_BRIDGED_ASSET_REGISTRY_FILENAME = "bera_bridged_assets.json"
 
 # Max size of a chains.json config file (1 MiB). Bound for the JSON read
 # performed by infrastructure.json_loader.load_guarded_json.
@@ -874,5 +882,46 @@ def load_position_token_registry_for_year(
             _POSITION_TOKEN_REGISTRY_FILENAME,
             override,
             repo_root if repo_root is not None else find_repository_root(),
+        )
+    )
+
+
+def load_bridged_asset_registry_for_year(
+    year: int,
+    override: Path | None = None,
+    repo_root: Path | None = None,
+) -> BridgedAssetRegistry:
+    """Resolve + load the per-year bridged-asset registry (plan 2026-08-26).
+
+    Same resolution contract as
+    :func:`load_position_token_registry_for_year`: path resolution is owned
+    by :func:`tax_reporting.application.paths.resolve_registry_path`
+    (``override`` -> per-user shadow -> committed ``example/``), and the
+    loader
+    (:func:`tax_reporting.infrastructure.on_chain.bridged_asset_registry.load_bridged_asset_registry`)
+    owns the degrade (absent file -> empty registry + WARNING; every other
+    failure raises). Those docstrings are authoritative for the details.
+
+    Args:
+        year: Four-digit fiscal year (e.g. ``2025``).
+        override: Explicit registry path (the substituter's ctor kwarg;
+            ``None`` in production).
+        repo_root: Repository root (the caller's resolved root when it
+            already holds one; resolved here when ``None``).
+
+    Returns:
+        The validated :class:`BridgedAssetRegistry`.
+
+    Raises:
+        FileProcessingError: Symlink / oversize / invalid JSON.
+        ConfigurationError: Schema validation failure.
+    """
+    return load_bridged_asset_registry(
+        resolve_registry_path(
+            year,
+            _BRIDGED_ASSET_REGISTRY_FILENAME,
+            override,
+            repo_root if repo_root is not None else find_repository_root(),
+            shadow_is_data_loss=True,
         )
     )

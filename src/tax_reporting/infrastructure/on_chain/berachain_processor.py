@@ -120,6 +120,9 @@ from tax_reporting.domain.on_chain_transaction import (
     OnChainTransaction,
     SubType,
 )
+from tax_reporting.infrastructure.on_chain.bridged_asset_registry import (
+    BridgedAssetRegistry,
+)
 from tax_reporting.infrastructure.on_chain.lp_autodiscovery import LpAutodiscovery
 from tax_reporting.infrastructure.on_chain.on_chain_csv_reader import OnChainTxRow
 from tax_reporting.infrastructure.on_chain.position_token_registry import (
@@ -179,6 +182,11 @@ class BerachainProcessor:
             2026-08-22 Task 3) - address-keyed LST / staking-position
             allowlist gating the pure-outflow LST deposit rule. ``None``
             behaves as empty (Unknown fallback).
+        bridged_asset_registry: The :class:`BridgedAssetRegistry` (plan
+            2026-08-26) - address-keyed bridge-issued token allowlist gating
+            the zero-address-mint discriminator: a member mint classifies
+            ``bridge``, anything else ``spam`` + review. ``None`` behaves as
+            empty (every zero-address mint classifies spam).
     """
 
     def __init__(
@@ -188,6 +196,7 @@ class BerachainProcessor:
         contract_registry: ContractRegistry,
         lp_autodiscovery: LpAutodiscovery,
         position_token_registry: PositionTokenRegistry | None = None,
+        bridged_asset_registry: BridgedAssetRegistry | None = None,
     ) -> None:
         """Bind the chain, contract registry, LP autodiscovery, and position registry.
 
@@ -196,11 +205,17 @@ class BerachainProcessor:
         (LST outflows fall to the Unknown fallback); the production wiring
         injects the loaded registry at
         :meth:`application.on_chain_th_substitution.OnChainThSubstituter._build_processor`.
+        ``bridged_asset_registry`` (plan 2026-08-26) gates the
+        zero-address-mint discriminator the same way: ``None`` behaves as an
+        EMPTY registry (every zero-address mint classifies ``spam`` +
+        review, never a silent bridge); the production wiring injects the
+        loaded registry at the same seam.
         """
         self.chain = chain
         self.contract_registry = contract_registry
         self.lp_autodiscovery = lp_autodiscovery
         self.position_token_registry = position_token_registry
+        self.bridged_asset_registry = bridged_asset_registry
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -1078,9 +1093,10 @@ class BerachainProcessor:
         swap_legs: list[Leg] = []
         # Pair each leg with its source row to read from_address. A
         # zero-address mint in-leg routes to the reward side too (review r1
-        # F3): _reward_sub_type classifies it bridge + review, the same
-        # treatment a pure-inflow mint gets, instead of silently absorbing
-        # the bridge transfer-in into the Swap legs.
+        # F3): _reward_sub_type registry-gates it (member token -> bridge,
+        # else spam + review), the same treatment a pure-inflow mint gets,
+        # instead of silently absorbing the bridge transfer-in into the
+        # Swap legs.
         for row, leg in zip(rows, legs, strict=True):
             sender = (row.from_address or "").lower()
             if leg.direction == "in" and (
@@ -1139,15 +1155,30 @@ class BerachainProcessor:
 
         Shared by the reward-claim-then-swap split and the multi-token
         reward builder (sibling sites, one helper so the review plumbing
-        cannot drift). A spam Reward is review-flagged with an actionable
-        reason naming the unverified sender (PT-C-030 family), so the
+        cannot drift). A spam Reward carries an actionable reason naming
+        either the unverified sender (sender-spam; PT-C-030 family) or the
+        unregistered minted token (mint-spam; there is no sender), so the
         merged-TH Description cell keeps the review indicator. A bridge
         mint (zero-address issuance) carries its own actionable reason: the
         workflow cannot match the inflow to the originating acquisition
         (e.g. a CEX withdrawal), so the source and cost basis must be
         verified before filing (user direction 2026-08-26).
         """
-        if sub_type is SubType.spam:
+        if sub_type is SubType.spam and _is_zero_address(summed_leg.from_address):
+            # Mint-spam (plan 2026-08-26; UL #91: the discriminator upstream
+            # sets is SubType.spam + a zero-address sender): the token was
+            # minted directly to the wallet and is NOT in the bridged-asset
+            # registry. There is NO sender, so the sender-spam text below
+            # ("not a registered reward distributor") would be wrong here;
+            # the reason names the unregistered token instead.
+            reason = (
+                f"mint classified as spam (token "
+                f"{(summed_leg.token_address or '<native asset>').lower()} "
+                f"was minted from the zero address and is not in the "
+                f"bridged-asset registry - possible spam airdrop); verify "
+                f"the token's origin and value before filing"
+            )
+        elif sub_type is SubType.spam:
             reason = (
                 f"reward classified as spam (sender "
                 f"{(summed_leg.from_address or '<missing>').lower()} is not a "
@@ -1176,12 +1207,16 @@ class BerachainProcessor:
     def _reward_sub_type(self, summed_leg: Leg) -> SubType:
         """Return the Reward SubType for one summed (asset, sender) leg (F4).
 
-        - bridge: the leg's from_address is the zero address - the tokens
-          were MINTED (new issuance: a bridge deposit, e.g. bridged WBTC,
-          or an on-chain mint). No external sender exists, so the F4
-          unverified-sender premise does not apply; the Event carries
-          review + a bridge-specific reason instead (user direction
-          2026-08-26: CEX->bridge transfers must not read as rewards).
+        - bridge: the leg's from_address is the zero address AND the leg's
+          token is a member of the bridged-asset registry (plan 2026-08-26:
+          the tokens were MINTED by a trusted bridge, e.g. bridged WBTC).
+          No external sender exists, so the F4 unverified-sender premise
+          does not apply; the Event carries review + a bridge-specific
+          reason instead (user direction 2026-08-26: CEX->bridge transfers
+          must not read as rewards).
+        - spam (mint): a zero-address mint of a token NOT in the registry
+          (an unregistered contract, a native asset, or an empty registry) -
+          a possible spam airdrop; review + a mint-specific reason.
         - staking: the leg's from_address is a registered
           reward-distributor (the verified case).
         - spam: the from_address is NOT in the contract registry
@@ -1190,7 +1225,18 @@ class BerachainProcessor:
         """
         sender = (summed_leg.from_address or "").lower()
         if _is_zero_address(summed_leg.from_address):
-            return SubType.bridge
+            # Registry gate (plan 2026-08-26): only a MEMBER token's
+            # zero-address mint is a trusted bridge issuance; anything else
+            # (an unregistered token, a native asset with no contract
+            # address, or an empty registry) is a possible spam airdrop.
+            # Membership keys on the LEG's token address case-insensitively.
+            if (
+                summed_leg.token_address is not None
+                and self.bridged_asset_registry is not None
+                and self.bridged_asset_registry.is_bridged_asset(summed_leg.token_address)
+            ):
+                return SubType.bridge
+            return SubType.spam
         if self._is_reward_distributor(sender):
             return SubType.staking
         # F4: unverified sender -> spam (never clean staking).

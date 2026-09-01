@@ -1688,8 +1688,9 @@ and - because the asset is a configured EUR-pegged stablecoin - sets
 `proceeds_eur = N` (EUR par), `review_required=True` with reason naming the par
 assumption. The phantom loss is replaced by the realized gain/loss on the
 EUR-par proceeds, and the row flows into aggregation and the materiality
-filter. (Real disposal amounts and dates live only in the gitignored personal
-trace at `docs/maintenance/personal/payment-proceeds-trace.md`.)
+filter. (Real disposal amounts and dates live only in the private sibling
+repo's trace at `~/Projects/myrepos/personal-finance/docs/payment-proceeds-trace.md`;
+`docs/maintenance/personal/` was migrated there 2026-08-31.)
 
 ## Transaction Fee Filtering (DP-015)
 

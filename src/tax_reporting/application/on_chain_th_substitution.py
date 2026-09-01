@@ -44,6 +44,7 @@ from ..domain.on_chain_config import ContractRegistry, LpSnapshot
 from ..domain.on_chain_transaction import EventType, OnChainTransaction
 from ..infrastructure.koinly_parser import _find_report_path, read_koinly_rows
 from ..infrastructure.on_chain.berachain_processor import BerachainProcessor
+from ..infrastructure.on_chain.bridged_asset_registry import BridgedAssetRegistry
 from ..infrastructure.on_chain.integrity_invariants import check_on_chain_integrity
 from ..infrastructure.on_chain.lp_autodiscovery import LpAutodiscovery
 from ..infrastructure.on_chain.on_chain_csv_reader import read_on_chain_rows
@@ -57,6 +58,7 @@ from .crypto.entities import (
     WalletSourceProvenance,
 )
 from .on_chain_config import (
+    load_bridged_asset_registry_for_year,
     load_contracts,
     load_lp_snapshot,
     load_position_token_registry_for_year,
@@ -288,6 +290,10 @@ class OnChainThSubstituter:
             ``example/`` fallback for fresh clones.
         lp_snapshot_path: Optional explicit path to ``berachain_lp_snapshot.json``
             (same resolution contract as ``contracts_path``).
+        bridged_assets_path: Optional explicit path to
+            ``bera_bridged_assets.json`` (plan 2026-08-26; same resolution
+            contract as ``contracts_path`` - tests inject the committed
+            ``example/`` canonical path).
         on_chain_rpc_url: Optional Berachain JSON-RPC endpoint
             (``ON_CHAIN_RPC_URL`` from ``[TAX JURISDICTION]``). When set,
             :meth:`maybe_substitute` builds an :class:`RpcClient` and passes it
@@ -304,12 +310,14 @@ class OnChainThSubstituter:
         contracts_path: Path | None = None,
         lp_snapshot_path: Path | None = None,
         position_tokens_path: Path | None = None,
+        bridged_assets_path: Path | None = None,
         on_chain_rpc_url: str | None = None,
     ) -> None:
         """Initialize the substituter with optional test-injected registry paths."""
         self._contracts_path = contracts_path
         self._lp_snapshot_path = lp_snapshot_path
         self._position_tokens_path = position_tokens_path
+        self._bridged_assets_path = bridged_assets_path
         self._on_chain_rpc_url = on_chain_rpc_url
 
     def maybe_substitute(  # noqa: PLR0913
@@ -459,9 +467,11 @@ class OnChainThSubstituter:
 
         # --- Pipeline (review F10: each stage was inline; now extracted helpers) ---
         repo_root = find_repository_root()
-        registry, snapshot, position_tokens = self._load_registries(year, repo_root, logger)
+        registry, snapshot, position_tokens, bridged_assets = self._load_registries(
+            year, repo_root, logger
+        )
         processor, autodiscovery = self._build_processor(
-            registry, snapshot, position_tokens
+            registry, snapshot, position_tokens, bridged_assets
         )
         on_chain_rows = read_on_chain_rows(bera_csv)
         if date_from is not None or date_to is not None:
@@ -495,8 +505,11 @@ class OnChainThSubstituter:
         year: int,
         repo_root: Path,
         logger: logging.Logger,
-    ) -> tuple[ContractRegistry, LpSnapshot, PositionTokenRegistry]:
-        """Resolve + load the per-year contract registry, LP snapshot, and position-token registry.
+    ) -> tuple[ContractRegistry, LpSnapshot, PositionTokenRegistry, BridgedAssetRegistry]:
+        """Resolve + load the per-year registries.
+
+        The per-year contract registry, LP snapshot, position-token registry,
+        and bridged-asset registry.
 
         Production resolves these from ``resources/source/<year>/`` (the per-user
         override dir); when absent (a fresh clone has no personal data there - it
@@ -526,13 +539,24 @@ class OnChainThSubstituter:
         position_tokens = load_position_token_registry_for_year(
             year, self._position_tokens_path, repo_root
         )
-        return registry, snapshot, position_tokens
+        # Bridged-asset registry (plan 2026-08-26 Task 2): the same
+        # resolution contract; the COMMITTED canonical
+        # ``example/<year>/bera_bridged_assets.json`` is the fallback (public
+        # contracts), the OPTIONAL gitignored user file shadows it, and the
+        # loader degrades to an empty registry + WARNING only when the
+        # committed file itself is missing. The per-year loader is the
+        # shared facade (filename literal lives once).
+        bridged_assets = load_bridged_asset_registry_for_year(
+            year, self._bridged_assets_path, repo_root
+        )
+        return registry, snapshot, position_tokens, bridged_assets
 
     def _build_processor(
         self,
         registry: ContractRegistry,
         snapshot: LpSnapshot,
         position_tokens: PositionTokenRegistry,
+        bridged_assets: BridgedAssetRegistry,
     ) -> tuple[BerachainProcessor, LpAutodiscovery]:
         """Wire the RPC client + LP autodiscovery + Berachain processor.
 
@@ -561,6 +585,7 @@ class OnChainThSubstituter:
             contract_registry=registry,
             lp_autodiscovery=autodiscovery,
             position_token_registry=position_tokens,
+            bridged_asset_registry=bridged_assets,
         )
         return processor, autodiscovery
 

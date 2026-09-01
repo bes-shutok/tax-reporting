@@ -7,13 +7,20 @@ Each was a valid, non-blocking finding whose fix was judged larger than the
 round warranted; none blocks the `ON_CHAIN_TH_WALLETS` flip. Promote each as
 its own plan (or fold into P2/P4 planning) when taken.
 
+NOTE (review r2 overflow, 2026-08-28): this doc is ARCHIVED, but items 4
+(fetcher CSV atomic write) and 5 (staleness-suite structural residuals)
+REMAIN OPEN - they were never promoted. The umbrella backlog
+(`docs/history/backlog/2026-08-18-koinly-cancellation-program.md`, P2
+follow-up candidates section) carries the open pointers so active-backlog
+scans still see them.
+
 ## 1. Staleness handling: hard refusal + in-artifact indicator (PROMOTED)
 
 **Status (2026-08-27): promoted** to plan
 `docs/history/plans/completed/2026-08-26-on-chain-staleness-refusal.md` (landed:
 retry-then-refuse contract). The in-artifact indicator half stays a P2
-candidate; this backlog doc is not archived yet because items 2-3 await
-their own plans.
+candidate; all three items are now promoted (2026-08-28), so this doc is
+archived under `docs/history/backlog/completed/`.
 
 - **Discovered**: review r1 F6 (risk; stale-CSV failure mode), extended r2 F5
   (risk; artifact-side indicator) and hardened through r3-r5 (empty-config
@@ -45,7 +52,7 @@ their own plans.
 ## 2. Comparator module extraction (module-size rule)
 
 **Status (2026-08-28): landed** via plan
-`docs/history/plans/2026-08-26-comparator-combo-extraction.md` (branch
+`docs/history/plans/completed/2026-08-26-comparator-combo-extraction.md` (branch
 `2026-08-27-comparator-combo-extraction`).
 
 - **Discovered**: review r2 overflow (design; god-module) - the branch pushed
@@ -65,16 +72,27 @@ their own plans.
 
 ## 3. Bridge-asset registry gate (spam airdrop vs trusted bridge mint)
 
+**Status (2026-08-28): promoted** to plan
+`docs/history/plans/2026-08-26-bridge-asset-registry-gate.md` (landed:
+registry gate live; registered mint -> bridge, unregistered -> spam +
+review).
+
 - **Discovered**: review r1 F8 (risk; premortem discriminator gap).
-- **Current state (landed)**: ANY token minted from the zero address to the
-  wallet classifies `Reward`/`SubType.bridge` with Tag `Bridge` + review; the
+- **State at deferral**: ANY token minted from the zero address to the
+  wallet classified `Reward`/`SubType.bridge` with Tag `Bridge` + review; the
   discriminator gap is documented in `docs/maintenance/on_chain_validation.md`
   (the P2 rewards-from-on-chain split must key on the Tag and the review
   flag, NEVER on `EventType.Reward` alone).
+- **Post-landing (2026-08-28)**: the registry gate replaced this behavior -
+  a REGISTERED token's zero-address mint keeps `bridge`; an unregistered one
+  (or an empty registry) now classifies `spam` + review with a mint-specific
+  reason.
 - **Why deferred**: distinguishing a trusted bridge mint (bridged WBTC) from
   a junk airdrop mint needs a curated per-year registry + membership gate;
   which tokens are bridge-issued is public and derivable in-session from the
-  archived origin documents, but the curation had not been built; and the
+  archived origin documents, but the curation had not been built (amended:
+  derivation was from the 2025 TH baseline and public canonical-contract
+  knowledge, not crypto-origin documents; see development lesson #159); and the
   review flag already forces human verification on the filing path, so
   nothing is silent today.
 - **Plan sketch**: mirror the C8 position-NFT membership boundary - a
@@ -153,6 +171,6 @@ unless they compound:
 - Umbrella program: `docs/history/backlog/2026-08-18-koinly-cancellation-program.md`
   (P2 follow-up candidates section points here).
 - Maintenance context: `docs/maintenance/on_chain_validation.md` (bridge-mint
-  classification + discriminator gap; fetch-failure staleness marker).
+  classification and the bridge-asset registry gate; fetch-failure staleness marker).
 - Staleness plan reviews: `docs/history/reviews/2026-08-26-on-chain-staleness-refusal-code-review-r{1..5}.md`
   (items 4-5 above are their dispositioned residuals).

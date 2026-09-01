@@ -54,9 +54,15 @@ def _is_forbidden_open(path_str: str, project_root: Path) -> bool:
     Paths that cannot be resolved relative to ``project_root`` (outside the
     repo tree, or already-relative paths that do not start with ``resources/``)
     are allowed: the guard only concerns in-repo personal-data reads.
+
+    Normalization is LEXICAL (``os.path.abspath``), never ``Path.resolve()``:
+    since the 2026-08-31 personal-finance migration the real personal-data
+    segments are symlinks into the sibling private repo, and ``resolve()``
+    would follow them out of the repo tree and silently allow exactly the
+    reads this guard forbids.
     """
     try:
-        rel = Path(path_str).resolve().relative_to(project_root.resolve())
+        rel = Path(os.path.abspath(path_str)).relative_to(project_root.resolve())
     except (ValueError, OSError):
         # Outside project_root (e.g. stdlib/site-packages) -> allow.
         return False
@@ -112,6 +118,7 @@ _ON_CHAIN_TEST_PATHS = sorted(
 # is passed in (the subprocess does not inherit Python variables) so the shape
 # check resolves opened paths relative to the same root the driver uses.
 _PROBE = """
+import os
 import sys
 from pathlib import Path
 project_root = Path(sys.argv[1])
@@ -119,7 +126,9 @@ modules = sys.argv[2:]
 hits = []
 def _is_forbidden(path_str):
     try:
-        rel = Path(path_str).resolve().relative_to(project_root.resolve())
+        # Lexical abspath (no symlink follow) so personal data symlinked into
+        # the tree (2026-08-31 personal-finance migration) stays forbidden.
+        rel = Path(os.path.abspath(path_str)).relative_to(project_root.resolve())
     except (ValueError, OSError):
         return False
     parts = rel.parts

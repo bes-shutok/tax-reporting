@@ -8,7 +8,8 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - **Layer 1:** [README.md](docs/README.md) (overview).
 - **Layer 2 (Shared):** `docs/architecture/` and `docs/maintenance/` (guidelines, glossary, decisions, tax-law). Update in-session when behavior or rules change.
 - **Layer 3 (History):** `docs/history/` (plans, completed plans, backlog ideas archived to `backlog/completed/`).
-- **LLM-only / Temporary:** `docs/tmp/` and gitignored `docs/history/reviews/` and `docs/maintenance/personal/`.
+- **LLM-only / Temporary:** `docs/tmp/` and gitignored `docs/history/reviews/` (personal documents moved to the sibling private repo `personal-finance` 2026-08-31).
+- **docs/tmp lifetime:** scratch with plan lifetime, not storage. Its entries die with their owner: the `plans` completion pass deletes the plan's requirements note and session logs, the `done` Step 2.62 sweep removes anything whose owning plan archived, and the docs-branch sync drops the branch copies (`{tmp_dir}` is its one sweep-eligible root).
 - **Resolution:** Other skills resolve paths (like `{plans_dir}`) from `.ai-playbook/facts.md`.
 
 ## Instruction Rules
@@ -104,6 +105,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Crypto derivatives/futures liquidations reporting losses are disposals of collateral even at a loss; this is correct tax treatment, not an error. See `development_lessons.md` #26.
 - Crypto tests MUST read committed synthetic data, never gitignored personal exports. See `crypto_implementation_guidelines.md`.
 - The on-chain TH validation harness (`--validate-on-chain-th`) is user-run; its artifacts and the append-only user-owned `on_chain_th_dispositions.toml` stay gitignored; gate exit semantics per PD-010 (`on_chain_validation.md`).
+- Personal data (real exports, results, `config.ini` values, personal docs) lives in the sibling PRIVATE repo `~/Projects/myrepos/personal-finance` and reaches this repo only through gitignored symlinks (`config.ini`, `resources/source/2025`, `resources/source/tmp`, `resources/source/ib_export.csv`, `resources/source/shares-leftover.csv`, `resources/result/2025`, loose `resources/result` artifacts). Never commit personal data here; recreate the links with personal-finance's `bin/link-tax-reporting.sh`.
 
 ### 4. Agent Workflow Rules
 
@@ -176,7 +178,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 - Before advising on an IRS reclamação/impugnação prazo, verify against the mirrored CPPT (`docs/maintenance/tax/laws/pt/official/`); secondary summaries have erred. See `project-guidelines.md` #3.
 - Use the authority level and source date in `crypto_rules.md` to check whether a rule may be stale for the current tax year.
 - For country-specific tax decision points, see `docs/maintenance/tax/decision_points/`.
-- For private personal tax or immigration documents, read `docs/maintenance/personal/facts.md`; verify dynamic signing place/date and do not copy its data into tracked docs. See `development_lessons.md` #122.
+- For private personal tax or immigration documents, read `~/Projects/myrepos/personal-finance/docs/facts.md` (sibling private repo; `docs/maintenance/personal/` was migrated there 2026-08-31); verify dynamic signing place/date and do not copy its data into tracked docs. See `development_lessons.md` #122.
 - For tax classification of structured products, certificates, blacklisted-issuer rules (CIRS Art. 43(7)), see `development_lessons.md` #33.
 - Portal das Financas entry data for an IRS annex/Quadro: transcribe the form's full field list (not a net total), confirm every title clause (incl. negated qualifiers); Q8A has no per-payer field, so aggregate by (Codigo + Pais). See `development_lessons.md` #35.
 
@@ -191,7 +193,7 @@ This repo follows a three-layer docs layout under `docs/` (see `doc-hierarchy` s
 
 ## Configuration
 
-- `configparser` INI files: `config.ini` (prod), `tests/config.ini` (test). Sections `[COMMON]`, `[EXCHANGE RATES]`, `[TAX JURISDICTION]` (fields/defaults in `README.md`). Update exchange rates annually.
+- `configparser` INI files: `config.ini` (prod, untracked; typically a symlink into the sibling private repo `personal-finance`), `tests/config.ini` (test). Sections `[COMMON]`, `[EXCHANGE RATES]`, `[TAX JURISDICTION]` (fields/defaults in `README.md`). Update exchange rates annually.
 - `IANA_TIMEZONE`: auto-deduces `Europe/Lisbon` for `TAX_COUNTRY=PT`; REQUIRED for other countries with crypto data, else fails fast.
 - **Law-driven flags** (e.g. `exclude_loan_repayment_gains`) live in `docs/maintenance/tax/decision_points/<fiscal_year>.toml`, NOT `config.ini` (user preferences only); update the `.md` and `.toml` sidecar together.
 - TOML schema: `[meta].fiscal_year` (integer) + `[countries.XX]` boolean tables (multi-type loader accepts `dict[str, Decimal]`); copy `2025.toml` per year. Missing TOML -> `MissingDecisionPointsError`; invalid `[TAX JURISDICTION]` -> `ConfigurationError`.

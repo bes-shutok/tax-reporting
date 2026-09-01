@@ -1,6 +1,6 @@
 # Plan: Comparator combo-vocabulary extraction (module-size rule)
 
-Backlog origin: `docs/history/backlog/2026-08-26-on-chain-review-followups.md` item 2
+Backlog origin: `docs/history/backlog/completed/2026-08-26-on-chain-review-followups.md` item 2
 (review r2 overflow). Pure mechanical refactor; no behavior change.
 Plan review: `docs/history/reviews/2026-08-26-plan-review-comparator-combo-extraction-r1.md` … `-r5.md` (all rounds).
 

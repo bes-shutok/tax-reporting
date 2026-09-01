@@ -388,7 +388,9 @@ backlog.
 
 A PURE inflow whose leg is MINTED from the zero address has no external
 sender, so the F4 unverified-sender (spam) premise does not apply: the
-processor classifies it `Reward` + `SubType.bridge` with review and a
+processor classifies it `Reward` with a review flag; since 2026-08-28 the
+SubType depends on bridged-asset registry membership (see the registry-gate
+paragraph below) - a REGISTERED token classifies `SubType.bridge` with the
 bridge-specific reason (source and cost basis must be verified - the workflow
 cannot match the inflow to the originating acquisition, e.g. a CEX withdrawal
 routed through a bridge; real case: the wallet's bridged WBTC deposits).
@@ -404,12 +406,69 @@ override applied anywhere OTHER than the single `SUB_TYPE_TAG_OVERRIDES` dict
 reverse-maps to `Unknown` and fails the gate loudly (observed once, 2026-08-26,
 before the lookup was extended).
 
-Discriminator gap (review r1 F8): the zero-address marker does NOT distinguish
-a trusted bridge mint from a spam airdrop mint - ANY token minted directly to
-the wallet classifies `Reward`/`SubType.bridge` and renders Tag `Bridge`, with
-the review flag the only guard. Note (review r4): the frozen `EVENT_COMPATIBILITY` table deliberately does NOT accept a Koinly-side `Bridge` tag for `Reward` - only the ON-CHAIN projection renders `crypto_deposit/Bridge` (recovered by the reverse map). A manually Bridge-tagged baseline row would fail the gate loudly (type mismatch); widening the table is a PD-010 amendment to plan with the P2 rewards split. The P2 rewards-from-on-chain split must therefore key on the Tag (and the review flag), never on `EventType.Reward` alone; a registry-gated bridge-asset allowlist (mirroring the C8 position-NFT
-membership boundary) is the recorded follow-up option if junk-mint noise
-grows.
+Bridge-asset registry gate (review r1 F8, resolved; plan
+`docs/history/plans/2026-08-26-bridge-asset-registry-gate.md`, landed
+2026-08-28): the zero-address marker now distinguishes a trusted bridge mint
+from a spam airdrop mint via the bridged-asset registry. A zero-address mint
+of a REGISTERED token classifies `Reward`/`SubType.bridge`, renders Tag
+`Bridge`, and carries the existing bridge review reason (source and cost
+basis must be verified); a mint of an UNREGISTERED token (including an empty
+registry or `token_address=None`) classifies `Reward`/`SubType.spam` +
+review with a mint-specific reason naming the unregistered token. The gate
+lives in `BerachainProcessor._reward_sub_type` (membership check) and
+`_reward_event` (reason branching on `SubType.spam` + zero-address sender;
+UL #91 discriminator), mirroring the C8 position-NFT membership boundary.
+The P2 keying rule is unchanged: the rewards-from-on-chain split must key
+on the Tag (and the review flag), never on `EventType.Reward` alone.
+
+Registry ownership contract: the committed
+`resources/source/example/<year>/bera_bridged_assets.json` is the CANONICAL
+curated registry of public bridge-issued token contracts (production data,
+provenance-cited via a per-entry `note` naming the derivation evidence and
+the RPC/explorer anchor with a check date; the crypto-origin corpus supplies
+chain domicile only, never token contracts - development lesson #159; note
+values are informational-only and
+never consulted by classification, which reads membership alone). Accepted deviation
+(review r1 F2): WBERA is INTENTIONALLY in the trusted-mint allowlist - a
+zero-address WBERA issuance is a trusted wrap of the holder's own BERA,
+never an airdrop - so it keeps the (conservative) `bridge` classification
+and bridge review reason; the review flag remains the guard. The gitignored
+`resources/source/<year>/bera_bridged_assets.json` is an OPTIONAL user
+override that SHADOWS (fully REPLACES) the committed registry: a user file
+must contain ALL trusted-mint tokens for the year (copy the committed file
+and append), otherwise the committed entries (e.g. WBTC, WBERA) downgrade
+to spam + review for that run. Entries not yet committed belong in a commit
+to the canonical file (the correct home for publicly documented assets).
+Logging note (review r4 F1): for THIS registry the shadow leg logs a
+WARNING naming the dropped-entry consequence and the copy-and-append
+remedy (the shared resolver's `shadow_is_data_loss=True` leg, set only by
+the bridged-asset facade); the other per-user registries log INFO on that
+leg because their committed example is a template, not canonical data.
+Per-year copies of the
+committed registry (when the resolution facade
+`load_bridged_asset_registry_for_year` in
+`src/tax_reporting/application/on_chain_config.py` needs a fresh year) are
+a committed, reviewed act, not a user-side copy. Resolution order:
+optional user override, then the committed canonical registry, else an
+EMPTY registry + WARNING (every zero-address mint then classifies
+spam + review - never a silent bridge). Format contract (review r2 F10, wording
+amended r3 F3): entry keys are `0x` + 40-hex contract addresses
+(case-normalized to lowercase at load) with only an
+optional `note` field; duplicate entry keys resolve last-wins (json.loads
+semantics); anything else fails the run with `ConfigurationError`
+(a native-asset mint with no contract address renders as `<native asset>`
+in the spam reason). Curator checklist (review r2 F11): verify each key
+resolves to a contract ON Berachain mainnet (via an explorer, or via
+on-chain eth_call (symbol()/decimals()) on a public Berachain RPC when the
+explorer is unreachable, recording the method and check date in the entry
+note) before committing - the load-time guard validates shape only, not
+network.
+Note (review r4, unchanged): the
+frozen `EVENT_COMPATIBILITY` table deliberately does NOT accept a
+Koinly-side `Bridge` tag for `Reward` - only the ON-CHAIN projection
+renders `crypto_deposit/Bridge` (recovered by the reverse map). A manually
+Bridge-tagged baseline row would fail the gate loudly (type mismatch);
+widening the table is a PD-010 amendment to plan with the P2 rewards split.
 
 ### The multi-leg rendering family and exit 3
 

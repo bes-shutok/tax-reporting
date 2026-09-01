@@ -48,6 +48,8 @@ def resolve_registry_path(
     filename: str,
     override: Path | None,
     repo_root: Path,
+    *,
+    shadow_is_data_loss: bool = False,
 ) -> Path:
     """Resolve a per-year on-chain registry file path with example fallback.
 
@@ -55,7 +57,7 @@ def resolve_registry_path(
     fetcher resolves the position-token registry the same way; homed here
     generic per-year resource-path resolution with nothing
     fetcher-specific). Logs via this module's logger (no
-    caller-threaded logger - both INFO messages concern the resolution
+    caller-threaded logger - all messages concern the resolution
     itself, so caller identity adds nothing).
 
     Resolution order (first match wins):
@@ -67,14 +69,37 @@ def resolve_registry_path(
     3. ``resources/source/example/<year>/<filename>`` (the committed template;
        always present, so the opted-in path works out of the box).
 
-    Logs INFO when the override or the fallback is used, so the user can see
-    which registry drove classification.
+    Logs INFO on the override and fallback legs. The per-user primary leg
+    logs INFO by default (the per-user file is the designed production
+    source; the committed example is a template). Callers passing
+    ``shadow_is_data_loss=True`` - registries whose committed file is
+    CANONICAL, so a partial per-user file shadows (fully replaces) it and
+    silently drops committed entries - get a WARNING with the
+    copy-and-append hint instead.
     """
     if override is not None:
         _LOGGER.info("Using injected on-chain registry path for %s: %s", filename, override)
         return override
     primary = repo_root / "resources" / "source" / str(year) / filename
     if primary.is_file():
+        # The per-user file SHADOWS (fully replaces) the committed file:
+        # a partial override silently drops committed entries, so the run
+        # itself must say which registry was used.
+        if shadow_is_data_loss:
+            _LOGGER.warning(
+                "Using per-user on-chain registry %s (fully replaces the committed "
+                "registry): %s - committed entries not present in this file are "
+                "dropped for this run; copy the committed file and append your "
+                "entries to keep them",
+                filename,
+                primary,
+            )
+        else:
+            _LOGGER.info(
+                "Using per-user on-chain registry %s: %s",
+                filename,
+                primary,
+            )
         return primary
     fallback = repo_root / "resources" / "source" / "example" / str(year) / filename
     _LOGGER.info(

@@ -196,12 +196,21 @@ acquisition still needs the P2/P4 ingestion work.
 
 ### P2 follow-up candidates (from the 2026-08-26 review loop)
 
-Three deferred-with-record findings live in their own backlog doc for later
-plan promotion: `docs/history/backlog/2026-08-26-on-chain-review-followups.md`
+Three deferred-with-record findings lived in their own backlog doc:
+`docs/history/backlog/completed/2026-08-26-on-chain-review-followups.md`
 (staleness handling promoted 2026-08-27 to plan
 `docs/history/plans/completed/2026-08-26-on-chain-staleness-refusal.md`, landed as the
-retry-then-refuse contract; in-artifact indicator, comparator module
-extraction, and bridge-asset registry gate remain open).
+retry-then-refuse contract; comparator module extraction landed 2026-08-28 via plan
+`docs/history/plans/completed/2026-08-26-comparator-combo-extraction.md`; bridge-asset registry
+gate landed 2026-08-28 via plan
+`docs/history/plans/2026-08-26-bridge-asset-registry-gate.md` - all three promoted, so
+the backlog doc is archived under `completed/`). The in-artifact staleness indicator
+remains the one open P2 candidate from that loop. Review r2 overflow
+(2026-08-28): the archived followups doc's items 4 (fetcher CSV atomic
+write; staleness-review residual r1-F14) and 5 (staleness-suite structural
+residuals) also remain OPEN - do them opportunistically when next touching
+`on_chain_fetcher.py` / the staleness modules; see the archived doc for the
+full problem statements and acceptance sketches.
 
 ### P3 - Capital gains fully pipeline-side
 

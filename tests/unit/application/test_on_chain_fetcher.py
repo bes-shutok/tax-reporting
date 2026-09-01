@@ -29,6 +29,7 @@ from tax_reporting.application.on_chain_config import (
     load_position_token_registry_for_year,
 )
 from tax_reporting.application.on_chain_fetcher import run_on_chain_fetch
+from tax_reporting.application.paths import resolve_registry_path
 from tax_reporting.domain.exceptions import FileProcessingError
 
 # Module path of the DI-3 HTTP seam (monkeypatched per-test).
@@ -301,8 +302,6 @@ class TestResolveRegistryPath:
     """Direct tests for ``resolve_registry_path``'s three branches (r1 F4)."""
 
     def _resolve(self, repo_root: Path, override: Path | None) -> Path:
-        from tax_reporting.application.paths import resolve_registry_path
-
         return resolve_registry_path(2025, "reg.json", override, repo_root)
 
     def test_override_wins(self, tmp_path: Path):
@@ -312,9 +311,17 @@ class TestResolveRegistryPath:
 
         assert self._resolve(tmp_path, override) == override
 
-    def test_primary_per_user_file_wins(self, tmp_path: Path):
+    def test_primary_per_user_file_wins_info_by_default(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
         """Given an existing per-user primary file (and an example fallback
-        also present), expects the PRIMARY returned.
+        also present), expects the PRIMARY returned. Review r4 F1: the
+        DEFAULT (non-data-loss registries - contracts, LP snapshot,
+        position tokens, whose committed example is a template and whose
+        per-user file is the designed production source) logs INFO naming
+        the file, NEVER a WARNING: the r3 F8 data-loss WARNING was
+        over-broad and carried wrong copy-and-append advice on the
+        expected path.
         """
         primary = tmp_path / "resources" / "source" / "2025" / "reg.json"
         primary.parent.mkdir(parents=True)
@@ -323,20 +330,77 @@ class TestResolveRegistryPath:
         fallback.parent.mkdir(parents=True)
         fallback.write_text("{}", encoding="utf-8")
 
-        assert self._resolve(tmp_path, None) == primary
+        with caplog.at_level(logging.INFO, logger="tax_reporting.application.paths"):
+            assert self._resolve(tmp_path, None) == primary
 
-    def test_absent_primary_returns_example_fallback(self, tmp_path: Path):
+        assert any(
+            "reg.json" in record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.INFO
+        ), "expected an INFO naming the per-user registry"
+        assert not [
+            record for record in caplog.records if record.levelno >= logging.WARNING
+        ], "the default per-user leg must not log WARNING (r4 F1: expected path, not data loss)"
+
+    def test_primary_per_user_file_warning_when_shadow_is_data_loss(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        """Given an existing per-user primary file AND
+        ``shadow_is_data_loss=True`` (the bridged-asset registry, whose
+        committed file is canonical), expects a WARNING naming the file,
+        its replace-not-merge semantics, and the copy-and-append hint
+        (reviews r2 F2 + r3 F8; scope narrowed by r4 F1 to the flagged leg
+        only).
+        """
+        primary = tmp_path / "resources" / "source" / "2025" / "reg.json"
+        primary.parent.mkdir(parents=True)
+        primary.write_text("{}", encoding="utf-8")
+
+        with caplog.at_level(logging.INFO, logger="tax_reporting.application.paths"):
+            assert (
+                resolve_registry_path(
+                    2025, "reg.json", None, tmp_path, shadow_is_data_loss=True
+                )
+                == primary
+            )
+
+        assert any(
+            "reg.json" in record.getMessage()
+            and "fully replaces the committed registry" in record.getMessage()
+            and "copy the committed file and append" in record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+        ), "expected a WARNING naming the per-user registry, its replace semantics, and the copy-and-append hint"
+
+    def test_absent_primary_returns_example_fallback(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
         """Given NO per-user primary, expects the committed-example fallback
         path returned (whether or not it exists - existence is the loader's
-        concern; it degrades with a WARNING).
+        concern; it degrades with a WARNING). Review r5 overflow (post-exit
+        polish): the fallback leg is the out-of-the-box default for every
+        registry, so it must stay WARNING-free on BOTH the default and the
+        ``shadow_is_data_loss=True`` leg (a fallback-leg WARNING regression
+        would spam every default run).
         """
-        from tax_reporting.application.paths import resolve_registry_path
-
-        result = resolve_registry_path(2025, "reg.json", None, tmp_path)
-
-        assert result == (
+        expected_fallback = (
             tmp_path / "resources" / "source" / "example" / "2025" / "reg.json"
         )
+
+        with caplog.at_level(logging.INFO, logger="tax_reporting.application.paths"):
+            assert resolve_registry_path(2025, "reg.json", None, tmp_path) == (
+                expected_fallback
+            )
+            assert (
+                resolve_registry_path(
+                    2025, "reg.json", None, tmp_path, shadow_is_data_loss=True
+                )
+                == expected_fallback
+            )
+
+        assert not [
+            record for record in caplog.records if record.levelno >= logging.WARNING
+        ], "the fallback leg must not log WARNING (expected default path, not data loss)"
 
 
 class TestLoadPositionRegistryWiring:

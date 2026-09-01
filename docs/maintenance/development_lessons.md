@@ -2601,6 +2601,8 @@ The same immunity applies to prose inside the guarded files: a docstring or comm
 
 **Witness (recurrence, 2026-08-24 bera-unknown-followups review r4 fixes):** `uv run ruff format` on two edited files churned ~150-480 pre-existing unformatted lines each; both HEAD blobs fail `ruff format --check`. Same recovery: `git checkout --` both files, re-apply only the intended edits, validate with `ruff check` instead.
 
+**Witness (recurrence, 2026-08-29 bridge-asset-registry-gate review r3 fixes):** `ruff format` applied to six touched hand-wrapped files churned ~226 lines in one file alone; the initial HEAD-blob check via stdin lost config context and mis-verified. Same recovery: `git checkout --`, re-apply surgical edits, `ruff check` only. Corollary: a stdin HEAD-blob format check without the repo config is not a verification.
+
 **See also:** lesson #72 (`ruff check` on the HEAD blob for `# noqa` attribution; same unenforced-baseline root cause, reporting tool vs this mutating-tool failure mode); user-level lessons #68 (auto-fix rewriting re-export import blocks).
 
 ## 133. Tasks Changing Behavior After the Plan's Doc Task Re-Sweep Layer 2 Docs
@@ -2931,7 +2933,7 @@ The same immunity applies to prose inside the guarded files: a docstring or comm
 
 **Trigger:** designing any on-chain/address registry (bridged assets, CEX funding wallets, contract allowlists) and deciding committed vs gitignored user-owned.
 
-**Rule:** Membership that is a public fact (canonical token/contract addresses, documented by the issuing protocols and archivable in crypto-origin) lives in the committed registry, provenance-cited (registry-level `source` plus per-entry note naming the origin document), and is agent-curated. The gitignored `resources/source/<year>/` file is an optional shadow override for entries not yet committed, never a duplicate of public entries. User-owned data stays the personal layer: chains.json wallets, the dispositions TOML, Koinly exports. A provenance rule (crypto-origin: archived documents, no auto-discovered guesses) bans unsourced data; it does not require user ownership.
+**Rule:** Membership that is a public fact (canonical token/contract addresses, documented by the issuing protocols and archivable in crypto-origin) lives in the committed registry, provenance-cited (registry-level `source` plus per-entry note naming the origin document), and is agent-curated. The gitignored `resources/source/<year>/` file is an optional shadow override for entries not yet committed, never a duplicate of public entries. User-owned data stays the personal layer: chains.json wallets, the dispositions TOML, Koinly exports. A provenance rule (crypto-origin: archived documents, no auto-discovered guesses) bans unsourced data; it does not require user ownership. Amended by #159 (2026-08-28): the per-entry note names the actual derivation evidence, verified by containment check in the cited artifact - never a crypto-origin document by topical adjacency; that corpus establishes chain domicile, not token contracts.
 
 **Why:** Citing a provenance rule to justify user ownership conflates curation with ownership (the 2026-08-27 user challenge on the bridge-asset registry plan). Public addresses duplicated into a user file shadow newer committed entries under first-match-wins resolution and rot silently; the user should maintain nothing derivable in-session.
 
@@ -3018,3 +3020,36 @@ The same immunity applies to prose inside the guarded files: a docstring or comm
 **Shape:** any fix-all review pipeline; also applies to execute-plan Phase 3 rounds that stage findings whose fix belongs to a different module than the plan's frozen scope.
 
 **See also:** #53 (plan freeze wins), #156 (symbol-location pins), doing-code-review Step 5.1 (high-level tasks follow-up), receiving-review drop guidance.
+
+## 159. A provenance citation must be verified inside the cited artifact, not by topical adjacency
+
+**Principle:** Family H (verify the real thing, not the abstraction). Citing an archived document as the provenance for a specific value in committed data (a token contract address, a rate, an effective date) asserts "this artifact contains/establishes this value". Topical adjacency - the document covers the same chain, protocol, or domain - is not provenance for the specific value; the citation must be verified by locating the value (or its direct derivation evidence) in the cited artifact before the data file is written.
+
+**Trigger:** authoring or reviewing per-entry `note`/`source` provenance fields in committed registries (`resources/source/example/...`, crypto-origin mappings) where the entry value was derived from something other than the document being cited.
+
+**Rule:** for each provenance citation, run the containment check first (grep the cited file for the value or an unambiguous derivation of it). If the artifact establishes only adjacent context (chain domicile, terms of service), either cite the actual derivation evidence (baseline TH rows, public canonical-contract knowledge) or say explicitly what the artifact does and does not establish. Never let an "Origin documents:" list imply containment that was never checked.
+
+**Why:** 2026-08-28 bridge-asset registry Task 2 Pass 1: per-entry notes cited archived Berachain genesis/terms documents as "Origin documents" for two contract addresses; orchestrator verification found neither address appears anywhere in `docs/maintenance/tax/`. The documents establish chain domicile, not token contracts. Pass 2 rewrote the notes to state the real derivation (2025 baseline zero-address mint rows; canonical wrapped-native contract knowledge).
+
+**Shape:** any committed data registry with provenance-cited entries; also applies to `sources.md` entries and doc claims that a mirror "documents" a specific value.
+
+**See also:** #139 (registry provenance outranks coarse plan decisions), #153 (committed public-fact registries; amended provenance wording), `docs/maintenance/project-guidelines.md` #1 (source-archive provenance), AGENTS.md crypto-origin provenance rules.
+
+## 160. Caller-dependent log severity or remediation advice in a shared helper needs an explicit discriminator flag
+
+**Principle:** Family G (Data-loss observability), compounded by Family H - a severity upgrade or remediation text added to a shared helper's branch to reflect ONE caller's data-loss semantics silently applies to every caller. For callers where the shadowed file is benign (or where the copy-and-append advice is actively harmful, e.g. importing synthetic template addresses), the escalated message misleads on every normal run.
+
+**Trigger:** You are tightening logging (level, remediation hint) inside a shared resolver/facade whose motivation is ONE caller's data-loss semantics, and the helper has other callers for whom the same branch is normal operation.
+
+**Rule:**
+1. Do not encode the escalation in the shared default path. Add a keyword-only discriminator flag (e.g. `shadow_is_data_loss: bool = False`) defaulting to the benign behavior (INFO); only the caller whose shadow is data loss passes it.
+2. Grep ALL call sites of the shared helper and record which set the flag and which keep the default; each call site's severity change (WARNING->INFO) is intentional and must be listed.
+3. Re-scope caplog tests that pinned the broad behavior: split into a default case (asserts INFO and NO WARNING) and a flagged case (asserts WARNING + the remediation hint). A test left pinning the broad WARNING will reject the correct fix.
+
+**What happened (2026-08-28 bridge-asset registry r3 fix / r4 review F1, blocking):** the r3 shadow-leg WARNING was scoped inside the shared `resolve_registry_path`, so it fired for all four per-user registries on every normal run; for the contracts registry the copy-and-append advice would import synthetic template addresses. The r3 caplog test even pinned the mis-scope. Fix: keyword-only flag on the resolver, set only by the bridged-asset facade, plus the test split above.
+
+**Distinguishing from #69 (caplog sweep on level change):** #69 sweeps existing tests after a level change is decided. This lesson is upstream of that: do not change the shared default at all; parameterize by caller via an explicit flag. Both are Family H verify-the-real-thing at different stages.
+
+**Shape:** any shared resolution/lookup helper with multiple callers where one caller's failure mode is data loss and another's is routine shadowing.
+
+**See also:** #69 (caplog sibling sweep), #60 (same-precision branch/display coupling), `docs/maintenance/project-guidelines.md` #7 (warning-grouping recipe).

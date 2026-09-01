@@ -65,6 +65,7 @@ import re
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -143,6 +144,13 @@ _NONVAULT_RECIPIENT = "0x0000000000000000000000000000000000000cc3"
 # a synthetic wrapped-native token. All synthetic (Design Invariant #1).
 _POSITION_NFT = "0x0000000000000000000000000000000000000d7a"
 _WBERA = "0x0000000000000000000000000000000000000bb1"
+# Plan 2026-08-26 (bridge-asset registry gate): synthetic bridged-token
+# contract addresses - members / non-members of the in-memory synthetic
+# bridged-asset registry. Never real mainnet contracts (Design Invariant #1).
+_BRIDGED_TOKEN = "0x0000000000000000000000000000000000000b77"
+_BRIDGED_TOKEN_UPPER = "0x0000000000000000000000000000000000000B77"  # checksummed-style form
+_BRIDGED_TOKEN_OTHER = "0x0000000000000000000000000000000000000c55"
+_UNREGISTERED_MINT_TOKEN = "0x0000000000000000000000000000000000000d06"
 
 _TS = datetime(2025, 2, 25, 13, 53, 25, tzinfo=UTC)
 
@@ -250,11 +258,42 @@ def _position_registry():  # type: ignore[no-untyped-def]
     )
 
 
+def _bridged_registry(*addresses: str):  # type: ignore[no-untyped-def]
+    """An in-memory BridgedAssetRegistry whose only members are ``addresses``.
+
+    Local import (not module level; same rationale as ``_position_registry``)
+    so the RED phase of the 2026-08-26 bridge-asset-registry plan fails ONLY
+    the new tests: a module-level import of the not-yet-existing
+    ``bridged_asset_registry`` would break collection for every
+    currently-green test in this file.
+
+    Uses the plan's pinned JSON vocabulary: registry-level ``source``
+    provenance string plus entries keyed by the LOWERCASED token address,
+    each an object with an optional ``note`` (NOT C8's
+    ``provenance``/``label``/``tokens`` vocabulary).
+    """
+    from tax_reporting.infrastructure.on_chain.bridged_asset_registry import (
+        build_bridged_asset_registry,
+    )
+
+    return build_bridged_asset_registry(
+        {
+            "source": "<inline-test>",
+            **{
+                address.lower(): {"note": "synthetic bridged token"}
+                for address in addresses
+            },
+        },
+        source="<inline-test>",
+    )
+
+
 def _processor(  # noqa: PLR0913 - test fixture builder; many kwargs is the point
     *,
     registry_path: Path | None = None,
     registry: ContractRegistry | None = None,
     position_registry: object | None = None,
+    bridged_registry: object | None = None,
 ) -> BerachainProcessor:
     """Build a processor bound to the example registry + an in-memory LP snapshot.
 
@@ -278,15 +317,20 @@ def _processor(  # noqa: PLR0913 - test fixture builder; many kwargs is the poin
     rpc.get_code.return_value = "0x"
     rpc.get_implementation.return_value = "0x0000000000000000000000000000000000000000"
     autod = LpAutodiscovery(snapshot=snapshot, rpc_client=rpc)
-    if position_registry is None:
-        return BerachainProcessor(
-            chain="Berachain", contract_registry=registry, lp_autodiscovery=autod
-        )
+    # Optional registries are forwarded ONLY when provided: the RED phase of
+    # the 2026-08-26 bridge-asset-registry plan must fail ONLY the new tests
+    # (constructing BerachainProcessor with the not-yet-existing kwarg raises
+    # TypeError), so pre-existing call sites keep the old signature.
+    extra: dict[str, Any] = {}
+    if position_registry is not None:
+        extra["position_token_registry"] = position_registry
+    if bridged_registry is not None:
+        extra["bridged_asset_registry"] = bridged_registry
     return BerachainProcessor(
         chain="Berachain",
         contract_registry=registry,
         lp_autodiscovery=autod,
-        position_token_registry=position_registry,
+        **extra,
     )
 
 
@@ -1232,7 +1276,7 @@ class TestBerachainProcessor:
                 tx_hash="0xbridgemint",
                 asset="WBTC",
                 direction="in",
-                token_address="0x0000000000000000000000000000000000000btc",
+                token_address="0x0000000000000000000000000000000000000b7c",
                 from_address=_ZERO_ADDRESS,
                 to_address=_WALLET,
                 amount_raw=10**8,
@@ -1241,7 +1285,12 @@ class TestBerachainProcessor:
                 fee_amount_raw=None,
             ),
         ]
-        processor = _processor()
+        # r1-F1 retrofit (plan 2026-08-26 Task 2): the minted token is
+        # registered in the synthetic bridged-asset registry so this
+        # characterization keeps expecting bridge under the registry gate.
+        processor = _processor(
+            bridged_registry=_bridged_registry("0x0000000000000000000000000000000000000b7c")
+        )
 
         txs = processor.process(rows)
 
@@ -1266,7 +1315,7 @@ class TestBerachainProcessor:
                 tx_hash="0xbridgegas",
                 asset="WBERA",
                 direction="in",
-                token_address="0x0000000000000000000000000000000000000wber",
+                token_address="0x000000000000000000000000000000000000be17",
                 from_address=_ZERO_ADDRESS,
                 to_address=_WALLET,
                 amount_raw=10**18,
@@ -1285,7 +1334,10 @@ class TestBerachainProcessor:
                 fee_amount_raw=21_000_002_730_000,
             ),
         ]
-        processor = _processor()
+        # r1-F1 retrofit (plan 2026-08-26 Task 2): registered WBERA mint.
+        processor = _processor(
+            bridged_registry=_bridged_registry("0x000000000000000000000000000000000000be17")
+        )
 
         txs = processor.process(rows)
 
@@ -1304,7 +1356,7 @@ class TestBerachainProcessor:
                 tx_hash="0xmixed",
                 asset="WBTC",
                 direction="in",
-                token_address="0x0000000000000000000000000000000000000btc",
+                token_address="0x0000000000000000000000000000000000000b7c",
                 from_address=_ZERO_ADDRESS,
                 to_address=_WALLET,
                 amount_raw=10**8,
@@ -1324,7 +1376,12 @@ class TestBerachainProcessor:
                 fee_amount_raw=None,
             ),
         ]
-        processor = _processor()
+        # r1-F1 retrofit (plan 2026-08-26 Task 2): the WBTC mint leg is
+        # registered (the HONEY sender leg needs no registration - it
+        # classifies via the sender-verification branch).
+        processor = _processor(
+            bridged_registry=_bridged_registry("0x0000000000000000000000000000000000000b7c")
+        )
 
         txs = processor.process(rows)
 
@@ -1355,7 +1412,7 @@ class TestBerachainProcessor:
                 tx_hash="0xsplitmint",
                 asset="WBTC",
                 direction="in",
-                token_address="0x0000000000000000000000000000000000000btc",
+                token_address="0x0000000000000000000000000000000000000b7c",
                 from_address=_ZERO_ADDRESS,
                 to_address=_WALLET,
                 amount_raw=10**8,
@@ -1384,7 +1441,11 @@ class TestBerachainProcessor:
                 fee_amount_raw=None,
             ),
         ]
-        processor = _processor()
+        # r1-F1 retrofit (plan 2026-08-26 Task 2): the split's WBTC mint
+        # in-leg is registered so the Reward half stays bridge.
+        processor = _processor(
+            bridged_registry=_bridged_registry("0x0000000000000000000000000000000000000b7c")
+        )
 
         txs = processor.process(rows)
 
@@ -1400,6 +1461,361 @@ class TestBerachainProcessor:
         bridge_event = next(e for e in events if e.sub_type is SubType.bridge)
         assert bridge_event.review_reason is not None
 
+    def _split_gate_rows(self) -> list[OnChainTxRow]:
+        """A reward-claim-then-swap tx whose reward in-leg is a zero-address
+        mint of ``_BRIDGED_TOKEN`` (plan 2026-08-26 Task 1; the split routing
+        also feeds ``_reward_sub_type``, so the registry gate applies there -
+        review r1 F3: the split path is a SECOND gate entry)."""
+        return [
+            _row(
+                tx_hash="0xsplitgate",
+                asset="BGT",
+                direction="in",
+                from_address=_REWARD_DISTRIBUTOR_VERIFIED,
+                to_address=_WALLET,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+            _row(
+                tx_hash="0xsplitgate",
+                asset="WBTC",
+                direction="in",
+                token_address=_BRIDGED_TOKEN,
+                from_address=_ZERO_ADDRESS,
+                to_address=_WALLET,
+                amount_raw=10**8,
+                amount_decimals=8,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+            _row(
+                tx_hash="0xsplitgate",
+                asset="BGT",
+                direction="out",
+                token_address="0x0000000000000000000000000000000000000bgt",
+                from_address=_WALLET,
+                to_address=_DEX_ROUTER,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+            _row(
+                tx_hash="0xsplitgate",
+                asset="HONEY",
+                direction="in",
+                token_address="0x0000000000000000000000000000000000000hny",
+                from_address=_DEX_ROUTER,
+                to_address=_WALLET,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+
+    def test_reward_then_swap_split_mint_leg_registry_gate(self) -> None:
+        # Plan 2026-08-26 Task 1 (review r1 F3): inside the split, a
+        # REGISTERED zero-address mint in-leg stays Reward/bridge, while an
+        # UNREGISTERED one flips to Reward/spam + review; the verified
+        # distributor Reward half and the Swap half are unchanged either way.
+        rows = self._split_gate_rows()
+
+        def _by_in_asset(events: list[Event]) -> dict[str, tuple[EventType, SubType | None]]:
+            routed: dict[str, tuple[EventType, SubType | None]] = {}
+            for event in events:
+                for leg in event.legs:
+                    if leg.direction == "in":
+                        routed[leg.asset] = (event.event_type, event.sub_type)
+            return routed
+
+        registered = _by_in_asset(
+            _events(
+                _processor(bridged_registry=_bridged_registry(_BRIDGED_TOKEN)).process(rows)[0]
+            )
+        )
+        assert registered["WBTC"] == (EventType.Reward, SubType.bridge)
+        assert registered["BGT"] == (EventType.Reward, SubType.staking)
+        assert registered["HONEY"] == (EventType.Swap, None)
+
+        unregistered = _by_in_asset(
+            _events(
+                _processor(
+                    bridged_registry=_bridged_registry(_BRIDGED_TOKEN_OTHER)
+                ).process(rows)[0]
+            )
+        )
+        assert unregistered["WBTC"] == (EventType.Reward, SubType.spam)
+        assert unregistered["BGT"] == (EventType.Reward, SubType.staking)
+        assert unregistered["HONEY"] == (EventType.Swap, None)
+        spam_event = next(
+            e
+            for e in _events(
+                _processor(
+                    bridged_registry=_bridged_registry(_BRIDGED_TOKEN_OTHER)
+                ).process(rows)[0]
+            )
+            if e.sub_type is SubType.spam
+        )
+        assert spam_event.review_reason is not None, "a mint-spam split half must stay review-flagged"
+        assert "registered reward distributor" not in spam_event.review_reason
+
+    def test_zero_address_mint_registered_token_bridge(self) -> None:
+        # Plan 2026-08-26 Task 1: characterization - a zero-address mint of a
+        # token IN the bridged-asset registry keeps TODAY's behavior
+        # (Reward/bridge with the existing bridge review reason; Design
+        # Invariant "registry members' behavior byte-identical").
+        rows = [
+            _row(
+                tx_hash="0xregmint",
+                asset="WBTC",
+                direction="in",
+                token_address=_BRIDGED_TOKEN,
+                from_address=_ZERO_ADDRESS,
+                to_address=_WALLET,
+                amount_raw=10**8,
+                amount_decimals=8,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+        processor = _processor(bridged_registry=_bridged_registry(_BRIDGED_TOKEN))
+
+        txs = processor.process(rows)
+
+        assert len(txs) == 1
+        events = _events(txs[0])
+        assert len(events) == 1
+        assert events[0].event_type is EventType.Reward
+        assert events[0].sub_type is SubType.bridge
+        reason = events[0].review_reason
+        assert reason is not None, "a registered bridge mint must stay review-flagged"
+        # Review r1 F8: pin the bridge reason byte-identically (the plan
+        # invariant "registry members' behavior byte-identical"), mirroring
+        # ``test_sender_spam_reason_unchanged`` - substring asserts would let
+        # wording drift pass the suite.
+        assert reason == (
+            "inflow classified as a possible bridge transfer-in (tokens "
+            "minted from the zero address - no external sender, e.g. "
+            "bridged WBTC); the current workflow cannot match it to the "
+            "originating acquisition (e.g. a CEX withdrawal) - verify "
+            "source and cost basis before filing"
+        )
+
+    def test_zero_address_mint_unregistered_token_spam(self) -> None:
+        # Plan 2026-08-26 Task 1: a zero-address mint of a token NOT in the
+        # registry classifies Reward/spam + review with a MINT-SPECIFIC reason
+        # naming the unregistered token - never the sender-spam text (there is
+        # no sender; UL #91 discriminator branching).
+        rows = [
+            _row(
+                tx_hash="0xjunkmint",
+                asset="JUNK",
+                direction="in",
+                token_address=_UNREGISTERED_MINT_TOKEN,
+                from_address=_ZERO_ADDRESS,
+                to_address=_WALLET,
+                amount_raw=5_000_000 * 10**18,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+        processor = _processor(bridged_registry=_bridged_registry(_BRIDGED_TOKEN_OTHER))
+
+        txs = processor.process(rows)
+
+        assert len(txs) == 1
+        events = _events(txs[0])
+        assert len(events) == 1
+        assert events[0].event_type is EventType.Reward
+        assert events[0].sub_type is SubType.spam
+        assert events[0].sub_type is not SubType.bridge
+        reason = events[0].review_reason
+        assert reason is not None, "an unregistered mint must stay review-flagged"
+        # Review r2 overflow: pin the mint-spam reason byte-identically,
+        # mirroring the registered-mint bridge pin above and the sender-spam
+        # pin (substring asserts would let wording drift pass the suite).
+        assert reason == (
+            f"mint classified as spam (token "
+            f"{_UNREGISTERED_MINT_TOKEN.lower()} "
+            f"was minted from the zero address and is not in the "
+            f"bridged-asset registry - possible spam airdrop); verify "
+            f"the token's origin and value before filing"
+        )
+        assert "registered reward distributor" not in reason
+
+    def test_zero_address_mint_empty_registry_spam(self) -> None:
+        # Plan 2026-08-26 Task 1: an EMPTY registry (the corrupted-checkout
+        # degradation) means EVERY zero-address mint classifies spam + review
+        # (nothing silently clean; never a silent bridge).
+        rows = [
+            _row(
+                tx_hash="0xemptyreg",
+                asset="WBTC",
+                direction="in",
+                token_address=_BRIDGED_TOKEN,
+                from_address=_ZERO_ADDRESS,
+                to_address=_WALLET,
+                amount_raw=10**8,
+                amount_decimals=8,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+        processor = _processor(bridged_registry=_bridged_registry())
+
+        txs = processor.process(rows)
+
+        assert len(txs) == 1
+        events = _events(txs[0])
+        assert len(events) == 1
+        assert events[0].event_type is EventType.Reward
+        assert events[0].sub_type is SubType.spam
+        # Review r4 F7: byte-pin the full reason, mirroring the unregistered
+        # sibling (same mint-spam f-string; wording drift must fail the suite).
+        reason = events[0].review_reason
+        assert reason is not None, "an empty-registry mint must stay review-flagged"
+        assert reason == (
+            f"mint classified as spam (token "
+            f"{_BRIDGED_TOKEN.lower()} "
+            f"was minted from the zero address and is not in the "
+            f"bridged-asset registry - possible spam airdrop); verify "
+            f"the token's origin and value before filing"
+        )
+
+    def test_zero_address_mint_native_token_spam(self) -> None:
+        # Plan 2026-08-26 Task 1: a zero-address mint whose Leg.token_address
+        # is None (the native asset - no contract address to be a registry
+        # member) classifies spam + review.
+        rows = [
+            _row(
+                tx_hash="0xnativemint",
+                asset="BERA",
+                direction="in",
+                token_address=None,
+                from_address=_ZERO_ADDRESS,
+                to_address=_WALLET,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+        processor = _processor(bridged_registry=_bridged_registry(_BRIDGED_TOKEN))
+
+        txs = processor.process(rows)
+
+        assert len(txs) == 1
+        events = _events(txs[0])
+        assert len(events) == 1
+        assert events[0].event_type is EventType.Reward
+        assert events[0].sub_type is SubType.spam
+        # Review r1 F3: pin the explicit ``<native asset>`` degradation (the
+        # ``str | None`` f-string must degrade explicitly; repo style rule).
+        # Review r3 F5: byte-pin the full reason, mirroring the sibling
+        # sender-spam exact pin (wording drift must fail the suite).
+        expected_reason = (
+            "mint classified as spam (token <native asset> "
+            "was minted from the zero address and is not in the "
+            "bridged-asset registry - possible spam airdrop); verify "
+            "the token's origin and value before filing"
+        )
+        assert events[0].review_reason == expected_reason
+
+    def test_bridged_asset_membership_case_insensitive(self) -> None:
+        # Plan 2026-08-26 Task 1: the registry stores the LOWERCASE address
+        # and the leg carries the CHECKSUMMED form - membership is
+        # case-insensitive, so the mint classifies bridge.
+        rows = [
+            _row(
+                tx_hash="0xcasecheck",
+                asset="WBTC",
+                direction="in",
+                token_address=_BRIDGED_TOKEN_UPPER,
+                from_address=_ZERO_ADDRESS,
+                to_address=_WALLET,
+                amount_raw=10**8,
+                amount_decimals=8,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+        processor = _processor(bridged_registry=_bridged_registry(_BRIDGED_TOKEN))
+
+        txs = processor.process(rows)
+
+        assert len(txs) == 1
+        events = _events(txs[0])
+        assert len(events) == 1
+        assert events[0].event_type is EventType.Reward
+        assert events[0].sub_type is SubType.bridge
+
+    def test_sender_spam_reason_unchanged(self) -> None:
+        # Plan 2026-08-26 Task 1 (UL #91: each cause exercised): a
+        # NON-zero-address reward from an unregistered sender keeps the
+        # EXISTING sender-spam reason text byte-identical when a bridged-asset
+        # registry is loaded - the registry gate must not disturb the
+        # sender-verification branch.
+        rows = [
+            _row(
+                tx_hash="0xsenderspam",
+                asset="HONEY",
+                direction="in",
+                token_address="0x000000000000000000000000000000000000abcd",
+                from_address=_REWARD_DISTRIBUTOR_UNVERIFIED,  # NOT in registry
+                to_address=_WALLET,
+                amount_raw=10**18,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+        processor = _processor(bridged_registry=_bridged_registry(_BRIDGED_TOKEN))
+
+        txs = processor.process(rows)
+
+        assert len(txs) == 1
+        events = _events(txs[0])
+        assert len(events) == 1
+        assert events[0].event_type is EventType.Reward
+        assert events[0].sub_type is SubType.spam
+        expected_reason = (
+            f"reward classified as spam (sender "
+            f"{_REWARD_DISTRIBUTOR_UNVERIFIED.lower()} is not a "
+            f"registered reward distributor); verify it is not taxable "
+            f"income before filing"
+        )
+        assert events[0].review_reason == expected_reason
+
+    def test_empty_sender_spam_reward_keeps_sender_spam_reason(self) -> None:
+        # Review r5 F2 (post-exit polish): pin the negative boundary of the
+        # mint-vs-sender discriminator - a spam Reward whose from_address is
+        # EMPTY (the CSV reader coerces a missing cell to "") is NOT a
+        # zero-address mint, so it must keep the SENDER-spam reason (with the
+        # '<missing>' placeholder for the empty sender), never the
+        # mint-spam text. A truthiness regression on _is_zero_address
+        # ("" is falsy) would flip this reason while the suite stayed green.
+        rows = [
+            _row(
+                tx_hash="0xemptysender",
+                asset="HONEY",
+                direction="in",
+                token_address=_UNREGISTERED_MINT_TOKEN,
+                from_address="",  # reader coercion of a missing cell
+                to_address=_WALLET,
+                amount_raw=5_000_000 * 10**18,
+                fee_asset=None,
+                fee_amount_raw=None,
+            ),
+        ]
+        processor = _processor(bridged_registry=_bridged_registry(_BRIDGED_TOKEN))
+
+        txs = processor.process(rows)
+
+        assert len(txs) == 1
+        events = _events(txs[0])
+        assert len(events) == 1
+        assert events[0].event_type is EventType.Reward
+        assert events[0].sub_type is SubType.spam
+        assert events[0].review_reason == (
+            "reward classified as spam (sender <missing> is not a "
+            "registered reward distributor); verify it is not taxable "
+            "income before filing"
+        )
+
     def test_swap_absorbing_mint_leg_warns(self, caplog) -> None:
         # Review r1 F3 residual: a bidirectional mint+out tx with NO
         # distributor/router split classifies as a Swap; the zero-address
@@ -1410,7 +1826,7 @@ class TestBerachainProcessor:
                 tx_hash="0xswapmint",
                 asset="WBTC",
                 direction="in",
-                token_address="0x0000000000000000000000000000000000000btc",
+                token_address="0x0000000000000000000000000000000000000b7c",
                 from_address=_ZERO_ADDRESS,
                 to_address=_WALLET,
                 amount_raw=10**8,

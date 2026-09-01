@@ -1,6 +1,6 @@
 # Plan: On-chain staleness auto-retry ladder, then hard refusal
 
-Backlog origin: `docs/history/backlog/2026-08-26-on-chain-review-followups.md` item 1
+Backlog origin: `docs/history/backlog/completed/2026-08-26-on-chain-review-followups.md` item 1
 (review r1 F6, extended r2 F5, hardened r3-r5). Contract decisions: 2026-08-26 the
 user chose hard refusal mirroring M1; 2026-08-27 the user SUPERSEDED it with a
 retry-first ladder (exponential backoff refetch: six attempts over 63 s of backoff
@@ -224,7 +224,7 @@ fi
 # r2-F1: the phrase is LINE-WRAPPED in the doc today ("does\nNOT refuse"), so the
 # plain grep above alone can never fire; the flattened per-file check is the real
 # backstop:
-for f in docs/maintenance/on_chain_validation.md docs/history/backlog/2026-08-26-on-chain-review-followups.md; do
+for f in docs/maintenance/on_chain_validation.md docs/history/backlog/completed/2026-08-26-on-chain-review-followups.md; do
   test -f "$f" || { echo "missing $f"; exit 1; }
   if tr '\n' ' ' < "$f" | grep -q "By design this does NOT refuse"; then
     echo "stale staleness contract prose remains in $f"; exit 1
@@ -329,7 +329,7 @@ Files:
 
 Files:
 - `docs/maintenance/on_chain_validation.md`
-- `docs/history/backlog/2026-08-26-on-chain-review-followups.md`
+- `docs/history/backlog/completed/2026-08-26-on-chain-review-followups.md`
 - `docs/history/backlog/2026-08-18-koinly-cancellation-program.md`
 
 - [x] Rewrite the "Fetch-failure staleness marker (2026-08-26)" section (line 330): the opted-in substitution first retries the fetch automatically (six attempts, exponential backoff, 63 s of backoff sleep plus fetch time) and then refuses the run; deletion remains the manual clear; the validation harness refuses identically but never retries (no fetch seam) and its refusal surfaces as `EXIT_VALIDATION_CRASH` (exit 2, fail-loud with traceback; r10-F1); record the user's 2026-08-27 contract decision superseding the 2026-08-26 hard refusal. The rewrite must contain the literal phrases "refuses the run" and "automatic refetch" (the Validation Commands probe them; r2-F3)

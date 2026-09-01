@@ -46,6 +46,7 @@ This will create a `.venv` folder in your project root that editors can detect a
 - **Modern tooling**: Ruff linter/formatter, coverage reporting, professional packaging
 
 ### **Source Files Configuration**
+- **Personal data (optional)**: real exports, results, and `config.ini` are untracked; they may be gitignored symlinks into the sibling private repo `personal-finance` (recreate with its `bin/link-tax-reporting.sh`). A fresh clone works standalone on the committed synthetic `example/` data.
 - **Input Data**: Add your Interactive Brokers CSV export to the `/resources/source` folder. See `resources/source/example/ib_export.csv` for a fully synthetic example of the file format.
 - **Crypto Tax Data (Optional)**: For Portuguese crypto tax reporting, place Koinly export files in a `koinly*` subdirectory within `/resources/source`. Of the ~13 exports Koinly can produce, only the following are read by this tool:
 
